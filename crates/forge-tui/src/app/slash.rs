@@ -848,21 +848,25 @@ mod tests {
             .await;
     }
 
+    /// `/new` is the core's own command wherever it is typed: this view draws
+    /// the words and sends them, and the core's interception restarts the
+    /// seat. A view that refused the name would answer with a system message
+    /// instead of the reader's own line.
     #[tokio::test(flavor = "current_thread")]
-    async fn new_sets_command_pending() {
+    async fn new_is_drawn_and_forwarded_to_the_core() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let _rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/new");
+
                 assert!(consumed);
+                let last = app.messages().and_then(|messages| messages.last());
                 assert!(
-                    matches!(app.status, AppStatus::CommandPending),
-                    "expected CommandPending, got {:?}",
-                    app.status
+                    matches!(last, Some(message) if message.role == MessageRole::User),
+                    "the reader's own line is drawn, so the core's command is not refused here",
                 );
-                assert_eq!(app.pending_command_label(), Some("Starting new session..."));
             })
             .await;
     }

@@ -5,18 +5,22 @@ use super::{
     require_connection, set_command_pending,
 };
 use crate::app::App;
-use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
+use crate::app::connect::begin_resume_session;
 use forge_workspace::SessionUpdate;
 
 /// One command's handler.
 type Handler = fn(&mut App, &[&str]) -> bool;
 
-/// The commands the terminal handles itself: the name as it is typed, and
-/// the handler for it. A name missing here falls to the unknown-command
-/// fallback, so this list and
-/// `forge_server::commands::FORGE_COMMANDS` are the same set - the table
-/// is what both views offer, and a name it carries that nothing here answers
-/// would be advertised by both dropdowns and refused when typed.
+/// The commands this view answers itself: the name as it is typed, and the
+/// handler for it, all of them terminal-side - an overlay, a picker, the
+/// launchpad. Everything else a composer can type is either the CLI's or the
+/// core's, and neither is decided here.
+///
+/// A name missing here falls to the unknown-command fallback, so this list
+/// and `forge_server::commands::FORGE_COMMANDS` cover the same set between
+/// them: the table is what both views offer, and a name it carries that
+/// nothing dispatches would be advertised by both dropdowns and refused
+/// when typed.
 const HANDLERS: &[(&str, Handler)] = &[
     ("/compact", handle_compact_submit),
     ("/dictate", handle_dictate_submit),
@@ -27,7 +31,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("/launchpad", handle_launchpad_submit),
     ("/mode", handle_mode_submit),
     ("/model", handle_model_submit),
-    ("/new", handle_new_session_submit),
     ("/resume", handle_resume_submit),
     ("/spinner", handle_spinner_submit),
     ("/usage", handle_usage_submit),
@@ -63,10 +66,46 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             _ => {}
         }
     }
+    // A command the core answers is the core's wherever it is typed: send
+    // the words as a prompt and let the one interception run them, which is
+    // the same path a client's send takes.
+    if forge_workspace::prompt::forge_prompt(text).is_some() {
+        return forward_to_core(app, text);
+    }
     match HANDLERS.iter().find(|(name, _)| *name == parsed.name) {
         Some((_, handler)) => handler(app, &parsed.args),
         None => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// Send one of forge's own commands to the core, drawing the words the way
+/// this view draws its own submits.
+///
+/// The core acts on them, so nothing here decides what they do - which is
+/// what keeps the terminal and a client on one path.
+fn forward_to_core(app: &mut App, text: &str) -> bool {
+    push_user_message(app, text);
+    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::Prompt {
+        key,
+        text: text.to_owned(),
+        attachments: Vec::new(),
+    }) {
+        if let Some(key) = app.active_session_key.clone() {
+            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+                key,
+                message: format!("Failed to run {text}: {err}"),
+            });
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "slash_error_without_session",
+                message = "a forge command failed with no session to report it against",
+                outcome = "skipped",
+                error_message = %err,
+            );
+        }
+    }
+    true
 }
 
 /// Open the read-only `/gateway` view: every org the gateway holds,
@@ -468,7 +507,9 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     use crate::agent::model::EffortLevel;
 
     if args.is_empty() {
-        let level = app.config.thinking_effort_effective();
+        let level = forge_workspace::launch_settings::thinking_effort(
+            &app.config.committed_settings_document,
+        );
         push_system_info(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
         return true;
     }
@@ -498,39 +539,6 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
             push_system_info(app, format!("Effort: {} (takes effect next session)", level.label()));
         }
         Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
-    }
-    true
-}
-
-fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /new");
-        return true;
-    }
-
-    push_user_message(app, "/new");
-
-    if !require_connection(app, "Cannot create new session: not connected yet.") {
-        return true;
-    }
-
-    set_command_pending(app, "Starting new session...", None);
-
-    if let Err(e) = start_new_session(app, SessionStartReason::NewSession) {
-        if let Some(session_key) = app.active_session_key.clone() {
-            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: format!("Failed to run /new: {e}"),
-            });
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_COMMAND,
-                event_name = "slash_error_without_session",
-                message = "start_new_session failed with no session to report it against",
-                outcome = "skipped",
-                error_message = %e,
-            );
-        }
     }
     true
 }

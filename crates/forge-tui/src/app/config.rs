@@ -4,7 +4,6 @@ mod overlay_input;
 pub mod store;
 
 use super::view::{self, ActiveView};
-use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -14,69 +13,6 @@ pub(crate) use mcp::{
     refresh_mcp_snapshot, request_mcp_snapshot_if_needed,
 };
 use serde_json::Value;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DefaultPermissionMode {
-    #[default]
-    Default,
-    Auto,
-    AcceptEdits,
-    Plan,
-    DontAsk,
-    BypassPermissions,
-}
-
-impl DefaultPermissionMode {
-    pub const fn as_stored(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Auto => "auto",
-            Self::AcceptEdits => "acceptEdits",
-            Self::Plan => "plan",
-            Self::DontAsk => "dontAsk",
-            Self::BypassPermissions => "bypassPermissions",
-        }
-    }
-
-    pub fn from_stored(value: &str) -> Option<Self> {
-        match value {
-            "default" => Some(Self::Default),
-            "auto" => Some(Self::Auto),
-            "acceptEdits" => Some(Self::AcceptEdits),
-            "plan" => Some(Self::Plan),
-            "dontAsk" => Some(Self::DontAsk),
-            "bypassPermissions" => Some(Self::BypassPermissions),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OutputStyle {
-    #[default]
-    Default,
-    Explanatory,
-    Learning,
-}
-
-impl OutputStyle {
-    pub const fn as_stored(self) -> &'static str {
-        match self {
-            Self::Default => "Default",
-            Self::Explanatory => "Explanatory",
-            Self::Learning => "Learning",
-        }
-    }
-
-    pub fn from_stored(value: &str) -> Option<Self> {
-        match value {
-            "Default" => Some(Self::Default),
-            "Explanatory" => Some(Self::Explanatory),
-            "Learning" => Some(Self::Learning),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketplaceActionKind {
@@ -226,34 +162,6 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
-    pub fn always_thinking_effective(&self) -> bool {
-        store::always_thinking_enabled(&self.committed_settings_document).unwrap_or(false)
-    }
-
-    pub fn model_effective(&self) -> Option<String> {
-        // Forge defaults to `opus` when no model is persisted. The
-        // claude CLI's own default is `sonnet`; without this override
-        // every fresh forge session would launch on sonnet even
-        // though the user expects opus.
-        store::model(&self.committed_settings_document)
-            .ok()
-            .flatten()
-            .or_else(|| Some("opus".to_owned()))
-    }
-
-    pub fn thinking_effort_effective(&self) -> EffortLevel {
-        // Forge defaults to `max` effort when unset.
-        store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
-    }
-
-    pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        // Forge defaults to `Auto` permission mode; the CLI defaults
-        // to `default`, so without this override every fresh forge
-        // session would ship `permissions.defaultMode = "default"`.
-        store::default_permission_mode(&self.committed_settings_document)
-            .unwrap_or(DefaultPermissionMode::Auto)
-    }
-
     pub fn respect_gitignore_effective(&self) -> bool {
         // The shared rule, which the web view's file walk reads too.
         forge_server::file_index::respect_gitignore(Some(&self.committed_preferences_document))
@@ -261,10 +169,6 @@ impl ConfigState {
 
     pub fn prefers_reduced_motion_effective(&self) -> bool {
         store::prefers_reduced_motion(&self.committed_local_settings_document).unwrap_or(false)
-    }
-
-    pub fn output_style_effective(&self) -> OutputStyle {
-        store::output_style(&self.committed_local_settings_document).unwrap_or_default()
     }
 
     pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
@@ -445,27 +349,6 @@ fn project_root(app: &App) -> Option<std::path::PathBuf> {
     // `forge.toml`, so the check lives here rather than being trusted
     // from the producer.
     root.filter(|root| !root.as_os_str().is_empty())
-}
-
-const LANGUAGE_MIN_CHARS: usize = 2;
-const LANGUAGE_MAX_CHARS: usize = 30;
-
-/// Validate a free-text language string before forwarding it to the
-/// session-launch settings payload. Returns a static error message
-/// when the value is out of range, otherwise `None` for "looks fine."
-pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let length = trimmed.chars().count();
-    if length < LANGUAGE_MIN_CHARS {
-        Some("Language must be at least 2 characters.")
-    } else if length > LANGUAGE_MAX_CHARS {
-        Some("Language must be at most 30 characters.")
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

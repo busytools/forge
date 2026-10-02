@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{DefaultPermissionMode, OutputStyle};
 use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
@@ -179,18 +178,6 @@ fn write_missing(document: &mut Value, path: &[&str]) {
     remove_json_path(document, path);
 }
 
-pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["alwaysThinkingEnabled"])?.unwrap_or(false))
-}
-
-pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
-    match read_string(document, &["effortLevel"])? {
-        // Forge defaults to `max` effort when unset.
-        None => Ok(EffortLevel::Max),
-        Some(value) => EffortLevel::from_stored(&value).ok_or(()),
-    }
-}
-
 pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
     write_string(document, &["effortLevel"], level.as_stored());
 }
@@ -204,13 +191,6 @@ pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
     write_bool(document, &["prefersReducedMotion"], enabled);
 }
 
-pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
-    match read_string(document, &["outputStyle"])? {
-        None => Ok(OutputStyle::Default),
-        Some(value) => OutputStyle::from_stored(&value).ok_or(()),
-    }
-}
-
 #[cfg(test)]
 pub fn set_model(document: &mut Value, model: Option<&str>) {
     match model {
@@ -219,73 +199,13 @@ pub fn set_model(document: &mut Value, model: Option<&str>) {
     }
 }
 
-pub fn model(document: &Value) -> Result<Option<String>, ()> {
-    read_string(document, &["model"])
-}
-
-pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
-    match read_string(document, &["permissions", "defaultMode"])? {
-        // Forge defaults to `Auto` permission mode when unset (the
-        // CLI itself defaults to `default`). The override lives
-        // here so launch_settings / picker render all pick up the
-        // same forge-flavoured default.
-        None => Ok(DefaultPermissionMode::Auto),
-        Some(value) => DefaultPermissionMode::from_stored(&value).ok_or(()),
-    }
-}
-
 #[cfg(test)]
 pub fn set_respect_gitignore(document: &mut Value, enabled: bool) {
     write_bool(document, &["respectGitignore"], enabled);
 }
 
-#[cfg(test)]
-pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
-    write_string(document, &["permissions", "defaultMode"], mode.as_stored());
-}
-
-#[cfg(test)]
-pub fn set_language(document: &mut Value, value: Option<&str>) {
-    match value.map(str::trim).filter(|text| !text.is_empty()) {
-        Some(text) => write_string(document, &["language"], text),
-        None => write_missing(document, &["language"]),
-    }
-}
-
-#[cfg(test)]
-pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["alwaysThinkingEnabled"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_output_style(document: &mut Value, style: OutputStyle) {
-    write_string(document, &["outputStyle"], style.as_stored());
-}
-
-#[cfg(test)]
-pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["spinnerTipsEnabled"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["terminalProgressBarEnabled"], enabled);
-}
-
 pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
     read_string(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV])
-}
-
-pub fn language(document: &Value) -> Result<Option<String>, ()> {
-    read_string(document, &["language"])
-}
-
-pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["spinnerTipsEnabled"])?.unwrap_or(true))
-}
-
-pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["terminalProgressBarEnabled"])?.unwrap_or(true))
 }
 
 fn resolve_paths(
@@ -569,29 +489,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_setting_readers_apply_defaults() {
-        let document = Value::Object(Map::new());
-
-        // Forge defaults `defaultMode` to `Auto` when missing.
-        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
-        assert_eq!(output_style(&document), Ok(OutputStyle::Default));
-        assert_eq!(model(&document), Ok(None));
-    }
-
-    #[test]
-    fn persisted_setting_readers_reject_invalid_values() {
-        let invalid_output_style = serde_json::json!({ "outputStyle": "Verbose" });
-        let invalid_model = serde_json::json!({ "model": true });
-        let invalid_permission_mode = serde_json::json!({
-            "permissions": { "defaultMode": "not-a-mode" }
-        });
-
-        assert_eq!(output_style(&invalid_output_style), Err(()));
-        assert_eq!(model(&invalid_model), Err(()));
-        assert_eq!(default_permission_mode(&invalid_permission_mode), Err(()));
-    }
-
-    #[test]
     fn opus_version_pin_returns_none_when_unset() {
         let document = Value::Object(Map::new());
 
@@ -620,16 +517,16 @@ mod tests {
     fn set_thinking_effort_level_writes_string_value() {
         let mut document = Value::Object(Map::new());
         set_thinking_effort_level(&mut document, EffortLevel::High);
-        assert_eq!(thinking_effort_level(&document), Ok(EffortLevel::High));
+        assert_eq!(document["effortLevel"], serde_json::json!("high"));
     }
 
     #[test]
     fn set_model_writes_or_removes_value() {
         let mut document = serde_json::json!({ "model": "sonnet" });
         set_model(&mut document, Some("opus"));
-        assert_eq!(model(&document), Ok(Some("opus".to_owned())));
+        assert_eq!(document["model"], serde_json::json!("opus"));
         set_model(&mut document, None);
-        assert_eq!(model(&document), Ok(None));
+        assert!(document.get("model").is_none(), "a cleared model is removed, not blanked");
     }
 
     /// Regression: a symlink at the write target must be preserved.

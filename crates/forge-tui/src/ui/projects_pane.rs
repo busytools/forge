@@ -1374,7 +1374,9 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Effort. Always shown - the underlying `EffortLevel` always has
     // a value (config carries a default). Keeping the row unconditional
     // means it doesn't appear / disappear as the user switches models.
-    let effort = app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
+    let effort = app.observed_effort().unwrap_or_else(|| {
+        forge_workspace::launch_settings::thinking_effort(&app.config.committed_settings_document)
+    });
     lines.push(Line::from(vec![
         Span::raw(" "),
         label_span("Effort", ACCOUNT_PANEL_ID_LABEL_WIDTH),

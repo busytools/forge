@@ -3606,7 +3606,19 @@ impl Workspace {
             Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
             _ => None,
         };
-        let outcome = self.route(cmd);
+        // A composer's text that names a forge command is FORGE'S, not the
+        // CLI's. Decided here rather than in a view, because this is where
+        // both of them dispatch: the terminal and a client reach the same
+        // commands only by taking the same path, and some of these names the
+        // CLI answers differently or not at all - `/new` is its own `/clear`,
+        // which rotates a conversation forge never records.
+        let outcome = match &cmd {
+            Command::Prompt { key, text, .. } => match crate::prompt::forge_prompt(text) {
+                Some(crate::prompt::ForgePrompt::NewSession) => self.restart_session(key),
+                None => self.route(cmd),
+            },
+            _ => self.route(cmd),
+        };
         if outcome.is_ok()
             && let Some((key, text)) = prompt
         {
@@ -3617,6 +3629,41 @@ impl Workspace {
             });
         }
         outcome
+    }
+
+    /// Start a fresh session on `key`'s seat, as the terminal's `/new` does.
+    ///
+    /// The launch settings are built here rather than taken from the caller:
+    /// a view that supplied its own would spawn a session with what its own
+    /// snapshot happened to hold, and a client has no snapshot to supply.
+    fn restart_session(self: &Arc<Self>, key: &SessionSlot) -> Result<(), DispatchError> {
+        let cwd = self.cwd_for_session(key).unwrap_or_default();
+        let launch_settings = self.launch_settings_for(key, &cwd);
+        self.route(Command::NewSession { key: key.clone(), cwd, launch_settings })
+    }
+
+    /// The settings a launch on `key` carries, read from the same documents
+    /// the CLI reads.
+    fn launch_settings_for(&self, key: &SessionSlot, cwd: &str) -> SessionLaunchSettings {
+        let empty = || serde_json::Value::Object(serde_json::Map::new());
+        // An empty cwd is no cwd: joining `.claude/settings.local.json` onto
+        // one would read it against the process working directory.
+        let documents_cwd = (!cwd.is_empty()).then(|| std::path::Path::new(cwd));
+        let documents = self.settings_documents(key, documents_cwd);
+        let user =
+            documents.as_ref().and_then(|documents| documents.user.clone()).unwrap_or_else(empty);
+        let local = documents
+            .as_ref()
+            .and_then(|documents| documents.project_local.clone())
+            .unwrap_or_else(empty);
+        let preferences = self.user_preferences().unwrap_or_else(empty);
+        crate::launch_settings::session_launch_settings(
+            &crate::launch_settings::LaunchSettingsDocuments {
+                user: &user,
+                local: &local,
+                preferences: &preferences,
+            },
+        )
     }
 
     /// Route a command that carries no frame of its own.
@@ -16457,6 +16504,52 @@ mod prompt_frame_origin_tests {
                     if key == seat
             ),
             "the words the terminal drew at submit are marked as its own, or it draws them twice",
+        );
+    }
+
+    /// `/new` from any composer is forge's own command, never the CLI's. The
+    /// CLI answers that name as its own `/clear`, which rotates a
+    /// conversation forge never records - no id minted, no `SessionReplaced` -
+    /// so the seat is restarted here instead, and the words never reach it.
+    #[test]
+    fn a_new_prompt_restarts_the_seat_rather_than_reaching_the_cli() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/new".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes a /new prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            commands.iter().any(|c| matches!(c, Command::NewSession { key, .. } if key == &seat)),
+            "the seat is restarted: {commands:?}",
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            "and the words are never forwarded to the CLI: {commands:?}",
+        );
+    }
+
+    /// A name that only LOOKS like a forge command is the reader's prose, and
+    /// reaches the model as they typed it.
+    #[test]
+    fn a_prompt_that_only_starts_like_a_forge_command_is_still_a_prompt() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/newer please".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/newer please"),
+            "a near miss is prose: {commands:?}",
         );
     }
 

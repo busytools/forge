@@ -16,16 +16,13 @@ use crate::Cli;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
+pub(crate) use session_start::begin_resume_session;
 
 /// Build `SessionLaunchSettings` for the startup spawn path.
 pub(crate) fn session_launch_settings_for_startup(
     app: &App,
 ) -> forge_workspace::SessionLaunchSettings {
-    session_start::session_launch_settings_for_reason(
-        app,
-        session_start::SessionStartReason::Startup,
-    )
+    session_start::session_launch_settings_for_reason(app)
 }
 
 /// Create the `App` struct in `Connecting` state and load shared
@@ -369,10 +366,7 @@ pub fn start_connection(app: &mut App) {
     }
 
     app.connection_started = true;
-    let mut launch_settings = session_start::session_launch_settings_for_reason(
-        app,
-        session_start::SessionStartReason::Startup,
-    );
+    let mut launch_settings = session_start::session_launch_settings_for_reason(app);
     // Boot wave only: --new makes the auto_start leads start fresh
     // instead of resuming (and cascades to their workers). Stamped on
     // the shared boot settings so every dispatch below carries it - the
