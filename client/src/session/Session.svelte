@@ -12,6 +12,7 @@
   import Rail from './Rail.svelte';
   import SessionId from './SessionId.svelte';
   import { watchSession, type SessionRead } from './live';
+  import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
     headerFacts,
@@ -268,7 +269,16 @@
             {/if}
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
             {#if compactions !== null}
-              <span class="f-comp">{'\u{b7}'} {compactions}</span>
+              <!-- Tappable: the count is a fact about the conversation, and
+                   the one thing a reader wants from it is to see the latest
+                   cut - so the click takes them there. -->
+              {'\u{b7}'}
+              <button
+                class="f-comp"
+                type="button"
+                title="go to the latest compaction"
+                onclick={askCompaction}>{compactions}</button
+              >
             {/if}
           </span>
         {/if}

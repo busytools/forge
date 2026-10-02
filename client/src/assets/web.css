@@ -426,7 +426,7 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* The chat column. min-height:0 or the column refuses to shrink below its
    content and the composer is pushed past the viewport, where
    overflow:hidden eats it. */
-main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 /* One row, never two. The seat and its facts are a single line, and what does
    not fit FOLDS by priority rather than wrapping - the terminal's own answer:
    at its narrow tier both panes fold and the bar keeps the handles and the
@@ -891,6 +891,21 @@ details.leaf > summary .st.sk { color: var(--dim); }
 .shot img { max-width: 100%; max-height: 320px; display: block;
   border: 1px solid var(--line); border-radius: 6px; }
 .shot .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 5px; }
+
+/* The way back to the foot, over the column's corner while the reader is away
+   from it: a request, not a status - the state is that it is there at all. */
+.follow { position: absolute; right: 18px; bottom: 14px; z-index: 6;
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--s2); border: 1px solid var(--line); color: var(--muted);
+  cursor: pointer; }
+.follow:hover { color: var(--text); border-color: var(--ctl); }
+.follow .ic { width: 16px; height: 16px; }
+
+/* The header's compaction count, which is a way in rather than a label: it
+   takes the reader to the latest cut. */
+.sess .f-comp { background: none; border: 0; padding: 0; font: inherit;
+  color: inherit; cursor: pointer; }
+.sess .f-comp:hover { color: var(--accent); }
 
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }

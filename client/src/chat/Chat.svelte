@@ -1,12 +1,15 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
-  import { VList } from 'virtua/svelte';
+  import { VList, type VListHandle } from 'virtua/svelte';
 
+  import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
+  import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Compacting from './Compacting.svelte';
+  import { latestCompaction } from './compaction-jump';
   import {
     Chat,
     NOTHING,
@@ -69,6 +72,12 @@
    * this update, and the element's own `scrollHeight` does not.
    */
   let viewport: HTMLElement | null = $state(null);
+  /**
+   * The list's own handle, for the one move the element cannot make: a jump
+   * to a row that may not be drawn. `land` deliberately goes through the
+   * element; finding an arbitrary past row needs the list's index math.
+   */
+  let list: VListHandle | null = $state(null);
   /** Where the column last left the reader, which its own pin's echo cannot disarm. */
   let placed: number | null = null;
   let working: Chat | null = null;
@@ -478,6 +487,25 @@
     placed = viewport.scrollTop;
   }
 
+  /** The ask already answered, so a repeat of the same token is not acted on twice. */
+  let answeredAsk: number | null = null;
+
+  /**
+   * The header's ask: reveal the latest compaction.
+   *
+   * Through the list's handle rather than the element, because the row may
+   * not be drawn - and the scroll it performs fires the same scroll event a
+   * reader's own wheel does, so the follow turns off exactly the way it does
+   * when anyone scrolls away from the foot. Nothing else has to remember it.
+   */
+  $effect(() => {
+    const ask = $scrollAsk;
+    if (ask === null || ask.token === answeredAsk) return;
+    answeredAsk = ask.token;
+    const at = latestCompaction(held.turns);
+    if (at !== null) list?.scrollToIndex(at, { align: 'start' });
+  });
+
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
   // conversation means, and a page that grew without the view moving would
   // lose the very thing it was opened on. A reader anywhere else is left
@@ -628,6 +656,7 @@
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}
+    bind:this={list}
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
@@ -652,4 +681,21 @@
        sibling of the scroller rather than a row of the grid, so the composer
        and the dock - both drawn under this column - never have to know it. -->
   <Pinned info={pinned?.info ?? null} />
+  <!-- The way back to the foot, shown ONLY while the reader is away from it:
+       following means the newest row is on screen, so its presence is the
+       state read at a glance and its click is the whole way back - at the
+       foot and following again, in one move. -->
+  {#if !held.following}
+    <button
+      class="follow"
+      type="button"
+      title="back to the latest"
+      onclick={() => {
+        working?.following(true);
+        land();
+      }}
+    >
+      <Icon name="down" />
+    </button>
+  {/if}
 {/if}
