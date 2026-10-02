@@ -72,6 +72,21 @@
   const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
 
   /**
+   * Whether the change only adds, which is what a file the call created is.
+   *
+   * **Then there is no old side, and no old-number column to draw**: a fixed
+   * column of blank numbers is the width of a gap on every line of a new file.
+   * Read across every part of the change, not per hunk: a file is new or it is
+   * not, and one of its hunks having an old side is what says it is not.
+   */
+  const added = $derived(
+    patches.length > 0 &&
+      patches.every((piece) =>
+        piece.kind === 'hunk' ? piece.lines.every((line) => line.old === null) : piece.old === '',
+      ),
+  );
+
+  /**
    * The size of a mutation's change, as the one line under its diff, or `null`
    * for a call whose row draws no diff at all.
    *
@@ -119,7 +134,7 @@
         {/each}
       {:else}
         {#if patches.length > 0}
-          <div class="dif">
+          <div class="dif" class:added>
             {#each patches as piece, at (at)}
               {#if piece.kind === 'diff'}
                 <!-- No header naming the file: the row's own title is the path,
