@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { clear, list, register } from './records';
 import List from './List.svelte';
+import Siblings from './Siblings.svelte';
 import Swapped from './Swapped.svelte';
 
 /** Let the list mount and every deferred pass land, the way `follow.test.ts` does. */
@@ -55,10 +56,28 @@ describe('the handle a list registers at the seam', () => {
     ).not.toBe(first);
   });
 
+  it('leaves the surviving list holding the seam when its neighbour departs', () => {
+    const both = writable(true);
+    app = mount(Siblings, { target: document.body, props: { both } });
+    flushSync();
+    const survivor = list();
+    expect(survivor, 'two lists mounted, the last one at the seam').not.toBeNull();
+
+    both.set(false);
+    flushSync();
+
+    expect(
+      document.querySelectorAll('.conv'),
+      'the departing list left the survivor on screen',
+    ).toHaveLength(1);
+    expect(list(), 'the departing list does not clear a handle that is not its own').toBe(survivor);
+  });
+
   it('holds nothing for a list that was unmounted before it ever flushed', () => {
     // Where a departed list leaves the seam, which is the state this starts at.
     register(null);
     app = mount(List, { target: document.body });
+    expect(document.querySelector('.conv'), 'the list rendered before the unmount').not.toBeNull();
     // No flush between the two, so the effect never ran.
     void unmount(app);
     app = null;
