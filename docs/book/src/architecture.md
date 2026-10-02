@@ -115,7 +115,8 @@ not reached is the five refreshes that ask the core for a new snapshot:
 they are still direct
 `Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
 and the arrow above is not yet one-way. The surface carries one of them for
-the socket - `refresh_context_usage`, asked on a seat's read - while the
+the socket - `refresh_context_usage`, asked on a seat's read and again when a
+turn finishes on a seat a page holds - while the
 TUI's own call sites are the ones still direct. A read a second view would want
 goes on that surface; a read only the TUI makes stays a plain method.
 
