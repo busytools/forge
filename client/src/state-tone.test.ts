@@ -24,11 +24,28 @@
  * resolves to - only that the rule meant to draw a failure names it.
  * `contrast.test.ts` is the check that sits over the palette's values.
  *
- * Two holes, named rather than left to be discovered. A state-class rule whose
- * colour declaration is DELETED names no tone at all and so leaves this check's
- * scope, where the tone test below reads declarations rather than requiring
- * one. And a state class coloured by a literal is read on `color` only, since
- * the sheet tinting a border or a ground by rgba is its idiom for alpha.
+ * Three holes, named rather than left to be discovered.
+ *
+ * A state-class rule whose colour declaration is DELETED names no tone at all,
+ * so it leaves this check's scope rather than failing it, where the tone test
+ * below reads declarations rather than requiring one. A state class coloured
+ * by a literal is read on `color` only, since the sheet tinting a border or a
+ * ground by rgba is its idiom for alpha.
+ *
+ * The third is the mark's BASE rule, a few lines from the one this file exists
+ * for: `.st` with no state class carries the mark's default tone, and swapping
+ * `.kind > summary .st` to `var(--bad)` leaves the whole suite green. No
+ * vocabulary entry reaches it - `st: '--ok'` would legalise `--ok` on `.st.err`
+ * too, because a rule's allowed tones are the union over the classes its
+ * selector carries, and the defect this file was written for would go green;
+ * it would also red on `.row .what .st`, whose default is the `--dim` of a row
+ * mark rather than a tone. The default is contextual, so there is no property
+ * to state about it, and these three rules stand outside this shape rather
+ * than being an oversight the file could close.
+ *
+ * A class NAME is the extension point, so a state written under one the
+ * vocabulary does not list draws in whatever tone it likes until someone adds
+ * it to `TONES` - the drawing's `.file .st.a` is the tree's example.
  */
 import { readFileSync } from 'node:fs';
 
