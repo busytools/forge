@@ -230,10 +230,12 @@ describe('the sheet a state class draws in', () => {
           }
 
           // The sheet's own contract is that the palette is not here, so a
-          // state class drawing text in a literal has left the token set behind.
+          // state class drawing text in a literal has left the token set
+          // behind. Only a declaration naming NO tone is read here: the scan
+          // above already reports one naming the wrong tone, and reading it
+          // twice puts the same rule in the failure twice.
           for (const [, value = ''] of body.matchAll(/(?:^|;)\s*color\s*:\s*([^;]+)/g)) {
-            const [token] = tonesNamed(value);
-            if (token === undefined || !allowed.includes(token)) {
+            if (tonesNamed(value).length === 0) {
               wrong.push(
                 `${where}: "${part}" draws its text in ${value.trim()}, and ${names} names ` +
                   `${allowed.join(' or ')}`,
