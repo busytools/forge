@@ -21,10 +21,13 @@ That is `cargo fmt --check`, the Unicode punctuation gate, the client's
 Prettier check, ESLint, `svelte-check` and `tsc --noEmit` and then its
 vitest run, `cargo clippy --all-targets --workspace -- -D warnings` once
 per feature set (with and without `--all-features`),
-`cargo nextest run --workspace --all-features`, and
+`cargo nextest run --workspace --all-features`,
+`cargo test --doc --workspace --all-features`, and
 `cargo doc --workspace --no-deps --all-features`, all with
-`RUSTFLAGS=-D warnings` on the clippy, test and doc steps. Get it
-green before you open a pull request. It is CI's set minus two jobs:
+`RUSTFLAGS=-D warnings` on the clippy, test, doctest and doc steps. That
+flag covers the build each step drives, and rustdoc compiles a doctest on
+its own, so it does not deny warnings inside one. Get it green before you
+open a pull request. It is CI's set minus two jobs:
 CI also runs `cargo check --release` and `just check-feature-configs`.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.

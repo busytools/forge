@@ -66,10 +66,13 @@ the client's Prettier check, its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
-`cargo nextest run --workspace --all-features`, and
-`cargo doc --workspace --no-deps --all-features`. The clippy, test and
-doc steps each set `RUSTFLAGS=-D warnings` so a warning CI would reject
-fails locally too; CI sets it once at workflow level instead.
+`cargo nextest run --workspace --all-features`,
+`cargo test --doc --workspace --all-features`, and
+`cargo doc --workspace --no-deps --all-features`. The clippy, test,
+doctest and doc steps each set `RUSTFLAGS=-D warnings` so a warning CI
+would reject fails locally too; CI sets it once at workflow level
+instead. It covers the build each step drives, and rustdoc compiles a
+doctest on its own, so it does not deny warnings inside one.
 
 Run it before opening a pull request. It is CI's set minus two jobs: CI
 also runs `cargo check --release` and `just check-feature-configs`, both
@@ -99,6 +102,7 @@ just clippy           # lints only
 just test-all         # whole workspace, all features
 just test             # forge-sdk only
 just conformance      # replay every committed wire baseline
+just doctest          # compile the workspace's doctests
 just doc              # rustdoc with warnings denied
 ```
 
