@@ -218,7 +218,8 @@ export const REPLACES: readonly string[] = [
  * queued-send bridge, the connector echoes, the plugin and account catalogue.
  * A page hears them because a connection carries every subject's frames, and
  * the record has no field for most of them. `dictate_overrides` is the
- * exception - the field exists and no variant writes it (#1467).
+ * exception - the field exists and nothing fills it: no variant writes it
+ * (#1467), and the read does not reach it (#1582).
  */
 export const IGNORED: readonly string[] = [
   'accounts_changed',
