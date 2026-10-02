@@ -384,9 +384,7 @@ function holdsImageResult(turn: Turn): boolean {
     blocksIn(held).some((block) => {
       const result = block as { type?: unknown; content?: unknown } | null;
       if (result?.type !== 'tool_result' || !Array.isArray(result.content)) return false;
-      return result.content.some(
-        (inner) => (inner as { type?: unknown } | null)?.type === 'image',
-      );
+      return result.content.some((inner) => (inner as { type?: unknown } | null)?.type === 'image');
     }),
   );
 }
