@@ -20,6 +20,7 @@ export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'l
 /** A record with nothing in it, which is the seat the tests start from. */
 export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
+    slot: SLOT,
     composer: { take: null, notice: null, compacting: false, sign_in: null },
     dictate_overrides: { styling: null, structure: null, context: null },
     pending_ask: null,

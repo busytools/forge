@@ -43,6 +43,7 @@
 
   function blank(): ComposerRecord {
     return {
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
       composer: { take: null, notice: null, compacting: false, sign_in: null },
       dictate_overrides: { styling: null, structure: null, context: null },
       pending_ask: null,

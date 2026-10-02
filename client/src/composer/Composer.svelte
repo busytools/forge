@@ -80,6 +80,18 @@
     echoes.leave(key);
   });
 
+  /**
+   * Whether the record in hand is the shown seat's.
+   *
+   * The page keeps this composer mounted while it hands it one seat's record
+   * after another, and between a switch and the new seat's first record what
+   * it hands over is the seat being LEFT's - seconds, on a seat being read for
+   * the first time. Everything a record WRITES is gated on this, because a
+   * record's writes are the seat's own: a landing the left seat's record still
+   * carries must not land in the box that just moved.
+   */
+  const owns = $derived(boxKey(record.slot) === boxKey(slot));
+
   /** The clock the beat's window is read against, which the close below moves. */
   let clock = $state(Date.now());
   /** The field, so focus can go back to it when the box returns. */
@@ -92,7 +104,9 @@
   const mac = navigator.platform.toLowerCase().includes('mac');
 
   const composer = $derived(composerState(record));
-  const ask = $derived(pendingAsk(record));
+  // A prompt only the shown seat's record may put up: answering the seat being
+  // left's prompt through this composer would dispatch it as the seat moved to.
+  const ask = $derived(owns ? pendingAsk(record) : null);
   /** Whether the landed beat's window is still open. */
   const beat = $derived(box.beatAt !== null && clock - box.beatAt < BEAT_MS);
 
@@ -150,7 +164,7 @@
 
   const blocker = $derived(blocked(seat, composer, box.sent));
   const filled = $derived(box.draft.trim() !== '');
-  const notice = $derived(noticeLine(composer.notice, box.sawTake));
+  const notice = $derived(owns ? noticeLine(composer.notice, box.sawTake) : null);
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
   /**
@@ -186,9 +200,11 @@
     if (field !== null) field.focus();
   });
 
-  // Holding the seat's take is having seen it, and the flag never clears.
+  // Holding the seat's take is having seen it, and the flag never clears -
+  // and only the seat's own record arms it: another seat's take, still in the
+  // record in hand between two seats, is not this box having watched anything.
   $effect(() => {
-    if (composer.take !== null) box.sawTake = true;
+    if (owns && composer.take !== null) box.sawTake = true;
   });
 
   /** What the dock's own box belongs to, which is what its words go with. */
@@ -217,6 +233,7 @@
    * this effect writes cannot re-run it.
    */
   $effect(() => {
+    if (!owns) return;
     const held = composer.notice;
     if (held === null) {
       box.landed = null;

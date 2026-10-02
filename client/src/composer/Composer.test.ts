@@ -124,8 +124,12 @@ function openBoth(over: Partial<ComposerProps> = {}) {
 }
 
 /** A record whose composer holds what a case wants it to. */
-function withNotice(notice: unknown, held: Record<string, unknown> | null = null): ComposerRecord {
-  return record({ composer: { take: held, notice, compacting: false, sign_in: null } });
+function withNotice(
+  notice: unknown,
+  held: Record<string, unknown> | null = null,
+  slot: SessionSlot = SLOT,
+): ComposerRecord {
+  return record({ slot, composer: { take: held, notice, compacting: false, sign_in: null } });
 }
 
 /** A take that landed, as the core sends one: the words, and whether they were cut. */
@@ -1020,6 +1024,42 @@ describe('the seat the box belongs to', () => {
     expect(field().value, 'the words land in the box of the seat they belong to').toBe(
       'and run the gate too',
     );
+  });
+
+  /**
+   * The move itself is not enough when the destination box has watched a take
+   * of its own before, which is every seat the reader dictates on: the flag is
+   * per box and never clears, so what is left stopping the landing is which
+   * seat the record in hand belongs to - and right after a move that record is
+   * still the seat being LEFT's, until the one being moved to answers.
+   */
+  it('does not land the left seat take in the box of the seat it moved to', () => {
+    const harness = open();
+    // Both seats are the reader's, so both boxes have watched a take: a fresh
+    // box would refuse the landing below for the wrong reason.
+    seesTake(harness);
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = withNotice(null, take(), ELSEWHERE);
+    flushSync();
+
+    // On the first seat a take lands and the reader sends it. The core keeps
+    // the landed notice after the take is gone.
+    harness.page.slot = SLOT;
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    expect(field().value, 'the take lands on its own seat').toBe(LANDED.text);
+    sendBox();
+    expect(field().value, 'the reader sent the words, so the box is empty').toBe('');
+
+    // The reader moves, and the page has not answered with the new seat yet:
+    // what it still holds is the seat they left, landing and all.
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+
+    expect(
+      field().value,
+      "the seat they left's landing was put into the box of the seat they moved to",
+    ).toBe('');
   });
 
   it('does not mark a refused send on a seat that never sent it', () => {

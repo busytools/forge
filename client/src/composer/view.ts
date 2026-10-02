@@ -55,6 +55,16 @@ export interface SeatRead {
  */
 export interface ComposerRecord {
   /**
+   * The seat this record is for.
+   *
+   * The page keeps this composer mounted while it hands it one seat's record
+   * after another, and between a switch and the new seat's first record the
+   * record in hand is the PREVIOUS seat's. Everything a record writes is gated
+   * on this matching the seat being shown, so a landing that belongs to the
+   * seat being left cannot land in the box being moved to.
+   */
+  slot: SessionSlot;
+  /**
    * What this seat's composer is doing, as the wire sends it.
    *
    * Left as it came rather than narrowed by the page: the take, the notice and
