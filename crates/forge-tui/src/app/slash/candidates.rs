@@ -458,19 +458,15 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
     })
 }
 
-/// The names the submit path forwards to the model rather than deciding
-/// itself: the pair the terminal handles only on the launchpad, and the two
-/// forge retired, which it forwards rather than refuses.
-///
-/// Forge's own commands are the dispatch table's, so they never reach the
-/// fallback that reads this and none of them may appear here: the two lists
-/// answer the same question about a name.
-const FORWARDED: [&str; 4] = ["/help", "/mcp", "/plugins", "/quit"];
-
 /// Whether the submit path forwards `command_name` to the model rather than
-/// refusing it here: [`FORWARDED`], or whatever the CLI advertised.
+/// refusing it here: the names the CLI resolves without advertising, or
+/// whatever it did advertise.
+///
+/// The list is the core's, because the client's send is decided by the same
+/// rule: a name this view forwards is one the core forwards too.
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
-    FORWARDED.contains(&command_name) || advertised_commands(app).iter().any(|c| c == command_name)
+    forge_workspace::prompt::is_forwarded_name(command_name)
+        || advertised_commands(app).iter().any(|c| c == command_name)
 }
 
 #[cfg(test)]
@@ -588,7 +584,7 @@ mod launchpad_filter_tests {
     /// decided by the fallback, which is the drift this pair kept landing in.
     #[test]
     fn the_fallback_forwards_nothing_forge_dispatches() {
-        for name in FORWARDED {
+        for name in forge_workspace::prompt::FORWARDED {
             assert!(
                 !forge_server::commands::is_forge_command(name),
                 "{name} is in the fallback list and in the table both views offer",
@@ -596,14 +592,19 @@ mod launchpad_filter_tests {
         }
     }
 
-    /// The names the terminal dispatches and the names the shared table
+    /// The names that answer a forge command and the names the shared table
     /// offers are the same set: the table is what both views' dropdowns
-    /// draw, so a name it carries that nothing dispatches would be offered
-    /// by both and refused when typed, and a dispatch with no entry would be
+    /// draw, so a name it carries that nothing answers would be offered by
+    /// both and refused when typed, and an answer with no entry would be
     /// reachable only by someone who knew it existed.
+    ///
+    /// Two answers between them, because the split is which side can run the
+    /// command: a terminal-side overlay is this view's, and one both views
+    /// are meant to have is the core's.
     #[test]
     fn the_shared_table_and_the_dispatch_agree() {
         let mut dispatched = crate::app::slash::executors::handled_names();
+        dispatched.extend(forge_workspace::prompt::forge_prompt_names());
         let mut offered: Vec<&str> =
             forge_server::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
         // Sets, not sequences: the table's order is the dropdown's, and the
@@ -611,7 +612,7 @@ mod launchpad_filter_tests {
         dispatched.sort_unstable();
         offered.sort_unstable();
 
-        assert_eq!(dispatched, offered, "the dispatched set is the table's set");
+        assert_eq!(dispatched, offered, "the answered set is the table's set");
     }
 
     /// Not a show-and-set: the dialog never reads state back, so the

@@ -1143,6 +1143,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    icon would otherwise sit at the top of it. */
 .send { color: var(--accent); background: none; border: 0; cursor: pointer;
   display: grid; place-items: center; width: 24px; height: 24px; }
+/* The stop, beside the send and at the same floor: a turn in flight is the one
+   thing the reader can act on without words, so the control is there whether
+   or not the box holds anything. Dim rather than the failed red, which the
+   rest of the sheet reserves for something having gone wrong. */
+.stop { color: var(--dim); background: none; border: 0; cursor: pointer;
+  display: grid; place-items: center; width: 24px; height: 24px; margin-left: 4px; }
+.stop:hover { color: var(--bad); }
 .foot { display: flex; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 

@@ -203,6 +203,101 @@ function fakeConnection() {
 }
 
 describe('the conversation the chat draws', () => {
+  /**
+   * The core's own line, which no transcript holds: the CLI never wrote a row
+   * for it, so this store is the only place it can be drawn from.
+   */
+  it("draws the core's own line, at the severity it carries", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    const row = get(chat.value).turns.at(-1);
+    expect(JSON.stringify(row?.messages), 'the line is drawn in the turn it arrived in').toContain(
+      'Usage: /mode <id>',
+    );
+    expect(JSON.stringify(row?.messages), 'and it carries the severity it came with').toContain(
+      'forge_notice',
+    );
+
+    // Nothing to say is nothing to draw: a malformed frame must not put an
+    // empty row in front of the reader. Read off the ROWS, not their count -
+    // a line that got through joins the turn it arrived in, which leaves the
+    // count where it was.
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    const before = drawn();
+    server.update({ notice: { key: LEAD, severity: 'info', text: '' } });
+    expect(drawn(), 'an empty line is not drawn').toBe(before);
+  });
+
+  /**
+   * A seat with no turn yet is the ordinary state, and a line that joins the
+   * turn it arrived in has nothing to join there - so the core's own line is
+   * the one `system` frame that opens a row. Held back, it would be dropped:
+   * its only copy is the live frame.
+   */
+  it('draws the core line on a seat with no turn to join it to', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    expect(get(chat.value).turns, 'precondition: nothing is drawn yet').toHaveLength(0);
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    const [row] = get(chat.value).turns;
+    expect(JSON.stringify(row), 'the line is drawn rather than dropped').toContain(
+      'Usage: /mode <id>',
+    );
+    // **Not a turn being written.** A live row draws the running strip and its
+    // clock, and the core's own header says no turn is in flight for a command
+    // that ran none; nothing would clear the strip but a later page.
+    expect(row?.live ?? false, 'the line is not a running turn').toBe(false);
+  });
+
+  /**
+   * The other half of the same narrowing: with a turn to join, the line joins
+   * it rather than opening a row of its own.
+   */
+  it('joins a turn the seat already has rather than opening a row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    expect(get(chat.value).turns, 'the row it joined is the one that was there').toHaveLength(1);
+  });
+
+  it('draws a mode or a model the CLI refused, which answers through no frame of its own', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      set_mode_failed: { key: LEAD, mode: 'plan', message: 'mode not permitted' },
+    });
+    const refusedMode = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(refusedMode, 'the refusal names what was asked for').toContain('plan');
+    expect(refusedMode, 'and carries the CLI own words for it').toContain('mode not permitted');
+
+    // The same arm carries a refused model, whose field is the other one: a
+    // reader that read `mode` alone would draw "the session was refused".
+    server.update({
+      set_model_failed: { key: LEAD, model: 'sonnet', message: 'model not available' },
+    });
+    const refusedModel = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(refusedModel, 'the refused model is named').toContain('sonnet');
+    expect(refusedModel, 'with the CLI own words for that refusal').toContain(
+      'model not available',
+    );
+  });
+
   it('opens at the latest turn rather than the first', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

@@ -269,6 +269,15 @@ export const IGNORED: readonly string[] = [
   'set_mode_failed',
   'set_model_failed',
   'slash_command_error',
+  /**
+   * **The conversation this record carries is not the one the page draws.**
+   * The page's is `chat/conversation.ts`'s, fed by the live stream, so a line
+   * folded in here would reach nothing - and the record has no field of its
+   * own for one. That store draws the core's line on arrival and deliberately
+   * keeps no copy: the CLI wrote no such row, so a page attaching later has
+   * nothing to read it from.
+   */
+  'notice',
   'slack_message_appended',
   'status_snapshot',
   'worker_status_changed',

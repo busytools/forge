@@ -274,6 +274,33 @@ describe('the box', () => {
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 
+  /**
+   * The one control that is not the reader's words.
+   *
+   * A turn in flight is the state the core reports, so the control follows
+   * that rather than anything this composer sent: a turn a cron or another
+   * page started is the same turn to stop. It is drawn with an empty box,
+   * which is exactly when a reader wants it.
+   */
+  it('stops the running turn, and offers the control only while one runs', () => {
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) });
+
+    const stop = document.querySelector('.stop');
+    expect(stop, 'a turn in flight draws the stop, empty box and all').not.toBeNull();
+    (stop as HTMLButtonElement).click();
+    flushSync();
+
+    expect(harness.sent, 'the stop is addressed to this seat, like a send').toEqual([
+      {
+        command: { cancel: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+      },
+    ]);
+
+    harness.page.record = record({ header: { turn_in_flight: false } });
+    flushSync();
+    expect(document.querySelector('.stop'), 'no turn, no control').toBeNull();
+  });
+
   it("grows by the take's own row and collapses when the take resolves", () => {
     const harness = open();
     const before = document.querySelector('.box')?.innerHTML ?? '';
@@ -2648,7 +2675,7 @@ describe('the autocomplete', () => {
       [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
       "forge's table is what it offers, matched on the description too",
     ).toEqual([
-      '/mode Show / set session mode',
+      '/mode Set session mode',
       '/model Show / set session model',
       '/usage Token/cost usage by project or model',
     ]);

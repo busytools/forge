@@ -334,6 +334,19 @@ function isSystem(message: unknown): boolean {
   return (message as { type?: unknown } | null)?.type === 'system';
 }
 
+/** What a refused mode or model carries, as the wire names the fields. */
+interface FailedLine {
+  mode?: unknown;
+  model?: unknown;
+  message?: unknown;
+}
+
+/** Whether a frame is the core's own line, which stands alone where it must. */
+function isForgeNotice(message: unknown): boolean {
+  const frame = message as { type?: unknown; subtype?: unknown } | null;
+  return frame?.type === 'system' && frame.subtype === 'forge_notice';
+}
+
 /** The update's variant name, for the ones the chat acts on. */
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
@@ -880,6 +893,36 @@ export class Chat {
       this.heard(false);
       this.refresh();
     }
+    // The core's own line: a command's answer, or why one did not run. It is
+    // drawn here because this store is the conversation the page draws, and the
+    // record's copy of the transcript is not. **Live only, deliberately**: the
+    // CLI never wrote such a row, so a page that attaches afterwards has
+    // nothing to read it from and the line is not owed to it.
+    if (variant === 'notice') {
+      const line = (update as { notice?: { severity?: unknown; text?: unknown } }).notice;
+      const text = line?.text;
+      if (typeof text !== 'string' || text === '') return;
+      this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
+      return;
+    }
+    // A mode or a model the CLI refused. It answers through no frame of its
+    // own either, so it is the same line: what was asked for, and the CLI's own
+    // words for the refusal.
+    if (variant === 'set_mode_failed' || variant === 'set_model_failed') {
+      const payload = (update as { set_mode_failed?: FailedLine; set_model_failed?: FailedLine })[
+        variant
+      ];
+      if (payload === undefined) return;
+      const asked = typeof payload.mode === 'string' ? payload.mode : payload.model;
+      const why = typeof payload.message === 'string' ? payload.message : '';
+      const what = typeof asked === 'string' && asked !== '' ? asked : 'the session';
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'error',
+        text: `${what} was refused: ${why}`.trimEnd(),
+      });
+    }
   }
 
   /**
@@ -941,7 +984,12 @@ export class Chat {
         draws &&
         !isSystem(message) &&
         (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
-      if (!opens) {
+      // **The core's own line is the one `system` frame that opens a row**, and
+      // only where there is no turn to join. Its only copy is this frame - the
+      // CLI wrote none - so on a seat with no turn yet, which is every fresh
+      // one, holding it back drops it rather than placing it, and the reader's
+      // own words draw with no answer under them.
+      if (!opens && !(last === undefined && draws && isForgeNotice(message))) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return this.answered({
@@ -952,12 +1000,20 @@ export class Chat {
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
+      // **A row opened for the core's own line is not a turn being written.**
+      // The line is a command's answer, so there is no turn in flight and the
+      // core's own header says so; a live row would draw the running strip and
+      // its clock for it, which nothing would clear but a later page. It is
+      // also what the page's next account replaces a live row with - so a row
+      // marked live here would be consumed by a turn settling that has nothing
+      // to do with it.
+      const live = !isForgeNotice(message);
       // Every turn above it is the object it was: only the row that grew is
       // rebuilt, so growing one turn does not re-render the conversation.
       return this.answered({
         ...held,
         following: follow,
-        turns: [...held.turns, { key, messages: [message], live: true }],
+        turns: [...held.turns, { key, messages: [message], live }],
       });
     });
   }

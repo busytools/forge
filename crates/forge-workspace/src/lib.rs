@@ -72,8 +72,10 @@ mod dictate;
 mod domain_session;
 mod error;
 mod gotify;
+pub mod launch_settings;
 pub(crate) mod mcp;
 mod parked;
+pub mod prompt;
 pub mod protocol;
 mod provider_probe;
 mod review;
@@ -102,7 +104,8 @@ pub use error::WorkspaceError;
 pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{
-    Command, DictateOutcome, DispatchError, PromptOrigin, SessionUpdate, TurnErrorClass,
+    Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate,
+    TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use views::{

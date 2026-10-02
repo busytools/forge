@@ -643,7 +643,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 57 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 58 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -664,6 +664,7 @@ const EVERY_VARIANT = [
   'connection_failed',
   'auth_required',
   'slash_command_error',
+  'notice',
   'runtime_reload_completed',
   'runtime_reload_failed',
   'set_mode_failed',
@@ -724,9 +725,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (57 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (58 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(57);
+    ).toBe(58);
   });
 
   it('classifies every variant the core can send', () => {

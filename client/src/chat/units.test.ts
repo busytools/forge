@@ -482,6 +482,25 @@ describe('one turn folded into the units a view draws', () => {
     ).toContain('was loaded earlier');
   });
 
+  it("draws the core's own line about a command, at the severity it carries", () => {
+    const line = (severity: unknown): unknown => ({
+      type: 'system',
+      subtype: 'forge_notice',
+      severity,
+      text: 'Usage: /resume <session_id>',
+    });
+
+    const refused = fold([line('error')]);
+    expect(kinds(refused)).toEqual(['notice']);
+    expect(refused[0]?.kind === 'notice' ? refused[0].notice.severity : '').toBe('error');
+    expect(refused[0]?.kind === 'notice' ? refused[0].notice.text : '').toContain('Usage: /resume');
+
+    // A severity word this page does not know is not a failure: the line is
+    // still drawn, and it says so quietly rather than shouting.
+    const unknown = fold([line('catastrophe')]);
+    expect(unknown[0]?.kind === 'notice' ? unknown[0].notice.severity : '').toBe('info');
+  });
+
   it('draws a running turn row from the frames the turn already carries', () => {
     // While a turn runs, the frames carry usage on EVERY assistant message -
     // measured per call on a real session (`197i 1995o 638592r 0w`) and on a
