@@ -820,9 +820,14 @@ details.leaf.running > summary { color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-prose); }
 .dif .ln { display: contents; }
 /* The range a hunk covers, which is the one thing the two sides of an edit
-   cannot say: where in the file the change sits. */
-.dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2);
-  padding: 4px 12px; border-radius: 5px; overflow-wrap: anywhere; }
+   cannot say: where in the file the change sits.
+   A hairline rather than a filled bar: two hunks of one file are two parts of
+   one change, and a bar each made them read as two separate cards with nothing
+   between them. The range is the whole of what separates them. */
+.dif .h { grid-column: 1 / -1; color: var(--dim); background: transparent;
+  border-top: 1px solid var(--line); padding: 3px 12px 2px; font-size: var(--fs-label);
+  overflow-wrap: anywhere; }
+.dif > .h:first-child { border-top: 0; }
 /* A line the change did not touch, which is what puts it somewhere. */
 .dif .ln.ctx .l { color: var(--dim); }
 /* A mark whose default is nothing to say, so a row carries it only when it is
@@ -838,7 +843,7 @@ details.leaf.running > summary { color: var(--text); }
    file readable: the old file's on the left, the new file's beside it, and a
    blank where that side does not have the line at all. */
 .dif .ln .on, .dif .ln .nn { color: var(--dim); text-align: right; padding-right: 8px;
-  user-select: none; }
+  user-select: none; font-size: var(--fs-label); }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }

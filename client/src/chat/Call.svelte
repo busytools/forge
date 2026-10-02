@@ -54,7 +54,22 @@
    * image - the notice is drawn in a box of its own there, because a line with
    * nowhere to sit is a line dropped.
    */
-  const tail = $derived(call.body.map((piece) => piece.kind).lastIndexOf('text'));
+  const rest = $derived(
+    call.body.filter((piece) => piece.kind !== 'diff' && piece.kind !== 'hunk'),
+  );
+
+  /**
+   * The diff and hunk pieces, which draw inside ONE box.
+   *
+   * **Several hunks are several parts of one change**, and a box each made them
+   * read as unrelated cards: two filled headers with nothing between them, on a
+   * row whose title already names the file both of them are in. One box, and a
+   * hairline carrying each hunk's range is the whole of what separates them.
+   */
+  const patches = $derived(
+    call.body.filter((piece) => piece.kind === 'diff' || piece.kind === 'hunk'),
+  );
+  const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
 
   /**
    * The size of a mutation's change, as the one line under its diff, or `null`
@@ -103,53 +118,57 @@
           </div>
         {/each}
       {:else}
-        {#each call.body as piece, at (at)}
-          {#if piece.kind === 'diff'}
-            <!-- No header naming the file: the row's own title is the path, and
-                 it is the same path, so a line here would print it twice. -->
-            <div class="dif">
-              {#each piece.old.split('\n') as line, n (`old-${n}`)}
-                {#if piece.old !== ''}
-                  <div class="ln d">
-                    <span class="on"></span><span class="nn"></span><span class="n"
-                      >{'\u{2212}'}</span
-                    ><span class="l">{line}</span>
-                  </div>
-                {/if}
-              {/each}
-              {#each piece.new.split('\n') as line, n (`new-${n}`)}
-                {#if piece.new !== ''}
-                  <div class="ln a">
-                    <span class="on"></span><span class="nn"></span><span class="n">+</span><span
-                      class="l">{line}</span
-                    >
-                  </div>
-                {/if}
-              {/each}
-            </div>
-          {:else if piece.kind === 'hunk'}
-            <!-- The CLI's own hunk, which is where the change sits and what is
-                 around it. The header is the range it covers, and each line is
-                 read by the mark the wire prefixes it with. -->
-            <div class="dif">
-              <div class="h">{piece.header}</div>
-              {#each piece.lines as line, n (`h-${n}`)}
-                <div
-                  class="ln"
-                  class:d={line.kind === 'del'}
-                  class:a={line.kind === 'add'}
-                  class:ctx={line.kind === 'ctx'}
-                >
-                  <span class="on">{line.old ?? ''}</span>
-                  <span class="nn">{line.new ?? ''}</span>
-                  <span class="n"
-                    >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
+        {#if patches.length > 0}
+          <div class="dif">
+            {#each patches as piece, at (at)}
+              {#if piece.kind === 'diff'}
+                <!-- No header naming the file: the row's own title is the path,
+                     and it is the same path, so a line here would print it
+                     twice. -->
+                {#each piece.old.split('\n') as line, n (`old-${n}`)}
+                  {#if piece.old !== ''}
+                    <div class="ln d">
+                      <span class="on"></span><span class="nn"></span><span class="n"
+                        >{'\u{2212}'}</span
+                      ><span class="l">{line}</span>
+                    </div>
+                  {/if}
+                {/each}
+                {#each piece.new.split('\n') as line, n (`new-${n}`)}
+                  {#if piece.new !== ''}
+                    <div class="ln a">
+                      <span class="on"></span><span class="nn"></span><span class="n">+</span><span
+                        class="l">{line}</span
+                      >
+                    </div>
+                  {/if}
+                {/each}
+              {:else}
+                <!-- The CLI's own hunk, which is where the change sits and what
+                     is around it. The header is the range it covers, and each
+                     line is read by the mark the wire prefixes it with. -->
+                <div class="h">{piece.header}</div>
+                {#each piece.lines as line, n (`h-${n}`)}
+                  <div
+                    class="ln"
+                    class:d={line.kind === 'del'}
+                    class:a={line.kind === 'add'}
+                    class:ctx={line.kind === 'ctx'}
                   >
-                  <span class="l">{line.text}</span>
-                </div>
-              {/each}
-            </div>
-          {:else if piece.kind === 'image'}
+                    <span class="on">{line.old ?? ''}</span>
+                    <span class="nn">{line.new ?? ''}</span>
+                    <span class="n"
+                      >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
+                    >
+                    <span class="l">{line.text}</span>
+                  </div>
+                {/each}
+              {/if}
+            {/each}
+          </div>
+        {/if}
+        {#each rest as piece, at (at)}
+          {#if piece.kind === 'image'}
             <div class="term">
               image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
             </div>
