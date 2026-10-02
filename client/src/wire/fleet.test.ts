@@ -456,8 +456,8 @@ describe('the variant census', () => {
 
     expect(
       stale,
-      'the not-news list carries a variant the enum has dropped, so it is a decision about a ' +
-        'name that no longer exists',
+      'the not-news list carries a name the enum read does not declare: either the enum dropped ' +
+        'the variant or the read missed it',
     ).toEqual([]);
   });
 });
