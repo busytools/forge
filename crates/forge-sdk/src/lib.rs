@@ -75,3 +75,20 @@ pub use permissions::CanUseToolCallback;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    // The crate doc's example below is the only fence `cargo test --doc`
+    // compiles here, and a run over no fence at all exits 0 reporting
+    // `running 0 tests`, so its removal would otherwise read green.
+    //
+    // The needle is built rather than written because this file is what is
+    // scanned: a literal one would match itself and the test could not fail.
+    #[test]
+    fn the_crate_doc_example_is_still_a_compiled_fence() {
+        assert!(
+            include_str!("lib.rs").contains(concat!("```", "no_run")),
+            "the crate doc's example is no longer a `no_run` fence, so `cargo test --doc` compiles nothing"
+        );
+    }
+}
