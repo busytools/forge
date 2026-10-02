@@ -598,18 +598,19 @@
               {#if row.detail !== null}
                 <span class="why">{row.detail}</span>
               {/if}
-              {#if row.preview !== null}
-                <!-- The option's own preview, with the option: every option
-                     that carries one shows it, rather than a single panel
-                     below the list that only the marked row could fill. -->
-                <div class="preview"><Prose text={row.preview} /></div>
-              {/if}
             {/if}
           </span>
         </div>
       {/each}
     </div>
 
+    {#if markedRow?.preview != null}
+      <!-- The marked option's own prose, carried as markdown on the wire and
+           rendered as markdown rather than shown as its source - the same
+           renderer the conversation's prose uses, which escapes what it is
+           handed. -->
+      <div class="preview"><Prose text={markedRow.preview} /></div>
+    {/if}
 
     {#if answered}
       <!-- The same mark the reader's own words carry while they are on their
