@@ -4,6 +4,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Harness from './Harness.svelte';
+import { echoes, type Echo } from '../chat/echoes.svelte';
+import { boxKey } from './box.svelte';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage } from '../protocol';
 import { sessionFrom } from '../session/wire';
@@ -62,7 +64,16 @@ afterEach(() => {
   app = null;
   second = null;
   document.body.innerHTML = '';
+  // The pending send outlives the page that drew it, so a case that leaves one
+  // behind would hand it to the next.
+  echoes.clear(boxKey(SLOT));
+  echoes.clear(boxKey(ELSEWHERE));
 });
+
+/** The send a seat is waiting on, which the conversation draws and the box does not. */
+function echoAt(slot: SessionSlot): Echo | undefined {
+  return echoes.of(boxKey(slot));
+}
 
 /** The harness's own state, which a test sets the way a page would re-render it. */
 interface Page {
@@ -992,32 +1003,39 @@ describe('the seat the box belongs to', () => {
     );
   });
 
-  it('does not give a refused send back in another seat, where the words were never typed', () => {
+  it('does not mark a refused send on a seat that never sent it', () => {
     const shared = wire();
     const harness = open({}, shared);
     type('push it once CI is green');
     sendBox();
-    // The premise, without which a refusal that never reaches any box leaves
-    // this case green: this seat's own box really is holding the send, so a
-    // refusal here gives the words back.
+    // The premise, without which a refusal that never reaches any seat leaves
+    // this case green: this seat's own send really is outstanding, so a
+    // refusal names it.
     shared.say({ kind: 'error', what: 'dispatch', why: 'the seat is busy' });
     flushSync();
-    expect(field().value, 'the send is outstanding on this box, so a refusal returns it').toBe(
-      'push it once CI is green',
-    );
+    expect(echoAt(SLOT), 'the seat waiting on it is the one a refusal names').toMatchObject({
+      state: 'failed',
+      why: 'the seat is busy',
+    });
 
     // Sent again, and the reader moves on before the core answers.
+    type('and the gate too');
     sendBox();
     expect(harness.sent, 'the second send went out too').toHaveLength(2);
     harness.page.slot = ELSEWHERE;
     flushSync();
+    expect(echoAt(SLOT), 'leaving a seat gives up the send it was waiting on').toBeUndefined();
 
     // The core refuses that one, and the connection says so to every page on it
     // - the error names the operation, never the seat.
     shared.say({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
     flushSync();
 
-    expect(field().value, "another seat's box is not where a refusal lands").toBe('');
+    expect(
+      echoAt(ELSEWHERE),
+      'a seat that sent nothing is not where a refusal lands',
+    ).toBeUndefined();
+    expect(field().value, 'and its box is not where it lands either').toBe('');
   });
 });
 
@@ -2304,7 +2322,7 @@ describe('the dock', () => {
     ]);
   });
 
-  it('says why, and gives the words back, when the core refuses a send', () => {
+  it('leaves a refused send in the column, and says why, rather than refilling the box', () => {
     const harness = open();
     type('push it once CI is green');
     press('Enter');
@@ -2313,8 +2331,15 @@ describe('the dock', () => {
     harness.say({ kind: 'error', what: 'dispatch', why: 'the session is not running' });
     flushSync();
 
-    expect(field().value, 'the words come back with the refusal').toBe('push it once CI is green');
-    expect(drawn()).toContain('the session is not running');
+    expect(field().value, 'the box is not refilled over whatever was typed since').toBe('');
+    expect(drawn(), 'and the box draws no line of its own about it').not.toContain(
+      'the session is not running',
+    );
+    expect(echoAt(SLOT), 'the row carrying the words is the one that says why').toMatchObject({
+      state: 'failed',
+      words: 'push it once CI is green',
+      why: 'the session is not running',
+    });
   });
 
   it('draws a held post as the terminal draws it: where it goes, and the words in full', () => {

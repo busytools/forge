@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
+  import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
@@ -71,8 +72,12 @@
   // svelte-ignore state_referenced_locally
   let box = $state.raw<Box>(boxes.of(boxKey(slot)));
   $effect.pre(() => {
-    const next = boxes.of(boxKey(slot));
+    const key = boxKey(slot);
+    const next = boxes.of(key);
     if (untrack(() => box) !== next) box = next;
+    // Leaving a seat gives up a send still on its way, which is the one piece
+    // of this box's state the conversation draws rather than the box.
+    echoes.leave(key);
   });
 
   /** The clock the beat's window is read against, which the close below moves. */
@@ -267,10 +272,12 @@
     if (!record.header.turn_in_flight) box.sent = null;
   });
 
-  // A turn in flight is the send landing: the words are the core's now, so the
-  // box owes the reader nothing back.
+  // A turn going in flight is a send landing: the words are the core's now, so
+  // the row that says they are not goes. This is the whole of the signal for a
+  // command the conversation never carries back as the reader's own row; where
+  // it does carry one, the column clears the echo on those words instead.
   $effect(() => {
-    if (record.header.turn_in_flight) box.sending = null;
+    if (record.header.turn_in_flight) echoes.clear(boxKey(slot));
   });
 
   /**
@@ -304,12 +311,11 @@
         box.refusal = message.why;
         return;
       }
-      if (box.sending === null) return;
-      // The words come back with the reason: a send the core refused took the
-      // box's text with it, and losing it is the defect this guards.
-      box.draft = box.sending;
-      box.sending = null;
-      box.bounced = message.why;
+      // The words stay where they are and the reason is named beside them: a
+      // refusal that put the text back in the box landed it over whatever the
+      // reader had typed since. The seat to name is the one waiting, which is
+      // the only thing the error's own shape can be read against.
+      for (const key of echoes.outstanding()) echoes.refuse(key, message.why);
     });
   });
 
@@ -332,8 +338,7 @@
     }
     const [first = ''] = text.split(/\s+/);
     if (first.startsWith('/')) box.sent = first;
-    box.sending = text;
-    box.bounced = null;
+    echoes.post(boxKey(slot), text);
     box.draft = '';
   }
 
@@ -383,7 +388,6 @@
   /** The reader's own typing is what dismisses a notice row. */
   function oninput(): void {
     box.dismissed = notice?.text ?? null;
-    box.bounced = null;
   }
 
   /** What the bound key asks for, which is the terminal's own three. */
@@ -569,8 +573,6 @@
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
-      {:else if box.bounced !== null}
-        <div class="notice bad">{box.bounced}</div>
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}

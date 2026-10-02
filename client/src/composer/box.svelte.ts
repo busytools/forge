@@ -26,11 +26,9 @@ export function boxKey(slot: SessionSlot): string {
 }
 
 export class Box {
-  /** The reader's own words, and what the box owes them for a send. */
+  /** The reader's own words, and the command a send named. A send still on its way is not here: it is the conversation's own row (`chat/echoes.svelte`). */
   draft = $state('');
   sent = $state<string | null>(null);
-  sending = $state<string | null>(null);
-  bounced = $state<string | null>(null);
   /** The prompt this box answered, while the core still lists it as waiting. */
   answered = $state<string | null>(null);
   refusal = $state<string | null>(null);

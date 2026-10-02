@@ -3,7 +3,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
+import { echoes } from './echoes.svelte';
 import { freeze } from './testing/frozen';
+import { subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -39,11 +41,15 @@ const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
   const asks: ClientMessage[] = [];
+  const dispatched: ClientMessage[] = [];
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
     unsubscribe: () => undefined,
     refresh: () => undefined,
-    dispatch: () => null,
+    dispatch: (message: ClientMessage) => {
+      dispatched.push(message);
+      return null;
+    },
     more: (conversation: SessionSlot, before: string | null, turns: number) => {
       asks.push({ kind: 'more', conversation, before, turns });
       return true;
@@ -62,6 +68,7 @@ function stub() {
   return {
     connection,
     asks,
+    dispatched,
     send(message: ServerMessage): void {
       for (const fn of listeners) fn(message);
       flushSync();
@@ -823,5 +830,78 @@ describe('the chat column as it draws', () => {
     const handed = seen.at(-1);
     expect(handed, 'a conversation was published').toBeDefined();
     expect(() => handed?.turns.at(-1)?.messages.push({}), 'and it is frozen').toThrow(TypeError);
+  });
+});
+
+describe('the reader own words before the core has them', () => {
+  /** The seat's key, which is what a pending send is held under. */
+  const key = subjectKey({ session: LEAD });
+
+  /** A turn's own opening words, which is the frame the core echoes a prompt in. */
+  const said = (text: string): unknown => ({
+    type: 'user',
+    uuid: `u-${text}`,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+
+  afterEach(() => {
+    echoes.clear(key);
+  });
+
+  it('draws the words while they are on their way, and stops when the core has them', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too');
+    flushSync();
+    expect(drawn(), 'the words are drawn before the core has them').toContain(
+      'and run the gate too',
+    );
+    expect(drawn(), 'and the row says so').toContain('sending');
+
+    // The core's own copy is the signal, and it arrives as its own frame.
+    server.send(appended(said('and run the gate too')));
+    expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
+  });
+
+  it('draws a send on a seat with no history, which is the first thing it says', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    expect(drawn(), 'nothing is claimed about a seat that has said nothing').toContain(
+      'Nothing said yet',
+    );
+
+    echoes.post(key, 'start here');
+    flushSync();
+    expect(drawn(), 'the first thing the seat says is the reader own words').toContain(
+      'start here',
+    );
+    expect(drawn(), 'and the empty copy goes with them').not.toContain('Nothing said yet');
+  });
+
+  it('keeps a refused send, names the reason, and sends it again from the row', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too');
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+    expect(drawn(), 'the words stay where they were sent from').toContain('and run the gate too');
+    expect(drawn(), 'and the row says why they did not go').toContain(
+      'not sent · the session is not running',
+    );
+
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    expect(server.dispatched, 'the row sends the same words again').toContainEqual({
+      prompt: { key: LEAD, text: 'and run the gate too', attachments: [] },
+    });
+    expect(echoes.of(key)?.state, 'and the row is back to saying it is on its way').toBe('sending');
   });
 });

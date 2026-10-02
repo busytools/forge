@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { VList } from 'virtua/svelte';
 
   import { subjectKey } from '../protocol';
@@ -13,6 +14,8 @@
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
+  import Echo from './Echo.svelte';
+  import { echoes, ownWords } from './echoes.svelte';
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { fold, type TurnInfo } from './units';
@@ -83,12 +86,62 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /**
+   * The reader's words, from submit until the core's own copy of them lands.
+   *
+   * Held per seat by the client rather than by either column, because the
+   * composer writes it and this one draws it: it is one mechanism over both
+   * sending surfaces, and a seat the reader has left keeps its pending send.
+   */
+  const echo = $derived(echoes.of(seat));
+
   /** The newest turn, which is the one a running row is folded for. */
   const newestTurn = $derived(
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
   /** The newest turn's key: the row a compaction in flight belongs under. */
   const newest = $derived(newestTurn?.key ?? null);
+
+  /**
+   * The echo goes the moment the conversation carries the words.
+   *
+   * **The core's own copy is the signal, in either carrier the wire uses**: a
+   * prompt that starts a turn arrives as that message's own text, and one sent
+   * while a turn is already running is held by the CLI as a queued block
+   * instead. The composer's own backstop is the turn going in flight, which is
+   * a signal a queued prompt never gives - so a reconcile that knew one
+   * carrier would leave the row saying "sending" for the rest of the turn.
+   */
+  $effect(() => {
+    const held = echoes.of(seat);
+    if (held === undefined) return;
+    const turn = newestTurn;
+    if (turn === null) return;
+    if (!turn.messages.some((message) => ownWords(message).includes(held.words))) return;
+    echoes.clear(seat);
+  });
+
+  /**
+   * Send the words again, from the row that says they did not go.
+   *
+   * The same dispatch the composer makes, because it is the same send: the row
+   * hands back words the reader already typed rather than asking them to type
+   * them again, which is what a refused send used to mean.
+   */
+  function retry(): void {
+    const held = echoes.of(seat);
+    if (held === undefined) return;
+    echoes.post(seat, held.words);
+    try {
+      // Fire-and-forget like the composer's own send: the outcome rides the
+      // subscription rather than a reply, so there is nothing to await.
+      void connection.dispatch({ prompt: { key: slot, text: held.words, attachments: [] } });
+    } catch {
+      // A closed socket throws rather than answering, so the row says why
+      // rather than the words going with a command that never left.
+      echoes.refuse(seat, 'the socket is closed');
+    }
+  }
   /**
    * Every seat's conversation, kept after the reader leaves it.
    *
@@ -97,16 +150,15 @@
    * for every seat this client has visited is kept for the same reason
    * (`session/live.ts`); this is the half that was missing.
    *
-   * Deliberately not `$state`: the seat on screen is `held` above, and making
-   * these reactive would put a proxy back on the conversations the raw state
-   * exists to keep off it.
+   * **Nothing draws from either map, and every read of them is untracked**: the
+   * seat on screen is `held` above, and a tracked read here would make the
+   * effect below depend on the entry the subscription writes on every frame -
+   * which is a column that re-keys itself, and a `placed` that resets, under
+   * each one.
    */
-  const kept = new Map<string, Conversation>();
+  const kept = new SvelteMap<string, Conversation>();
   /** The seats whose conversation is still open here, so a switch back does not open a second. */
-  const live = new Map<
-    string,
-    { connection: Connection; chat: Chat; stop: () => void }
-  >();
+  const live = new SvelteMap<string, { connection: Connection; chat: Chat; stop: () => void }>();
   /**
    * Pages of older turns asked for and not yet answered.
    *
@@ -175,7 +227,7 @@
   $effect(() => {
     const which = seat;
     const open = connection;
-    let entry = live.get(which);
+    let entry = untrack(() => live.get(which));
     // A seat reopened on another connection is a different conversation, so the
     // one held goes with the socket that carried it.
     if (entry !== undefined && entry.connection !== open) {
@@ -208,7 +260,7 @@
     placed = null;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
-    held = kept.get(which) ?? NOTHING;
+    held = untrack(() => kept.get(which)) ?? NOTHING;
   });
 
   // The column's own teardown, which the effect above cannot do: it closes one
@@ -476,10 +528,17 @@
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
-    <div class="hold">
-      Nothing said yet
-      <span class="sub">this seat has no history: what is said here starts it</span>
-    </div>
+    {#if echo !== undefined}
+      <!-- A seat with no history still has a message on its way, and that row
+           is the first thing it says: the empty copy would claim nothing was
+           said while the reader watches their own words arrive. -->
+      <Echo {echo} onretry={retry} />
+    {:else}
+      <div class="hold">
+        Nothing said yet
+        <span class="sub">this seat has no history: what is said here starts it</span>
+      </div>
+    {/if}
     {#if compacting}
       <Compacting />
     {/if}
@@ -512,6 +571,12 @@
           compacting={compacting && turn.key === newest}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}
         />
+        <!-- The echo rides the newest row, which is where the words will land:
+             the row it is drawn in is the one the core's own copy opens or
+             joins, so nothing moves when the send is taken. -->
+        {#if echo !== undefined && turn.key === newest}
+          <Echo {echo} onretry={retry} />
+        {/if}
       </div>
     {/snippet}
   </VList>
