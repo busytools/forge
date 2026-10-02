@@ -375,9 +375,9 @@ fn path_is_taken(path: &Path) -> bool {
 /// Whether a path git printed and a path forge composed name the same
 /// directory. Each side canonicalizes through its parent with the name
 /// re-attached, so a symlinked spelling of a repo root (a macOS tempdir
-/// under `/private`, a linked checkout) cannot read as a different worktree
-/// - which matters most on the path that is GONE, where a stranded
-/// registration lives and nothing exists to canonicalize.
+/// under `/private`, a linked checkout) cannot read as a different
+/// worktree. That matters most for a path that is gone, which is exactly
+/// where a stranded registration lives and nothing exists to canonicalize.
 fn same_path(listed: &str, composed: &Path) -> bool {
     let listed = Path::new(listed);
     match (spelled_from_parent(listed), spelled_from_parent(composed)) {
