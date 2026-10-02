@@ -260,6 +260,22 @@
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
   .mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+  /* The echo: the reader's words from submit until the core has them. The word
+     carries the state rather than the rule, because the accent line means
+     "these words are yours" and a mark that also meant "in flight" would be
+     two meanings on one thing. A refusal keeps the words here with the reason
+     beside them: the box is never refilled, since words typed since would land
+     over them. */
+  .mine.bad { border-left-color: var(--bad); }
+  .mine .st { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .mine .why { display: flex; align-items: center; gap: 9px; margin-top: 9px;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
+  .mine .why .ic { width: 12px; height: 12px; flex: 0 0 12px; color: var(--bad); }
+  .mine .retry { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    background: transparent; border: 1px solid #2a3244; border-radius: 6px;
+    padding: 1px 7px; cursor: pointer; }
+  .mine .retry:hover { color: var(--muted); border-color: #2e3850; }
   /* What a turn carried besides its words: named, and never the bytes. The
      wire sends no file name, so the mime is what there is to name it by. */
   .attrow { display: flex; align-items: center; gap: 9px; margin-top: 10px;
@@ -403,13 +419,13 @@
      Six pixels of padding rather than eight, and the conversation's leading: the
      panel is a line and a hairline of air, where it was a line and a third, at
      1.89x the one row the terminal draws for the same fence. */
-  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+  .code pre { font-family: var(--mono); font-size: var(--fs-prose); padding: 6px 10px;
     white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
   .k { color: var(--syn-key); } .s { color: var(--syn-str); }
   .c2 { color: var(--dim); font-style: italic; }
   .f { color: var(--syn-fn); }
 
-  .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  .term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
     white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
@@ -432,11 +448,7 @@
   .dif { display: grid; grid-template-columns: 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
     overflow: hidden;
-    font-family: var(--mono); font-size: var(--fs-data); }
-  .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
-  /* The path above a diff is one unbroken token and often longer than a phone. It
-     is a location rather than code, so it wraps rather than scrolling. */
-  .dif .h { overflow-wrap: anywhere; }
+    font-family: var(--mono); font-size: var(--fs-prose); }
   .dif .ln { display: contents; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
@@ -1108,7 +1120,7 @@ Set `service_key` per environment in the bot's own config.</pre>
 
             <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
             <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -1124,7 +1136,7 @@ Set `service_key` per environment in the bot's own config.</pre>
               </div>
             </details>
             <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-server/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -1135,7 +1147,7 @@ Set `service_key` per environment in the bot's own config.</pre>
               </div>
             </details>
             <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="code">
                   <div class="lang">rust</div>
@@ -1144,7 +1156,7 @@ Set `service_key` per environment in the bot's own config.</pre>
               </div>
             </details>
             <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="term">## Tool-call grouping (L2 / L1 / L0)
 Consecutive tool calls between two user messages fold into one group.</div>
@@ -1171,10 +1183,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
 
             <div class="knd"><svg class="ic gl"><use href="#i-edit"/></svg><span class="nm">edit</span></div>
             <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</div>
                   <div class="ln d"><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
@@ -1182,10 +1193,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
               </div>
             </details>
             <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</div>
                   <div class="ln d"><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                 div .versions {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
@@ -1195,10 +1205,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
               </div>
             </details>
             <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</div>
                   <div class="ln a"><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">    }</span></div>
@@ -1551,6 +1560,40 @@ branch main, nothing to commit</div>
 
       <div class="mine">
         <div class="prose">
+          <p>Now the echo. My words land the moment I press enter, and the row says whether the core has taken them yet - so a slow dispatch reads as slow rather than as the box clearing for no reason. A refusal keeps the words in the row, names the reason and sends them again from there, because putting them back in the box lands them over whatever I typed since.</p>
+        </div>
+      </div>
+
+      <div class="work" id="echo">
+        <div class="annot"><span class="dim">not taken yet &#183; the word carries the state, and the rule is unchanged: it means these words are mine, and nothing else</span></div>
+        <div class="mine">
+          <div class="prose">
+            <p>Also drop the second fold - the newest turn is folded twice a frame.</p>
+          </div>
+          <div class="st"><span class="ring"></span>sending</div>
+        </div>
+
+        <div class="annot"><span class="dim">taken &#183; the mark settles and nothing is left saying so, which is today's row</span></div>
+        <div class="mine">
+          <div class="prose">
+            <p>Also drop the second fold - the newest turn is folded twice a frame.</p>
+          </div>
+        </div>
+
+        <div class="annot"><span class="dim">refused &#183; the words stay where they are, the reason is named, and the send retries from here</span></div>
+        <div class="mine bad">
+          <div class="prose">
+            <p>Also drop the second fold - the newest turn is folded twice a frame.</p>
+          </div>
+          <div class="why">
+            <svg class="ic"><use href="#i-x"/></svg>not sent &#183; the core refused the dispatch
+            <button class="retry" type="button">retry</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
           <p>Here is the mock I am working from - the rail covers the composer in it.</p>
           <p>A prompt is a document too: run <code>just client-preview</code> and read the rail.</p>
           <div class="code">
@@ -1597,7 +1640,7 @@ branch main, nothing to commit</div>
                 <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
                 <details class="leaf" id="lv-a">
                   <summary><span class="st" id="lv-a-st"><span class="ring"></span></span>
-                    <span class="tn">crates/forge-server/src/family.rs</span>
+                    <span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span>
                     <svg class="ic arw"><use href="#i-chev"/></svg></summary>
                   <div class="body"><div class="code"><div class="lang">rust</div>
                     <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
