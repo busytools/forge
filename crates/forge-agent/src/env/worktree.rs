@@ -278,9 +278,11 @@ pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Opti
         Some((_, _, false)) if path.exists() => None,
         Some((_, _, prunable)) => Some(format!(
             "the worktree at {} is a {}registration whose directory is gone, so this worker's \
-             worktree cannot be created there; run `git worktree prune` in {} and spawn again",
+             worktree cannot be created there; run `git worktree unlock {}` and then `git \
+             worktree prune` in {} and spawn again",
             path.display(),
             if *prunable { "stale " } else { "" },
+            path.display(),
             repo.display(),
         )),
         None if path_is_taken(path) => Some(format!(
@@ -1583,6 +1585,28 @@ mod tests {
             worktree_creation_obstacle(repo.path(), "lbl", &wt),
             None,
             "an empty directory is a path git will take",
+        );
+    }
+
+    /// claude locks every worktree it creates and git will not prune a
+    /// locked registration, so the remedy has to clear the lock first:
+    /// measured, `worktree prune` alone exits 0 having done nothing and
+    /// the same refusal comes back byte-identical.
+    #[test]
+    fn obstacle_remedy_unlocks_before_pruning() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
+        fs::remove_dir_all(&wt).expect("delete the worktree directory");
+
+        let obstacle = worktree_creation_obstacle(dir.path(), "lbl", &wt).expect("an obstacle");
+
+        assert!(
+            obstacle.contains("worktree unlock"),
+            "the remedy clears the lock git requires first: {obstacle}"
+        );
+        assert!(
+            obstacle.contains("worktree prune"),
+            "and then clears the registration: {obstacle}"
         );
     }
 
