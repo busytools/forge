@@ -4,7 +4,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Harness from './Harness.svelte';
+import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage } from '../protocol';
+import { sessionFrom } from '../session/wire';
 import {
   permissionAsk,
   questionAsk,
@@ -2608,6 +2610,33 @@ describe('the dictation panel', () => {
       'may bullet a list',
       'plain text',
     ]);
+  });
+
+  /**
+   * **The join the pieces were each tested without.** The cases above hand the
+   * composer a record built by hand and the session's cases stop at the record,
+   * so a parse that read the axes from a path the server never writes left both
+   * halves green while no panel could ever draw a session's own set.
+   */
+  it('draws the overrides a session record carries off the wire', () => {
+    opened({
+      record: sessionFrom({
+        ...sessionFixture,
+        // The fixture arrives parked on a prompt, which draws the dock rather
+        // than the box this panel hangs off.
+        pending_ask: null,
+        state: {
+          ...sessionFixture.state,
+          dictate_overrides: { styling: 'formal', structure: 'lists', context: null },
+        },
+      }),
+    });
+
+    const on = chips().filter((chip) => chip.on);
+    expect(
+      on.map((chip) => chip.label),
+      'the record reported a set the panel did not draw',
+    ).toEqual(['formal', 'may bullet a list', 'plain text']);
   });
 
   it('marks an axis the session set, and only that one', () => {
