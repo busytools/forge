@@ -335,6 +335,13 @@ function isSystem(message: unknown): boolean {
 }
 
 /** The update's variant name, for the ones the chat acts on. */
+/** What a refused mode or model carries, as the wire names the fields. */
+interface FailedLine {
+  mode?: unknown;
+  model?: unknown;
+  message?: unknown;
+}
+
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
   const [name] = Object.keys(update);
@@ -879,6 +886,36 @@ export class Chat {
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       this.heard(false);
       this.refresh();
+    }
+    // The core's own line: a command's answer, or why one did not run. It is
+    // drawn here because this store is the conversation the page draws, and the
+    // record's copy of the transcript is not. **Live only, deliberately**: the
+    // CLI never wrote such a row, so a page that attaches afterwards has
+    // nothing to read it from and the line is not owed to it.
+    if (variant === 'notice') {
+      const line = (update as { notice?: { severity?: unknown; text?: unknown } }).notice;
+      const text = line?.text;
+      if (typeof text !== 'string' || text === '') return;
+      this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
+      return;
+    }
+    // A mode or a model the CLI refused. It answers through no frame of its
+    // own either, so it is the same line: what was asked for, and the CLI's own
+    // words for the refusal.
+    if (variant === 'set_mode_failed' || variant === 'set_model_failed') {
+      const payload = (update as { set_mode_failed?: FailedLine; set_model_failed?: FailedLine })[
+        variant
+      ];
+      if (payload === undefined) return;
+      const asked = typeof payload.mode === 'string' ? payload.mode : payload.model;
+      const why = typeof payload.message === 'string' ? payload.message : '';
+      const what = typeof asked === 'string' && asked !== '' ? asked : 'the session';
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'error',
+        text: `${what} was refused: ${why}`.trimEnd(),
+      });
     }
   }
 

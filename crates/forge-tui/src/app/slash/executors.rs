@@ -88,9 +88,15 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 /// what keeps the terminal and a client on one path.
 fn forward_to_core(app: &mut App, text: &str) -> bool {
     push_user_message(app, text);
-    // These commands are not instant: the core re-spawns a session behind
-    // them, so the input stays blocked until the replacement lands.
-    set_command_pending(app, &format!("Running {text}..."), None);
+    // Only the respawning commands block the input, and only while the
+    // replacement is on its way: every other one answers here and now, so a
+    // row set for it would never be cleared.
+    if let Some(invocation) = forge_workspace::prompt::forge_invocation(text)
+        && let forge_workspace::prompt::Invocation::Command(command) = invocation
+        && command.respawns()
+    {
+        set_command_pending(app, &format!("Running {text}..."), None);
+    }
     if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::Prompt {
         key,
         text: text.to_owned(),

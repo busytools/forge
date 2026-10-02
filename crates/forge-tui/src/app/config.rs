@@ -262,6 +262,37 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+/// Re-read the three documents a launch reads, leaving everything else - the
+/// overlay, the status line - where it was.
+///
+/// The core writes one of them itself: `/effort` lands in `settings.json`, so
+/// a snapshot taken at boot would carry the level the reader had before it,
+/// and the settings this view builds its own spawns from would be a launch
+/// behind. Called when the core answers rather than on a timer, because a
+/// line the core has for a view is the only signal this process gets that
+/// something outside it may have changed.
+pub(crate) fn reload_launch_documents(app: &mut App) {
+    let pr = project_root(app);
+    match store::load(
+        app.settings_home_override.as_deref(),
+        pr.as_deref(),
+        store_workspace_bridge(app).as_ref().copied(),
+    ) {
+        Ok(loaded) => {
+            app.config.committed_settings_document = loaded.settings_document;
+            app.config.committed_local_settings_document = loaded.local_settings_document;
+            app.config.committed_preferences_document = loaded.preferences_document;
+        }
+        Err(err) => tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "launch_documents_reread_failed",
+            message = "the launch documents could not be re-read; the held ones stand",
+            outcome = "skipped",
+            error_message = %err,
+        ),
+    }
+}
+
 /// Open the Extensions page. Loads settings docs (the pane still
 /// reads `~/.claude/settings.json`), sets the active view, and
 /// triggers the inventory refresh.

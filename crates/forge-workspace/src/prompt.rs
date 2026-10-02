@@ -34,15 +34,14 @@ pub enum Invocation {
 }
 
 impl ForgePrompt {
-    /// The name as it is typed.
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Self::NewSession => "/new",
-            Self::ResumeSession { .. } => "/resume",
-            Self::SetMode { .. } => "/mode",
-            Self::SetModel { .. } => "/model",
-            Self::SetEffort { .. } => "/effort",
-        }
+    /// Whether running this replaces the seat's occupant.
+    ///
+    /// The slow ones, and the only ones a view blocks its input for: what
+    /// clears that block is the replacement arriving. Every other command
+    /// answers where it was asked, so a view that blocked on one would leave
+    /// the input disabled with nothing coming to release it.
+    pub const fn respawns(&self) -> bool {
+        matches!(self, Self::NewSession | Self::ResumeSession { .. })
     }
 }
 
@@ -63,6 +62,11 @@ const USAGE: &[(&str, &str)] = &[
 /// `/quit` each come back as a local line ("isn't available in this
 /// environment") with no model call, where a name the CLI does not know at
 /// all is sent to the model as a question.
+///
+/// `/mcp` is the fourth and the one the measurement did not have to establish:
+/// the CLI advertises it, so the catalogue covers it for a client, and it is
+/// here because the terminal forwards it as a retired forge name rather than
+/// asking the core. A name in both sets is forwarded either way.
 pub const FORWARDED: [&str; 4] = ["/help", "/mcp", "/plugins", "/quit"];
 
 /// Every name forge answers, which a view reads to decide to forward rather
@@ -164,14 +168,32 @@ mod tests {
         }
     }
 
-    /// The names a view forwards on, which is the wider set: a half-typed
-    /// command has to reach the core to be answered.
+    /// Every name the table offers has an invocation the parse answers.
+    ///
+    /// The guardian of the pair a view and the core each read: a view forwards
+    /// on the NAME while the core acts on the parsed INVOCATION, so a name
+    /// with no parse arm is one every view offers and nothing can run - it
+    /// would be answered with its own usage line forever. The examples are
+    /// here rather than derived, because the arity of each command is the
+    /// thing being pinned.
     #[test]
-    fn every_name_is_forwarded_however_it_was_invoked() {
+    fn every_name_the_table_offers_can_be_run() {
+        let examples = [
+            ("/new", "/new"),
+            ("/resume", "/resume 7f3a92e0"),
+            ("/mode", "/mode plan"),
+            ("/model", "/model sonnet"),
+            ("/effort", "/effort high"),
+        ];
         for name in forge_prompt_names() {
-            assert!(is_forge_prompt_name(name), "{name} is forge's");
+            let Some((_, example)) = examples.iter().find(|(known, _)| *known == name) else {
+                panic!("{name} is offered with no example here, so nothing pins that it runs");
+            };
+            assert!(
+                matches!(forge_invocation(example), Some(Invocation::Command(_))),
+                "{name} is offered and cannot be run",
+            );
+            assert!(is_forge_prompt_name(name), "{name} is a name a view forwards on");
         }
-        assert!(!is_forge_prompt_name("/newer"), "a name that only starts alike is prose");
-        assert!(!is_forge_prompt_name("/spinner"), "a terminal-side verb is not a core command");
     }
 }

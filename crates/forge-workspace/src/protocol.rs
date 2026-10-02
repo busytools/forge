@@ -855,6 +855,17 @@ pub enum SpawnRole {
 /// fact about the dispatch rather than about the words. It is therefore set
 /// where the dispatch happens, by which entry the caller took, and never read
 /// off the wire.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptOrigin {
+    /// The forge process's own input handler submitted it, so that view has
+    /// already drawn the words and must not draw them a second time.
+    Ui,
+    /// A view submitted it over the socket, and no view drew it: a composer
+    /// that is not optimistic has only this frame to draw its own send from.
+    View,
+}
+
 /// How loudly a [`SessionUpdate::Notice`] reads.
 ///
 /// Two levels rather than a scale, because the core has two things to say:
@@ -866,17 +877,6 @@ pub enum NoticeSeverity {
     Info,
     /// One that did not run.
     Error,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptOrigin {
-    /// The forge process's own input handler submitted it, so that view has
-    /// already drawn the words and must not draw them a second time.
-    Ui,
-    /// A view submitted it over the socket, and no view drew it: a composer
-    /// that is not optimistic has only this frame to draw its own send from.
-    View,
 }
 
 /// Update envelope: forge-workspace -> forge-tui.
@@ -972,6 +972,12 @@ pub enum SessionUpdate {
     /// anything: the CLI emits no frame for a command it never saw, and the
     /// line is the core's own answer rather than a view's opinion - what a
     /// command found, or why it refused.
+    ///
+    /// **Live only, and that is intended.** The CLI writes no transcript row
+    /// for a line it never produced, so a view draws this on arrival and a
+    /// page that attaches afterwards has nothing to read it from. It is a
+    /// statement about the moment a command ran, not a record of the
+    /// conversation.
     Notice {
         key: SessionSlot,
         severity: NoticeSeverity,

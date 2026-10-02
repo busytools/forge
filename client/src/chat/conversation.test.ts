@@ -203,6 +203,48 @@ function fakeConnection() {
 }
 
 describe('the conversation the chat draws', () => {
+  /**
+   * The core's own line, which no transcript holds: the CLI never wrote a row
+   * for it, so this store is the only place it can be drawn from.
+   */
+  it("draws the core's own line, at the severity it carries", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    const row = get(chat.value).turns.at(-1);
+    expect(JSON.stringify(row?.messages), 'the line is drawn in the turn it arrived in').toContain(
+      'Usage: /mode <id>',
+    );
+    expect(JSON.stringify(row?.messages), 'and it carries the severity it came with').toContain(
+      'forge_notice',
+    );
+
+    // Nothing to say is nothing to draw: a malformed frame must not put an
+    // empty row in front of the reader.
+    const before = get(chat.value).turns.length;
+    server.update({ notice: { key: LEAD, severity: 'info', text: '' } });
+    expect(get(chat.value).turns).toHaveLength(before);
+  });
+
+  it('draws a mode or a model the CLI refused, which answers through no frame of its own', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      set_mode_failed: { key: LEAD, mode: 'plan', message: 'mode not permitted' },
+    });
+
+    const drawn = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn, 'the refusal names what was asked for').toContain('plan');
+    expect(drawn, 'and carries the CLI own words for it').toContain('mode not permitted');
+  });
+
   it('opens at the latest turn rather than the first', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

@@ -164,7 +164,7 @@ fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
+    use crate::app::{App, SystemSeverity};
     use serde_json::json;
 
     // Re-import submodule items needed by tests
@@ -478,6 +478,41 @@ mod tests {
             .await;
     }
 
+    /// Only the commands that replace the seat's occupant block the input,
+    /// because the replacement arriving is what clears the row. A row nothing
+    /// clears leaves the composer disabled for the rest of the session, which
+    /// is what one typed `/mode plan` used to do.
+    #[tokio::test(flavor = "current_thread")]
+    async fn only_the_respawning_commands_block_the_input() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for text in ["/mode plan", "/model sonnet", "/effort high"] {
+                    let mut app = App::test_default();
+                    let _rx = app.install_testing_stub();
+
+                    assert!(try_handle_submit(&mut app, text), "{text} is taken");
+
+                    assert!(
+                        !matches!(app.status, AppStatus::CommandPending),
+                        "{text} answers, so the input must not stay blocked behind it",
+                    );
+                }
+
+                for text in ["/new", "/resume abc-123"] {
+                    let mut app = App::test_default();
+                    let _rx = app.install_testing_stub();
+
+                    assert!(try_handle_submit(&mut app, text), "{text} is taken");
+
+                    assert!(
+                        matches!(app.status, AppStatus::CommandPending),
+                        "{text} replaces the occupant, so the input waits for it",
+                    );
+                }
+            })
+            .await;
+    }
+
     /// A forge name invoked wrongly is still forge's, so this view forwards
     /// it and the core answers: deciding here is the second path the shared
     /// interception exists to remove.
@@ -494,6 +529,76 @@ mod tests {
                 "{text} is drawn as the reader's own line, so this view did not decide it",
             );
         }
+    }
+
+    /// The core's own line, which every forge command answers through. The
+    /// info arm is the one `/effort` takes, and the error arm is what a
+    /// refusal takes; a reducer that drew neither would pass every other test
+    /// in this file.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_core_notice_is_drawn_at_the_severity_it_carries() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let _rx = app.install_testing_stub();
+                let key = app.active_session_key.clone().expect("active session");
+
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    forge_workspace::SessionUpdate::Notice {
+                        key: key.clone(),
+                        severity: forge_workspace::NoticeSeverity::Info,
+                        text: "Effort: High (takes effect next session)".into(),
+                    },
+                );
+                let last = app.messages().and_then(|messages| messages.last());
+                assert!(
+                    matches!(last, Some(message)
+                        if message.role == MessageRole::System(Some(SystemSeverity::Info))),
+                    "an answer draws as an info message, got {:?}",
+                    last.map(|message| &message.role),
+                );
+            })
+            .await;
+    }
+
+    /// The same line for a seat nobody is looking at: it lands in that
+    /// bucket rather than being dropped, so a reader who switches to it finds
+    /// the answer waiting.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_core_notice_for_another_seat_lands_in_its_own_bucket() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let _rx = app.install_testing_stub();
+                let elsewhere = forge_workspace::SessionSlot::from_str_for_test("other-seat");
+                app.sessions.entry(elsewhere.clone()).or_insert_with(|| {
+                    crate::app::session::UiSession::new(elsewhere.clone(), "other")
+                });
+                let shown_before = app.messages().map(<[_]>::len).unwrap_or_default();
+
+                crate::app::events::apply_session_update(
+                    &mut app,
+                    forge_workspace::SessionUpdate::Notice {
+                        key: elsewhere.clone(),
+                        severity: forge_workspace::NoticeSeverity::Error,
+                        text: "Usage: /mode <id>".into(),
+                    },
+                );
+
+                let landed = app
+                    .sessions
+                    .get(&elsewhere)
+                    .map(|bucket| bucket.messages.len())
+                    .unwrap_or_default();
+                assert!(landed > 0, "the line is held for the seat it was addressed to");
+                assert_eq!(
+                    app.messages().map(<[_]>::len).unwrap_or_default(),
+                    shown_before,
+                    "and the seat on screen is not drawn into",
+                );
+            })
+            .await;
     }
 
     /// A refused mode change still lands as a system message, whichever view

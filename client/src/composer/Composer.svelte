@@ -3,6 +3,7 @@
 
   import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
+  import { report } from '../socket';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
@@ -355,9 +356,11 @@
   function stop(): void {
     try {
       void connection.dispatch({ cancel: { key: slot } });
-    } catch {
+    } catch (error) {
       // A closed socket has nothing to stop, and the control goes with the
-      // turn that would have drawn it.
+      // turn that would have drawn it - but the click did nothing and that is
+      // reported rather than swallowed.
+      report('the stop was not sent', error);
     }
   }
 

@@ -519,6 +519,10 @@ pub(super) fn handle_core_notice(
         viewport.engage_auto_scroll();
     }
     clear_pending_command(app);
+    // A line from the core is the only notice this process gets that
+    // something outside it may have written the documents a launch reads:
+    // `/effort` is the core's now, and it lands in `settings.json`.
+    crate::app::config::reload_launch_documents(app);
 }
 
 /// Foreground arm: the replaced session is the one on screen, so the
@@ -1008,11 +1012,14 @@ pub(super) fn apply_session_update_notice(
 }
 
 /// `SessionUpdate::SetModeFailed` reducer: restore the pre-apply mode
-/// snapshot the optimistic `/mode` apply parked on the bucket, then
-/// surface the CLI's refusal as a system message. Rapid submits
-/// overlap, so a refusal only rolls back when it names the mode the
-/// chip currently shows - a refusal for a superseded request leaves
-/// the newer optimistic apply (and its snapshot) alone.
+/// snapshot the mode cycle parked on the bucket, then surface the CLI's
+/// refusal as a system message. Rapid changes overlap, so a refusal only
+/// rolls back when it names the mode the chip currently shows - a refusal
+/// for a superseded request leaves the newer apply (and its snapshot) alone.
+///
+/// The typed `/mode` is the core's and applies nothing locally, so a refusal
+/// of one finds no snapshot to restore and only the message is drawn. The
+/// keyboard cycle is what parks one.
 pub(super) fn apply_session_update_set_mode_failed(
     app: &mut App,
     key: &SessionSlot,

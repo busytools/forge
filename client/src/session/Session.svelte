@@ -4,7 +4,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
-  import type { Connection } from '../socket';
+  import { report, type Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CopyButton from './CopyButton.svelte';
@@ -93,6 +93,10 @@
    * A project's own lead is the one seat the core can start by name: a worker
    * is spawned by the lead that owns it, so a worker seat with nothing behind
    * it stays as it is rather than asking for a spawn the core cannot place.
+   *
+   * The only refusal this can meet is the socket's own - the ask names a
+   * project the roster carries, so the core has one to start, and its refusal
+   * for a project it does not know cannot be reached from here.
    */
   $effect(() => {
     const open = connection;
@@ -105,9 +109,11 @@
       void open.dispatch({
         spawn_project: { project_name: seatSlot.project, launch_settings: {} },
       });
-    } catch {
+    } catch (error) {
       // A closed socket has nothing to start: the seat keeps drawing its
-      // not-running state, which is the truth about it.
+      // not-running state, which is the truth about it - and the click did
+      // nothing, so it is reported rather than swallowed.
+      report('the spawn was not sent', error);
       asked.delete(key);
     }
   });

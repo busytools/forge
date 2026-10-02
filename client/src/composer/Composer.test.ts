@@ -2675,7 +2675,7 @@ describe('the autocomplete', () => {
       [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
       "forge's table is what it offers, matched on the description too",
     ).toEqual([
-      '/mode Show / set session mode',
+      '/mode Set session mode',
       '/model Show / set session model',
       '/usage Token/cost usage by project or model',
     ]);

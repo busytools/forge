@@ -273,7 +273,9 @@ mod tests {
         // that reaches for the wrong one answers differently rather than
         // matching by luck.
         let local = json!({ "outputStyle": "Learning", "spinnerTipsEnabled": false });
-        let preferences = json!({ "terminalProgressBarEnabled": true });
+        // False, which is not the default: a reader that reached for the
+        // wrong document would otherwise answer `true` and match by luck.
+        let preferences = json!({ "terminalProgressBarEnabled": false });
 
         let launch = session_launch_settings(&documents(&user, &local, &preferences));
 
@@ -286,7 +288,7 @@ mod tests {
         assert_eq!(settings["effortLevel"], json!("high"));
         assert_eq!(settings["outputStyle"], json!("Learning"));
         assert_eq!(settings["spinnerTipsEnabled"], json!(false));
-        assert_eq!(settings["terminalProgressBarEnabled"], json!(true));
+        assert_eq!(settings["terminalProgressBarEnabled"], json!(false));
     }
 
     /// Forge's own defaults, which are not the CLI's: a document that says
@@ -362,5 +364,17 @@ mod tests {
         let user = json!({ "language": "   " });
         let launch = session_launch_settings(&documents(&user, &empty(), &empty()));
         assert_eq!(launch.language, None, "blank");
+
+        // One character longer than the ceiling, so the bound is the one
+        // being read rather than a shorter string failing some other way.
+        let too_long = "L".repeat(31);
+        let user = json!({ "language": too_long });
+        let launch = session_launch_settings(&documents(&user, &empty(), &empty()));
+        assert_eq!(launch.language, None, "longer than the ceiling");
+
+        let at_the_ceiling = "L".repeat(30);
+        let user = json!({ "language": at_the_ceiling });
+        let launch = session_launch_settings(&documents(&user, &empty(), &empty()));
+        assert_eq!(launch.language.as_deref(), Some(&*at_the_ceiling), "the ceiling itself passes");
     }
 }

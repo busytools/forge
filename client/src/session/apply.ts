@@ -54,27 +54,6 @@ type Apply = (held: SessionRecord, payload: Record<string, unknown>) => SessionR
  * falls through.
  */
 export const HANDLERS: Record<string, Apply> = {
-  /**
-   * One line the core has for this seat: a command's own answer, or why one
-   * did not run.
-   *
-   * The conversation holds frames, and this is not one the CLI sent, so it is
-   * appended as a `system` frame of a forge subtype - which is the shape the
-   * fold already reads, and the shape that makes the line land in the turn it
-   * belongs to rather than after everything.
-   */
-  notice: (held, payload) => {
-    const text = payload['text'];
-    if (typeof text !== 'string' || text === '') return held;
-    const frame = {
-      type: 'system',
-      subtype: 'forge_notice',
-      severity: payload['severity'],
-      text,
-    };
-    return { ...held, conversation: appendFrame(held.conversation, frame) };
-  },
-
   chat_appended: (held, payload) => {
     const msg = payload['msg'];
     if (msg === undefined) return held;
@@ -290,6 +269,15 @@ export const IGNORED: readonly string[] = [
   'set_mode_failed',
   'set_model_failed',
   'slash_command_error',
+  /**
+   * **The conversation this record carries is not the one the page draws.**
+   * The page's is `chat/conversation.ts`'s, fed by the live stream, so a line
+   * folded in here would reach nothing - and the record has no field of its
+   * own for one. That store draws the core's line on arrival and deliberately
+   * keeps no copy: the CLI wrote no such row, so a page attaching later has
+   * nothing to read it from.
+   */
+  'notice',
   'slack_message_appended',
   'status_snapshot',
   'worker_status_changed',

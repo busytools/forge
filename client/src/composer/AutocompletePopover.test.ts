@@ -21,7 +21,7 @@ import type { FileEntry } from './wire';
 const sources = (): Sources => ({
   forgeCommands: [
     { name: '/compact', description: 'Compact session context' },
-    { name: '/mode', description: 'Show / set session mode' },
+    { name: '/mode', description: 'Set session mode' },
     { name: '/model', description: 'Show / set session model' },
   ],
   advertised: [

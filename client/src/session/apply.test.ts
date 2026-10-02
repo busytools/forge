@@ -148,29 +148,6 @@ describe('applyUpdate', () => {
       expect(next.conversation.turns).toHaveLength(1);
       expect(next.conversation.turns[0]?.messages).toHaveLength(2);
     });
-
-    it("carries the core's own line into the conversation, joined to the live turn", () => {
-      const held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('hello') } });
-      const next = applyUpdate(held, {
-        notice: { key: SLOT, severity: 'error', text: 'Usage: /resume <session_id>' },
-      });
-
-      expect(
-        next.conversation.turns,
-        'a line about the turn joins it rather than opening one of its own',
-      ).toHaveLength(1);
-      const last = next.conversation.turns[0]?.messages.at(-1);
-      expect(last).toEqual({
-        type: 'system',
-        subtype: 'forge_notice',
-        severity: 'error',
-        text: 'Usage: /resume <session_id>',
-      });
-
-      // A notice with nothing to say leaves the record alone, so a malformed
-      // frame cannot put an empty row in front of the reader.
-      expect(applyUpdate(held, { notice: { key: SLOT, severity: 'info', text: '' } })).toBe(held);
-    });
   });
 
   describe('the turn in flight', () => {
@@ -666,7 +643,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 57 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 58 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.

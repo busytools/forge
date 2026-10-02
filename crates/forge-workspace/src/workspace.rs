@@ -3697,6 +3697,12 @@ impl Workspace {
     /// no language, no model and the CLI's own defaults for permissions,
     /// effort and output style - a session launched differently from the one
     /// the same click starts in the terminal.
+    ///
+    /// Read from the workspace's own config dir, which is what a session with
+    /// no account-scoped dir of its own runs under. The terminal builds its
+    /// own from the account it is bound to, so the two can differ where an
+    /// account names a dir of its own - and where they do, the caller that
+    /// supplied settings keeps them.
     fn fill_launch_settings(&self, launch_settings: &mut SessionLaunchSettings, cwd: Option<&str>) {
         if launch_settings.settings.is_some() {
             return;
@@ -3729,20 +3735,21 @@ impl Workspace {
         let Some(level) = forge_primitives::EffortLevel::from_stored(level) else {
             return self.answer_forge_misuse(key, &format!("Unknown effort level: {level}"));
         };
-        let Some(config_dir) = self.config_dir_for(key) else {
-            return self.answer_forge_misuse(key, "Effort: settings path is unavailable");
-        };
+        // The seat's own config dir where there is one, and the one forge runs
+        // under otherwise: effort is a user-level setting, so it does not
+        // depend on a session being live.
+        let config_dir =
+            self.config_dir_for(key).unwrap_or_else(|| self.config_dir().to_path_buf());
         let path = config_dir.join("settings.json");
-        let mut document = self
-            .settings_documents(key, None)
-            .and_then(|documents| documents.user)
+        let held = forge_agent::userdata::settings::settings_documents(&config_dir, None)
+            .user
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let Some(object) = document.as_object_mut() {
-            object.insert(
-                "effortLevel".to_owned(),
-                serde_json::Value::String(level.as_stored().to_owned()),
-            );
-        }
+        // A settings file holding something other than an object is one this
+        // cannot add a key to. Writing the key alone is better than reporting
+        // a success over a document nothing was added to.
+        let mut document =
+            if held.is_object() { held } else { serde_json::Value::Object(serde_json::Map::new()) };
+        document["effortLevel"] = serde_json::Value::String(level.as_stored().to_owned());
         match forge_agent::userdata::settings::save_document(&path, &document) {
             Ok(()) => {
                 self.notice(
@@ -3825,6 +3832,20 @@ impl Workspace {
 
     /// Route a command that carries no frame of its own.
     fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+        // A spawn a caller could not complete is completed here, ahead of
+        // routing: a client has no config to read, so what it sends carries no
+        // settings, and a spawn that ran on those alone would carry no
+        // language and the CLI's own defaults for permissions, effort and
+        // output style. Ahead of the intercept below because a command is
+        // finished before it is dispatched, and what a test reads there is
+        // what the handler will receive.
+        if let Command::SpawnProject { project_name, launch_settings } = &mut cmd {
+            let cwd = self
+                .find_project_view_by_name(project_name)
+                .map(|project| project.path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.fill_launch_settings(launch_settings, Some(&cwd));
+        }
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
         // this to assert what would have been dispatched without
@@ -4002,17 +4023,12 @@ impl Workspace {
             // (which internally tokio::spawns the agent), and return.
             // Run them inline under the span; no detach needed.
             match cmd {
-                Command::SpawnProject { project_name, mut launch_settings } => {
+                Command::SpawnProject { project_name, launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_project",
                         project = %project_name,
                     );
                     let _enter = span.enter();
-                    let cwd = self
-                        .find_project_view_by_name(&project_name)
-                        .map(|project| project.path.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    self.fill_launch_settings(&mut launch_settings, Some(&cwd));
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::SpawnSession { key, role, launch_settings } => {
@@ -16890,6 +16906,149 @@ mod prompt_frame_origin_tests {
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing reaches the model: {commands:?}");
+    }
+
+    /// The guard's clauses, one row each: prose with no slash is the model's,
+    /// a name the CLI resolves is the CLI's, an advertised name is the CLI's,
+    /// and only a name nothing has is refused.
+    ///
+    /// **A slash-led first word is refused whether or not words follow it**,
+    /// which is the terminal's own rule. The two readings cannot be told
+    /// apart at the first token, and the permissive one reopens the hole the
+    /// guard exists for: `/spinner now`, a typo with an argument, would reach
+    /// the model as a question.
+    #[test]
+    fn the_guard_refuses_only_a_name_nothing_has() {
+        let (ws, mut rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        for (text, refusal) in [
+            ("hello", None),
+            ("/tmp is full, why?", Some("/tmp is not yet supported")),
+            ("/help", None),
+            ("/compact 3", None),
+            ("/compact3", Some("/compact3 is not yet supported")),
+        ] {
+            // The rows share one fleet, so each starts from an empty stream:
+            // the frame the row above drew would otherwise answer for this one.
+            while rx.try_recv().is_ok() {}
+            let dispatched = ws.dispatch_from_view(Command::Prompt {
+                key: seat.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+            });
+            assert!(dispatched.is_ok(), "{text}: {dispatched:?}");
+            if let Some(expected) = refusal {
+                let received = rx.try_recv();
+                assert!(
+                    matches!(
+                        received,
+                        Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, ref text, .. })
+                            if text == expected
+                    ),
+                    "{text} is refused with {expected:?}, got {received:?}",
+                );
+                assert!(ws.drain_test_dispatch_buffer().is_empty(), "{text} reaches nothing");
+            } else {
+                let commands = ws.drain_test_dispatch_buffer();
+                assert!(
+                    matches!(commands.as_slice(), [Command::Prompt { .. }]),
+                    "{text} is the CLI's: {commands:?}",
+                );
+            }
+        }
+    }
+
+    /// Effort is user-level, so it lands even when the seat has no session
+    /// behind it: what it writes is the document a launch reads, not anything
+    /// about a run.
+    #[test]
+    fn effort_lands_for_a_seat_with_no_live_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/prompt-frame-origin");
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_from_view(Command::Prompt {
+            key: SessionSlot::lead("TestOrg", "proj"),
+            text: "/effort low".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("the core takes it");
+
+        let written = std::fs::read_to_string(dir.path().join("settings.json"))
+            .expect("the document is written");
+        let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
+        assert_eq!(document["effortLevel"], serde_json::json!("low"));
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Info, .. })
+            ),
+            "and the reader is told it took",
+        );
+    }
+
+    /// A spawn a view could not complete is completed by the core: a client
+    /// has no config to read, so what it sends carries none, and the settings
+    /// the launch reads are built from the same documents the terminal reads.
+    #[test]
+    fn a_spawn_without_settings_gets_them_from_the_documents() {
+        // A config dir of its own, so the line the spawn carries is read from
+        // a document this test wrote rather than from the machine's.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("settings.json"), br#"{ "effortLevel": "low" }"#)
+            .expect("seed the document");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_from_view(Command::SpawnProject {
+            project_name: "proj".to_owned(),
+            launch_settings: SessionLaunchSettings::default(),
+        })
+        .expect("the core takes it");
+
+        let commands = ws.drain_test_dispatch_buffer();
+        let [Command::SpawnProject { launch_settings, .. }] = commands.as_slice() else {
+            panic!("the spawn was not the command routed: {commands:?}");
+        };
+        let settings = launch_settings.settings.as_ref().expect("the documents filled it in");
+        assert_eq!(
+            settings["effortLevel"],
+            serde_json::json!("low"),
+            "the value the document holds, which a bare spawn would not have carried",
+        );
+    }
+
+    /// The mirror: a spawn that built its own settings keeps them, so the
+    /// terminal's snapshot is not silently replaced by the core's read.
+    #[test]
+    fn a_spawn_that_supplied_settings_keeps_them() {
+        let (ws, _rx, _seat) = a_fleet();
+        let supplied = SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "model": "haiku" })),
+            ..SessionLaunchSettings::default()
+        };
+
+        ws.dispatch_from_view(Command::SpawnProject {
+            project_name: "proj".to_owned(),
+            launch_settings: supplied,
+        })
+        .expect("the core takes it");
+
+        let commands = ws.drain_test_dispatch_buffer();
+        let [Command::SpawnProject { launch_settings, .. }] = commands.as_slice() else {
+            panic!("the spawn was not the command routed: {commands:?}");
+        };
+        assert_eq!(
+            launch_settings.settings,
+            Some(serde_json::json!({ "model": "haiku" })),
+            "the caller's own settings are left alone",
+        );
     }
 
     /// A name the CLI advertised is the CLI's, and goes to it.
