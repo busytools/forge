@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
-import type { Turn as HeldTurn } from './conversation';
+import { beingWritten, type Turn as HeldTurn } from './conversation';
 import Turn from './Turn.svelte';
+import { fold } from './units';
 
 /** A turn holding `messages`, drawn as the page draws it. */
 const draw = (...messages: unknown[]): string =>
@@ -70,6 +71,27 @@ const result = (id: string, value: string): unknown => ({
   message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: value }] },
   uuid: `r-${id}`,
 });
+
+/** The frame a turn ends on, which is the only carrier of a session cost. */
+const ended = (uuid: string, total: number): unknown => ({
+  type: 'result',
+  uuid,
+  duration_ms: 1000,
+  duration_api_ms: 500,
+  total_cost_usd: total,
+  usage: {},
+});
+
+/**
+ * The key of each report row a fold draws for this turn, oldest first.
+ *
+ * Asked of the fold rather than written out, because the key is the fold's own
+ * - a fixture naming one would be asserting the name rather than the row.
+ */
+const reportKeys = (turn: HeldTurn): string[] =>
+  fold(turn.messages, null, null, beingWritten(turn))
+    .filter((unit) => unit.kind === 'report')
+    .map((unit) => unit.key);
 
 /** Everything between two tags, so an assertion reads a row rather than a page. */
 const between = (body: string, from: string, to: string): string => {
@@ -183,31 +205,58 @@ describe('one turn, as the page draws it', () => {
     // of it: the same figures twice on one page is the defect. The settled row
     // comes back here the moment the pin lets go, which is the half that makes
     // this a move rather than a loss.
-    const at = (turn: HeldTurn, pinned: boolean): string =>
-      render(Turn, { props: { turn, cwd: null, pinned } }).body;
+    const at = (turn: HeldTurn, carried: string | null): string =>
+      render(Turn, { props: { turn, cwd: null, carried } }).body;
     const settled: HeldTurn = {
       key: 't1',
       live: false,
-      messages: [
-        working,
-        { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
-      ],
+      messages: [working, ended('r-1', 12.5)],
     };
+    const [held] = reportKeys(settled);
+
+    const writing: HeldTurn = { key: 't1', messages: [working], live: true };
+    const seated: HeldTurn = { key: 't1', messages: [working], live: false, running: true };
 
     expect(
-      at({ key: 't1', messages: [working], live: true }, true),
+      at(writing, reportKeys(writing)[0] ?? null),
       'a running turn the frames built',
     ).not.toContain('turninfo');
     expect(
-      at({ key: 't1', messages: [working], live: false, running: true }, true),
+      at(seated, reportKeys(seated)[0] ?? null),
       'and one whose turn the seat says is running',
     ).not.toContain('turninfo');
-    expect(at(settled, true), 'nor the finished row while the pin holds it').not.toContain(
+    expect(at(settled, held ?? null), 'nor the finished row while the pin holds it').not.toContain(
       'turninfo',
     );
-    expect(at(settled, false), 'and the turn takes it back when the pin lets go').toContain(
+    expect(at(settled, null), 'and the turn takes it back when the pin lets go').toContain(
       'turninfo',
     );
+  });
+
+  it('drops the row the pin holds, and no other row the turn carries', () => {
+    // **The pin holds one row, so the turn stands aside for one.** A turn can
+    // carry two report rows - one per Result that landed in it, which is what a
+    // refused ask or a queued prompt that never arrived as a frame leaves - and
+    // a filter that dropped every report row would lose the row the pin never
+    // took, for as long as the pin holds the one it did.
+    const at = (turn: HeldTurn, carried: string | null): string =>
+      render(Turn, { props: { turn, cwd: null, carried } }).body;
+    const rows = (body: string): number => (body.match(/details class="turninfo"/g) ?? []).length;
+    const twice: HeldTurn = {
+      key: 't1',
+      live: false,
+      messages: [
+        said([{ type: 'text', text: 'one' }], 'm1'),
+        ended('r-1', 12.5),
+        said([{ type: 'text', text: 'two' }], 'm2'),
+        ended('r-2', 9),
+      ],
+    };
+    const keys = reportKeys(twice);
+
+    expect(keys, 'the turn carries a row per Result').toHaveLength(2);
+    expect(rows(at(twice, null)), 'with the pin holding none, both draw').toBe(2);
+    expect(rows(at(twice, keys[1] ?? '')), 'and with one held, the other still draws').toBe(1);
   });
 
   it('draws the running row for a turn the seat says is running', () => {

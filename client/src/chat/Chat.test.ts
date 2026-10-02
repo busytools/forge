@@ -94,12 +94,12 @@ const frame = (uuid: string, input: number): unknown => ({
 });
 
 /** The frame a turn ends on, which is the only carrier of a session cost. */
-const settledFrame = (): unknown => ({
+const settledFrame = (uuid = 'r1', total = 12.5): unknown => ({
   type: 'result',
-  uuid: 'r1',
+  uuid,
   duration_ms: 42_000,
   duration_api_ms: 20_000,
-  total_cost_usd: 12.5,
+  total_cost_usd: total,
   usage: {},
 });
 
@@ -626,6 +626,20 @@ describe('the chat column as it draws', () => {
       expect(document.querySelector('.strip')?.textContent, 'and its own finish beats').toContain(
         'cumulative',
       );
+
+      // **And its beat lets go.** The assertion above is satisfied by a row
+      // that is stuck exactly as well as by one that is beating, so this is the
+      // half that says the second turn's beat was armed at all: a take-back
+      // that clears the timer but leaves the flag set holds this row for good,
+      // and the turn below never gets its row back.
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      expect(document.querySelector('.strip'), 'and its own beat lets go').toBeNull();
+      expect(
+        document.querySelectorAll('details.turninfo'),
+        'and the turns take their rows back',
+      ).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }
@@ -641,6 +655,51 @@ describe('the chat column as it draws', () => {
       document.querySelectorAll('details.turninfo'),
       'and the turn draws its own',
     ).toHaveLength(1);
+  });
+
+  it('holds one of two finished rows, and leaves the other in the turn', () => {
+    // **The pin holds one row, so the turn stands aside for one.** A turn can
+    // carry two report rows - one per Result that landed in it, which is what a
+    // refused ask leaves behind - and a column that withheld every report row
+    // from the turn would lose the row the pin never took, for as long as the
+    // pin holds the one it did.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      server.send(appended(frame('a-run', 100)));
+
+      server.send(ended());
+      server.answer([
+        {
+          key: 'turn-a-run',
+          messages: [frame('a-run', 100), settledFrame('r-1', 12.5), settledFrame('r-2', 9)],
+        },
+      ]);
+
+      expect(document.querySelector('.strip')?.textContent, 'the pin holds the last row').toContain(
+        '$9.00 cumulative',
+      );
+      expect(
+        document.querySelectorAll('details.turninfo'),
+        'and the turn keeps the row the pin never took',
+      ).toHaveLength(1);
+      expect(
+        document.querySelector('details.turninfo')?.textContent,
+        'which is the row of the first Result',
+      ).toContain('$12.50 cumulative');
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      expect(
+        document.querySelectorAll('details.turninfo'),
+        'and takes both once the pin lets go',
+      ).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('pins the row of the newest turn, not of the first one the column holds', () => {

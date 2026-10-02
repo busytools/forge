@@ -30,37 +30,37 @@
     cwd,
     slot = null,
     compacting = false,
-    pinned = false,
+    carried = null,
   }: {
     turn: HeldTurn;
     cwd: string | null;
     slot?: Self | null;
     compacting?: boolean;
     /**
-     * Whether this turn's report row is drawn in the pin above the box.
+     * The key of this turn's report row that the pin above the box is drawing,
+     * or `null` where the pin is drawing none of them.
      *
-     * Set for the newest turn while the pin is carrying it, which is the whole
-     * of the turn being written and the beat after it ends: the row moves out
-     * of the turn and sits above the composer, and comes back here the moment
-     * the pin lets it go. Two rows of one turn on one page - the running one
-     * drawn twice, or the finished one drawn in the pin and here at once - is
-     * the defect this prop exists to prevent.
+     * **The row rather than a yes**, so the turn stands aside for exactly what
+     * the pin holds and nothing else: a turn can carry more than one report
+     * row - one per Result that landed in it - and the pin takes one of them.
+     * Dropping every report row here would lose the rows the pin never took,
+     * and dropping none would draw the one it holds twice.
      */
-    pinned?: boolean;
+    carried?: string | null;
   } = $props();
 
   const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
 
   /**
-   * The fold's units, less the report row where the pin is carrying it.
+   * The fold's units, less the one row the pin is carrying.
    *
    * The row moves out of the turn and above the composer while the pin holds
-   * it, so it is not drawn here as well - the running row while the turn is
-   * written, and the finished row for the beat after it ends. Nothing is lost
+   * it - the running row while the turn is written, and the finished one for
+   * the beat after it ends - so it is not drawn here as well. Nothing is lost
    * by that: the same row is on the page, in the pin, and the turn takes it
    * back the moment the pin lets go.
    */
-  const units = $derived(pinned ? folded.filter((unit) => unit.kind !== 'report') : folded);
+  const units = $derived(carried === null ? folded : folded.filter((unit) => unit.key !== carried));
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =

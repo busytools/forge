@@ -225,14 +225,21 @@
    */
   const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
 
-  /** The newest turn's own row, folded the way the turn folds itself. */
-  const newestRow = $derived.by((): TurnInfo | null => {
+  /**
+   * The newest turn's own report row - the unit, and the figures in it -
+   * folded the way the turn folds itself.
+   *
+   * **One fold and one pick, because the row has two readers**: the pin draws
+   * it, and the turn's own copy of it stands aside. Which row that is is
+   * answered here rather than worked out again at each of them.
+   */
+  const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
     const units = fold(turn.messages, cwd, slot, beingWritten(turn));
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
-      if (unit !== undefined && unit.kind === 'report') return unit.info;
+      if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
     }
     return null;
   });
@@ -269,7 +276,7 @@
   // reason to run again, and the beat a reason to re-arm itself forever.
   $effect(() => {
     const which = newest;
-    const holding = newestRow !== null && newestRow.running;
+    const holding = newestRow !== null && newestRow.info.running;
     if (which === null || newestRow === null) return;
     if (holding) {
       // A turn being written takes the row back, whichever turn was beating
@@ -299,16 +306,18 @@
   $effect(() => () => stopBeat());
 
   /**
-   * Whether the pin is holding the newest turn's row right now, which is the
-   * whole of the turn being written and the beat after it ends.
+   * The row the pin is holding right now, if any: the whole of the turn being
+   * written, and the beat after it ends.
    *
-   * **One fact with two readers**: the pin draws the row from it, and the
-   * turn's own row stands aside for exactly as long as it is true. The key is
-   * checked rather than trusted, so a beat that outlived its turn - an
-   * occupant swapped under the page - carries nothing.
+   * **One fact with two readers**, and it is the ROW rather than a yes: the
+   * pin draws it, and the turn's own copy of that same row stands aside. The
+   * key is checked rather than trusted, so a beat that outlived its turn - an
+   * occupant swapped under the page - holds nothing.
    */
-  const pinHolds = $derived(
-    newestRow !== null && (newestRow.running || (beating && carried === newest)),
+  const pinned = $derived(
+    newestRow !== null && (newestRow.info.running || (beating && carried === newest))
+      ? newestRow
+      : null,
   );
 
   /**
@@ -463,7 +472,7 @@
           {cwd}
           {slot}
           compacting={compacting && turn.key === newest}
-          pinned={turn.key === newest && pinHolds}
+          carried={turn.key === newest ? (pinned?.key ?? null) : null}
         />
       </div>
     {/snippet}
@@ -473,5 +482,5 @@
        being written stops depending on where the reader is looking. It is a
        sibling of the scroller rather than a row of the grid, so the composer
        and the dock - both drawn under this column - never have to know it. -->
-  <Pinned info={pinHolds ? newestRow : null} />
+  <Pinned info={pinned?.info ?? null} />
 {/if}
