@@ -507,6 +507,19 @@
   .turninfo > summary .st.err { color: var(--bad); }
   .turninfo > summary .arw { color: var(--dim); }
   .turninfo[open] > summary .arw { color: var(--accent); }
+  /* The strip pinned above the box while a turn runs: its own row, sharing the
+     composer's edges and outside its ring. Its fields are the settled row's
+     own - the row moved to the pin is the same one - so its element is the flex
+     row they wrap in and it draws no box of its own. */
+  .strip { flex: none; padding: 8px 13px 9px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--s1); }
+  .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+  /* Wrap between fields, never inside one: a broken token pair reads as two
+     numbers rather than as in and out. */
+  .strip .ti > span { white-space: nowrap; }
+  .strip .ti .sep { opacity: .5; }
+  .strip .ti .st.err { color: var(--bad); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -1434,6 +1447,7 @@ docs: Render the message body into rows.</div>
       <div class="mine">
         <div class="prose" id="lv-prompt">
           <p>Add the live-turn states to the mock: text streaming, calls landing one at a time, the row counting up.</p>
+          <p>And pin that row above the box while the turn runs, so I can tell from anywhere in the column whether it is still working. It keeps its place here while the turn is pinned and goes back into the turn at the end.</p>
         </div>
       </div>
 
@@ -1495,24 +1509,6 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="beat" data-beat="7">
-          <details class="turninfo" open>
-            <summary>
-              <span id="lv-mark"><span class="ring"></span></span>
-              <span id="lv-time">0.4s</span><span class="sep">&#183;</span>
-              <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
-              <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
-              <span>93% cached</span><span class="sep">&#183;</span>
-              <span>3.1k written</span>
-              <!-- The cumulative cost is the one figure only the Result carries,
-                   so a running row has no segment for it at all: a slot with no
-                   value is not drawn, rather than held empty for a figure that
-                   has not arrived. -->
-              <svg class="ic arw"><use href="#i-chev"/></svg>
-            </summary>
-          </details>
-        </div>
-
-        <div class="beat" data-beat="8">
           <details class="hooks">
             <summary><span>hook summary &#183; 2 actions</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1521,6 +1517,42 @@ docs: Render the message body into rows.</div>
       </div>
 
     <div class="composer">
+      <!-- The strip pinned above the box: the running turn's row, outside the
+           scroll, so a reader who has scrolled up can still see whether the
+           turn is working. Its own row, sharing the composer's edges and
+           outside its ring, for exactly as long as the turn is incomplete.
+
+           One row of a turn, never two: while the row is pinned the turn above
+           draws none of it, and when the turn ends the finished row holds here
+           for a beat - the check and the cumulative - before it goes back into
+           the turn. The settled rows higher up the page are that half drawn.
+
+           Early in a turn it carries only what has arrived: the mark and the
+           clock at the barest, then thinking, the token pair, cached and
+           written as their frames land. An absent field is dropped rather than
+           dashed, because a dash is a claim that a value exists. A dock takes
+           the box's place beneath it and the row is unchanged - one row above
+           one box.
+
+           The terminal draws these figures inside the turn and pins nothing
+           above its input; the client has a scroll position the terminal does
+           not, and that is the whole reason for the row. -->
+      <div class="strip" id="pin">
+        <div class="ti">
+          <span id="lv-mark"><span class="ring"></span></span>
+          <span id="lv-time">0.4s</span><span class="sep" id="lv-think-sep">&#183;</span>
+          <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
+          <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
+          <span>93% cached</span><span class="sep">&#183;</span>
+          <span>3.1k written</span>
+          <!-- The cumulative cost is the one figure only the Result carries,
+               so the running row has no segment for it at all: it appears with
+               the check when the turn ends, and a slot held empty for a figure
+               that has not arrived is the thing this row never draws. -->
+          <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
+          <span id="lv-cost" style="display:none">$4.82 cumulative</span>
+        </div>
+      </div>
       <div class="cstates" data-mock-ignore>
         <span class="cl">composer</span>
         <button class="cs on" data-cs="idle">idle</button>
@@ -1888,7 +1920,10 @@ docs: Render the message body into rows.</div>
     $('lv-mark').innerHTML = TICK;
     $('lv-time').textContent = '0.4s';
     $('lv-think').style.display = '';
+    $('lv-think-sep').style.display = '';
     $('lv-tok').textContent = '1.1k↑ 62↓';
+    $('lv-cost').style.display = 'none';
+    $('lv-cost-sep').style.display = 'none';
 
     at(200, () => { reveal(1); stream($('lv-t1'), $('lv-c1'), T1, 1300); });
     at(1500, () => { reveal(2); t0 = performance.now();
@@ -1906,9 +1941,17 @@ docs: Render the message body into rows.</div>
       if (clock) { clearInterval(clock); clock = null; }
       $('lv-mark').innerHTML = OK;
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
+      /* The count is only a running row's: the finished row drops the segment
+         and its separator together, the way the app draws it. */
       $('lv-think').style.display = 'none';
+      $('lv-think-sep').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
-      reveal(8);
+      /* The turn has ended, so the pinned row shows the finished state - the
+         check and the cumulative - for a beat before it detaches into the
+         turn. This is that beat: the row still above the box, finished. */
+      $('lv-cost').style.display = '';
+      $('lv-cost-sep').style.display = '';
+      reveal(7);
     });
   }
 
