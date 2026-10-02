@@ -162,7 +162,8 @@ pub enum WorktreeEnsure {
 /// claude's default `worktree.baseRef` of `fresh` that is not the base
 /// a fresh `--worktree <label>` would use, which cuts from
 /// `origin/<default-branch>`; local HEAD is that base only with
-/// `baseRef` set to `head`, or a repo with no origin ref to resolve. An
+/// `baseRef` set to `head`, or with no local `origin/<default>` ref and
+/// a fetch that fails. An
 /// existing `path` is a no-op; an out-of-band `rm -rf` defeats this
 /// (git's stale registration makes `worktree add` fail with git's
 /// message, surfaced here).
@@ -1298,8 +1299,9 @@ mod tests {
         (dir, wt, branch)
     }
 
-    /// `worktree add -b worktree-<label>` off the current HEAD, as
-    /// claude's `--worktree <label>` does. Returns the branch name.
+    /// `worktree add -b worktree-<label>` off the current HEAD: the branch
+    /// claude's `--worktree <label>` names, though not the base it would
+    /// use. Returns the branch name.
     fn add_worker_worktree(repo: &Path, label: &str) -> String {
         let branch = format!("worktree-{label}");
         let wt = repo.join(".claude").join("worktrees").join(label);
@@ -1478,8 +1480,9 @@ mod tests {
 
     /// The despawn-reaped-branch shape: nothing on the branch was
     /// unreachable, so despawn deleted it. The branch is recreated at the
-    /// repo's current HEAD, the same base claude's fresh `--worktree
-    /// <label>` would use.
+    /// repo's current HEAD - under claude's default `worktree.baseRef` of
+    /// `fresh`, not the base its own `--worktree` would use; see
+    /// [`ensure_worker_worktree`].
     #[test]
     fn ensure_worker_worktree_recreates_the_branch_when_reaped() {
         let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
