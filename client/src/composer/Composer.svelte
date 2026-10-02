@@ -164,6 +164,15 @@
 
   const blocker = $derived(blocked(seat, composer, box.sent));
   const filled = $derived(box.draft.trim() !== '');
+
+  /**
+   * Whether this seat has a turn to stop.
+   *
+   * Read from the header rather than from anything this composer sent, because
+   * a turn started anywhere - another page, a cron, a delivery - is the same
+   * turn to stop, and the core is the one that knows it is running.
+   */
+  const running = $derived(record.header.turn_in_flight);
   const notice = $derived(owns ? noticeLine(composer.notice, box.sawTake) : null);
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
@@ -335,6 +344,22 @@
       for (const key of echoes.outstanding()) echoes.refuse(key, message.why);
     });
   });
+
+  /**
+   * Stop the turn this seat is running, which the terminal binds to Escape.
+   *
+   * Fire-and-forget like a send: the turn ending is what says the stop landed,
+   * and it arrives as the header's own state going quiet rather than as a
+   * reply. The draft is left alone, since the reader may be steering with it.
+   */
+  function stop(): void {
+    try {
+      void connection.dispatch({ cancel: { key: slot } });
+    } catch {
+      // A closed socket has nothing to stop, and the control goes with the
+      // turn that would have drawn it.
+    }
+  }
 
   /** Send the draft, and remember the command when the draft was one. */
   function send(): void {
@@ -632,6 +657,11 @@
             onclick={mic}
           >
             <Icon name="mic" />
+          </button>
+        {/if}
+        {#if running}
+          <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+            <Icon name="stop" />
           </button>
         {/if}
         {#if filled}

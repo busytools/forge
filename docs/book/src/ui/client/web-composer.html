@@ -92,6 +92,8 @@
     display: grid; place-items: center; color: var(--dim); }
   .send { color: var(--accent); display: grid; place-items: center; width: 24px;
     height: 24px; }
+  .stop { color: var(--dim); display: grid; place-items: center; width: 24px;
+    height: 24px; margin-left: 4px; }
   .foot { display: flex; align-items: center; gap: 10px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
@@ -259,6 +261,7 @@
   <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></symbol>
   <symbol id="i-cmd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
@@ -299,6 +302,17 @@ character-cell row. Slash commands keep their magenta, because that is a real di
           <div class="foot"><span class="k">&#8593;</span> history
             <span class="k">&#8679;&#9166;</span> newline
             <span class="k">&#9166;</span> send</div>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="lab">running &middot; stop appears beside the send</div>
+      <div class="comp">
+        <div class="box">
+          <div class="line"><span class="txt ph">Type a message...</span>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+            <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></div>
+          <div class="foot"><span>nothing to send, something to stop</span></div>
         </div>
       </div>
     </div>
