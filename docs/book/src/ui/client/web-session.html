@@ -790,6 +790,27 @@
   .mopts { display: flex; flex-direction: column; gap: 1px; }
   .mopt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
+  /* A question's marks, in the client's own forms: a circle that fills on the
+     row being taken, a box with a long thin check for a set, an empty slot so
+     the escape row's words line up. */
+  .mopt .radio { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px;
+    border-radius: 50%; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
+  .mopt .radio.on { border-color: var(--ok); }
+  .mopt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ok); }
+  .mopt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
+    margin-top: 2px; border: 1px solid var(--ctl); display: grid; place-items: center; }
+  .mopt .box2.on { border-color: var(--ok); color: var(--ok); }
+  .mopt .box2 .ic { width: 12px; height: 12px; margin: 0; }
+  .mopt .slot { width: 15px; flex: 0 0 15px; margin-top: 2px; }
+  .mopt .tx { flex: 1; min-width: 0; }
+  .mopt .why { display: block; color: var(--dim); font-size: var(--fs-label); }
+  /* An option's own preview, and a held Slack draft: one panel, the marked
+     option's prose or the post itself, markdown on the wire. */
+  .mpreview { border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px;
+    font-size: var(--fs-data); color: var(--muted); }
+  .mpreview p { margin: 0; }
+  .mdhead .qm { color: var(--accent); font-weight: 700; display: flex; align-items: center; }
   .mopt .ic { color: var(--dim); }
   .mopt .ic.ok { color: var(--ok); }
   .mopt .ic.no { color: var(--bad); }
@@ -1963,6 +1984,45 @@ branch main, nothing to commit</div>
               <div class="mopt"><svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
               <div class="mopt"><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
               <div class="mopt"><svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell the agent something else</span></div>
+            </div>
+            <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
+              <span><span class="mk">&#9166;</span> confirm</span>
+              <span><span class="mk">esc</span> reject</span></div>
+          </div>
+
+          <!-- The slot's other two kinds, as the client draws them: a question
+               from the CLI, one answer at a time, and a Slack post held for
+               approval. Same card, same rows, same keys. -->
+          <div class="annot"><span class="dim">a question &#183; the escape row holds the slot its options mark in, and the marked option's preview sits in the panel</span></div>
+          <div class="mdock">
+            <div class="mdhead"><svg class="ic qm"><use href="#i-question"/></svg>
+              <span class="t">Environments</span><span class="q">Q2 of 3</span></div>
+            <div class="mopts">
+              <div class="mopt sel"><span class="radio on"></span>
+                <span class="tx"><span class="lbl">Staging</span>
+                  <span class="why">the pre-production cluster</span></span></div>
+              <div class="mopt"><span class="radio"></span>
+                <span class="tx"><span class="lbl">Production</span>
+                  <span class="why">live traffic</span></span></div>
+              <div class="mopt"><span class="radio"></span>
+                <span class="tx"><span class="lbl">Development</span></span></div>
+              <div class="mopt"><span class="slot"></span>
+                <span class="tx"><span class="lbl">Tell the agent something else:</span></span></div>
+            </div>
+            <div class="mpreview"><p><strong>staging</strong> &#183; deploys run the full migration set against the replica first.</p></div>
+            <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> move</span>
+              <span><span class="mk">&#9166;</span> submit</span>
+              <span><span class="mk">esc</span> reject</span></div>
+          </div>
+
+          <div class="annot"><span class="dim">a held Slack post &#183; the draft reads through the same markdown panel the previews use</span></div>
+          <div class="mdock">
+            <div class="mdhead"><span class="t">Post to Slack</span>
+              <span class="q">Trust Machines &#183; #granite-staging-alerts</span></div>
+            <div class="mpreview">The staging deploy is green. Rolling to production once the 14:30 window closes.</div>
+            <div class="mopts">
+              <div class="mopt sel"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Send it</span></div>
+              <div class="mopt"><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Don't send</span></div>
             </div>
             <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
               <span><span class="mk">&#9166;</span> confirm</span>
