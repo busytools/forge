@@ -3,27 +3,23 @@
  *
  * **The defect this closes.** Swapping a token in the client's own sheet -
  * `details.hooks > summary .st.err` from `var(--bad)` to `var(--ok)`, say -
- * left the whole suite passing, so a failed hook's summary mark would draw in
- * the success tone and nothing would notice. No test pinned a STATE CLASS's
- * tone in `assets/web.css`: `rail.test.ts` pins one rule's token, but nothing
- * read the classes this file is about, so the same swap at any `.st.err` rule
- * was invisible.
- *
- * `Hooks.test.ts` pins one rule of the BOOK DRAWING's copy of the sheet, by
- * regex, selector and token together. That made the drawing's rule better
- * covered than the app's identical one, which is backwards: the app's sheet is
- * what ships. This is the general check rather than a second per-rule pin.
+ * drew a failed hook's summary mark in the success tone with the whole suite
+ * green. That is the gap this pins: the tone a state class names, in the app's
+ * sheet and in the book drawing's own copy of it.
  *
  * **The property rather than a list of rules.** Every rule whose selector
  * carries a state class may only draw in a tone that class names, so a new
  * `.st.err` rule anywhere in the sheet is covered by writing it and nothing
  * here has to be extended to reach it. Pinning the rules a finding happens to
- * name, one at a time, is how a file collects a test per symptom instead.
+ * name, one at a time, is how a file collects a test per symptom instead. It
+ * reads both sheets rather than one rule: the app's own, and the book
+ * drawing's copy of it.
  *
- * **The token NAMED is the whole claim.** The palette lives in `[web] theme`
- * and reaches the page from the server, so nothing here knows what `--bad`
- * resolves to - only that the rule meant to draw a failure names it.
- * `contrast.test.ts` is the check that sits over the palette's values.
+ * **The token NAMED is the whole claim.** The palette's values live in
+ * `theme.ts`, and the theme's NAME is what reaches the page from the server,
+ * so nothing here knows what `--bad` resolves to - only that the rule meant to
+ * draw a failure names it. `contrast.test.ts` is the check that sits over the
+ * palette's values.
  *
  * Three holes, named rather than left to be discovered.
  *
@@ -35,12 +31,11 @@
  *
  * The third is that a state class is what this reads, and most of the sheet's
  * tones sit on rules no state class reaches: 71 selectors across the two
- * sheets name a tone carrying no class the vocabulary knows, and exactly one
- * of them - `.rfoot .vers .up`, by `rail.test.ts` - is pinned by anything
- * else. The mark's BASE rules are among the 71, and the default tone lives
- * there: swapping `.kind > summary .st` to `var(--bad)` leaves the whole suite
- * green, and `.rfoot .led` sits beside `.rfoot .led.bad`, which this does
- * cover, in the same relationship and with no cover of its own.
+ * sheets name a tone carrying no class the vocabulary knows. The mark's BASE
+ * rules are among the 71, and the default tone lives there: swapping
+ * `.kind > summary .st` to `var(--bad)` leaves the whole suite green, and
+ * `.rfoot .led` sits beside `.rfoot .led.bad`, which this does cover, in the
+ * same relationship this does not reach.
  *
  * A vocabulary entry cannot close that. `st: '--ok'` would legalise `--ok` on
  * `.st.err` too, since a rule's allowed tones are the union over the classes
