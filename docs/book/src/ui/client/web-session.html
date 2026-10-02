@@ -319,7 +319,12 @@
   .conv::-webkit-scrollbar { width: 8px; }
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
-  .mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+  /* One blank line between blocks, the terminal's whole spacing policy, read
+     the same on both sides of a work block: the turn's margin and the block's
+     own padding add up to about a line each way, where the trailing padding
+     used to make the seam under a tool block half again as tall as the one
+     above it. */
+  .mine { margin: 12px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
   /* The echo: the reader's words from submit until the core has them. The word
      carries the state rather than the rule, because the accent line means
      "these words are yours" and a mark that also meant "in flight" would be
@@ -342,7 +347,7 @@
     font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
   .attrow .gl { color: var(--dim); }
   .attrow .n { color: var(--dim); }
-  .work { padding: 4px 0 8px; }
+  .work { padding: 4px 0; }
   /* What the model thought. Collapsed, carrying the first of its own words: the
      terminal's vocabulary for a block nothing else shows, where its own arm for
      this block only sets a running status and counts the characters. */

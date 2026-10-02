@@ -661,7 +661,11 @@ details.sec[open] > summary .arw { color: var(--accent); }
    pixels on a retina display rather than 4, and the weight the page already
    draws a lane inside the conversation at (`.pbody`); the accent colour is
    what keeps it a mark rather than structure. */
-.mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+/* One blank line between blocks, the terminal's whole spacing policy, read the
+   same on both sides of a work block: the turn's margin and the block's own
+   padding add up to about a line each way, where the trailing padding used to
+   make the seam under a tool block half again as tall as the one above it. */
+.mine { margin: 12px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
 /* The echo: the reader's words from submit until the core has them. The word
    carries the state rather than the rule, because the accent line means "these
    words are yours" and a mark that also meant "in flight" would be two
@@ -677,7 +681,7 @@ details.sec[open] > summary .arw { color: var(--accent); }
   background: transparent; border: 1px solid var(--line); border-radius: 6px;
   padding: 1px 7px; cursor: pointer; }
 .mine .retry:hover { color: var(--muted); }
-.work { padding: 4px 0 8px; }
+.work { padding: 4px 0; }
 /* Prose draws in both blocks - the work a turn did, and what the reader typed,
    which the terminal folds as a document too - so these read `.prose` alone. */
 /* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
