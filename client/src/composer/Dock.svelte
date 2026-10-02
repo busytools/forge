@@ -103,6 +103,33 @@
         own: option.kind === 'notes',
       }));
     }
+    if (prompt.kind === 'slack_draft') {
+      // A held post has two answers and no more: the draft goes out, or it does
+      // not. The rows are the dock's own because the wire carries the draft
+      // rather than a set of options to choose from.
+      return [
+        {
+          key: 'send',
+          icon: 'check',
+          tone: 'ok',
+          label: 'Send it',
+          detail: null,
+          preview: null,
+          optionId: null,
+          own: false,
+        },
+        {
+          key: 'drop',
+          icon: 'x',
+          tone: 'no',
+          label: "Don't send",
+          detail: null,
+          preview: null,
+          optionId: null,
+          own: false,
+        },
+      ];
+    }
     if (prompt.kind === 'question') {
       return [
         ...prompt.request.options.map((option) => ({
@@ -121,7 +148,7 @@
           key: 'own',
           icon: null,
           tone: 'ok',
-          label: 'Tell Claude something else:',
+          label: 'Tell the agent something else:',
           detail: null,
           preview: null,
           optionId: null,
@@ -212,7 +239,21 @@
    */
   function submit(): void {
     const row = rows[marked];
-    if (row === undefined || toolId === null) return;
+    if (row === undefined) return;
+
+    if (ask.kind === 'slack_draft') {
+      // A draft is answered by its own id rather than by a tool call, which is
+      // the command the terminal sends for the same two rows. Both are read
+      // before the answer is remembered: remembering it is what takes this dock
+      // off screen, and the prop is gone by the next read.
+      const id = ask.request.id;
+      const approved = row.key === 'send';
+      onanswer(id);
+      void connection.dispatch({ respond_slack_post: { key: slot, id, approved } });
+      return;
+    }
+
+    if (toolId === null) return;
     const words = notes.trim() === '' ? null : notes;
 
     if (ask.kind === 'permission') {
@@ -267,6 +308,34 @@
         outcome: { outcome: 'answered', selected_option_ids: ids, annotation },
       },
     });
+  }
+
+  /**
+   * Answer with the prompt's own way out.
+   *
+   * A question refuses with an outcome of its own rather than a row, which is
+   * the shape the core offers and the one the terminal sends - a question whose
+   * options are all wrong has no row to say so with, and an empty `answered`
+   * would pick nothing on the reader's behalf.
+   */
+  function reject(): void {
+    if (ask.kind === 'question') {
+      onanswer(ask.request.toolId);
+      void connection.dispatch({
+        respond_question: {
+          key: slot,
+          tool_id: ask.request.toolId,
+          outcome: { outcome: 'cancelled' },
+        },
+      });
+      return;
+    }
+    // Every other prompt refuses with a row of its own: choosing that row keeps
+    // the action the core sent as the action taken, rather than one this client
+    // named.
+    const deny = rows.findIndex((row) => row.tone === 'no');
+    marked = deny < 0 ? rows.length - 1 : deny;
+    submit();
   }
 
   function move(step: number): void {
@@ -325,8 +394,17 @@
         return;
       }
       if (event.key === 'Escape') {
-        // Back to the options, which is where the terminal's Escape goes from
-        // its own notes editor - and the words typed so far stay in the state.
+        // A question's way out from here is the reject, which is the terminal's
+        // own: its notes box cancels the prompt. The words typed so far go with
+        // it, because the prompt does.
+        if (question) {
+          event.preventDefault();
+          reject();
+          return;
+        }
+        // A permission steps back to its options instead, so the words typed so
+        // far stay in the state - a divergence from the terminal, which cancels
+        // from its notes box for this kind too.
         event.preventDefault();
         move(-1);
       }
@@ -353,13 +431,9 @@
       submit();
       return;
     }
-    // A question's rows draw a box per option and its answer carries one of
-    // them, so a reject key would name a key that cannot do what it says.
-    if (event.key === 'Escape' && !question) {
+    if (event.key === 'Escape') {
       event.preventDefault();
-      const deny = rows.findIndex((row) => row.tone === 'no');
-      marked = deny < 0 ? rows.length - 1 : deny;
-      submit();
+      reject();
     }
   }
 
@@ -398,7 +472,9 @@
     <div class="head">
       <span class="qm"><Icon name="question" /></span>
       <span class="t">{ask.request.header}</span>
-      <span class="q">Q{ask.request.index + 1} of {ask.request.total}</span>
+      {#if ask.request.total > 1}
+        <span class="q">Q{ask.request.index + 1} of {ask.request.total}</span>
+      {/if}
     </div>
     <div class="desc">{ask.request.question}</div>
   {:else}
@@ -407,16 +483,13 @@
         {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
       </span>
       <span class="q">
-        {ask.request.workspace} · {ask.request.conversationLabel}
+        {ask.request.workspace} · {ask.request.conversationLabel}{#if ask.request.threadTs !== null}
+          · thread {ask.request.threadTs}{/if}
       </span>
     </div>
-    <!-- This client holds no approval dock for a held post, which is the
-         session view's Slack surface rather than the composer's. What it can
-         do is say what is waiting, rather than explain an empty dock away. -->
-    <div class="desc">
-      {ask.request.tool} is waiting to send: approve it from the terminal, and the words land in your
-      draft either way.
-    </div>
+    <!-- The body verbatim: this is what would go out, so the reader approves
+         the text itself rather than a summary of it. -->
+    <div class="sent">{ask.request.text}</div>
   {/if}
 
   {#if rows.length > 0}
@@ -466,10 +539,12 @@
               {/if}
             </span>
           {/if}
-          <span class="lbl">{row.label}</span>
-          {#if row.detail !== null}
-            <span class="d">{row.detail}</span>
-          {/if}
+          <span class="tx">
+            <span class="lbl">{row.label}</span>
+            {#if row.detail !== null}
+              <span class="why">{row.detail}</span>
+            {/if}
+          </span>
         </div>
       {/each}
     </div>
@@ -502,7 +577,7 @@
       <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
       {#if take !== null}
         <span><kbd>Esc</kbd> cancel the take</span>
-      {:else if !question}
+      {:else}
         <span><kbd>Esc</kbd> reject</span>
       {/if}
     </div>

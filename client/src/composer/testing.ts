@@ -149,6 +149,23 @@ export function questionAsk(
   };
 }
 
+/** A held Slack post as the core offers one, with whatever the test overrides. */
+export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'slack_draft',
+    request: {
+      id: '0192e1c0-0000-7000-8000-000000000000',
+      workspace: 'Trust Machines',
+      conversation: 'C0123456789',
+      conversation_label: 'granite-staging-alerts',
+      thread_ts: null,
+      text: 'Deploy finished on staging.',
+      tool: 'slack__post',
+      ...over,
+    },
+  };
+}
+
 /** One command the composer sent, as the connection received it. */
 export interface Sent {
   command: Record<string, Record<string, unknown>>;
