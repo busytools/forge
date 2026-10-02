@@ -510,13 +510,37 @@ function imageNoteOf(text: string): string | null {
 }
 
 /**
- * Whether a `Skill` call's own input names the skill a body's path ended in.
+ * A skill's body carried as the skill's OWN markdown, for a body the CLI
+ * injects when the Skill tool loads one.
  *
- * The two spellings differ for a plugin skill: the call says
- * `ui-ux-pro-max:ui-ux-pro-max` where the path ends `ui-ux-pro-max`.
+ * That carrier has no plumbing line: the frame IS the skill, opening on its
+ * title heading (`# PR Review Loop` for `pr-review-loop`). The name is the
+ * heading, so the pairing is by that - normalized, because the two spellings
+ * differ in case and separator - and the whole text is the body.
+ */
+export function headingNameOf(text: string): string | null {
+  const lead = text.trimStart().split('\n')[0] ?? '';
+  const match = /^#{1,6}\s+(.+)$/.exec(lead.trim());
+  return match?.[1] ?? null;
+}
+
+/** A skill name as its words, so `pr-review-loop` and `Pr Review Loop` agree. */
+function normalizedSkill(name: string): string {
+  return name.toLowerCase().replaceAll(/[-_:]/g, ' ').replaceAll(/\s+/g, ' ').trim();
+}
+
+/**
+ * Whether a `Skill` call's own input names the skill a body names.
+ *
+ * The spellings differ two ways: a plugin skill is `ui-ux-pro-max:ui-ux-pro-max`
+ * where the path ends `ui-ux-pro-max`, and a tool-invoked body's heading is
+ * `Pr Review Loop` where the call says `pr-review-loop`.
  */
 export function namesSkill(want: string, name: string): boolean {
-  return want === name || want.endsWith(`:${name}`) || want.startsWith(`${name}:`);
+  if (want === name || want.endsWith(`:${name}`) || want.startsWith(`${name}:`)) return true;
+  const held = normalizedSkill(want);
+  const wanted = normalizedSkill(name);
+  return held === wanted || held.includes(wanted) || wanted.includes(held);
 }
 
 /**
@@ -1079,11 +1103,12 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
   /**
-   * The skill bodies the wire carries as user frames, pre-scanned so the
-   * `Skill` call that loaded one can claim it: a body follows its call, and
-   * the call's own row is the row that should open onto it.
+   * The `Skill` calls this turn holds, by the name each asked for and with the
+   * row each drew, so a body arriving behind its call still finds the row that
+   * should open onto it - and does so even across a flush, because the leaf is
+   * the row the lane holds rather than a copy.
    */
-  const skills: Array<{ block: Block; name: string; body: string; claimed: boolean }> = [];
+  const skillCalls: Array<{ want: string; leaf: ToolLeaf }> = [];
   for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
@@ -1170,10 +1195,6 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           records.set(block.tool_use_id, frame.tool_use_result);
         }
       }
-      if (block.type === 'text' && typeof block.text === 'string') {
-        const held = skillBody(block.text);
-        if (held !== null) skills.push({ block, ...held, claimed: false });
-      }
     }
   }
 
@@ -1235,6 +1256,22 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+
+  /**
+   * Hang a skill's body on the call that loaded it, by name.
+   *
+   * The first unclaimed call naming that skill takes it - the order bodies
+   * arrive in is the order their calls were made - and the row is the leaf
+   * itself, so a run that flushed between the two changes nothing.
+   */
+  const attachSkillBody = (name: string, body: string): boolean => {
+    for (const held of skillCalls) {
+      if (held.leaf.skill !== null || !namesSkill(held.want, name)) continue;
+      held.leaf.skill = body;
+      return true;
+    }
+    return false;
+  };
 
   /**
    * Hang the harness's line about an image on the call that read it.
@@ -1585,23 +1622,26 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
             });
             continue;
           }
-          // Same rule for the two frames nobody typed that arrive as the
+          // Same rule for the frames nobody typed that arrive as the
           // reader's: a loaded skill's body and a compaction's continuation
-          // prompt. Each gets its own row above rather than the reader's.
+          // prompt. Each rides the row it belongs to rather than the
+          // reader's own.
           const skill = skillBody(stripped);
-          if (skill !== null) {
-            // A body the `Skill` call claimed rides that call's own row, so
-            // nothing draws here; one no call claimed still gets a row of its
-            // own rather than being dropped.
-            const held = skills.find((held) => held.block === block);
-            if (held !== undefined && held.claimed) continue;
-            push({
-              kind: 'skill',
-              key: keyOf(at, frame, blockAt),
-              name: skill.name,
-              body: skill.body,
-            });
-            continue;
+          const carried = skill?.name ?? headingNameOf(stripped);
+          if (carried !== null) {
+            if (attachSkillBody(carried, skill?.body ?? stripped.trim())) continue;
+            // Unclaimed: a body with the CLI's plumbing line still gets a row
+            // of its own rather than being dropped; a heading frame is an
+            // ordinary user frame and falls through as it always did.
+            if (skill !== null) {
+              push({
+                kind: 'skill',
+                key: keyOf(at, frame, blockAt),
+                name: skill.name,
+                body: skill.body,
+              });
+              continue;
+            }
           }
           if (isContinuation(stripped)) {
             attachContinuation(stripped, keyOf(at, frame, blockAt));
@@ -1721,17 +1761,10 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           abandoned,
         );
         if (name.toLowerCase() === 'skill') {
-          // A skill's body follows its call as a user frame; attaching it here
-          // is what makes the call's own row the one that opens onto the skill.
+          // A skill's body follows its call as a user frame; the claim is
+          // recorded here, and the body attaches to this row when it arrives.
           const want = str(obj(block.input), 'skill');
-          const held =
-            want === null
-              ? undefined
-              : skills.find((held) => !held.claimed && namesSkill(want, held.name));
-          if (held !== undefined) {
-            held.claimed = true;
-            leaf.skill = held.body;
-          }
+          if (want !== null) skillCalls.push({ want, leaf });
         }
         pending.push({
           tag: 'call',

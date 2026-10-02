@@ -875,8 +875,24 @@ fn is_task_notice(text: &str) -> bool {
 /// reading the web client's fold makes (`skillBody` in its `units.ts`).
 fn skill_body_name(text: &str) -> Option<&str> {
     let lead = text.split('\n').next()?;
-    let path = lead.strip_prefix("Base directory for this skill:")?.trim();
-    path.split('/').rev().find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()))
+    if let Some(path) = lead.strip_prefix("Base directory for this skill:") {
+        let path = path.trim();
+        return path
+            .split('/')
+            .rev()
+            .find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()));
+    }
+    // The carrier a tool-invoked skill uses: the skill's own markdown, opening
+    // on its title heading (`# PR Review Loop` for `pr-review-loop`) with no
+    // plumbing line. The heading is the whole of what names it, so that is the
+    // name - normalized by `names_skill`, the same match the client makes.
+    let trimmed = lead.trim();
+    let title = trimmed.trim_start_matches('#');
+    if title.len() == trimmed.len() || !title.starts_with(' ') {
+        return None;
+    }
+    let title = title.trim();
+    (!title.is_empty()).then_some(title)
 }
 
 /// Whether `text` is the continuation prompt a compaction leaves behind.
@@ -891,12 +907,30 @@ fn is_continuation(text: &str) -> bool {
 
 /// Whether a `Skill` call's own input names the skill a body's path ended in.
 ///
-/// The two spellings differ for a plugin skill: the call says
-/// `ui-ux-pro-max:ui-ux-pro-max` where the path ends `ui-ux-pro-max`. The
-/// client fold matches the same way (`namesSkill` in its `units.ts`); the two
-/// must agree, or the same frame lands in one view and not the other.
+/// The spellings differ two ways: a plugin skill is `ui-ux-pro-max:ui-ux-pro-max`
+/// where the path ends `ui-ux-pro-max`, and a tool-invoked body's heading is
+/// `PR Review Loop` where the call says `pr-review-loop`. The client fold
+/// matches the same way (`namesSkill` in its `units.ts`); the two must agree,
+/// or the same frame lands in one view and not the other.
 fn names_skill(want: &str, name: &str) -> bool {
-    want == name || want.ends_with(&format!(":{name}")) || want.starts_with(&format!("{name}:"))
+    if want == name || want.ends_with(&format!(":{name}")) || want.starts_with(&format!("{name}:"))
+    {
+        return true;
+    }
+    let held = normalized_skill(want);
+    let wanted = normalized_skill(name);
+    held == wanted || held.contains(&wanted) || wanted.contains(&held)
+}
+
+/// A skill name as its words, so `pr-review-loop` and `PR Review Loop` agree.
+fn normalized_skill(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c == '-' || c == '_' || c == ':' { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Whether `text` is the body of a skill the open turn holds a call for,
@@ -2002,6 +2036,17 @@ mod tests {
         // The control: a body no call claimed opens a turn, so nothing is lost.
         let orphan = render(&[prompt(), body("/Users/ved/.claude/skills/other")]);
         assert_eq!(orphan.turns.len(), 2, "an unclaimed body opens a turn as it always did");
+
+        // The carrier a tool-invoked skill uses: the skill's own markdown,
+        // named only by its title heading.
+        let titled = render(&[
+            prompt(),
+            call("pr-review-loop"),
+            user(vec![ContentBlock::Text {
+                text: "# PR Review Loop\n\nReview a change with parallel reviewers.".to_owned(),
+            }]),
+        ]);
+        assert_eq!(titled.turns.len(), 1, "a titled body stays in its call's turn");
     }
 
     /// The continuation prompt a compaction leaves behind arrives as the

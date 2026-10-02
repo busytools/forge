@@ -28,7 +28,7 @@ import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { fold, namesSkill, queuedWords, skillBody } from './units';
+import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -353,6 +353,10 @@ function skillNameOf(message: unknown): string | null {
     if (held?.type !== 'text' || typeof held.text !== 'string') continue;
     const skill = skillBody(held.text);
     if (skill !== null) return skill.name;
+    // The carrier a tool-invoked skill uses: the skill's own markdown, named
+    // by its title heading (`# PR Review Loop`), with no plumbing line.
+    const titled = headingNameOf(held.text);
+    if (titled !== null) return titled;
   }
   return null;
 }

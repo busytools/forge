@@ -360,6 +360,23 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
   });
 
+  it("hangs a tool-invoked skill's titled body on its call as well", () => {
+    // The other carrier: when the Skill tool loads one, the body IS the
+    // skill's markdown, opening on `# PR Review Loop` with no plumbing line -
+    // named by that heading, which is a different spelling of the call's
+    // `pr-review-loop` and has to match it all the same.
+    const load = said([use('toolu_pr', 'Skill', { skill: 'pr-review-loop' })]);
+    const body = heard([
+      text('# PR Review Loop\n\nReview a change with parallel specialist reviewers.'),
+    ]);
+
+    const units = fold([load, body]);
+    expect(kinds(units), 'nothing draws as the reader').toEqual(['group']);
+    const [group] = units;
+    const held = group?.kind === 'group' ? families(group).flatMap((f) => f.calls)[0] : undefined;
+    expect(held?.skill, "the call's row opens onto the skill").toContain('# PR Review Loop');
+  });
+
   it('draws an unclaimed skill body as its own row rather than as the reader own turn', () => {
     // The CLI injects a skill's body as a user frame and nobody typed it; the
     // row is built from the frame's own first line, which is the only marker
