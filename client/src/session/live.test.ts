@@ -667,6 +667,35 @@ describe('the record a page holds over an update stream', () => {
     page.stop();
   });
 
+  /**
+   * **A settings pick moves the record the moment the core echoes it.** The
+   * update carries the whole set and the seat folds it the way the terminal's
+   * own arm folds it, so the panel follows the pick instead of waiting for a
+   * read to carry the record past it.
+   */
+  it('moves the overrides a set landed, without asking for a read', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const asked = page.reads();
+
+    page.land(
+      updateOf({
+        dictate_overrides: {
+          key: LEAD,
+          overrides: { styling: 'formal', structure: 'lists', context: null },
+        },
+      }),
+    );
+
+    expect(
+      page.read().wire?.dictate_overrides,
+      'the set the update carried never reached the seat',
+    ).toEqual({ styling: 'formal', structure: 'lists', context: null });
+    expect(page.reads(), 'the set was answered with a read rather than folded').toBe(asked);
+    page.stop();
+  });
+
   it('leaves the record alone for another seat sent over the same connection', () => {
     const connection = drivable();
     const page = watch(connection);

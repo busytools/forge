@@ -570,6 +570,26 @@ describe('applyUpdate', () => {
     });
   });
 
+  /**
+   * The override set a `/dictate` edit leaves behind. The core echoes the whole
+   * set on an update of its own after every set and reset - so it is folded,
+   * the way the terminal's own arm folds it, rather than left to a read.
+   */
+  describe('the dictation overrides', () => {
+    it('takes the whole set a dictate_overrides carries', () => {
+      const next = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: 'lists', context: null },
+        },
+      });
+
+      expect(next.dictate_overrides, 'the set the update carried never reached the record').toEqual(
+        { styling: 'formal', structure: 'lists', context: null },
+      );
+    });
+  });
+
   describe('what it does not handle', () => {
     it('leaves the record alone for a variant it does not handle', () => {
       const held = empty();
