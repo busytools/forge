@@ -978,9 +978,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    its ring, so the row's height is the only thing it ever costs the column.
    Its fields are the settled row's own, under `.turninfo`, and its element is
    the flex row the fields wrap in - the strip renders no box of its own.
-   No margin of its own: it lands in the space the grid already leaves between
-   the column and the composer's slot, which is what puts it nearer the box
-   than the turn above it. */
+   No margin of its own: the composer cancels the grid's row gap for its own
+   row, so the column's foot is this row's bottom edge with only the composer's
+   padding under it - which is what puts it nearer the box than the turn above
+   it. */
 .strip { flex: none; padding: 8px 13px 9px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
