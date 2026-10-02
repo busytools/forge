@@ -17,6 +17,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::tasks::{Task, TaskStatus};
 use forge_primitives::{CronEntry, CronId, CronKind};
 use forge_workspace::{ProjectKey, Workspace};
+use tokio::sync::mpsc;
 
 use crate::SessionUpdate;
 use crate::surface::{PendingKind, ViewSurface};
@@ -309,15 +310,21 @@ impl Fleet {
     }
 
     /// Give `slot` a live agent, which is what makes a view treat the seat as
-    /// running rather than as one nothing is behind. A stub: the commands a
-    /// view sends it are read by nobody.
-    pub fn install_agent(&self, org: &str, project: &str, label: &str) {
+    /// running rather than as one nothing is behind. A stub: nothing answers
+    /// the commands it is sent, and a caller that holds the receiver it hands
+    /// back reads what was asked.
+    pub fn install_agent(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+    ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         let slot = if label == "lead" {
             SessionSlot::lead(org, project)
         } else {
             SessionSlot::worker(org, project, label)
         };
-        let _commands = self.workspace.install_testing_stub(&slot);
+        self.workspace.install_testing_stub(&slot)
     }
 
     /// Catch every command the core is dispatched, so a test can assert

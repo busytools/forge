@@ -125,6 +125,25 @@ impl ViewSurface {
         self.workspace.store_process_snapshot(slot, snapshot);
     }
 
+    /// Ask the core for a fresh context reading on `slot`, which its bridge
+    /// answers with [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot).
+    ///
+    /// The ask rather than the read, because the reading only exists once the
+    /// CLI has computed it: the terminal asks for its focused seat, and the
+    /// socket asks for the seat a client reads, so both reach the one probe
+    /// rather than each holding a way to reach the CLI.
+    ///
+    /// # Errors
+    ///
+    /// [`DispatchError::UnknownSession`](forge_workspace::DispatchError::UnknownSession)
+    /// when the seat has no agent to ask or has not stamped a session id yet.
+    pub fn refresh_context_usage(
+        &self,
+        slot: &SessionSlot,
+    ) -> Result<(), forge_workspace::DispatchError> {
+        self.workspace.refresh_context_usage(slot)
+    }
+
     /// The monitors the session has running, and the ones that settled
     /// while it did, folded from the wire.
     ///
