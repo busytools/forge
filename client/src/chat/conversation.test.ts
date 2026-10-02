@@ -408,6 +408,96 @@ describe('the conversation the chat draws', () => {
     );
   });
 
+  it("joins the harness's image line to the turn that read the picture", () => {
+    // The line arrives as a user frame behind the result; on its own row it
+    // draws as a separating notice of the reader's, where the agreed shape is
+    // the call's own caption.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'assistant',
+                uuid: 'a-read',
+                message: {
+                  id: 'm-read',
+                  role: 'assistant',
+                  model: 'claude-opus-5',
+                  content: [
+                    {
+                      type: 'tool_use',
+                      id: 'toolu_shot',
+                      name: 'Read',
+                      input: { file_path: '/Users/ved/shot.png' },
+                    },
+                  ],
+                },
+              },
+              {
+                type: 'user',
+                uuid: 'u-shot',
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'toolu_shot',
+                      content: [
+                        {
+                          type: 'image',
+                          source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-note',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'one turn, not a notice beside it').toHaveLength(1);
+    const units = fold(turns[0]?.messages ?? []);
+    expect(
+      units.map((unit) => unit.kind),
+      'and no row of its own',
+    ).toEqual(['group']);
+    const [group] = units.filter((unit) => unit.kind === 'group');
+    const calls =
+      group?.kind === 'group'
+        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+        : [];
+    expect(calls[0]?.imageNote, "the call's row carries it").toContain('Multiply coordinates');
+  });
+
   it('re-renders only the turn in flight when its frames arrive', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

@@ -261,6 +261,11 @@ pub fn render(messages: &[Message]) -> Rendered {
     // continuation prompt that follows belongs beside it - it is the row's own
     // account - so it opens no turn of its own while this holds.
     let mut turn_boundary = false;
+    // Whether the open turn has taken any tool call. The harness's line about
+    // an image it read arrives right behind the call that read it, so it joins
+    // that turn rather than opening one; the note claims the call by content
+    // in the views, and this only keeps the two in one turn.
+    let mut turn_calls = false;
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -351,6 +356,11 @@ pub fn render(messages: &[Message]) -> Rendered {
                 {
                     turn_boundary = false;
                 }
+                // The harness's own line about an image it just read: it
+                // belongs in the open turn, right behind the call whose result
+                // carried the picture, where the view hangs it on that call's
+                // row as the caption. It draws no unit of its own either way.
+                ContentBlock::Text { text } if !assistant && turn_calls && is_image_note(text) => {}
                 // The harness's task ending in its other carrier: the same XML
                 // written into a user row, which the scan hands on as this
                 // plain text. A turn opened for it draws a task id and an
@@ -384,6 +394,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                                 open_turn(&mut turns, &mut units, text, index);
                                 turn_skills.clear();
                                 turn_boundary = false;
+                                turn_calls = false;
                             }
                             other => units.push(other),
                         }
@@ -412,10 +423,12 @@ pub fn render(messages: &[Message]) -> Rendered {
                         open_turn(&mut turns, &mut units, text, index);
                         turn_skills.clear();
                         turn_boundary = false;
+                        turn_calls = false;
                     }
                 }
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
+                    turn_calls = true;
                     // A `Skill` call's own name for the skill it loads, held
                     // until that skill's body arrives: the body is what this
                     // claim decides the turn of.
@@ -893,6 +906,16 @@ fn skill_body_name(text: &str) -> Option<&str> {
     }
     let title = title.trim();
     (!title.is_empty()).then_some(title)
+}
+
+/// Whether `text` is the harness's own line about an image it just read.
+///
+/// The CLI sends it as the reader's own row right after the result that
+/// carried the image; the client fold hangs it on the call that read the
+/// picture (`imageNoteOf` in its `units.ts`), so it belongs in that call's
+/// turn rather than in one of its own.
+fn is_image_note(text: &str) -> bool {
+    text.trim().starts_with("[Image: original ")
 }
 
 /// Whether `text` is the continuation prompt a compaction leaves behind.
@@ -2047,6 +2070,18 @@ mod tests {
             }]),
         ]);
         assert_eq!(titled.turns.len(), 1, "a titled body stays in its call's turn");
+
+        // The harness's line about an image it read: it belongs behind the
+        // call that read it, where the view hangs it on that call's row.
+        let note = user(vec![ContentBlock::Text {
+            text: "[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]".to_owned(),
+        }]);
+        let pictured = render(&[prompt(), tool_call("read"), note.clone()]);
+        assert_eq!(pictured.turns.len(), 1, "the image line opens no turn of its own");
+
+        // The control: with no call in the turn it opens one, so nothing is lost.
+        let loose = render(&[prompt(), note]);
+        assert_eq!(loose.turns.len(), 2, "with no call to join it opens a turn");
     }
 
     /// The continuation prompt a compaction leaves behind arrives as the

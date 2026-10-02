@@ -361,6 +361,36 @@ function skillNameOf(message: unknown): string | null {
   return null;
 }
 
+/**
+ * Whether a frame is the harness's own line about an image it just read.
+ *
+ * It arrives as the reader's own row right behind the result that carried the
+ * picture; the fold hangs it on the call that read the picture
+ * (`imageNoteOf` in its `units.ts`), so the store keeps it in that call's turn
+ * rather than letting it open one.
+ */
+function isImageNote(message: unknown): boolean {
+  for (const block of blocksIn(message)) {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    if (held?.type !== 'text' || typeof held.text !== 'string') continue;
+    if (held.text.trim().startsWith('[Image: original ')) return true;
+  }
+  return false;
+}
+
+/** Whether a turn holds a result that carried an image. */
+function holdsImageResult(turn: Turn): boolean {
+  return turn.messages.some((held) =>
+    blocksIn(held).some((block) => {
+      const result = block as { type?: unknown; content?: unknown } | null;
+      if (result?.type !== 'tool_result' || !Array.isArray(result.content)) return false;
+      return result.content.some(
+        (inner) => (inner as { type?: unknown } | null)?.type === 'image',
+      );
+    }),
+  );
+}
+
 /** Whether a turn holds the `Skill` call a body of `name` belongs to. */
 function holdsSkillCall(turn: Turn, name: string): boolean {
   return turn.messages.some((held) =>
@@ -1019,6 +1049,20 @@ export class Chat {
         for (let at = held.turns.length - 1; at >= 0; at -= 1) {
           const target = held.turns[at];
           if (target === undefined || !holdsSkillCall(target, skill)) continue;
+          const grown: Turn = { ...target, messages: [...target.messages, message] };
+          return this.answered({
+            ...held,
+            turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
+          });
+        }
+      }
+      // **The harness's image line joins the turn that read the picture**, for
+      // the same reason: it is that call's row caption, and a turn of its own
+      // draws it as a separating row of the reader's.
+      if (isImageNote(message)) {
+        for (let at = held.turns.length - 1; at >= 0; at -= 1) {
+          const target = held.turns[at];
+          if (target === undefined || !holdsImageResult(target)) continue;
           const grown: Turn = { ...target, messages: [...target.messages, message] };
           return this.answered({
             ...held,
