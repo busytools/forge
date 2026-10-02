@@ -129,8 +129,10 @@
   // gone - a seam left registered would let a test call a callback the browser
   // cannot deliver. Registering inside the effect pairs it with that teardown:
   // a list unmounted before its first flush never registers at all. Cleared
-  // only while the seam still holds THIS list, because Svelte creates the
-  // incoming branch before running the outgoing branch's destroy.
+  // only while the seam still holds THIS list. A swap does not need that: its
+  // clear lands before the replacement registers, under `{#if}` and `{#key}`
+  // alike. Two lists under one parent do, because the departing one's teardown
+  // lands after the survivor registered and nothing registers again after it.
   $effect(() => {
     register(mine);
     return () => {
