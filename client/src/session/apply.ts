@@ -217,7 +217,9 @@ export const REPLACES: readonly string[] = [
  * They are the rest of the stream: the fleet's own news, the composer's
  * queued-send bridge, the connector echoes, the plugin and account catalogue.
  * A page hears them because a connection carries every subject's frames, and
- * the record has no field for any of them.
+ * the record has no field for most of them. `dictate_overrides` is the
+ * exception - the field exists and nothing fills it: no variant writes it
+ * (#1467), and the read does not reach it (#1582).
  */
 export const IGNORED: readonly string[] = [
   'accounts_changed',
@@ -261,12 +263,14 @@ export const IGNORED: readonly string[] = [
  * The fields no update feeds, so only a read can move them.
  *
  * A walk of the process table, the working tree and the pull request on its
- * branch, a Monitor's status, the CLI's background-task registry, and the
- * composer's three lists - none of them is carried by any variant of
- * `SessionUpdate`. They are the slowest-moving part of the record: a git scan
- * and a process walk do not change between one frame and the next.
+ * branch, a Monitor's status, the CLI's background-task registry, the
+ * composer's three lists, and the record's own dispatch answer - none of them
+ * is carried by any variant of `SessionUpdate`. They are the slowest-moving
+ * part of the record: a git scan and a process walk do not change between one
+ * frame and the next.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
+  'has_dispatches',
   'processes',
   'work',
   'pr',

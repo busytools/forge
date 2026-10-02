@@ -122,57 +122,29 @@ describe('the inspector as it draws', () => {
 
   /**
    * A section that is always there says nothing when it is empty - and the
-   * subagents section is the one carry whose absence would read as "none ran",
-   * so it is drawn against the conversation rather than against the catalogue.
+   * subagents section is the one carry whose absence would read as "none ran".
+   *
+   * **It is drawn against the record's own answer rather than worked out here.**
+   * The server folds whether a seat dispatched where the conversation is folded,
+   * because these turns are a window of it: a page holding a partly-read
+   * conversation would answer "none ran" for a seat that dispatched an hour ago.
    */
-  it('draws the subagents gap only when the conversation shows a dispatch', () => {
+  it('draws the subagents gap only when the record says a seat dispatched', () => {
     expect(sections(draw())).not.toContain('subagents');
-    const dispatched: SessionRecord = {
-      ...record,
-      conversation: {
-        ...record.conversation,
-        turns: [
-          {
-            key: null,
-            messages: [
-              {
-                type: 'assistant',
-                message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-                parent_tool_use_id: null,
-              },
-            ],
-          },
-        ],
-      },
-    };
+
+    const dispatched: SessionRecord = { ...record, has_dispatches: true };
+
     expect(sections(draw({ record: dispatched }))).toContain('subagents');
   });
 
   /**
-   * The section is drawn against the conversation the READER hands it, and a
-   * test that builds the narrowed record by hand cannot see the boundary at
-   * all: the socket sends `turns`, and a reader that still looks for
-   * `messages` answers an empty conversation for every seat.
+   * The field is read off the wire the socket actually sends, and a test that
+   * builds the narrowed record by hand cannot see that boundary at all: a
+   * reader looking for it anywhere but the record's own level answers `false`
+   * for every seat.
    */
-  it('sees a dispatch across the conversation the socket actually sends', () => {
-    const dispatched = sessionFrom({
-      ...session,
-      conversation: {
-        ...session.conversation,
-        turns: [
-          {
-            key: null,
-            messages: [
-              {
-                type: 'assistant',
-                message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-                parent_tool_use_id: null,
-              },
-            ],
-          },
-        ],
-      },
-    });
+  it('sees a dispatch across the record the socket actually sends', () => {
+    const dispatched = sessionFrom({ ...session, has_dispatches: true });
 
     expect(sections(draw({ record: dispatched }))).toContain('subagents');
   });

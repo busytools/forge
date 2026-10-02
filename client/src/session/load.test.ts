@@ -9,6 +9,7 @@ import load from '../dev/fixtures/session-load.json';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { POLL_MS } from './live';
 
 /**
  * Every builder the inspector reaches through is wrapped, so what one arriving
@@ -32,7 +33,6 @@ vi.mock('./view', async (importOriginal) => {
     monitorsSection: counting('monitorsSection', real.monitorsSection),
     processTree: counting('processTree', real.processTree),
     walkedNote: counting('walkedNote', real.walkedNote),
-    hasDispatches: counting('hasDispatches', real.hasDispatches),
   };
 });
 
@@ -63,9 +63,6 @@ vi.mock('./wire', async (importOriginal) => {
     // `$state.raw` cannot be mutated in place, and ESM's strict mode turns the
     // first write into a thrown TypeError rather than a silent no-op.
     sessionFrom: counting('sessionFrom', (data: unknown) => frozen(real.sessionFrom(data))),
-    // The flatten is the whole conversation as one array, and it is handed to
-    // a scan that stops at the first dispatch.
-    framesOf: counting('framesOf', real.framesOf),
   };
 });
 
@@ -136,6 +133,11 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     more: () => false,
     onMessage: (fn: (message: ServerMessage) => void) => {
       listeners.add(fn);
+      // **The subscription's own answer**, which the socket sends once the
+      // subscribe is taken. Without it the seat's whole-record ask is never
+      // spent and every poll tick returns before it asks, so nothing in this
+      // file can see a read.
+      emit({ kind: 'snapshot', subject: SUBJECT, data: held });
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
@@ -175,7 +177,10 @@ function block(text = 'hello'): Record<string, unknown> {
   };
 }
 
-/** A frame the inspector's dispatch scan reads: a sub-agent call. */
+/**
+ * A dispatch as it arrives: the frame this page is sent when a seat makes one,
+ * and not the record's own answer, which the section draws from.
+ */
 function dispatched(): Record<string, unknown> {
   return {
     type: 'assistant',
@@ -186,6 +191,21 @@ function dispatched(): Record<string, unknown> {
     },
     session_id: 's',
     parent_tool_use_id: null,
+  };
+}
+
+/** A Monitor the record carries: no frame feeds it, so only a read can move it. */
+function monitor(): Record<string, unknown> {
+  return {
+    tool_use_id: 'm1',
+    task_id: null,
+    description: 'ci-watch',
+    command: 'gh run watch',
+    persistent: false,
+    timeout_ms: 0,
+    status: 'running',
+    output_file: null,
+    ended_at: null,
   };
 }
 
@@ -245,7 +265,9 @@ function openSection(name: string): void {
 
 beforeEach(() => {
   counts.clear();
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // The seat's read poll is an INTERVAL, so it has to be faked with the two
+  // timeouts: a file that fakes only those cannot advance a poll at all.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
 afterEach(async () => {
@@ -269,15 +291,14 @@ describe('what one arriving frame costs the inspector', () => {
    */
   it('re-derives what a frame for this seat moved, and nothing for a frame it did not', () => {
     const server = open();
-    // The page's own read on the way up is not an arriving frame, so the
-    // measurement starts after it.
+    // Read before the clear below: what the assertion is about is the record
+    // the page's own read was handed, and that read is the one thing here that
+    // is not an arriving frame.
+    const rows = counts.rowsCarried('sessionFrom');
     counts.clear();
 
     arrive(server.update);
     const event = counts.tally();
-    // Read before the two controls clear the counter: a `widthOf` taken after
-    // them would be summing an empty array and asserting the zero it found.
-    const scanned = counts.widthOf('hasDispatches');
     const called = (name: string): number => event.find((row) => row.name === name)?.calls ?? 0;
 
     counts.clear();
@@ -300,15 +321,10 @@ describe('what one arriving frame costs the inspector', () => {
       0,
     );
     expect(called('gitSection'), measured).toBe(1);
-    // Once, not once per section: the flatten is the whole conversation, so a
-    // second reader would pay for the same walk again.
-    expect(called('hasDispatches'), measured).toBe(1);
-    expect(called('framesOf'), measured).toBe(1);
-    // And over the whole conversation, which the call count above cannot say:
-    // every number in this file is about a record of a real size, and a fixture
-    // that stopped carrying one would leave all of them green. The frame above
-    // is part of that conversation now, because the page put it there.
-    expect(scanned, `the conversation reached the scan: ${measured}`).toBe(MESSAGES + 1);
+    // And over a record of a real size, which the call counts cannot say: every
+    // number in this file is about a conversation the record really carries, and
+    // a fixture that stopped carrying one would leave all of them green.
+    expect(rows, `the rows the record handed the page: ${measured}`).toBe(MESSAGES);
     expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
   });
 
@@ -364,29 +380,94 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **A frame is applied to the record the page holds, so what it carries has
-   * to reach what is drawn.** That is the assertion the whole arrangement
-   * rests on: a page that applied updates into a tree nothing reads would draw
-   * a seat frozen at its last read.
+   * **The section follows the record's own answer, not a scan of its frames.**
+   * The server folds whether a seat dispatched where the conversation is folded,
+   * because a client holds only what it has been sent - so a page that scanned
+   * what it held would draw "no sub-agents ran" for a seat that dispatched an
+   * hour ago, which this section's own copy calls the same mistake as drawing a
+   * settled state for one nobody described.
+   *
+   * Both directions are asserted, because either alone is passed by a section
+   * that is always drawn or by one that never is.
    */
-  it('draws what the frame it was sent actually carries', () => {
-    // A seat that has dispatched nothing, so the section is absent to start
-    // with and the frame has something to move.
-    const server = open([]);
-    counts.clear();
+  it('draws the subagents section over an empty conversation when the record says it dispatched', () => {
+    open([], { has_dispatches: true });
+    const keys = drawn().map((section) => section.key);
 
+    expect(keys, `a record that dispatched drew no section: ${JSON.stringify(keys)}`).toContain(
+      'sec-subagents',
+    );
+  });
+
+  it('leaves the section absent for a frame that dispatched while the record says none', () => {
+    const server = open([], { has_dispatches: false });
+    counts.clear();
     const before = drawn().map((section) => section.key);
+
+    // A dispatch arrives as a frame. What the section draws from is the
+    // record's answer, which this seat's read has already given - the reducer
+    // does not re-derive it, so a later READ is what moves it, and a poll's
+    // read is a merge.
     arrive(() => server.update(dispatched()));
 
     const after = drawn().map((section) => section.key);
     const measured = JSON.stringify({ before, after });
-    // Both halves, because a section that were always drawn would pass the
-    // second one alone.
     expect(before, `the section was there before the frame: ${measured}`).not.toContain(
       'sec-subagents',
     );
-    expect(after, `the seat's own frame did not reach the inspector: ${measured}`).toContain(
+    expect(after, `a frame turned the section on: ${measured}`).not.toContain('sec-subagents');
+  });
+
+  /**
+   * **A poll's answer is a MERGE, and it takes only the slices no frame
+   * carries** - so a poll has to be shown moving one, or the case below cannot
+   * tell "the poll never ran" from "the field is not taken from the poll".
+   */
+  it('takes a field no frame feeds from what the poll answered with', () => {
+    const fields: Record<string, unknown> = { monitors: [] };
+    const server = open([], fields);
+    expect(drawn().map((section) => section.key)).not.toContain('sec-monitors');
+
+    fields['monitors'] = [monitor()];
+    vi.advanceTimersByTime(POLL_MS + 1);
+    flushSync();
+
+    const keys = drawn().map((section) => section.key);
+    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
+    expect(keys, `a poll's answer did not reach the record: ${JSON.stringify(keys)}`).toContain(
+      'sec-monitors',
+    );
+  });
+
+  /**
+   * **A dispatch made while this page is open reaches the section through a
+   * read and nothing else.** The server folds the answer on append and no frame
+   * carries it, so the poll is the only path that moves it - and a merge that
+   * dropped it would leave the section absent for a seat that dispatched with
+   * the page in front of the reader, which is the mistake the section exists to
+   * avoid. The case above is this one's control: it shows a poll that ran.
+   */
+  it("takes the record's own dispatch answer from what the poll answered with", () => {
+    const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };
+    const server = open([], fields);
+    expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
+
+    // The seat dispatches; the server's own fold records it on append. The
+    // answer also carries a field a frame feeds, which is the other half of
+    // the claim: a merge keeps this page's value for it, a replacement does
+    // not.
+    fields['has_dispatches'] = true;
+    fields['mcp'] = { servers: [{ name: 'forge', status: 'connected', tools: [] }], error: null };
+    vi.advanceTimersByTime(POLL_MS + 1);
+    flushSync();
+
+    const keys = drawn().map((section) => section.key);
+    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
+    expect(keys, `a poll's answer did not reach the section: ${JSON.stringify(keys)}`).toContain(
       'sec-subagents',
+    );
+    expect(keys, 'the answer replaced the record rather than merging into it').not.toContain(
+      'sec-mcp servers',
     );
   });
 });

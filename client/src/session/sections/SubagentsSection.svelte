@@ -9,8 +9,8 @@
    * than a card.** A card is one instance with its calls under it, folded from
    * the conversation the server holds; `subagents` on the session record is
    * the catalogue of agent TYPES the CLI offers, and a page of history carries
-   * no instance either. The section is drawn when the conversation shows a
-   * dispatch, because an absent section reads as "no sub-agents ran" - the
+   * no instance either. The section is drawn when the record says the seat
+   * dispatched, because an absent section reads as "no sub-agents ran" - the
    * same mistake, one section along, as drawing a healthy state for an
    * unknown one.
    */

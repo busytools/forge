@@ -13,11 +13,19 @@
  * not go quiet rather than as a plausible measurement.
  */
 
-/** One builder call: which builder, and the size of the array it was handed. */
+/** One builder call: which builder, and the rows a record it was given
+ * carried. */
 export interface Call {
   name: string;
-  /** The length of the first argument when it is an array, else `null`. */
-  width: number | null;
+  /**
+   * The frames a conversation-carrying argument held, or `null` for one that is
+   * not one.
+   *
+   * **The volume a measurement is taken against, read off the record itself.**
+   * The page no longer walks the conversation it is given, so a fixture that
+   * stopped carrying one would leave every number in the file green.
+   */
+  frames: number | null;
 }
 
 const called: Call[] = [];
@@ -28,18 +36,6 @@ export function clear(): void {
 
 export function countOf(name: string): number {
   return called.filter((call) => call.name === name).length;
-}
-
-/**
- * The total width of what one builder was handed.
- *
- * **A call count cannot tell an empty conversation from a full one**, which is
- * the whole point of the record this suite measures against: a fixture mutated
- * to hand the page no messages at all still calls every builder exactly once.
- * So the volume has to be asserted separately from the calls, and this is it.
- */
-export function widthOf(name: string): number {
-  return called.reduce((total, call) => total + (call.name === name ? (call.width ?? 0) : 0), 0);
 }
 
 /** The names called, with their call counts, in first-call order. */
@@ -57,8 +53,40 @@ export function tally(): { name: string; calls: number }[] {
 export function counting<F extends (...args: never[]) => unknown>(name: string, fn: F): F {
   const wrapped = (...args: never[]): unknown => {
     const first: unknown = args[0];
-    called.push({ name, width: Array.isArray(first) ? first.length : null });
+    called.push({ name, frames: carriedRows(first) });
     return fn(...args);
   };
   return wrapped as F;
+}
+
+/**
+ * The rows one builder's first argument carried, or `null` for an argument
+ * that is not a session record.
+ *
+ * A record's conversation is turns of frames, so the count is the frames
+ * flattened - the same volume the page used to walk when it scanned for a
+ * dispatch, read here off the record instead of off the work.
+ */
+function carriedRows(first: unknown): number | null {
+  if (first === null || typeof first !== 'object') return null;
+  const conversation = (first as { conversation?: unknown }).conversation;
+  if (conversation === null || typeof conversation !== 'object') return null;
+  const turns = (conversation as { turns?: unknown }).turns;
+  if (!Array.isArray(turns)) return null;
+  return turns.reduce((total: number, turn: unknown) => {
+    const messages = (turn as { messages?: unknown } | null)?.messages;
+    return total + (Array.isArray(messages) ? messages.length : 0);
+  }, 0);
+}
+
+/**
+ * The rows the LAST record handed to one builder carried, or 0 when it got
+ * none.
+ *
+ * The last rather than the sum: what the assertion is about is the record the
+ * page holds, and a page that re-read would otherwise double the number and
+ * read as a bigger conversation rather than as a fault.
+ */
+export function rowsCarried(name: string): number {
+  return called.filter((call) => call.name === name).at(-1)?.frames ?? 0;
 }
