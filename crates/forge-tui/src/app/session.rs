@@ -229,9 +229,6 @@ pub struct UiSession {
     /// an auth-required prompt in one session doesn't leak into
     /// another session's input area when the user switches.
     pub login_hint: Option<LoginHint>,
-    /// Session id currently being resumed via `/resume`. Per-session
-    /// so the resume marker doesn't follow the user across switches.
-    pub resuming_session_id: Option<String>,
     /// Spinner label shown while a slash command is in flight
     /// (`CommandPending` status). Per-session.
     pub pending_command_label: Option<String>,
@@ -873,7 +870,6 @@ impl UiSession {
             recent_sessions: Vec::default(),
             file_index: FileIndexState::default(),
             login_hint: Option::default(),
-            resuming_session_id: Option::default(),
             pending_command_label: Option::default(),
             pending_command_ack: Option::default(),
             selection: Option::default(),

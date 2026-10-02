@@ -16,8 +16,6 @@ use crate::Cli;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-pub(crate) use session_start::begin_resume_session;
-
 /// Build `SessionLaunchSettings` for the startup spawn path.
 pub(crate) fn session_launch_settings_for_startup(
     app: &App,

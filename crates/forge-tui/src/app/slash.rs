@@ -454,73 +454,46 @@ mod tests {
         assert_eq!(app.input().expect("active session").text(), "/resume new-id trailing");
     }
 
-    #[test]
-    fn resume_with_missing_id_returns_usage() {
-        let mut app = App::test_default();
-        let consumed = try_handle_submit(&mut app, "/resume");
-        assert!(consumed);
-        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /resume <session_id>");
-    }
-
-    #[test]
-    fn resume_with_extra_args_returns_usage() {
-        let mut app = App::test_default();
-        let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
-        assert!(consumed);
-        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /resume <session_id>");
-    }
-
-    #[test]
-    fn resume_command_is_rendered_as_user_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/resume abc-123");
-        assert!(consumed);
-        assert!(app.messages().expect("active session").len() >= 2);
-
-        let Some(first) = app.messages().and_then(|messages| messages.first()) else {
-            panic!("expected user message");
-        };
-        assert!(matches!(first.role, MessageRole::User));
-        let Some(MessageBlock::Text(block)) = first.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "/resume abc-123");
-    }
-
+    /// `/resume <id>` is the core's own command, so this view draws the
+    /// words and sends them, and blocks its input while the replacement
+    /// lands. A view that refused the name would answer with a system
+    /// message instead of the reader's own line.
     #[tokio::test(flavor = "current_thread")]
-    async fn resume_sets_command_pending_when_connected() {
+    async fn resume_is_drawn_and_forwarded_to_the_core() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let mut rx = app.install_testing_stub();
+                let _rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
+
                 assert!(consumed);
                 assert!(matches!(app.status, AppStatus::CommandPending));
-                assert_eq!(app.resuming_session_id(), Some("abc-123"));
-
-                tokio::task::yield_now().await;
-                let cmd = rx.try_recv().expect("resume command dispatched");
-                assert!(matches!(
-                    cmd,
-                    forge_primitives::AgentCommand::ResumeSession { session_id, .. }
-                        if session_id == "abc-123"
-                ));
+                let first = app.messages().and_then(|messages| messages.first());
+                let Some(MessageBlock::Text(block)) = first.and_then(|m| m.blocks.first()) else {
+                    panic!("expected the reader's own line first");
+                };
+                assert_eq!(block.text, "/resume abc-123");
             })
             .await;
+    }
+
+    /// A forge name invoked wrongly is still forge's, so this view forwards
+    /// it and the core answers: deciding here is the second path the shared
+    /// interception exists to remove.
+    #[test]
+    fn a_wrong_forge_invocation_is_forwarded_rather_than_decided_here() {
+        for text in ["/resume", "/resume abc-123 extra", "/new session"] {
+            let mut app = App::test_default();
+            let consumed = try_handle_submit(&mut app, text);
+
+            assert!(consumed, "{text} is taken by a view, never sent as a prompt");
+            let last = app.messages().and_then(|messages| messages.last());
+            assert!(
+                matches!(last, Some(message) if message.role == MessageRole::User),
+                "{text} is drawn as the reader's own line, so this view did not decide it",
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

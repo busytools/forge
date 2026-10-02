@@ -608,8 +608,7 @@ mod launchpad_filter_tests {
     #[test]
     fn the_shared_table_and_the_dispatch_agree() {
         let mut dispatched = crate::app::slash::executors::handled_names();
-        dispatched
-            .extend(forge_workspace::prompt::ForgePrompt::ALL.iter().map(|command| command.name()));
+        dispatched.extend(forge_workspace::prompt::forge_prompt_names());
         let mut offered: Vec<&str> =
             forge_server::commands::FORGE_COMMANDS.iter().map(|entry| entry.name).collect();
         // Sets, not sequences: the table's order is the dropdown's, and the

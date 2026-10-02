@@ -25,7 +25,7 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, PromptOrigin, SessionUpdate};
+use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3613,8 +3613,13 @@ impl Workspace {
         // CLI answers differently or not at all - `/new` is its own `/clear`,
         // which rotates a conversation forge never records.
         let outcome = match &cmd {
-            Command::Prompt { key, text, .. } => match crate::prompt::forge_prompt(text) {
-                Some(crate::prompt::ForgePrompt::NewSession) => self.restart_session(key),
+            Command::Prompt { key, text, .. } => match crate::prompt::forge_invocation(text) {
+                Some(crate::prompt::Invocation::Command(prompt)) => {
+                    self.run_forge_prompt(key, &prompt)
+                }
+                Some(crate::prompt::Invocation::Misuse(usage)) => {
+                    self.answer_forge_misuse(key, usage)
+                }
                 None => self.route(cmd),
             },
             _ => self.route(cmd),
@@ -3631,15 +3636,48 @@ impl Workspace {
         outcome
     }
 
-    /// Start a fresh session on `key`'s seat, as the terminal's `/new` does.
+    /// Run one of forge's own commands against `key`'s seat.
     ///
     /// The launch settings are built here rather than taken from the caller:
     /// a view that supplied its own would spawn a session with what its own
     /// snapshot happened to hold, and a client has no snapshot to supply.
-    fn restart_session(self: &Arc<Self>, key: &SessionSlot) -> Result<(), DispatchError> {
+    fn run_forge_prompt(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        prompt: &crate::prompt::ForgePrompt,
+    ) -> Result<(), DispatchError> {
         let cwd = self.cwd_for_session(key).unwrap_or_default();
         let launch_settings = self.launch_settings_for(key, &cwd);
-        self.route(Command::NewSession { key: key.clone(), cwd, launch_settings })
+        let command = match prompt {
+            crate::prompt::ForgePrompt::NewSession => {
+                Command::NewSession { key: key.clone(), cwd, launch_settings }
+            }
+            crate::prompt::ForgePrompt::ResumeSession { session_id } => Command::ResumeSession {
+                key: key.clone(),
+                session_id: session_id.clone(),
+                cwd,
+                launch_settings,
+            },
+        };
+        self.route(command)
+    }
+
+    /// Answer a forge-name invocation the command does not take.
+    ///
+    /// Answered rather than acted on, and never left to fall through as a
+    /// prompt: a mistyped command reaching the model reads as a question.
+    fn answer_forge_misuse(&self, key: &SessionSlot, usage: &str) -> Result<(), DispatchError> {
+        self.notice(key, NoticeSeverity::Error, usage);
+        Ok(())
+    }
+
+    /// Emit one line the core has for a view about `key`.
+    fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
+        let _ = self.update_sender().send(SessionUpdate::Notice {
+            key: key.clone(),
+            severity,
+            text: text.to_owned(),
+        });
     }
 
     /// The settings a launch on `key` carries, read from the same documents
@@ -16531,6 +16569,65 @@ mod prompt_frame_origin_tests {
             !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
             "and the words are never forwarded to the CLI: {commands:?}",
         );
+    }
+
+    /// `/resume <id>` is forge's too, and for a harder reason than `/new`:
+    /// the CLI classifies its own `/resume` as local-jsx, so it cannot run
+    /// away from a terminal at all. The seat is re-spawned onto the named
+    /// session, from the same settings a `/new` would carry.
+    #[test]
+    fn a_resume_prompt_resumes_the_seat_rather_than_reaching_the_cli() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/resume 7f3a92e0".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes a /resume prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                Command::ResumeSession { key, session_id, .. }
+                    if key == &seat && session_id == "7f3a92e0"
+            )),
+            "the named session is resumed: {commands:?}",
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            "and the words are never forwarded to the CLI: {commands:?}",
+        );
+    }
+
+    /// A forge name invoked wrongly is answered with the command's own usage
+    /// line, and dispatched nowhere: a mistyped command that reached the model
+    /// would read as a question.
+    #[test]
+    fn a_wrong_forge_invocation_is_answered_rather_than_dispatched() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/resume".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::Notice {
+                    severity: NoticeSeverity::Error,
+                    text,
+                    key,
+                }) if key == seat && text == "Usage: /resume <session_id>"
+            ),
+            "the reader is told what the command wanted",
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
     }
 
     /// A name that only LOOKS like a forge command is the reader's prose, and

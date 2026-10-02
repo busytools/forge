@@ -334,6 +334,8 @@ interface Frame {
   hook_event?: unknown;
   outcome?: unknown;
   exit_code?: unknown;
+  /** `NoticeSeverity`, on the core's own line about a command. */
+  severity?: unknown;
   output?: unknown;
   stdout?: unknown;
   stderr?: unknown;
@@ -832,6 +834,17 @@ function beside(sentence: string, word: string | null): string {
  * array, when the frame carries one, is the CLI's own diagnostic of it. Both
  * go in one line, because a failure is one thing.
  */
+/**
+ * The core's own severity word, narrowed where it enters.
+ *
+ * `NoticeSeverity` on the Rust side is two levels; a word this page does not
+ * know reads as an informational line, because a line nobody can classify is
+ * not a failure to shout about.
+ */
+function noticeSeverity(value: unknown): NoticeSeverity {
+  return value === 'error' ? 'error' : 'info';
+}
+
 function turnFailure(frame: Frame): Notice | null {
   if (frame.is_error !== true) return null;
   const subtype = str(frame, 'subtype');
@@ -1238,6 +1251,17 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     }
 
     if (frame.type === 'system') {
+      // The core's own line about the seat: a command's answer, or why one
+      // did not run. Nothing the CLI emitted carries it, so it is marked with
+      // a subtype of its own rather than folded out of anything here.
+      if (frame.subtype === 'forge_notice') {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'notice'),
+          notice: { severity: noticeSeverity(frame.severity), text: str(frame, 'text') ?? '' },
+        });
+        continue;
+      }
       // The counter arrives as a subtype of its own, and the wire's running
       // value restarts at every thinking block - so a turn's estimate is the
       // sum of its deltas rather than the last absolute one. Read before the

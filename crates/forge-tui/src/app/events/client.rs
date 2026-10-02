@@ -172,6 +172,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SlashCommandError { key, message } => {
             session::apply_session_update_slash_command_error(app, &key, &message);
         }
+        SessionUpdate::Notice { key, severity, text } => {
+            session::apply_session_update_notice(app, &key, severity, &text);
+        }
         SessionUpdate::SetModeFailed { key, mode, message } => {
             session::apply_session_update_set_mode_failed(app, &key, mode, &message);
         }
@@ -4441,7 +4444,6 @@ mod focus_seam_tests {
     #[test]
     fn click_spawn_keeps_focus_through_connect() {
         let (mut app, stub, _worker) = app_with_worker_and_focused_stub();
-        *app.resuming_session_id_mut().expect("active session") = Some("resume-1".to_owned());
 
         apply_session_update_chat_appended(
             &mut app,
@@ -4467,11 +4469,6 @@ mod focus_seam_tests {
             app.active_session_key.as_ref(),
             Some(&stub),
             "the clicked session keeps focus through its Connected",
-        );
-        assert_eq!(
-            app.resuming_session_id(),
-            None,
-            "Connected took the active path: the user is watching this session",
         );
     }
 

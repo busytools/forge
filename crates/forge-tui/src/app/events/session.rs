@@ -9,7 +9,7 @@ use crate::agent::model;
 use crate::app::session::SessionLifecycleState;
 use crate::error::AppError;
 use forge_primitives::cloud::service_status::ServiceSeverity;
-use forge_workspace::SessionSlot;
+use forge_workspace::{NoticeSeverity, SessionSlot};
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
@@ -73,9 +73,6 @@ fn apply_connected_presentation(
             load_resume_history(app, history_messages);
         }
         clear_pending_command(app);
-        if let Some(resuming) = app.resuming_session_id_mut() {
-            *resuming = None;
-        }
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
@@ -259,9 +256,6 @@ pub(super) fn handle_auth_required_event(
     }
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
-    if let Some(resuming) = app.resuming_session_id_mut() {
-        *resuming = None;
-    }
     if let Some(hint) = app.login_hint_mut() {
         *hint = Some(LoginHint { method_name, method_description });
     }
@@ -393,9 +387,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         *mcp = super::super::McpState::default();
     }
     crate::app::usage::reset_for_session_change(app);
-    if let Some(resuming) = app.resuming_session_id_mut() {
-        *resuming = None;
-    }
     if let Some(label) = app.pending_command_label_mut() {
         *label = None;
     }
@@ -473,43 +464,54 @@ pub(super) fn handle_slash_command_error_event(
     session_key: &SessionSlot,
     msg: &str,
 ) {
+    handle_core_notice(app, session_key, NoticeSeverity::Error, msg);
+}
+
+/// Draw a line the core has for one seat, as the severity it came with.
+pub(super) fn handle_core_notice(
+    app: &mut App,
+    session_key: &SessionSlot,
+    severity: NoticeSeverity,
+    msg: &str,
+) {
+    let role = match severity {
+        NoticeSeverity::Info => MessageRole::System(Some(super::super::SystemSeverity::Info)),
+        NoticeSeverity::Error => MessageRole::System(None),
+    };
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
-                event_name = "slash_command_error_dropped",
-                message = "slash command error dropped for an unknown session",
+                event_name = "core_notice_dropped",
+                message = "core notice dropped for an unknown session",
                 outcome = "dropped",
                 slot = %session_key.display(),
                 reason = "unknown_session",
             );
             return;
         };
-        // Background slash command error: append a system message to
-        // the bucket's chat buffer (so a future switch shows it).
-        // Skip retention enforcement / viewport auto-scroll because
-        // the bucket isn't being rendered. Skip the title-change
-        // overlay reconciliation (App-global config UI).
-        session.messages.push(ChatMessage::new(
-            MessageRole::System(None),
-            vec![MessageBlock::Text(TextBlock::from_complete(msg))],
-        ));
+        // Background: append to the bucket's chat buffer (so a future
+        // switch shows it). Skip retention enforcement / viewport
+        // auto-scroll because the bucket isn't being rendered.
+        session
+            .messages
+            .push(ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(msg))]));
         // Append a 0 to the parallel retained-bytes vec so the
         // history-retention bookkeeping stays consistent next time
         // the bucket runs through the active path.
         session.message_retained_bytes.push(0);
-        tracing::warn!(
+        tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
-            event_name = "slash_command_error_background",
-            message = "slash command error appended to background session chat",
+            event_name = "core_notice_background",
+            message = "core notice appended to background session chat",
             outcome = "info",
             slot = %session_key.display(),
-            error_message = %msg,
+            text_chars = msg.chars().count(),
         );
         return;
     }
     app.push_message_tracked(ChatMessage::new(
-        MessageRole::System(None),
+        role,
         vec![MessageBlock::Text(TextBlock::from_complete(msg))],
     ));
     app.enforce_history_retention_tracked();
@@ -517,9 +519,6 @@ pub(super) fn handle_slash_command_error_event(
         viewport.engage_auto_scroll();
     }
     clear_pending_command(app);
-    if let Some(resuming) = app.resuming_session_id_mut() {
-        *resuming = None;
-    }
 }
 
 /// Foreground arm: the replaced session is the one on screen, so the
@@ -579,9 +578,6 @@ fn handle_session_replaced_event(
         load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
-    if let Some(resuming) = app.resuming_session_id_mut() {
-        *resuming = None;
-    }
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
 
@@ -999,6 +995,16 @@ pub(super) fn apply_session_update_slash_command_error(
     message: &str,
 ) {
     handle_slash_command_error_event(app, key, message);
+}
+
+/// `SessionUpdate::Notice` reducer: the core's own line about a seat.
+pub(super) fn apply_session_update_notice(
+    app: &mut App,
+    key: &SessionSlot,
+    severity: NoticeSeverity,
+    text: &str,
+) {
+    handle_core_notice(app, key, severity, text);
 }
 
 /// `SessionUpdate::SetModeFailed` reducer: restore the pre-apply mode

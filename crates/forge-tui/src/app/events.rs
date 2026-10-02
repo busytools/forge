@@ -1902,7 +1902,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_updates_cwd_and_clears_resuming_marker() {
+    fn connected_updates_cwd() {
         let mut app = make_test_app();
         // The Connected arrives on the bucket's own key: the spawn mints
         // that id, so the bucket is already filed there by the time the
@@ -1913,7 +1913,6 @@ mod tests {
             "/test",
             "-",
         ));
-        *app.resuming_session_id_mut().expect("active session") = Some("resume-123".into());
 
         apply_session_update(
             &mut app,
@@ -1931,7 +1930,6 @@ mod tests {
 
         assert_eq!(app.cwd_raw().as_deref(), Some("/changed"));
         assert_eq!(app.cwd(), Some("/changed"));
-        assert!(app.resuming_session_id().is_none());
         let Some(first) = app.messages().expect("active session").first() else {
             panic!("missing welcome message");
         };
@@ -2875,10 +2873,9 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
+    fn slash_command_error_returns_ready() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        *app.resuming_session_id_mut().expect("active session") = Some("resume-123".into());
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2887,7 +2884,6 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.resuming_session_id().is_none());
     }
 
     #[test]
@@ -3021,7 +3017,6 @@ mod tests {
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
         let mut app = make_test_app();
-        *app.resuming_session_id_mut().expect("active session") = Some("requested-123".into());
 
         let key = active_session_key(&app);
         apply_session_update(
@@ -3040,7 +3035,6 @@ mod tests {
 
         assert_eq!(app.messages().expect("active session").len(), 1);
         assert!(matches!(app.messages().expect("active session")[0].role, MessageRole::Welcome));
-        assert!(app.resuming_session_id().is_none());
         assert!(matches!(app.status, AppStatus::Ready));
     }
 

@@ -54,6 +54,27 @@ type Apply = (held: SessionRecord, payload: Record<string, unknown>) => SessionR
  * falls through.
  */
 export const HANDLERS: Record<string, Apply> = {
+  /**
+   * One line the core has for this seat: a command's own answer, or why one
+   * did not run.
+   *
+   * The conversation holds frames, and this is not one the CLI sent, so it is
+   * appended as a `system` frame of a forge subtype - which is the shape the
+   * fold already reads, and the shape that makes the line land in the turn it
+   * belongs to rather than after everything.
+   */
+  notice: (held, payload) => {
+    const text = payload['text'];
+    if (typeof text !== 'string' || text === '') return held;
+    const frame = {
+      type: 'system',
+      subtype: 'forge_notice',
+      severity: payload['severity'],
+      text,
+    };
+    return { ...held, conversation: appendFrame(held.conversation, frame) };
+  },
+
   chat_appended: (held, payload) => {
     const msg = payload['msg'];
     if (msg === undefined) return held;

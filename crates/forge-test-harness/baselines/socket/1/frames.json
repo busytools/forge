@@ -33,6 +33,7 @@
     "HookObservation": "hook_observation",
     "McpOperationError": "mcp_operation_error",
     "McpSnapshot": "mcp_snapshot",
+    "Notice": "notice",
     "OauthCredentialsSnapshot": "oauth_credentials_snapshot",
     "PeerEnvelopeAppended": "peer_envelope_appended",
     "PeerInflightStatsChanged": "peer_inflight_stats_changed",

@@ -2,10 +2,9 @@
 
 use super::{
     parse, push_system_info, push_system_message, push_user_message, require_active_session,
-    require_connection, set_command_pending,
+    set_command_pending,
 };
 use crate::app::App;
-use crate::app::connect::begin_resume_session;
 use forge_workspace::SessionUpdate;
 
 /// One command's handler.
@@ -31,7 +30,6 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("/launchpad", handle_launchpad_submit),
     ("/mode", handle_mode_submit),
     ("/model", handle_model_submit),
-    ("/resume", handle_resume_submit),
     ("/spinner", handle_spinner_submit),
     ("/usage", handle_usage_submit),
 ];
@@ -69,7 +67,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     // A command the core answers is the core's wherever it is typed: send
     // the words as a prompt and let the one interception run them, which is
     // the same path a client's send takes.
-    if forge_workspace::prompt::forge_prompt(text).is_some() {
+    if forge_workspace::prompt::is_forge_prompt_name(parsed.name) {
         return forward_to_core(app, text);
     }
     match HANDLERS.iter().find(|(name, _)| *name == parsed.name) {
@@ -85,6 +83,9 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 /// what keeps the terminal and a client on one path.
 fn forward_to_core(app: &mut App, text: &str) -> bool {
     push_user_message(app, text);
+    // These commands are not instant: the core re-spawns a session behind
+    // them, so the input stays blocked until the replacement lands.
+    set_command_pending(app, &format!("Running {text}..."), None);
     if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::Prompt {
         key,
         text: text.to_owned(),
@@ -539,43 +540,6 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
             push_system_info(app, format!("Effort: {} (takes effect next session)", level.label()));
         }
         Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
-    }
-    true
-}
-
-fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
-    let [session_id_arg] = args else {
-        push_system_message(app, "Usage: /resume <session_id>");
-        return true;
-    };
-    let session_id = session_id_arg.trim();
-    if session_id.is_empty() {
-        push_system_message(app, "Usage: /resume <session_id>");
-        return true;
-    }
-
-    push_user_message(app, format!("/resume {session_id}"));
-    if !require_connection(app, "Cannot resume session: not connected yet.") {
-        return true;
-    }
-
-    set_command_pending(app, &format!("Resuming session {session_id}..."), None);
-    let session_id = session_id.to_owned();
-    if let Err(e) = begin_resume_session(app, session_id) {
-        if let Some(session_key) = app.active_session_key.clone() {
-            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: format!("Failed to run /resume: {e}"),
-            });
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_COMMAND,
-                event_name = "slash_error_without_session",
-                message = "begin_resume_session failed with no session to report it against",
-                outcome = "skipped",
-                error_message = %e,
-            );
-        }
     }
     true
 }

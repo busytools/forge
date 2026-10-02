@@ -148,6 +148,29 @@ describe('applyUpdate', () => {
       expect(next.conversation.turns).toHaveLength(1);
       expect(next.conversation.turns[0]?.messages).toHaveLength(2);
     });
+
+    it("carries the core's own line into the conversation, joined to the live turn", () => {
+      const held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('hello') } });
+      const next = applyUpdate(held, {
+        notice: { key: SLOT, severity: 'error', text: 'Usage: /resume <session_id>' },
+      });
+
+      expect(
+        next.conversation.turns,
+        'a line about the turn joins it rather than opening one of its own',
+      ).toHaveLength(1);
+      const last = next.conversation.turns[0]?.messages.at(-1);
+      expect(last).toEqual({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'error',
+        text: 'Usage: /resume <session_id>',
+      });
+
+      // A notice with nothing to say leaves the record alone, so a malformed
+      // frame cannot put an empty row in front of the reader.
+      expect(applyUpdate(held, { notice: { key: SLOT, severity: 'info', text: '' } })).toBe(held);
+    });
   });
 
   describe('the turn in flight', () => {
@@ -664,6 +687,7 @@ const EVERY_VARIANT = [
   'connection_failed',
   'auth_required',
   'slash_command_error',
+  'notice',
   'runtime_reload_completed',
   'runtime_reload_failed',
   'set_mode_failed',
@@ -724,9 +748,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (57 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (58 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(57);
+    ).toBe(58);
   });
 
   it('classifies every variant the core can send', () => {

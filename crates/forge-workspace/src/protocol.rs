@@ -855,6 +855,19 @@ pub enum SpawnRole {
 /// fact about the dispatch rather than about the words. It is therefore set
 /// where the dispatch happens, by which entry the caller took, and never read
 /// off the wire.
+/// How loudly a [`SessionUpdate::Notice`] reads.
+///
+/// Two levels rather than a scale, because the core has two things to say:
+/// what a command found, and why one did not run.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeSeverity {
+    /// A command's own answer.
+    Info,
+    /// One that did not run.
+    Error,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptOrigin {
@@ -951,6 +964,18 @@ pub enum SessionUpdate {
     SlashCommandError {
         key: SessionSlot,
         message: String,
+    },
+    /// One line the core has for a view about `key`, which nothing else
+    /// carries.
+    ///
+    /// A command answered where both views dispatch has no other way to say
+    /// anything: the CLI emits no frame for a command it never saw, and the
+    /// line is the core's own answer rather than a view's opinion - what a
+    /// command found, or why it refused.
+    Notice {
+        key: SessionSlot,
+        severity: NoticeSeverity,
+        text: String,
     },
     RuntimeReloadCompleted {
         key: SessionSlot,
@@ -1326,6 +1351,7 @@ impl SessionUpdate {
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
             | Self::SlashCommandError { key, .. }
+            | Self::Notice { key, .. }
             | Self::SetModeFailed { key, .. }
             | Self::SetModelFailed { key, .. }
             | Self::PermissionRequest { key, .. }
@@ -1408,6 +1434,9 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::SlashCommandError { key, .. } => {
                 f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
+            }
+            Self::Notice { key, .. } => {
+                f.debug_struct("Notice").field("key", key).finish_non_exhaustive()
             }
             Self::RuntimeReloadCompleted { key } => {
                 f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
