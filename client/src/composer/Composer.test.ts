@@ -1612,10 +1612,20 @@ describe('the dock', () => {
   });
 
   it("offers the reader's own words as the agent's, which is the wording rule", () => {
-    open({ record: record({ pending_ask: questionAsk() }) });
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
 
     expect(options()[2]?.textContent, 'the row says agent, never the vendor').toContain(
       'Tell the agent something else',
+    );
+
+    // A permission's row is the name the core sent rather than this client's
+    // own: the rule reaches that one where the name is written, not here, and a
+    // local rename would put the dock's row out of step with the wire.
+    harness.page.record = record({ pending_ask: permissionAsk() });
+    flushSync();
+
+    expect(options()[2]?.textContent, "so a permission draws the core's own name").toContain(
+      'Tell Claude something else',
     );
   });
 
