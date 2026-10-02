@@ -27,7 +27,7 @@
   /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
      mono, so nothing here goes below what that surface already uses. Prose
      is what you read, a row is data, and a label sits on data. */
-  --fs-prose: 17px; --fs-base: 15.5px; --fs-group: 15.5px;
+  --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
   --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
   --ins: 10px; --rail-l: 312px; --rail-r: 366px;
   /* one line per entity: state | name | where | what | when.

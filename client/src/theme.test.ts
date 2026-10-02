@@ -94,6 +94,18 @@ describe('the palette', () => {
   });
 });
 
+describe('the type scale', () => {
+  /** The prose step is the chat's reading size, and it is the scale's base
+   * step rather than one above it: a row is data and a label sits on data,
+   * but prose is read, so nothing in the chat is larger than it. */
+  it("draws the chat's prose at the base step", () => {
+    const declared = captures(sheet, /--fs-prose:\s*([^;]+);/g);
+
+    expect(declared, 'the sheet declares the prose step once').toHaveLength(1);
+    expect(declared[0], 'the prose is the base step, not a step above it').toBe('15.5px');
+  });
+});
+
 describe('the typefaces', () => {
   /** By value: two distinct objects satisfy any "not equal" shape. */
   it('draws each name as its own stack', () => {
