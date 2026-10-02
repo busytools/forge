@@ -465,6 +465,38 @@ describe('one turn, as the page draws it', () => {
     expect(at('Compacting context'), 'and above the report row').toBeLessThan(at('turninfo'));
   });
 
+  it('puts the compaction line above a hook run that landed after the result', () => {
+    // A Stop hook's frames arrive at the turn's end, after the result that
+    // settled it, so that row is trailing furniture of the same family as the
+    // chip - the chip IS a hook summary. Left out of the footer set, where the
+    // line draws would depend on whether a hook happened to fire.
+    const body = compacting(
+      said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
+      {
+        type: 'system',
+        subtype: 'stop_hook_summary',
+        hookCount: 1,
+        hookInfos: [],
+        uuid: 'hooks-1',
+      },
+      { type: 'result', uuid: 'r1', duration_ms: 1000, duration_api_ms: 500, usage: {} },
+      {
+        type: 'system',
+        subtype: 'hook_started',
+        hook_id: 'h1',
+        hook_name: 'Stop:check',
+        hook_event: 'Stop',
+        uuid: 'h1',
+      },
+    );
+
+    const at = (marker: string): number => body.indexOf(marker);
+    expect(at('Compacting context'), 'the line is drawn').toBeGreaterThanOrEqual(0);
+    expect(at('Compacting context'), 'and above the hook run that landed last').toBeLessThan(
+      at('hookrun'),
+    );
+  });
+
   it('draws the compaction point where the boundary landed, and keeps the in-flight line beside it', () => {
     const boundary = {
       type: 'system',

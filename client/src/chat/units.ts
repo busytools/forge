@@ -24,7 +24,7 @@
  *   surface;
  * - a compaction boundary is a row at the cut, where the terminal draws none:
  *   the count is the terminal's marker, the cut is unmarked there, and this
- *   fold's `push` ends a run of calls at it.
+ *   fold's `push` ends a run of calls at it;
  * - a hook's own lifecycle draws as one row per run, where the terminal's arm
  *   for those three frames is a no-op. Its summary chip - the one other hook
  *   surface it has - is matched here rather than dropped, and no capture holds

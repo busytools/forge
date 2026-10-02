@@ -117,12 +117,20 @@
     });
   });
 
-  /** The index the trailing hooks and report units start at. */
+  /**
+   * The index the turn's trailing furniture starts at: the hooks chip, the
+   * report row, and a hook's own run.
+   *
+   * **A hook run belongs here because it is the chip's own family and lands in
+   * the same place.** A Stop hook's frames arrive after the result that settled
+   * the turn, so leaving the kind out would make where the compaction line
+   * draws depend on whether a hook happened to fire.
+   */
   function footerOf(units: readonly Unit[]): number {
     let at = units.length;
     while (at > 0) {
       const kind = units[at - 1]?.kind;
-      if (kind !== 'hooks' && kind !== 'report') break;
+      if (kind !== 'hooks' && kind !== 'report' && kind !== 'hook') break;
       at -= 1;
     }
     return at;
