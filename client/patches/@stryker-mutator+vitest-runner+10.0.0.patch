@@ -1,0 +1,32 @@
+diff --git a/node_modules/@stryker-mutator/vitest-runner/dist/src/stryker-setup.js b/node_modules/@stryker-mutator/vitest-runner/dist/src/stryker-setup.js
+index aecfacb..9710efc 100644
+--- a/node_modules/@stryker-mutator/vitest-runner/dist/src/stryker-setup.js
++++ b/node_modules/@stryker-mutator/vitest-runner/dist/src/stryker-setup.js
+@@ -63,7 +63,9 @@ function collectTestName({ name, suite, }) {
+         nameParts.unshift(currentSuite.name);
+         currentSuite = currentSuite.suite;
+     }
+-    return nameParts.join(' ').trim();
++    // Must match vitest 5's `task.fullTestName` separator so the ids this
++    // collects line up with the names the runner later filters on.
++    return nameParts.join(' > ').trim();
+ }
+ function toRawTestId(test) {
+     return `${test.file?.filepath ?? 'unknown.js'}#${collectTestName(test)}`;
+diff --git a/node_modules/@stryker-mutator/vitest-runner/dist/src/test-helpers.js b/node_modules/@stryker-mutator/vitest-runner/dist/src/test-helpers.js
+index 56cc786..9a1b3f1 100644
+--- a/node_modules/@stryker-mutator/vitest-runner/dist/src/test-helpers.js
++++ b/node_modules/@stryker-mutator/vitest-runner/dist/src/test-helpers.js
+@@ -8,7 +8,11 @@ export function collectTestName({ name, suite, }) {
+         nameParts.unshift(currentSuite.name);
+         currentSuite = currentSuite.suite;
+     }
+-    return nameParts.join(' ').trim();
++    // vitest 5's `task.fullTestName` joins the suite chain with ' > '
++    // (createTaskName's default separator), and the runner's testNamePattern
++    // is matched against it. A space-joined name matches nothing there, so
++    // every nested test was skipped and its mutants reported as survivors.
++    return nameParts.join(' > ').trim();
+ }
+ export function toRawTestId(test) {
+     return `${test.file?.filepath ?? 'unknown.js'}#${collectTestName(test)}`;

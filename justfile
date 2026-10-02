@@ -91,6 +91,50 @@ conformance-record-socket:
 bench:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture
 
+# Mutation-test the client with Stryker: break each line the tests claim to
+# cover and see whether anything fails. `vitest` reports what ran and never
+# whether a passing assertion discriminates, so this is the client's only
+# instrument for a test that passes for the wrong reason.
+#
+# Not part of `check`, and deliberately a recipe rather than a CI job: a run
+# is minutes and belongs to whoever asks for it, not to every push.
+#
+# The target set is the client's logic modules - the conversation fold, the
+# chat's row composition, the composer's state machine, the session view and
+# the stores - plus the wire types. All of it is in
+# `client/stryker.conf.json`; a run reports a score per file and lists every
+# mutant that survived, which is a list of assertions that look like they
+# test something and do not. Mutating the Svelte components is out on
+# purpose: a full render per mutant finds much less than it costs.
+#
+# `client/patches/` carries one patch, applied on `npm ci` through
+# `patch-package`. The vitest runner joins a test's suite chain with a space
+# and filters mutants by that name, where vitest 5 matches against the " > "
+# joined `task.fullTestName` - so without the patch every nested test is
+# skipped per mutant and its survivors are false. Applied, `client/src/chat/report.ts`
+# scores 68% with 16 real survivors instead of 0% with 50 fake ones.
+#
+# A file whose tests read outside `client/` cannot run here, because Stryker
+# copies the project into its sandbox: `src/wire/fleet.ts` is out of the set
+# for that reason, its test reading the server's `live.rs`.
+#
+# The sandbox is `client/.stryker-tmp/sandbox-*/`, and a run in flight is a
+# second copy of every test file inside the tree - so do not run `just check`
+# or `npm test` beside one (a plain vitest run collects both, 64 files
+# becoming 128). A successful run deletes it; a crashed one leaves it, and
+# `.gitignore`, `.prettierignore` and `eslint.config.js` all ignore it.
+#
+# Usage: `just mutate` for the configured set, or `just mutate src/chat/units.ts`
+# for one file or glob. The whole set is 4,081 mutants and took 4m47s here.
+mutate target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{target}}" ]; then
+        npm --prefix client run mutate
+    else
+        npm --prefix client run mutate -- --mutate "{{target}}"
+    fi
+
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \

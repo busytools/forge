@@ -6,7 +6,18 @@ import svelte from 'eslint-plugin-svelte';
 export default tseslint.config(
   // The shell's crate target dir holds generated .js (tauri-build's API script
   // and the codegen'd assets), which this project has no tsconfig for.
-  { ignores: ['dist/', 'node_modules/', 'src-tauri/target/', 'src-tauri/gen/'] },
+  // Stryker's sandbox is a copy of this tree and its report carries bundled
+  // .js, and neither is this project's source.
+  {
+    ignores: [
+      'dist/',
+      'node_modules/',
+      'src-tauri/target/',
+      'src-tauri/gen/',
+      '.stryker-tmp/',
+      'reports/',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   ...svelte.configs['flat/recommended'],
