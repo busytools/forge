@@ -2246,6 +2246,27 @@ describe('the dock', () => {
     expect(drawn()).toContain('the connector is not configured');
   });
 
+  it('clears the refusal it showed when the reader answers the draft again', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    // The retry is the only thing the reader can do about a refusal, and the
+    // reason belonged to the attempt that failed: left standing it reads as a
+    // verdict on this one.
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the answer went out again').toHaveLength(2);
+    expect(drawn(), "and the first failure's reason goes with it").not.toContain(
+      'the connector is not configured',
+    );
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
   it('takes the dock away once the draft is answered, which no frame will do', () => {
     const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
 

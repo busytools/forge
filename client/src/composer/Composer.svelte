@@ -452,9 +452,16 @@
     void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
   }
 
-  /** Remember which prompt this reader answered, while the core still lists it. */
+  /**
+   * Remember which prompt this reader answered, while the core still lists it.
+   *
+   * A new answer supersedes the refusal it followed: the reason belonged to the
+   * attempt that failed, and left standing it would read as a verdict on this
+   * one.
+   */
   function remember(toolId: string | null): void {
     answered = toolId;
+    refusal = null;
   }
 
   /**
