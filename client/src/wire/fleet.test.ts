@@ -126,10 +126,11 @@ function serverSlots(): { keyed: string[]; seatless: string[]; declared: number 
  * SessionUpdate {` at column zero and closes with `}` at column zero, and
  * every variant is still spelled at the top level of that body. The
  * derivation implements `rename_all` and not an explicit `#[serde(rename)]`,
- * which no variant of this enum carries. A rename on a variant no bucket
- * names reads as a name the census fails on; one on an already classified
- * variant leaves `NOT_NEWS` holding a name that is no longer the wire name,
- * which nothing here checks.
+ * which no variant of this enum carries. The name it reads is the variant's
+ * own, so a rename is invisible here in either bucket: a variant no bucket
+ * names reads as a name the census fails on, one in `NOT_NEWS` leaves a name
+ * in that list which is no longer the wire name, and one an arm names keeps
+ * the census green while the wire name has moved.
  */
 function serverVariantNames(): { names: string[]; closed: boolean } {
   const source = readFileSync(
@@ -412,9 +413,9 @@ describe('the variant census', () => {
 
     // The denominators, because an emptiness assertion below that has stopped
     // reading anything looks exactly like a clean one. `closed` is the parse
-    // reaching the enum's own closing brace, and the count is the enum's own:
-    // a parse that read fewer names than the enum declares is one that cannot
-    // pass as a clean run.
+    // reaching the enum's own closing brace, and the count is the enum's own
+    // number of variants: a parse that read a different count than the enum
+    // holds cannot pass as a clean run.
     expect(
       closed,
       'the parse never reached the end of `SessionUpdate`, so it is the parse that moved and not ' +
@@ -422,9 +423,10 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      '`SessionUpdate` declares 57 variants: raise this count in the same edit that adds one, and ' +
-        'the census below names the bucket it belongs in; a count below 57 means the parse read ' +
-        'fewer names than the enum holds',
+      'this count and the enum disagree, and `SessionUpdate` held 57 variants when it was last ' +
+        'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
+        'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
+        'different set of names than the enum holds',
     ).toBe(57);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
