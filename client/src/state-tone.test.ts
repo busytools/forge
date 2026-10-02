@@ -1,0 +1,314 @@
+/**
+ * A state class's rule, pinned to the tone that class names.
+ *
+ * **The defect this closes.** Swapping a token in the client's own sheet -
+ * `details.hooks > summary .st.err` from `var(--bad)` to `var(--ok)`, say -
+ * drew a failed hook's summary mark in the success tone with the whole suite
+ * green. That is the gap this pins: the tone a state class names, in the app's
+ * sheet and in the book drawing's own copy of it.
+ *
+ * **The property rather than a list of rules.** Every rule whose selector
+ * carries a state class may only draw in a tone that class names, so a new
+ * `.st.err` rule anywhere in the sheet is covered by writing it and nothing
+ * here has to be extended to reach it. Pinning the rules a finding happens to
+ * name, one at a time, is how a file collects a test per symptom instead. It
+ * reads both sheets rather than one rule: the app's own, and the book
+ * drawing's copy of it.
+ *
+ * **The token NAMED is the whole claim.** The palette's values live in
+ * `theme.ts`, and the theme's NAME is what reaches the page from the server,
+ * so nothing here knows what `--bad` resolves to - only that the rule meant to
+ * draw a failure names it. `contrast.test.ts` is the check that sits over the
+ * palette's values.
+ *
+ * Three holes, named rather than left to be discovered.
+ *
+ * A state-class rule whose colour declaration is DELETED names no tone at all,
+ * so it leaves this check's scope rather than failing it, where the tone test
+ * below reads declarations rather than requiring one. A state class coloured
+ * by a literal is read on `color` only, since the sheet tinting a border or a
+ * ground by rgba is its idiom for alpha.
+ *
+ * The third is that a state class is what this reads, and most of the sheet's
+ * tones sit on rules no state class reaches: 71 selectors across the two
+ * sheets name a tone carrying no class the vocabulary knows. The mark's BASE
+ * rules are among the 71, and the default tone lives there: swapping
+ * `.kind > summary .st` to `var(--bad)` leaves the whole suite green, and
+ * `.rfoot .led` sits beside `.rfoot .led.bad`, which this does cover, in the
+ * same relationship this does not reach.
+ *
+ * A vocabulary entry cannot close that. `st: '--ok'` would legalise `--ok` on
+ * `.st.err` too, since a rule's allowed tones are the union over the classes
+ * its selector carries, and the defect this file exists for would go green; it
+ * would also red on `.row .what .st`, whose default is a row mark's `--dim`.
+ * What cannot be stated is a base rule's CORRECT tone, because the default is
+ * contextual - `--ok` for a summary's aggregate mark, `--dim` for a row's. A
+ * stricter check could say the mark reaching no state class must not name
+ * `--bad`, which would catch the swap named here but not every one; that is a
+ * different check, and it is not this one.
+ *
+ * A class NAME is the extension point, so a state written under one the
+ * vocabulary does not list draws in whatever tone it likes until someone adds
+ * it to `TONES` - the drawing's `.file .st.a` is the tree's example.
+ */
+import { readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+/**
+ * The state classes the sheet writes, and the tone each one MEANS.
+ *
+ * A class belongs here when its NAME fixes its tone - a failure cannot be
+ * drawn green - rather than only its rows' convention. `needs` and `unseen`
+ * are states whose tone is a design choice, so they are out: the sheet may
+ * recolour them without losing anything they are named for.
+ */
+const TONES = {
+  ok: '--ok',
+  err: '--bad',
+  fail: '--bad',
+  failed: '--bad',
+  bad: '--bad',
+  warn: '--warn',
+} as const;
+
+type StateClass = keyof typeof TONES;
+
+/** Every tone the vocabulary can name, which is the palette's state colours. */
+const TONE_TOKENS = new Set<string>(Object.values(TONES));
+
+/**
+ * A state class carried by a selector.
+ *
+ * The pattern is built from the vocabulary's own names, so every hit is one of
+ * them, and a class added to `TONES` is scannable without a second edit here.
+ */
+const STATE_CLASS = new RegExp(`\\.(${Object.keys(TONES).join('|')})\\b`, 'g');
+
+function stateClasses(selector: string): StateClass[] {
+  // A class inside `:not()` names a state the element is NOT, so it is not a
+  // state this selector carries. Nested parentheses would escape this, and
+  // none are written.
+  const bare = selector.replace(/:not\([^)]*\)/g, '');
+  return [...(bare.match(STATE_CLASS) ?? [])].map((hit) => hit.slice(1) as StateClass);
+}
+
+/** The palette tones a piece of a sheet names, in the order they appear. */
+function tonesNamed(text: string): string[] {
+  return [...text.matchAll(/var\((--[\w-]+)\)/g)]
+    .map(([, token = '']) => token)
+    .filter((token) => TONE_TOKENS.has(token));
+}
+
+/**
+ * A selector list's parts.
+ *
+ * One rule's declarations reach every part of its list, but the parts do not
+ * mean the same thing: `.tag.ok, .tag.warn { color: var(--ok) }` draws the warn
+ * half green. So the tone test below reads the parts separately, and a comma
+ * joins two selectors only when no function is open around it - the commas in
+ * `:not(.rec, .err)` belong to one selector rather than to a list.
+ */
+function selectorParts(selector: string): string[] {
+  const parts: string[] = [];
+  let open = 0;
+  let start = 0;
+  for (let at = 0; at < selector.length; at += 1) {
+    const char = selector.charAt(at);
+    if (char === '(') open += 1;
+    else if (char === ')') open -= 1;
+    else if (char === ',' && open === 0) {
+      parts.push(selector.slice(start, at));
+      start = at + 1;
+    }
+  }
+  parts.push(selector.slice(start));
+  return parts.map((part) => part.trim());
+}
+
+/**
+ * Every `selector { declarations }` block in a sheet.
+ *
+ * Neither side of the pattern can cross a brace, so a rule nested inside an
+ * at-rule is read and the at-rule's own header is not - which is the half the
+ * census below counts.
+ */
+const RULE = /([^{}]+)\{([^{}]*)\}/g;
+
+/** The at-rules whose body holds other blocks, so their `{` opens no rule. */
+const AT_RULE_BLOCK = /@(media|keyframes|supports|container|layer|scope)\b[^{;]*\{/g;
+
+function rules(sheet: string): { selector: string; body: string }[] {
+  return [...sheet.matchAll(RULE)].map(([, selector = '', body = '']) => ({
+    selector: selector.trim().replace(/\s+/g, ' '),
+    body,
+  }));
+}
+
+/** A sheet as these checks read it. */
+function sheetText(raw: string): string {
+  // A brace inside a comment is not a block, and a comment sitting above a
+  // rule would otherwise be glued onto the selector the rule parse reads.
+  return raw.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/** The sheet the app ships. */
+const SHEET = sheetText(readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8'));
+
+const PAGE = readFileSync(
+  new URL('../../docs/book/src/ui/client/web-session.html', import.meta.url),
+  'utf8',
+);
+
+/**
+ * Every `<style>` block in the drawing, joined rather than the first taken: a
+ * second block is where a rule escapes a read that asked for one.
+ */
+const BOOK = sheetText(
+  [...PAGE.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(([, css = '']) => css).join('\n'),
+);
+
+const SHEETS: [string, string][] = [
+  ['assets/web.css', SHEET],
+  ['the book drawing', BOOK],
+];
+
+describe('the sheet a state class draws in', () => {
+  /**
+   * The denominator. An emptiness assertion that has stopped reading anything
+   * looks exactly like a clean one, and the tone test below is one: a parse
+   * that read a fraction of the sheet reports a short, plausible, confidently
+   * clean answer. Every `{` in the sheet is either a rule this parse read or
+   * the head of a block it named, and the two counts are taken independently -
+   * one from the structured parse, one off the raw text.
+   */
+  it('reads every block of each sheet', () => {
+    for (const [where, sheet] of SHEETS) {
+      expect(sheet.length, `${where} was read at all`).toBeGreaterThan(0);
+
+      const blocks = [...sheet.matchAll(AT_RULE_BLOCK)].length;
+      const parsed = rules(sheet).length;
+      const opens = (sheet.match(/\{/g) ?? []).length;
+
+      expect(parsed, `${where} carries rules to read`).toBeGreaterThan(0);
+      expect(
+        parsed + blocks,
+        `${where}: the blocks this parse read and the blocks the sheet holds disagree, so the ` +
+          'parse has stopped seeing a shape the sheet writes, and read a smaller sheet than ' +
+          'exists. Name it in AT_RULE_BLOCK if a nested at-rule was added; if none was, the ' +
+          'rule pattern is what moved',
+      ).toBe(opens);
+    }
+  });
+
+  it('draws a state class in the tone that class names', () => {
+    for (const [where, sheet] of SHEETS) {
+      const wrong: string[] = [];
+
+      for (const { selector, body } of rules(sheet)) {
+        // Per part, not per selector list: the declarations reach every part,
+        // so one rule can draw a part green in a tone only its neighbour names.
+        for (const part of selectorParts(selector)) {
+          const classes = stateClasses(part);
+          if (classes.length === 0) continue;
+
+          const allowed: string[] = classes.map((name) => TONES[name]);
+          const names = classes.map((name) => `.${name}`).join(' and ');
+
+          for (const token of tonesNamed(body)) {
+            if (!allowed.includes(token)) {
+              wrong.push(
+                `${where}: "${part}" draws in ${token}, and ${names} names ` +
+                  `${allowed.join(' or ')}`,
+              );
+            }
+          }
+
+          // The sheet's own contract is that the palette is not here, so a
+          // state class drawing text in a literal has left the token set
+          // behind. Only a declaration naming NO tone is read here: the scan
+          // above already reports one naming the wrong tone, and reading it
+          // twice puts the same rule in the failure twice.
+          for (const [, value = ''] of body.matchAll(/(?:^|;)\s*color\s*:\s*([^;]+)/g)) {
+            if (tonesNamed(value).length === 0) {
+              wrong.push(
+                `${where}: "${part}" draws its text in ${value.trim()}, and ${names} names ` +
+                  `${allowed.join(' or ')}`,
+              );
+            }
+          }
+        }
+      }
+
+      expect(
+        wrong,
+        'a state class drawn in a tone it does not name has lost the colour that gives it its ' +
+          `meaning: ${wrong.join('; ')}`,
+      ).toEqual([]);
+    }
+  });
+
+  /**
+   * Totality over the vocabulary, and the half the tone test cannot reach: a
+   * class whose every rule goes silent - renamed, or dropped - leaves nothing
+   * to mismatch, so a scan that finds no rules at all reports clean. Each name
+   * has to be one the SHIPPING sheet colours in the tone it names.
+   */
+  it('carries every tone the vocabulary names, in the sheet that ships', () => {
+    const coloured = new Set<string>();
+
+    for (const { selector, body } of rules(SHEET)) {
+      for (const name of stateClasses(selector)) {
+        if (tonesNamed(body).includes(TONES[name])) coloured.add(name);
+      }
+    }
+
+    expect(
+      Object.keys(TONES).filter((name) => !coloured.has(name)),
+      'a state class the sheet never draws in its own tone is either one whose tone was dropped ' +
+        'or one that was renamed and left this vocabulary behind: name the class the sheet ' +
+        'writes now, or put its tone back',
+    ).toEqual([]);
+  });
+
+  /**
+   * The classifier's own spellings, named directly. The tone test asks which
+   * classes a selector carries, and a reader that answered short would find
+   * fewer rules than exist and report them clean - so the misspellings matter
+   * as much as the hits.
+   */
+  it('names the state classes the sheet writes, and nothing wider', () => {
+    expect(stateClasses('.st.err'), 'the mark this defect was found on').toEqual(['err']);
+    expect(stateClasses('.kind > summary .st.err'), 'reached through an ancestor').toEqual(['err']);
+    expect(stateClasses('.st.err:hover'), 'a state that is also a target').toEqual(['err']);
+    expect(stateClasses('.error'), 'a name that merely starts the same').toEqual([]);
+    expect(
+      stateClasses('.box:focus-within:not(.rec, .err)'),
+      'a state the selector is not',
+    ).toEqual([]);
+    expect(stateClasses('.row .what a'), 'a selector carrying no state at all').toEqual([]);
+  });
+
+  /**
+   * The list splitter's spellings, for the same reason: a list read as one
+   * selector hands every part its neighbour's tones, which is the defect the
+   * tone test now reads per part to avoid.
+   */
+  it('splits a selector list into its own selectors, and nothing wider', () => {
+    expect(selectorParts('.band .dot.ok, .band .dot.warn'), 'a list of two').toEqual([
+      '.band .dot.ok',
+      '.band .dot.warn',
+    ]);
+    expect(
+      selectorParts('.row.needs .dot, .row.auth .dot, .row.failed .dot'),
+      'a list the sheet already writes',
+    ).toEqual(['.row.needs .dot', '.row.auth .dot', '.row.failed .dot']);
+    expect(
+      selectorParts('.box:focus-within:not(.rec, .tr, .done, .err)'),
+      'a comma inside a function belongs to one selector',
+    ).toEqual(['.box:focus-within:not(.rec, .tr, .done, .err)']);
+    expect(selectorParts('.strip .ti .st.err'), 'a selector that is no list').toEqual([
+      '.strip .ti .st.err',
+    ]);
+  });
+});
