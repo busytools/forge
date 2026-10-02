@@ -12,10 +12,12 @@
 //! what a terminal paints an ANSI colour as is not knowable from here:
 //! [`UNFLOORED`] names each one and says which half the terminal owns. Two
 //! things sit outside the table the way the client's file cannot see a colour
-//! written inline in a component: a `Color::Rgb` written outside `theme.rs`
-//! (the diff overlay's comment chip, the dictate ring's literals), and the
-//! code panel's body, whose colours come from the syntect theme in
-//! `ui/highlight.rs` rather than from this palette.
+//! written inline in a component. One is a `Color::Rgb` written outside
+//! `theme.rs`: the diff overlay's comment chip, and the palette's own values
+//! restated as literals in the prompt and the dictate ring. The other is every
+//! surface whose ink is the highlight theme's rather than this palette's - the
+//! code panel's body, and the diff rows, where syntect's foregrounds are
+//! composited over the tint grounds in `ui/diff.rs`.
 //!
 //! The numbers are exact about the value forge chooses and approximate about
 //! what gets painted: ratatui writes `Color::Rgb` as truecolor, and a
@@ -73,8 +75,8 @@ const DRAWN: &[(&str, &str, f64)] =
 /// no row in [`DRAWN`] and no entry here fails the guard below.
 const UNFLOORED: &[(&str, &str)] = &[
     ("USER_MSG_BG", "ground of the Projects pane's row buttons, inked Color::Gray"),
-    ("DIFF_ADDITION_BG", "ground of an added diff row, inked Color::Green"),
-    ("DIFF_DELETION_BG", "ground of a removed diff row, inked Color::Red"),
+    ("DIFF_ADDITION_BG", "ground of an added diff row, inked Color::Green and the highlight theme"),
+    ("DIFF_DELETION_BG", "ground of a removed diff row, inked Color::Red and the highlight theme"),
     ("AVAILABLE", "the extensions row's mark; also a chip ground inked Color::Black"),
     ("REVIEW_RESOLVED", "the RESOLVED label and the completion glyph, on the canvas"),
     ("REVIEW_ADDRESSED", "the ADDRESSED label and the rail dot, on the canvas"),
@@ -139,7 +141,10 @@ fn out_of_band(pairs: &[(&str, &str, f64)], palette: &[(&str, Color)]) -> Vec<St
 /// The names of the `Color::Rgb` constants a source text declares.
 ///
 /// A constant whose value is another constant (`COMPLETION = REVIEW_RESOLVED`)
-/// is not one of these: it names a token the palette already carries.
+/// is not one of these: it names a token the palette already carries. Nor is
+/// one whose `=` and literal sit on different lines, which is why the caller
+/// counts the literals as well: a declaration this misses would otherwise
+/// leave the accounting complete and the constant unread.
 fn rgb_constants(source: &str) -> Vec<&str> {
     source
         .lines()
@@ -149,25 +154,42 @@ fn rgb_constants(source: &str) -> Vec<&str> {
                 return None;
             }
             let (name, value) = line.split_once("const ")?.1.split_once(':')?;
-            value.trim_start().starts_with("Color = Color::Rgb(").then_some(name)
+            value.contains("= Color::Rgb(").then_some(name)
         })
         .collect()
 }
 
-/// The accounting failures in `source`: a `Color::Rgb` constant with no entry
-/// in `palette`, and an entry for a constant the source no longer declares.
+/// The accounting failures in `source`: a `Color::Rgb` value the scan did not
+/// read as a constant, a constant with no entry in `palette`, and an entry for
+/// a constant the source no longer declares.
+///
+/// The first is the denominator, and it is not the same check as the other
+/// two. Those say the constants the scan read are all accounted for; this says
+/// the scan read the source at all. Without it a declaration in a spelling
+/// `rgb_constants` does not know disappears from both lists and the guard
+/// reports a clean file.
 fn unaccounted(source: &str, palette: &[(&str, Color)]) -> Vec<String> {
     let declared = rgb_constants(source);
-    let missing =
-        declared.iter().filter(|name| !palette.iter().any(|e| e.0 == **name)).map(|name| {
-            format!("{name}: a Color::Rgb constant with no entry saying where it is drawn")
-        });
-    let stale = palette
-        .iter()
-        .map(|entry| entry.0)
-        .filter(|name| !declared.contains(name))
-        .map(|name| format!("{name}: an entry for a constant the palette no longer declares"));
-    missing.chain(stale).collect()
+    let written = source.matches("Color::Rgb(").count();
+    let mut failures = Vec::new();
+    if declared.len() != written {
+        failures.push(format!(
+            "the scan read {} of the source's {written} `Color::Rgb(` values: a declaration it \
+             cannot see is one nothing accounts for",
+            declared.len()
+        ));
+    }
+    failures.extend(declared.iter().filter(|name| !palette.iter().any(|e| e.0 == **name)).map(
+        |name| format!("{name}: a Color::Rgb constant with no entry saying where it is drawn"),
+    ));
+    failures.extend(
+        palette
+            .iter()
+            .map(|entry| entry.0)
+            .filter(|name| !declared.contains(name))
+            .map(|name| format!("{name}: an entry for a constant the palette no longer declares")),
+    );
+    failures
 }
 
 /// The token names the pairs and the exclusions account for.
@@ -184,7 +206,9 @@ fn accounted() -> Vec<&'static str> {
 fn finds_a_pair_too_close_to_read() {
     assert_eq!(
         out_of_band(&[("DIFF_DELETION_BG", "DIFF_FILE_HEADER_BG", TEXT)], PALETTE),
-        ["DIFF_DELETION_BG on DIFF_FILE_HEADER_BG measures 1.00:1, below the 4.5:1 floor"]
+        [format!(
+            "DIFF_DELETION_BG on DIFF_FILE_HEADER_BG measures 1.00:1, below the {TEXT}:1 floor"
+        )]
     );
 }
 
@@ -230,6 +254,23 @@ fn reports_an_entry_the_palette_no_longer_declares() {
     assert_eq!(
         unaccounted("", &[("RUST_ORANGE", RUST_ORANGE)]),
         ["RUST_ORANGE: an entry for a constant the palette no longer declares"]
+    );
+}
+
+/// The control the other two cannot be: they pin the classifier, and this pins
+/// the COVERAGE. A spelling the scan does not read leaves the count short
+/// without any pair going missing, so the guard has to say so rather than
+/// report the constants it did read. Both shapes here compile and stay
+/// rustfmt-clean: a declaration wrapped after the `=`, and a qualified type
+/// path.
+#[test]
+fn reports_a_declaration_the_scan_cannot_read() {
+    let source = "pub const WRAPPED: Color =\n    Color::Rgb(1, 2, 3);\n\
+                  pub const PATHED: ratatui::style::Color = Color::Rgb(4, 5, 6);\n";
+    assert_eq!(
+        unaccounted(source, &[("PATHED", CODE_PANEL_BG)]),
+        ["the scan read 1 of the source's 2 `Color::Rgb(` values: a declaration it cannot see \
+             is one nothing accounts for"]
     );
 }
 
