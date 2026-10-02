@@ -108,8 +108,10 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
             // whole, and it is already the shape the wire sends, so the
             // same decoder turns it into the frame a reader draws. A row
             // missing a typed field decodes as a generic `Message::System`
-            // rather than failing, which the fold draws nothing for, so the
-            // Err arm is for a shape this cannot currently take.
+            // rather than failing - a frame a view draws only where it has an
+            // arm for the subtype, and the boundary row draws itself bare or
+            // half-filled from the facts it kept - so the Err arm is for a
+            // shape this cannot currently take.
             "system" => match serde_json::from_value::<Message>(message_value.clone()) {
                 Ok(frame) => out.push(frame),
                 Err(err) => tracing::warn!(

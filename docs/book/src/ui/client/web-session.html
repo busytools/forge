@@ -1399,7 +1399,7 @@ docs: Render the message body into rows.</div>
           <svg class="ic arw"><use href="#i-chev"/></svg>
           <span class="rule"></span>
         </summary>
-        <div class="cpbody">trigger <b>auto</b> &#183; <b>154,013</b> tokens read before the cut</div>
+        <div class="cpbody">trigger <b>auto</b> &#183; <b>154,013</b> tokens read before the cut, <b>4,712</b> carried after it</div>
       </details>
 
       <div class="mine">
@@ -1469,9 +1469,8 @@ docs: Render the message body into rows.</div>
       </div>
 
       <!-- The same row opened, since the body is the half a reader has to
-           judge: the trigger, and the count read before the cut. What the CLI
-           also sends - the count carried after it - does not survive forge's
-           decode, so the body states the two facts it is given and stops. -->
+           judge: the trigger, the count read before the cut, and the count
+           carried after it. -->
       <details class="cpoint" open>
         <summary>
           <span class="rule"></span>
@@ -1480,16 +1479,16 @@ docs: Render the message body into rows.</div>
           <svg class="ic arw"><use href="#i-chev"/></svg>
           <span class="rule"></span>
         </summary>
-        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut</div>
+        <div class="cpbody">trigger <b>manual</b> &#183; <b>88,412</b> tokens read before the cut, <b>2,703</b> carried after it</div>
       </details>
 
       <!-- And the third state: a boundary whose frame carried no metadata at
            all - the outer key renamed drops it to the CLI's generic bucket -
            keeps the hairline and draws neither a count nor a handle onto a
-           body that does not exist. A rename INSIDE the metadata keeps one of
-           the two facts and draws a handle onto a body holding that one: the
-           count's own clause and the trigger's are independent, and the two
-           mixed bodies are the count alone and the trigger alone. -->
+           body that does not exist. A rename INSIDE the metadata keeps some of
+           the facts and draws a handle onto a body holding those: the clauses
+           are independent, so the mixed bodies are the trigger alone, a count
+           alone, or the trigger with the count the cut carried. -->
       <details class="cpoint">
         <summary>
           <span class="rule"></span>

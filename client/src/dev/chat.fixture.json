@@ -211,7 +211,7 @@
           "type": "system",
           "subtype": "compact_boundary",
           "uuid": "compact-1",
-          "compact_metadata": { "trigger": "auto", "pre_tokens": 41207 }
+          "compact_metadata": { "trigger": "auto", "pre_tokens": 41207, "post_tokens": 1265 }
         },
         {
           "type": "assistant",

@@ -11,17 +11,25 @@
    * A hint rather than a block: a hairline across the column carrying the word,
    * the count read before the cut, and a handle onto the trigger behind it.
    *
-   * **It says what it was given.** The CLI's frame also carries the count after
-   * the cut, which forge's decode drops before any view sees it, so the body
-   * states the trigger and the pre-cut count and stops. A boundary whose
-   * metadata did not survive the wire at all keeps the hairline and drops the
-   * handle rather than opening onto nothing, and one that kept a single fact
-   * opens onto that fact alone.
+   * **It says what it was given.** Each of the three facts a boundary's frame
+   * carries - the trigger, the count read before the cut, the count carried
+   * after it - draws only when the frame held one. A boundary whose metadata
+   * did not survive the wire at all keeps the hairline and drops the handle
+   * rather than opening onto nothing, and one that kept some of its facts opens
+   * onto those alone.
    */
-  let { trigger, preTokens }: { trigger: string | null; preTokens: number | null } = $props();
+  let {
+    trigger,
+    preTokens,
+    postTokens,
+  }: {
+    trigger: string | null;
+    preTokens: number | null;
+    postTokens: number | null;
+  } = $props();
 
   /** Whether anything sits behind the row, which is what the handle promises. */
-  const opens = $derived(trigger !== null || preTokens !== null);
+  const opens = $derived(trigger !== null || preTokens !== null || postTokens !== null);
 </script>
 
 <details class="cpoint">
@@ -34,9 +42,11 @@
   </summary>
   {#if opens}
     <div class="cpbody">
-      {#if trigger !== null}trigger <b>{trigger}</b>{/if}
+      {#if trigger !== null}trigger <b>{trigger}</b
+        >{#if preTokens === null && postTokens !== null},{/if}{/if}
       {#if trigger !== null && preTokens !== null}{' \u{b7} '}{/if}
-      {#if preTokens !== null}<b>{grouped(preTokens)}</b> tokens read before the cut{/if}
+      {#if preTokens !== null}<b>{grouped(preTokens)}</b> tokens read before the cut{#if postTokens !== null},{/if}{/if}
+      {#if postTokens !== null}<b>{grouped(postTokens)}</b> carried after it{/if}
     </div>
   {/if}
 </details>
