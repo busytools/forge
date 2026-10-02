@@ -1389,15 +1389,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
-/* What choosing an option means, in the label's own line: a second indented
-   line under every row reads as a warning about the row rather than as part
-   of it, and the reader is choosing, not being told off. */
-.opt .why { color: var(--dim); font-size: var(--fs-label); margin-left: 7px; }
-/* The tint rides the option's own words, not the row: a wrap of description
-   under it is not part of the thing being chosen, and a band across the pair
-   read as though it were. */
-.opt.sel .lbl { color: var(--text); font-weight: 600; background: var(--sel);
-  border-radius: 7px; padding: 2px 8px; margin-left: -8px; }
+/* What choosing an option means, flowing from the label: it starts where the
+   label's own run ends, and a wrap lands at the column's edge rather than
+   under an indent - the words are one sentence, not a caption hanging off it. */
+.opt .why { color: var(--dim); font-size: var(--fs-label); }
+/* The marked option is marked by its own words: brighter and heavier, and
+   nothing painted behind them - a tint read as a state of the row rather than
+   as the thing being chosen, and one carrying padding dragged the label out
+   of the column every other option's text sits in. */
+.opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   margin-top: 2px; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
