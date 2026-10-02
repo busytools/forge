@@ -190,7 +190,9 @@ describe('one submit, as the screen sees it', () => {
     const server = await stubServer();
     servers.push(server);
 
-    const next = await submitAttempt(server.address, (input) => connectTo(input, 200));
+    // The production deadline rather than a shortened one: the property here
+    // is the pass path, and a tight budget races the machine under load.
+    const next = await submitAttempt(server.address, (input) => connectTo(input));
     expect(next.busy).toBe(false);
     expect(next.failure).toBeNull();
     expect(next.connected).toMatchObject({

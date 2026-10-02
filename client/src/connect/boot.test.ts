@@ -157,7 +157,7 @@ describe('what the app opens on', () => {
     const second = await stubServer();
     servers.push(first, second);
 
-    const was = await submitAttempt(first.address, (input) => connectTo(input, 200));
+    const was = await submitAttempt(first.address, (input) => connectTo(input));
     expect(
       was.connected,
       'the first address did not connect, so there is nothing to replace',
@@ -165,7 +165,7 @@ describe('what the app opens on', () => {
     expect(rememberedAddress(), 'a connection that took was not remembered').toBe(first.address);
     was.connected?.connection.close();
 
-    const now = await submitAttempt(second.address, (input) => connectTo(input, 200));
+    const now = await submitAttempt(second.address, (input) => connectTo(input));
     expect(now.connected).not.toBeNull();
     expect(rememberedAddress(), 'editing the address left the old one remembered').toBe(
       second.address,

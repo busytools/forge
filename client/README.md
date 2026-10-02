@@ -13,6 +13,7 @@ npm install
 npm run dev      # dev server on http://localhost:1420
 npm run build    # dist/
 npm run test     # vitest
+npm run mutate   # Stryker over the modules named in stryker.conf.json
 npm run typecheck
 ```
 
