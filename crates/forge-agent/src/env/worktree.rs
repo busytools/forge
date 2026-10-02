@@ -237,6 +237,11 @@ pub fn discard_worker_worktree(
 ///
 /// `None` when git cannot be asked: this exists to catch a silent failure,
 /// not to block a spawn on a probe that never answered.
+///
+/// The label is taken raw, the way forge's worktree paths take it
+/// everywhere else. claude sanitises the name before deriving the path and
+/// the branch, so a label carrying `/` is a divergence that predates this
+/// check rather than one it widens.
 pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Option<String> {
     let branch = format!("worktree-{label}");
     let mut command = git_command::command("git");
