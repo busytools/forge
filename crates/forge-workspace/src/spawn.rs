@@ -3692,8 +3692,11 @@ provider = "anthropic"
             "the refused boot re-spawn is not live"
         );
         assert!(
-            entry.diagnostic.as_deref().is_some_and(|reason| reason.contains("worktree")),
-            "and the reason is on the row for a reader: {:?}",
+            entry
+                .diagnostic
+                .as_deref()
+                .is_some_and(|reason| reason.contains("already checked out")),
+            "and the reason is on the row for a reader, not just some worktree word: {:?}",
             entry.diagnostic
         );
         assert!(err.contains("already checked out"), "the dropped reply still carries it: {err}");
