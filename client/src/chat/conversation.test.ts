@@ -937,7 +937,7 @@ describe('the conversation the chat draws', () => {
     expect(
       fold(held, LEAD).map((unit) => unit.kind),
       'the forged frame draws as traffic, not as the reader own turn',
-    ).toEqual(['messages']);
+    ).toEqual(['group']);
   });
 
   it('keeps every row keyed when older turns arrive', () => {

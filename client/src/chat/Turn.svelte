@@ -7,12 +7,10 @@
   import Group from './Group.svelte';
   import Hook from './Hook.svelte';
   import Hooks from './Hooks.svelte';
-  import Messages from './Messages.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
-  import Thinking from './Thinking.svelte';
   import { fold, type Self, type Unit } from './units';
 
   /**
@@ -24,8 +22,9 @@
    * neither re-measures it nor closes what the reader has open.
    *
    * **The fold is not this component's.** `fold` decides what the turn's
-   * messages are - one group per run of calls, one lane per family, a card for
-   * a question, a notice for a delivery - and this draws what it is given.
+   * messages are - one group per stretch of work, a lane per family and per
+   * kind of peer traffic, a card for a question, a notice for a delivery - and
+   * this draws what it is given.
    */
   let {
     turn,
@@ -172,14 +171,10 @@
         {/if}
         {#if unit.kind === 'text'}
           <Prose text={unit.text} />
-        {:else if unit.kind === 'thinking'}
-          <Thinking text={unit.text} />
         {:else if unit.kind === 'group'}
-          <Group families={unit.families} status={unit.status} />
+          <Group lanes={unit.lanes} />
         {:else if unit.kind === 'question'}
           <Card asked={unit.asked} />
-        {:else if unit.kind === 'messages'}
-          <Messages lanes={unit.lanes} status={unit.status} />
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
         {:else if unit.kind === 'hooks'}

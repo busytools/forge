@@ -129,6 +129,29 @@ export function firstLine(text: string): string {
   );
 }
 
+/**
+ * A body as one line, ready for inline markdown: block marks off, lines joined,
+ * space collapsed.
+ *
+ * **For a thought, the first line is often a stub** - "Let me orient. State:" -
+ * with the substance a line or two below, so a row previewing `firstLine` says
+ * nothing. The row shows the text whole and the layout breaks it where it runs
+ * out. Block marks go because one line cannot draw a heading, a list or a
+ * fence: they would land as raw `##` and `- ` where the words should be. Inline
+ * marks - emphasis, code - stay, and the row renders them the way the body
+ * does.
+ */
+export function joinedLine(text: string): string {
+  return text
+    .replace(/^```.*$/gm, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** A body's paragraphs, which are the blank-line breaks it arrives with. */
 export function paragraphs(body: string): string[] {
   return body

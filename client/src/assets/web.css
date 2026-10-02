@@ -757,21 +757,11 @@ details.sec[open] > summary .arw { color: var(--accent); }
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
-/* the family tree is the default view */
-.kind { margin: 3px 0; }
-.kind > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-  padding: 6px 10px; border-radius: 9px; cursor: pointer;
-  font-family: var(--mono); font-size: var(--fs-group); }
-.kind > summary::-webkit-details-marker { display: none; }
-.kind > summary:hover { background: rgba(27,33,48,.45); }
-/* The aggregate: enough to know the run has a failure in it, never a
-   substitute for the per-call status that says which one. */
-.kind > summary .st { color: var(--ok); }
-.kind > summary .st.err { color: var(--bad); }
-.kind > summary .nm { font-weight: 700; white-space: nowrap; }
-.kind > summary .arw { margin-left: auto; color: var(--dim); }
-.kind[open] > summary .arw { color: var(--accent); }
-.leaves { padding: 0 0 6px 4px; }
+/* A run of calls, or of peer messages: a family row per kind with its calls
+   under it. There is no disclosure around the run - no count, no roll-up -
+   because a run is not a thing to hide: the family rows always show, and each
+   call still opens on its own. */
+.leaves { padding: 0 0 6px 4px; margin: 6px 0; }
 /* One family inside a group: a label, and its calls on their own lane, so
    what is a group and what is a call never reads alike. */
 .knd { display: flex; align-items: center; gap: 8px; padding: 9px 8px 3px;
@@ -790,6 +780,9 @@ details.leaf > summary:hover { background: rgba(27,33,48,.4); }
 details.leaf > summary .st { color: var(--ok); }
 details.leaf > summary .st.err { color: var(--bad); }
 details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row's inline marks - a thought preview renders emphasis and code - take the
+   prose tone rather than the row's own muting, so a mark reads as a mark. */
+details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary { color: var(--text); }
@@ -883,33 +876,11 @@ details.leaf.running > summary { color: var(--text); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
 .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
-/* What the model thought. Collapsed, carrying the first of its own words: the
-   terminal's vocabulary for a block nothing else shows, where its own arm for
-   this block only sets a running status and counts the characters. Dim, because
-   it is not what the assistant said - and the words, not a label, because the
-   row's whole job is to show that there was something here. */
-details.think { margin: 3px 0; }
-details.think > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-  padding: 4px 10px; border-radius: 9px; cursor: pointer; color: var(--dim);
-  font-size: var(--fs-base); }
-details.think > summary::-webkit-details-marker { display: none; }
-details.think > summary:hover { background: rgba(27,33,48,.45); }
-details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The row's kind, ahead of its words: the mark is the same size as the small
-   mono labels a row carries rather than the 15px a tool row's glyph takes, so
-   the word stays the thing that reads.
-   Named `tkind` rather than `kind`, which the family-tree group disclosure
-   already owns - a bare `.kind` here would inherit its 3px margins and make
-   every thinking row taller, which is the trap this sheet's `.knd` was split
-   out of in the first place. */
-details.think > summary .tkind { display: flex; align-items: center; gap: 7px;
-  flex: none; color: var(--dim); }
-details.think > summary .tkind .ic { width: 12px; height: 12px; flex: 0 0 12px; }
-details.think > summary .tkind .word { color: var(--muted); }
-details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-details.think > summary:hover .arw { color: var(--muted); }
-details.think[open] > summary { color: var(--muted); }
-details.think[open] > summary .arw { color: var(--accent); }
+/* The bulb's ink nearly fills its box, so at the marks' 15px its base sat below
+   the text's baseline and the row read low; 13 with a 1px lift sits it with
+   the words. */
+details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
+  transform: translateY(-1px); }
 
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }

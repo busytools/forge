@@ -315,7 +315,7 @@ describe('the chat column as it draws', () => {
     ]);
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'every message is on the page, both asks included').toContain('3 messages');
+    expect(drawn(), 'every message is on the page, both asks included').toContain('is it filed?');
     expect((html.match(/>ask</g) ?? []).length, 'the two asks share one lane').toBe(1);
     expect((html.match(/>message</g) ?? []).length, 'and the message its own').toBe(1);
     expect(html, 'a counterparty in this project').toContain('i-bot');
@@ -353,8 +353,8 @@ describe('the chat column as it draws', () => {
     ]);
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'both lanes drew, so the turn drew').toContain('2 tool calls');
-    expect((html.match(/>read</g) ?? []).length, 'and each kept its own word').toBe(2);
+    expect(drawn(), 'both calls drew, so the turn drew').toContain('a.rs');
+    expect((html.match(/>read</g) ?? []).length, 'and each lane kept its own word').toBe(2);
   });
 
   it('draws a message whose body repeats a paragraph, which a text key refuses', () => {
@@ -384,7 +384,7 @@ describe('the chat column as it draws', () => {
       },
     ]);
 
-    expect(drawn(), 'the message drew, both paragraphs of it').toContain('1 message');
+    expect(drawn(), 'the message drew').toContain('forge/steward');
     expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
   });
 
@@ -473,16 +473,11 @@ describe('the chat column as it draws', () => {
     server.answer([], null);
     server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: edit } } });
 
-    const run = document.querySelector('details.kind');
     const leaf = document.querySelector('details.leaf');
-    if (!(run instanceof HTMLDetailsElement) || !(leaf instanceof HTMLDetailsElement)) {
-      throw new Error('the run did not draw');
-    }
+    if (!(leaf instanceof HTMLDetailsElement)) throw new Error('the call did not draw');
     expect(leaf.open, 'a mutation draws open without being asked').toBe(true);
-    for (const row of [run, leaf]) {
-      row.open = false;
-      row.dispatchEvent(new Event('toggle'));
-    }
+    leaf.open = false;
+    leaf.dispatchEvent(new Event('toggle'));
 
     // The page lands with the turn grown, which is what re-renders the row.
     server.answer([{ key: null, messages: [edit, answered] }], '1');
@@ -524,7 +519,7 @@ describe('the chat column as it draws', () => {
     });
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'the message is on the page as a group of one').toContain('1 message');
+    expect(drawn(), 'the message is on the page').toContain('picking it up');
     expect(html, 'marked by the counterparty class').toContain('i-bot');
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });

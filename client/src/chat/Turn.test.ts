@@ -153,11 +153,12 @@ describe('one turn, as the page draws it', () => {
     expect(answered, 'and the assistant prose still joins').not.toContain('<br>');
   });
 
-  it('draws what the model thought as a collapsed row carrying its own words', () => {
+  it('draws what the model thought as a collapsed row carrying its words joined', () => {
     // The terminal does not render thinking text at all - its arm sets a status
     // and traces a count - so this is the client beyond it rather than beside
-    // it, in the terminal's own collapsed vocabulary: the row carries the first
-    // of its words, and the whole of it is behind the row's open.
+    // it, in the terminal's own collapsed vocabulary: the row carries the
+    // thought joined into one line, and the layout breaks it at the row's
+    // width, where a reader expects the row to end.
     const body = draw(
       said([
         {
@@ -172,10 +173,9 @@ describe('one turn, as the page draws it', () => {
     // the whole render passes whether or not the row carries them.
     const at = body.indexOf('<span class="tn">');
     const summary = body.slice(at, body.indexOf('</summary>', at));
-    expect(summary, 'the row leads with the thinking own first words').toContain(
-      'first the model wondered',
+    expect(summary, 'the row leads with the thought joined, not cut at its newline').toContain(
+      'first the model wondered and then it kept going',
     );
-    expect(summary, 'and only that line of it').not.toContain('and then it kept going');
     expect(summary, 'and carries the shared disclosure chevron').toContain('#i-chev');
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
   });
@@ -327,10 +327,11 @@ describe('one turn, as the page draws it', () => {
       result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
     );
 
-    const groups = body.match(/<details class="kind"/g) ?? [];
-    expect(groups, 'two runs, so two groups').toHaveLength(2);
+    const lanes = body.match(/<div class="knd"/g) ?? [];
+    expect(lanes, 'two runs, so two family rows').toHaveLength(2);
     expect(body).toContain('<div class="card">');
-    expect(body, 'and the first run keeps its own one call').toContain('1 tool call');
+    expect(body, 'and each run keeps its own call').toContain('a.rs');
+    expect(body, 'and the other its own').toContain('b.rs');
   });
 
   it('draws a search hit as a location and the line beneath it', () => {

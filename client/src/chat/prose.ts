@@ -85,3 +85,14 @@ withPanels(PROMPT);
 export function renderProse(text: string, preserveLines = false): string {
   return (preserveLines ? PROMPT : READER).render(text);
 }
+
+/**
+ * `text` as inline markdown: emphasis and code, no block of its own.
+ *
+ * For a row's own line, which is one line by the design's rule and cannot hold
+ * a paragraph, a heading or a list. Same renderer and same escaping as the
+ * body, so a row and its open body read the marks alike.
+ */
+export function renderInlineProse(text: string): string {
+  return READER.renderInline(text);
+}
