@@ -283,12 +283,25 @@ pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Opti
             if *prunable { "stale " } else { "" },
             repo.display(),
         )),
-        None if path.exists() => Some(format!(
-            "{} already exists and is not a worktree of this repository, so this worker's \
-             worktree cannot be created there; remove it, or spawn under a different label",
+        None if path_is_taken(path) => Some(format!(
+            "{} already exists and is not an empty directory, so this worker's worktree cannot \
+             be created there; remove it, or spawn under a different label",
             path.display()
         )),
         None => None,
+    }
+}
+
+/// Whether something at `path` is in the way of `git worktree add`, which
+/// takes a path that is absent or an empty directory and refuses anything
+/// else: a file, and any directory holding an entry, both exit 128
+/// ("already exists"). A dotfile counts as an entry - measured.
+fn path_is_taken(path: &Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        // Not a directory at all, or one that cannot be read: git takes
+        // neither, and `exists` separates that from a path that is free.
+        Err(_) => path.exists(),
     }
 }
 
@@ -1556,6 +1569,23 @@ mod tests {
         assert_eq!(worktree_creation_obstacle(repo.path(), "lbl", &wt), None);
     }
 
+    /// git takes a path that is absent or an EMPTY directory, so an empty
+    /// one is not in its way. Refusing it would strand the label: a `mkdir`
+    /// or a cleanup that empties the directory would block every spawn of
+    /// it until someone removed the directory by hand.
+    #[test]
+    fn obstacle_is_none_for_an_empty_directory() {
+        let repo = init_repo_with_commit();
+        let wt = repo.path().join(".claude").join("worktrees").join("lbl");
+        fs::create_dir_all(&wt).expect("empty worktrees dir");
+
+        assert_eq!(
+            worktree_creation_obstacle(repo.path(), "lbl", &wt),
+            None,
+            "an empty directory is a path git will take",
+        );
+    }
+
     #[test]
     fn obstacle_names_a_path_taken_by_something_else() {
         let repo = init_repo_with_commit();
@@ -1566,7 +1596,7 @@ mod tests {
         let obstacle = worktree_creation_obstacle(repo.path(), "lbl", &wt).expect("an obstacle");
 
         assert!(
-            obstacle.contains("is not a worktree"),
+            obstacle.contains("is not an empty directory"),
             "the obstacle names what is in the way: {obstacle}"
         );
     }
