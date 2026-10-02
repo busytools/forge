@@ -121,7 +121,10 @@ bench:
 # `client/stryker.conf.json`; a run reports a score per file and lists every
 # mutant that survived, which is a list of assertions that look like they test
 # something and do not. Mutating the Svelte components is out on purpose: a
-# full render per mutant finds much less than it costs.
+# full render per mutant finds much less than it costs, and `src/wire/limits.ts`
+# is out for the same reason a file earns its place: it is one numeric literal,
+# Stryker has no mutator for one, and a run against it prints an n/a row with
+# "Ran NaN tests per mutant" that reads as a clean module.
 #
 # This drives Stryker's `command` runner rather than the vitest runner, and
 # the reason is worth keeping: the vitest runner filters a mutant's tests by a
@@ -140,10 +143,12 @@ bench:
 # refused rather than scored against tests that never import it.
 #
 # Cost is about 2 seconds a mutant, so `just mutate src/composer/meter.ts` is
-# roughly a minute and the whole 4,081-mutant set is hours. Run it per module,
-# not per handover. The run is bounded by `concurrency` in `stryker.conf.json`
-# (four workers, well below this machine's core count) because a campaign at
-# the default starves a box that is being used while it runs.
+# roughly a minute and the whole 4,227-mutant set is hours. Run it per module,
+# not per handover. A run is bounded at both levels: `concurrency` in
+# `stryker.conf.json` caps Stryker's workers at four, and the command pins each
+# worker's vitest fleet with `--maxWorkers=2`, so a run holds the box to about
+# twelve test processes rather than the ~60 the defaults allow - this machine
+# is used while a campaign runs.
 #
 # The sandbox is `client/.stryker-tmp/sandbox-*/`; a successful run deletes it
 # and a crashed one leaves it. `.gitignore`, `.prettierignore` and
