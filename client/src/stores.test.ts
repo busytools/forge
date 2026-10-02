@@ -99,6 +99,7 @@ describe('the stores one connection holds', () => {
       // reset it: a reader suppresses its replay while that count is nonzero,
       // and the new occupant's own frames are then never read.
       for (let at = 0; at < 520; at += 1) store.push('catalog_loaded');
+      expect(store.dropped(), 'precondition: the tail overflowed the ceiling').toBeGreaterThan(0);
 
       store.push(occupantAs(name));
 
