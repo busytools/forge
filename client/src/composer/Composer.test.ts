@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Harness from './Harness.svelte';
 import type { ServerMessage } from '../protocol';
-import { permissionAsk, questionAsk, record, seatRead, take, wire, type Wire } from './testing';
+import {
+  permissionAsk,
+  questionAsk,
+  record,
+  seatRead,
+  slackDraftAsk,
+  take,
+  wire,
+  type Wire,
+} from './testing';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
@@ -1533,6 +1542,93 @@ describe('the dock', () => {
     expect(harness.sent, 'moving the mark answers nothing').toEqual([]);
   });
 
+  it('rejects a question on Escape, which is a way out the dock did not have', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    press('Escape');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'cancelled' },
+        },
+      },
+    ]);
+  });
+
+  it('rejects a question from its own-words box, rather than only from the options', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    press('ArrowUp');
+    expect(document.activeElement, 'the own-words row is where the question takes words').toBe(
+      document.querySelector('.dock textarea.notes'),
+    );
+
+    press('Escape');
+
+    expect(commands(harness), 'the same way out from both places').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'cancelled' },
+        },
+      },
+    ]);
+  });
+
+  it('names the reject key on a question, which the keys line used to leave out', () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    expect(drawn(), 'the keys line says what Escape does here').toContain('Esc reject');
+  });
+
+  it('leaves the counter off a lone question, where "Q1 of 1" says nothing', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 0, 1) }) });
+
+    expect(drawn(), 'the ordinary case carries no index').not.toContain('Q1 of 1');
+
+    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 1, 3) });
+    flushSync();
+
+    expect(drawn(), 'a batch still says which one this is').toContain('Q2 of 3');
+  });
+
+  it("draws an option's description under its name, where the terminal draws it", () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    const row = options()[0];
+    if (!(row instanceof HTMLElement)) throw new Error('the dock drew no options');
+    const name = row.querySelector('.lbl');
+    const vs = row.querySelector('.why');
+
+    expect(vs?.textContent, 'the description is drawn').toBe('The pre-production cluster');
+    expect(
+      vs?.parentElement,
+      'and it shares the name column, so the two align rather than the name being pushed around',
+    ).toBe(name?.parentElement);
+  });
+
+  it("offers the reader's own words as the agent's, which is the wording rule", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    expect(options()[2]?.textContent, 'the row says agent, never the vendor').toContain(
+      'Tell the agent something else',
+    );
+
+    // A permission's row is the name the core sent rather than this client's
+    // own: the rule reaches that one where the name is written, not here, and a
+    // local rename would put the dock's row out of step with the wire.
+    harness.page.record = record({ pending_ask: permissionAsk() });
+    flushSync();
+
+    expect(options()[2]?.textContent, "so a permission draws the core's own name").toContain(
+      'Tell Claude something else',
+    );
+  });
+
   it("does not deny on the reader's behalf from a permission's own-words row", () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
 
@@ -2097,28 +2193,159 @@ describe('the dock', () => {
     expect(drawn()).toContain('the session is not running');
   });
 
-  it('names a held post for what is waiting rather than explaining an empty dock', () => {
-    open({
-      record: record({
-        pending_ask: {
-          kind: 'slack_draft',
-          request: {
-            workspace: 'Trust Machines',
-            conversation_label: 'granite-staging-alerts',
-            thread_ts: null,
-            text: 'Deploy finished on staging.',
-            tool: 'slack__post',
-          },
-        },
-      }),
-    });
+  it('draws a held post as the terminal draws it: where it goes, and the words in full', () => {
+    open({ record: record({ pending_ask: slackDraftAsk() }) });
 
     expect(drawn()).toContain('Post to Slack');
     expect(drawn()).toContain('Trust Machines · granite-staging-alerts');
-    expect(drawn()).toContain('slack__post');
+    expect(drawn(), 'the words being approved are shown in full').toContain(
+      'Deploy finished on staging.',
+    );
     expect(drawn(), 'and does not claim options this view never drew').not.toContain(
       'arrived before this view attached',
     );
+  });
+
+  it('names the thread a reply goes into, rather than the tool that composed it', () => {
+    open({ record: record({ pending_ask: slackDraftAsk({ thread_ts: '1758901234.482910' }) }) });
+
+    expect(drawn()).toContain('Reply in Slack');
+    expect(drawn()).toContain('thread 1758901234.482910');
+    expect(drawn(), 'the dock says where it goes, not which tool asked').not.toContain(
+      'slack__post',
+    );
+  });
+
+  it('posts the held draft from the row the reader picks, addressed by its own id', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: true,
+        },
+      },
+    ]);
+  });
+
+  it('says why when the core refuses the draft, rather than dropping it in silence', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock comes back with the refusal').not.toBeNull();
+    expect(drawn()).toContain('the connector is not configured');
+  });
+
+  it('clears the refusal it showed when the reader answers the draft again', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    // The retry is the only thing the reader can do about a refusal, and the
+    // reason belonged to the attempt that failed: left standing it reads as a
+    // verdict on this one.
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the answer went out again').toHaveLength(2);
+    expect(drawn(), "and the first failure's reason goes with it").not.toContain(
+      'the connector is not configured',
+    );
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('takes the dock away once the draft is answered, which no frame will do', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the approval went out').toHaveLength(1);
+    expect(document.querySelector('.dock'), 'and the dock goes with it').toBeNull();
+    expect(document.querySelector('textarea'), 'the box takes the slot back').not.toBeNull();
+  });
+
+  it('does not raise an answered draft again, while the next one still draws', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    // The same draft as a fresh frame carries it: the seat is still parked on
+    // it server-side, and no update will ever say it is gone.
+    harness.page.record = record({ pending_ask: slackDraftAsk() });
+    flushSync();
+    expect(document.querySelector('.dock'), 'a repaint does not raise it again').toBeNull();
+
+    harness.page.record = record({
+      pending_ask: slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' }),
+    });
+    flushSync();
+    expect(document.querySelector('.dock'), 'while the next draft is a new prompt').not.toBeNull();
+  });
+
+  it('draws the next held draft as a fresh dock, rather than carrying the mark over', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    press('ArrowDown');
+    expect(document.querySelector('.opt.sel')?.textContent).toContain("Don't send");
+
+    // The second draft, which is the next prompt the seat is parked on.
+    harness.page.record = record({
+      pending_ask: slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' }),
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.opt.sel')?.textContent,
+      'the mark belongs to the draft that was answered, not to the next one',
+    ).toContain('Send it');
+  });
+
+  it('refuses the held draft from its own no-row', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[1]?.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: false,
+        },
+      },
+    ]);
+  });
+
+  it('refuses the held draft on Escape, which is the same refusal', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    press('Escape');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: false,
+        },
+      },
+    ]);
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {

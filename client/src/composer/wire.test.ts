@@ -89,9 +89,11 @@ describe('the ask as the composer reads it', () => {
     });
     if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
 
+    expect(held.request.id, 'a draft is answered by its own id, not by a tool call').toBe(
+      '0192e1c0-0000-7000-8000-000000000000',
+    );
     expect(held.request.workspace).toBe('Trust Machines');
     expect(held.request.conversationLabel).toBe('granite-staging-alerts');
-    expect(held.request.tool, 'which tool is what is actually waiting').toBe('slack__post');
     expect(held.request.text).toBe('Deploy finished on staging.');
   });
 });

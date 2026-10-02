@@ -128,6 +128,23 @@
   let dockLanded = $state<string | null>(null);
 
   /**
+   * The prompt the dock draws, which is the one the seat is parked on - unless
+   * this composer has answered a held draft.
+   *
+   * A question's answer clears the ask with an update of its own. A draft's does
+   * not: the core drops it from its registry and says nothing, and a poll's
+   * answer takes only the slices no update carries, which an ask is not. So the
+   * draft this composer answered would stand until the seat was read whole.
+   * Suppressing it is the move the terminal makes by popping its own prompt, and
+   * a refusal brings it back with the reason.
+   */
+  const dockAsk = $derived(
+    ask !== null && !(ask.kind === 'slack_draft' && answered === ask.request.id && refusal === null)
+      ? ask
+      : null,
+  );
+
+  /**
    * What the table needs to say which box holds the keyboard.
    *
    * This is the session route's box, so the connect screen's is never up beside
@@ -137,8 +154,8 @@
   const where = $derived({
     editor: 'composer',
     remember: 'composer',
-    pending: ask !== null,
-    composerPresent: ask === null,
+    pending: dockAsk !== null,
+    composerPresent: dockAsk === null,
     connectPresent: false,
     dockPresent: dockOpen,
   } satisfies Where);
@@ -468,9 +485,16 @@
     void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
   }
 
-  /** Remember which prompt this reader answered, while the core still lists it. */
+  /**
+   * Remember which prompt this reader answered, while the core still lists it.
+   *
+   * A new answer supersedes the refusal it followed: the reason belonged to the
+   * attempt that failed, and left standing it would read as a verdict on this
+   * one.
+   */
   function remember(toolId: string | null): void {
     answered = toolId;
+    refusal = null;
   }
 
   /**
@@ -482,11 +506,9 @@
    * that tells an answered prompt from the next and names what the dock
    * dispatches under.
    *
-   * A held Slack post carries no id of its own and keys as null, so two in a row
-   * share one. Nothing stateful rides on that dock - it draws a head and a
-   * description and no rows at all - so a shared key has nothing to carry. Give
-   * it rows and this key needs a field for it, the way a question's has one for
-   * its index.
+   * A held Slack post carries no tool id and rides its own instead, so two in a
+   * row are two prompts: the dock has rows and a mark, and a shared key would
+   * carry the one draft's mark onto the next.
    */
   function ownKeyOf(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
@@ -494,15 +516,21 @@
     if (current.kind === 'question') {
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
-    return null;
+    return `slack:${current.request.id}`;
   }
 
-  /** The tool the prompt is waiting on, which is how an answer is told apart from the next one. */
+  /**
+   * What the prompt is waiting on, which is how an answer is told apart from the
+   * next one.
+   *
+   * A tool id for a permission and a question, and the draft's own id for a held
+   * post: it is answered by that id rather than by a tool call, and it is what
+   * tells a refusal about this draft from one about the next.
+   */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
-    return current.kind === 'permission' || current.kind === 'question'
-      ? current.request.toolId
-      : null;
+    if (current.kind === 'slack_draft') return current.request.id;
+    return current.request.toolId;
   }
 </script>
 
@@ -518,16 +546,16 @@
       </div>
     </div>
   </div>
-{:else if ask !== null}
+{:else if dockAsk !== null}
   <div class="comp">
     <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
          wire's option ids are positional, so a mark or a toggle left over from
          the question before is a valid answer to the one after, and the core
          accepts it. A repaint of the same prompt keeps its key, so a frame
          arriving clears nothing the reader has turned on. -->
-    {#key ownKeyOf(ask)}
+    {#key ownKeyOf(dockAsk)}
       <Dock
-        {ask}
+        ask={dockAsk}
         {slot}
         {connection}
         depth={seat.pendingDepth}

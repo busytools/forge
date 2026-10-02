@@ -221,9 +221,15 @@
   .opt .ic.ok { color: var(--ok); }
   .opt .ic.no { color: var(--bad); }
   .opt .ic.ed { color: var(--blue); }
+  .opt .tx { flex: 1; min-width: 0; }
   .opt .lbl { color: var(--dim); }
+  /* What choosing an option means, on its own line under the name and in the
+     name's own column, which is where the terminal draws it. */
+  .opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
+    margin-top: 1px; }
   .opt.sel { background: var(--sel); }
   .opt.sel .lbl { color: var(--text); font-weight: 600; }
+  .opt.sel .why { color: var(--muted); }
   .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
     border: 1.5px solid var(--ctl); display: grid; place-items: center; }
   .opt .box2.on { border-color: var(--ok); color: var(--ok); }
@@ -234,12 +240,6 @@
   .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
-  .dock .body { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .dock .body .r { display: flex; gap: 10px; padding: 6px 12px; font-family: var(--mono);
-    font-size: var(--fs-data); }
-  .dock .body .r .k { color: var(--dim); width: 108px; flex: none; }
-  .dock .body .r .v { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
   /* The message itself, set apart because it is the thing being approved. */
   .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
     font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
@@ -653,15 +653,16 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
           <span class="q">Q2 of 3</span></div>
         <div class="desc">Pick the environments to deploy to.</div>
         <div class="opts">
-          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Staging</span></div>
+          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="tx"><span class="lbl">Staging</span><span class="why">The pre-production cluster</span></span></div>
           <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Production</span></div>
           <div class="opt"><span class="cur"></span><span class="box2"></span><span class="lbl">Development</span></div>
-          <div class="opt sel"><span class="cur">&#9656;</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Tell Claude something else:</span></div>
+          <div class="opt sel"><span class="cur">&#9656;</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Tell the agent something else:</span></div>
         </div>
         <div class="notes">Also bump the queue worker concurrency<span class="caret"></span></div>
         <div class="keys"><span><span class="k">space</span> toggle</span>
           <span><span class="k">&#8593;&#8595;</span> move</span>
-          <span><span class="k">&#9166;</span> submit</span></div>
+          <span><span class="k">&#9166;</span> submit</span>
+          <span><span class="k">esc</span> reject</span></div>
       </div>
     </div>
     <div class="col">
@@ -688,25 +689,24 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
 
   <div class="lab">held slack post &middot; the approval is the message</div>
   <div class="dock">
-    <div class="head"><span class="t">Post a message</span>
-      <span class="q">Trust Machines &#183; #granite-staging-alerts</span></div>
-    <div class="body">
-      <div class="r"><span class="k">workspace</span><span class="v">Trust Machines</span></div>
-      <div class="r"><span class="k">conversation</span><span class="v">#granite-staging-alerts</span></div>
-      <div class="r"><span class="k">thread</span><span class="v">1758901234.482910</span></div>
-    </div>
+    <div class="head"><span class="t">Reply in Slack</span>
+      <span class="q">Trust Machines &#183; granite-staging-alerts &#183; thread 1758901234.482910</span></div>
     <div class="sent">Deploy finished on staging. 148 of 148 checks green, rollback not needed.</div>
     <div class="opts">
       <div class="opt sel"><span class="cur">&#9656;</span>
-        <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Post</span></div>
+        <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Send it</span></div>
       <div class="opt"><span class="cur"></span>
-        <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Discard</span></div>
+        <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Don't send</span></div>
     </div>
     <div class="blip"><span class="dot"></span>dictating &#183; the words land in your draft either way</div>
     <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
       <span><span class="k">&#9166;</span> confirm</span>
       <span><span class="k">esc</span> reject</span></div>
   </div>
+  <p class="note" style="margin:8px 0 0">The words being approved are shown in full, because a
+  summary is not what goes out. The head names Post or Reply, the workspace, the conversation
+  and the thread, and the conversation is Slack's own name for it rather than a
+  <span class="mono">#</span> the panel made up: a DM's label is the partner's user id.</p>
 </div>
 
 <script>
