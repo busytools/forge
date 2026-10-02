@@ -267,6 +267,76 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe(9_149);
   });
 
+  it('draws a loaded skill as its own row rather than as the reader own turn', () => {
+    // The CLI injects a skill's body as a user frame and nobody typed it; the
+    // row is built from the frame's own first line, which is the only marker
+    // the wire carries, and that line is dropped from the body.
+    const skills = heard([
+      text(
+        'Base directory for this skill: /Users/ved/.claude/skills/unslop\n\n# Unslop\n\nEdit text.',
+      ),
+    ]);
+    const plugin = heard([
+      text(
+        'Base directory for this skill: /Users/ved/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.13.0\n\n# Ux\n\nDo it.',
+      ),
+    ]);
+
+    const units = fold([skills]);
+    expect(kinds(units), 'a row of its own').toEqual(['skill']);
+    const [row] = units;
+    expect(row?.kind === 'skill' ? row.name : null, 'named off the path').toBe('unslop');
+    expect(row?.kind === 'skill' ? row.body : '', 'the body without the plumbing line').toBe(
+      '# Unslop\n\nEdit text.',
+    );
+    const [cached] = fold([plugin]);
+    expect(
+      cached?.kind === 'skill' ? cached.name : null,
+      'and a versioned plugin path names the skill above the version',
+    ).toBe('ui-ux-pro-max');
+  });
+
+  it('hangs the continuation prompt on the compaction row rather than the reader', () => {
+    // The prompt is a user frame nobody typed, right after the boundary. Drawn
+    // as the reader's it wore an attribution, and the compaction row opened
+    // onto only the counts - the summary is the one account of what was cut.
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'cb-1',
+      compact_metadata: { trigger: 'auto', pre_tokens: 68_031, post_tokens: 9_149 },
+    };
+    const summary = heard([
+      text(
+        'This session is being continued from a previous conversation that ran out of context. And so on.',
+      ),
+    ]);
+
+    const units = fold([boundary, summary]);
+    expect(kinds(units), 'one row, not a turn beside it').toEqual(['compaction']);
+    const [row] = units;
+    expect(row?.kind === 'compaction' ? row.summary : null, 'the prompt rides the row').toContain(
+      'This session is being continued',
+    );
+    expect(row?.kind === 'compaction' ? row.preTokens : null, 'with its facts kept').toBe(68_031);
+  });
+
+  it('draws a continuation prompt with no boundary as the compaction it is', () => {
+    // The cut happened whether or not its frame reached this fold; the row
+    // carries what it has, and the summary is what it has.
+    const summary = heard([
+      text(
+        'This session is being continued from a previous conversation that ran out of context. More.',
+      ),
+    ]);
+
+    const units = fold([summary]);
+    expect(kinds(units)).toEqual(['compaction']);
+    const [row] = units;
+    expect(row?.kind === 'compaction' ? row.trigger : 'x', 'no facts to draw').toBeNull();
+    expect(row?.kind === 'compaction' ? row.summary : null).toContain('continued');
+  });
+
   it('draws a boundary that carries no metadata, saying only that it happened', () => {
     // The bare shape comes from drift: a rename of the outer key (`compact
     // _metadata` on the wire, `compactMetadata` on disk) drops the frame to the

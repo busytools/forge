@@ -264,6 +264,14 @@ export type Unit =
   | { kind: 'group'; key: string; lanes: Lane[]; status: CallStatus }
   | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
   | { kind: 'notice'; key: string; notice: Notice }
+  /**
+   * A skill the CLI loaded into the conversation.
+   *
+   * Its body arrives as the reader's own user frame, which nobody typed; the
+   * row names the skill and holds the whole body, so the skill stays readable
+   * without wearing an attribution it never had.
+   */
+  | { kind: 'skill'; key: string; name: string; body: string }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[]; errors: string[] }
   /**
    * Where the conversation was cut and the transcript replaced.
@@ -271,7 +279,9 @@ export type Unit =
    * The wire carries it as a `system` frame of its own subtype, and the fold
    * had no arm for it - so the frame that records the boundary drew nothing,
    * which is a frame dropped rather than a shape chosen. Its metadata carries
-   * the trigger and the counts either side of the cut.
+   * the trigger and the counts either side of the cut; `summary` is the
+   * continuation prompt the CLI sends after it, which is what the row opens
+   * onto, and it is null where that prompt never arrived.
    */
   | {
       kind: 'compaction';
@@ -279,6 +289,7 @@ export type Unit =
       trigger: string | null;
       preTokens: number | null;
       postTokens: number | null;
+      summary: string | null;
     }
   /** One hook's own run, drawn collapsed on the hook and the state it reached. */
   | { kind: 'hook'; key: string; run: HookRun }
@@ -448,6 +459,34 @@ function queuedText(prompt: unknown): string {
  */
 function isSkillReminder(text: string): boolean {
   return text.startsWith('Skill /') && text.includes('was loaded earlier');
+}
+
+/**
+ * A skill's body, which the CLI injects as the reader's own user frame.
+ *
+ * The frame is one text block: a plumbing line naming the skill's directory,
+ * then the skill's markdown. That line is the only marker the wire carries -
+ * the disk's own meta flag does not survive to it - so the row is built from
+ * it, its name read off the path, and the line itself dropped from the body.
+ */
+function skillBody(text: string): { name: string; body: string } | null {
+  const [lead, ...rest] = text.split('\n');
+  if (lead === undefined || !lead.startsWith('Base directory for this skill:')) return null;
+  const parts = lead.slice('Base directory for this skill:'.length).trim().split('/');
+  // A plugin-cached skill's path ends in its version, so the name is the last
+  // segment that is not one: `.../ui-ux-pro-max/2.13.0` is `ui-ux-pro-max`.
+  const name = parts.reverse().find((part) => part !== '' && !/^\d/.test(part)) ?? 'skill';
+  return { name, body: rest.join('\n').trim() };
+}
+
+/**
+ * The continuation prompt a compaction leaves behind, which nobody typed.
+ *
+ * It arrives as a user frame right after the boundary frame, so the fold hands
+ * it to the compaction row rather than drawing it as the reader's own turn.
+ */
+function isContinuation(text: string): boolean {
+  return text.startsWith('This session is being continued from a previous conversation');
 }
 
 /**
@@ -1130,6 +1169,33 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * with: a run's later frames rewrite that row rather than drawing beside it.
    */
   const hookRows = new Map<string, number>();
+  /**
+   * The row the last boundary opened, by index, so the continuation prompt
+   * that follows it lands on that row rather than drawing as the reader's.
+   */
+  let lastCompaction: number | null = null;
+
+  /** Attach a continuation prompt to the compaction row it belongs under. */
+  const attachContinuation = (text: string, key: string): void => {
+    flushWork();
+    const row = lastCompaction;
+    const held = row === null ? undefined : units[row];
+    if (row !== null && held !== undefined && held.kind === 'compaction') {
+      units[row] = { ...held, summary: text };
+      return;
+    }
+    // No boundary frame reached this fold, so the prompt's own row carries
+    // what it has: the cut happened, whatever the wire said about it.
+    units.push({
+      kind: 'compaction',
+      key,
+      trigger: null,
+      preTokens: null,
+      postTokens: null,
+      summary: text,
+    });
+    lastCompaction = units.length - 1;
+  };
 
   /** The running totals across the distinct messages seen so far, or null before any. */
   const liveUsage = (): { input: number; output: number; read: number; written: number } | null => {
@@ -1288,7 +1354,9 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           trigger: str(metadata, 'trigger'),
           preTokens: count('pre_tokens'),
           postTokens: count('post_tokens'),
+          summary: null,
         });
+        lastCompaction = units.length - 1;
         continue;
       }
       // A hook's own lifecycle: one row per RUN, because the frames are one
@@ -1421,6 +1489,23 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
               key: keyOf(at, frame, blockAt),
               notice: { severity: 'info', text: stripped },
             });
+            continue;
+          }
+          // Same rule for the two frames nobody typed that arrive as the
+          // reader's: a loaded skill's body and a compaction's continuation
+          // prompt. Each gets its own row above rather than the reader's.
+          const skill = skillBody(stripped);
+          if (skill !== null) {
+            push({
+              kind: 'skill',
+              key: keyOf(at, frame, blockAt),
+              name: skill.name,
+              body: skill.body,
+            });
+            continue;
+          }
+          if (isContinuation(stripped)) {
+            attachContinuation(stripped, keyOf(at, frame, blockAt));
             continue;
           }
         }

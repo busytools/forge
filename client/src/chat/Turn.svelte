@@ -11,6 +11,7 @@
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
+  import Skill from './Skill.svelte';
   import { fold, type Self, type Unit } from './units';
 
   /**
@@ -177,6 +178,8 @@
           <Card asked={unit.asked} />
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
+        {:else if unit.kind === 'skill'}
+          <Skill name={unit.name} body={unit.body} />
         {:else if unit.kind === 'hooks'}
           <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
         {:else if unit.kind === 'compaction'}
@@ -184,6 +187,7 @@
             trigger={unit.trigger}
             preTokens={unit.preTokens}
             postTokens={unit.postTokens}
+            summary={unit.summary}
           />
         {:else if unit.kind === 'hook'}
           <Hook run={unit.run} />

@@ -882,6 +882,10 @@ details.leaf.running > summary { color: var(--text); }
 details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
   transform: translateY(-1px); }
 
+/* A skill row's mark says what the row is, not how it ended, so it takes the
+   lane's dim rather than the ok tone a check wears. */
+details.leaf > summary .st.sk { color: var(--dim); }
+
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
 details.leaf > summary .k { color: var(--text); font-weight: 700; }
@@ -936,6 +940,9 @@ details.cpoint[open] > summary .word { color: var(--accent); }
 details.cpoint[open] > summary .arw { color: var(--accent); }
 .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
 .cpoint .cpbody b { color: var(--text); font-weight: 500; }
+/* The continuation summary under the facts, as prose rather than the body's
+   own line. */
+.cpoint .cpbody .sum { margin-top: 10px; }
 /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
 .hooks { margin: 4px 0;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
