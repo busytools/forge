@@ -54,15 +54,17 @@
    * input-loss defect this component's tests exist for.
    *
    * **A pointer this component moves, rather than a value derived from
-   * `slot`**, and both halves of that are load-bearing:
+   * `slot`**, for two reasons:
    *
    * - `Boxes` mints a seat's box on first use, and a derivation that resolved
    *   one would mint from inside a derivation - a write Svelte refuses with
    *   `state_unsafe_mutation` rather than drawing the box at all.
-   * - `pre` rather than a plain effect, because the swap has to land before
-   *   the effects that write to the box: the seat change and the record that
-   *   belongs to it arrive in one flush, and a landing that record carries
-   *   belongs to the seat being moved TO.
+   * - The swap has to land before the effects that write to the box: the seat
+   *   change and the record that belongs to it arrive in one flush, and a
+   *   landing that record carries belongs to the seat being moved TO. That is
+   *   an order rather than a position, which is why the move is in
+   *   `$effect.pre` - a plain effect would be early only while it stayed
+   *   declared above them.
    */
   // The seat being mounted on is the right initial value: the effect below
   // takes it from there, and this is the one read that is not a re-render.
