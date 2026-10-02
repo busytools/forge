@@ -308,14 +308,26 @@
      and measures about 2.2:1 on the page. The underline is the browser's, and
      stays: a link is not carried by its colour alone. */
   .prose a { color: var(--blue); }
+  /* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
+     URL in a sentence would take the conversation sideways on its own. This
+     inherits, which is what reaches a list item, a quote and a heading too. */
+  .prose { overflow-wrap: anywhere; }
   /* A rule down the left, which is how this sheet marks an inset everywhere else:
      the reader's own turn, a command's output, a search hit, a call. */
   .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
     padding: 2px 0 2px 12px; margin: 10px 0; }
   /* No rule between body rows: the terminal draws the one line under the header. */
   .prose table { border-collapse: collapse; margin: 10px 0; }
+  /* A data cell breaks a long token rather than widening the table past the
+     column: the terminal stacks a table its grid cannot hold, and wrapping keeps
+     the table the shape it is - while a header that may break anywhere has a
+     one-character minimum and is sliced by a neighbouring column's demand for
+     width, so the header resets what it would otherwise inherit. A table whose
+     own header words do not fit the column still exceeds it; stacking is the
+     terminal's answer to that and not this one. */
   .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
-  .prose th { color: var(--muted); font-weight: 700;
+  .prose td { overflow-wrap: anywhere; }
+  .prose th { color: var(--muted); font-weight: 700; overflow-wrap: normal;
     border-bottom: 1px solid var(--line); }
   .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
 
@@ -366,15 +378,17 @@
     background: var(--s2); overflow: hidden; }
   .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     padding: 5px 12px; border-bottom: 1px solid var(--line); }
+  /* A long line wraps inside the panel rather than scrolling it, and a token with
+     nowhere to break is split the way the terminal's own wrapper splits one. */
   .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-    white-space: pre; overflow-x: auto; line-height: 1.55; }
+    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
   .k { color: var(--syn-key); } .s { color: var(--syn-str); }
   .c2 { color: var(--dim); font-style: italic; }
   .f { color: var(--syn-fn); }
 
   .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-    white-space: pre-wrap; overflow-x: auto; }
+    white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
   /* A task that ended badly is the same line in the bad tone. */
@@ -385,16 +399,24 @@
   .searchhit .fl { color: var(--muted); }
   .searchhit .hit { color: var(--warn); }
 
-  /* One grid for the whole diff, rows as `display: contents`, so every line's
-     ground spans the scroller's widest line rather than the container's edge. */
+  /* One grid for the whole diff, with the rows as `display: contents`, so a
+     line's number and its text stay one row and the tint covers both. The grid
+     used to span the scroller's full width - a grid per ROW would have ended
+     each tint at the container's edge with the scrolled overflow left bare - and
+     wrapping retires that premise rather than working around it:
+     `overflow-wrap: anywhere` holds the column at the container's own width, so
+     nothing overflows and no tint can fall short of one. */
   .dif { display: grid; grid-template-columns: 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
-    overflow-x: auto; overflow-y: hidden;
+    overflow: hidden;
     font-family: var(--mono); font-size: var(--fs-data); }
   .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
+  /* The path above a diff is one unbroken token and often longer than a phone. It
+     is a location rather than code, so it wraps rather than scrolling. */
+  .dif .h { overflow-wrap: anywhere; }
   .dif .ln { display: contents; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
-  .dif .ln .l { white-space: pre; padding-right: 12px; }
+  .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
   .dif .ln.d .l { background: var(--del-bg); }
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
