@@ -723,6 +723,7 @@ impl ForgeSdkBridge {
         if !self.inner.context_probes_in_flight.lock().insert(session_id.clone()) {
             tracing::debug!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "context_usage_probe_coalesced",
                 session_id = %session_id,
                 "context usage probe already in flight; this ask is coalesced",
             );
@@ -1587,11 +1588,22 @@ mod tests {
             .get_context_usage("session-1".to_owned())
             .expect("an ask while one is out is answered, not refused");
         bridge.get_context_usage("session-1".to_owned()).expect("and so is a third");
+        // The mark itself, so the coalescing is pinned without a stopwatch: the
+        // window below would read a slow mock as a dropped ask.
+        assert_eq!(
+            bridge.inner.context_probes_in_flight.lock().len(),
+            1,
+            "the three asks left one seat marked, which is the one probe that went",
+        );
         let subtypes = drain_answers(&mut events, &echo).await;
         assert_eq!(
             subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
             1,
             "three asks with one probe out reach the CLI once: {subtypes:?}",
+        );
+        assert!(
+            bridge.inner.context_probes_in_flight.lock().is_empty(),
+            "and the answer released the seat, so the next ask is not the last",
         );
 
         // And the seat is free again once its answer lands.
