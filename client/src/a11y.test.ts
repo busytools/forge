@@ -5,7 +5,15 @@ import { describe, expect, it } from 'vitest';
 
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
-import { permissionAsk, questionAsk, record, seatRead, SLOT, wire } from './composer/testing';
+import {
+  permissionAsk,
+  questionAsk,
+  record,
+  seatRead,
+  slackDraftAsk,
+  SLOT,
+  wire,
+} from './composer/testing';
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
@@ -129,6 +137,7 @@ describe('axe over the rendered pages', () => {
     expect(await idsOf(draw(record())), 'the box').toEqual([]);
     expect(await idsOf(draw(record({ pending_ask: permissionAsk() }))), 'a permission').toEqual([]);
     expect(await idsOf(draw(record({ pending_ask: questionAsk() }))), 'a question').toEqual([]);
+    expect(await idsOf(draw(record({ pending_ask: slackDraftAsk() }))), 'a held post').toEqual([]);
   });
 
   it('draws a turn of the conversation with no violations', async () => {

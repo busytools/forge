@@ -2315,13 +2315,13 @@ describe('the dock', () => {
     ).toContain('Send it');
   });
 
-  it('refuses the held draft from its own no-row, and from Escape', () => {
-    const rowed = open({ record: record({ pending_ask: slackDraftAsk() }) });
+  it('refuses the held draft from its own no-row', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
 
     options()[1]?.click();
     flushSync();
 
-    expect(commands(rowed), 'the no-row refuses').toEqual([
+    expect(commands(harness)).toEqual([
       {
         respond_slack_post: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
@@ -2330,12 +2330,14 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
 
-    const escaped = open({ record: record({ pending_ask: slackDraftAsk() }) });
+  it('refuses the held draft on Escape, which is the same refusal', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
 
     press('Escape');
 
-    expect(commands(escaped), 'and Escape is the same refusal').toEqual([
+    expect(commands(harness)).toEqual([
       {
         respond_slack_post: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
