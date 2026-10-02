@@ -60,6 +60,14 @@ jobs:
 
       - run: mdbook build docs/book
 
+      # The site does not publish from a tree that does not compile. rustdoc
+      # alone cannot say that: it never type-checks a function body, in a
+      # library or a binary, and a body is where a call-site type error lives.
+      # Compiling every target first is what makes this job's green mean the
+      # tree compiles.
+      - name: Compile the workspace
+        run: cargo check --workspace --all-targets --all-features
+
       # `--enable-index-page` is what gives the site a front door: the
       # root manifest is virtual, so rustdoc writes no index of its own.
       - name: Build rustdoc
