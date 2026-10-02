@@ -1003,8 +1003,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 
 /* The composer's own slot at the foot of the chat column. Its padding is
    the only thing keeping the box off the column's bottom edge, and its margin
-   cancels the app grid's row gap for this row: `gap` cannot drop one row's
-   share without the column gap the rails sit in going with it. */
+   cancels the app grid's row gap for this row alone: `row-gap: 0` on the app
+   draws the same today and would leave any row added later unspaced too. */
 .composer { padding: 4px 0 2px; margin-top: calc(-1 * var(--ins)); }
 .comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
