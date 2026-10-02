@@ -63,7 +63,7 @@
       var(--bg);
     background-attachment: fixed;
     color: var(--text); font-family: var(--ui); font-size: var(--fs-prose);
-    line-height: 1.62; -webkit-font-smoothing: antialiased;
+    line-height: 1.5; -webkit-font-smoothing: antialiased;
     /* Switched on for Fira Code, whose ligatures ride the calt feature. */
     font-variant-ligatures: contextual; font-feature-settings: "calt" 1;
   }
@@ -248,7 +248,17 @@
   .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
   .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
 
-  .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+  /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
+     book page; a terminal draws one row per line at 1.231em of its own text
+     size, and 1.35 is nearer that without sitting on it - a browser still has to
+     fit a descender under a line of monospace. */
+  .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+    line-height: 1.35; }
+  /* The measure, capped, so prose cannot run the full width of a wide window and
+     lose the eye on the return sweep. The app caps `.turn`, which wraps both
+     blocks of a turn; this drawing has no `.turn`, so the cap takes the two
+     blocks it does have. */
+  .conv > .mine, .conv > .work { max-width: 80ch; }
   .conv::-webkit-scrollbar { width: 8px; }
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
@@ -284,9 +294,12 @@
   details.think[open] > summary .arw { color: var(--accent); }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
-  .prose p + p { margin-top: 10px; }
+  /* One blank line between blocks, which is the terminal's whole spacing policy:
+     a live reply is cut at paragraph boundaries and each block carries one
+     trailing break, so every gap it draws is one line box. */
+  .prose p + p { margin-top: 20px; }
   /* The reset above zeroes the padding a list draws its markers in. */
-  .prose ul, .prose ol { padding-left: 22px; margin: 8px 0; }
+  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
   .prose li + li { margin-top: 4px; }
   .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -300,10 +313,16 @@
      own, and takes its block spacing below. */
   .prose h1, .prose h2, .prose h3,
   .prose h4, .prose h5, .prose h6 {
-    font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+    font-size: var(--fs-prose); font-weight: 500; margin: 20px 0; }
+  /* Every mark a message draws in bold takes the heaviest cut the vendored face
+     ships: Fira Code ships static cuts and only Regular and Medium are
+     vendored, so a weight above 500 has no face behind it and the browser fakes
+     it by smearing the Medium. `strong` carried no rule at all before this and
+     drew the browser's default 700. */
+  .prose strong { font-weight: 500; }
   /* The panel is new markup inside prose, so it carries the block spacing every
      other unit here has rather than sitting on the paragraph's own line box. */
-  .prose .code { margin: 10px 0; }
+  .prose .code { margin: 20px 0; }
   /* A colour rather than the browser's own link blue, which is off the palette
      and measures about 2.2:1 on the page. The underline is the browser's, and
      stays: a link is not carried by its colour alone. */
@@ -315,9 +334,14 @@
   /* A rule down the left, which is how this sheet marks an inset everywhere else:
      the reader's own turn, a command's output, a search hit, a call. */
   .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
-    padding: 2px 0 2px 12px; margin: 10px 0; }
+    padding: 2px 0 2px 12px; margin: 20px 0; }
   /* No rule between body rows: the terminal draws the one line under the header. */
-  .prose table { border-collapse: collapse; margin: 10px 0; }
+  .prose table { border-collapse: collapse; margin: 20px 0; }
+  /* Two pixels rather than four: a row's own leading is what separates it from
+     the next, and four top and bottom took a row to 1.96em where the terminal
+     draws 1.25em. The rule under the header comes with it: it sat clear of the
+     row below because that padding was holding it there. */
+  .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
   /* A data cell breaks a long token rather than widening the table past the
      column: the terminal stacks a table its grid cannot hold, and wrapping keeps
      the table the shape it is - while a header that may break anywhere has a
@@ -325,11 +349,10 @@
      width, so the header resets what it would otherwise inherit. A table whose
      own header words do not fit the column still exceeds it; stacking is the
      terminal's answer to that and not this one. */
-  .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
   .prose td { overflow-wrap: anywhere; }
-  .prose th { color: var(--muted); font-weight: 700; overflow-wrap: normal;
+  .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
     border-bottom: 1px solid var(--line); }
-  .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
+  .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
   /* ---------- the family tree is the DEFAULT view ---------- */
   .kind { margin: 3px 0; }
@@ -377,11 +400,14 @@
   .code { border: 1px solid var(--line); border-radius: 9px;
     background: var(--s2); overflow: hidden; }
   .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    padding: 5px 12px; border-bottom: 1px solid var(--line); }
+    padding: 4px 10px; border-bottom: 1px solid var(--line); }
   /* A long line wraps inside the panel rather than scrolling it, and a token with
-     nowhere to break is split the way the terminal's own wrapper splits one. */
-  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+     nowhere to break is split the way the terminal's own wrapper splits one.
+     Six pixels of padding rather than eight, and the conversation's leading: the
+     panel is a line and a hairline of air, where it was a line and a third, at
+     1.89x the one row the terminal draws for the same fence. */
+  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
   .k { color: var(--syn-key); } .s { color: var(--syn-str); }
   .c2 { color: var(--dim); font-style: italic; }
   .f { color: var(--syn-fn); }
