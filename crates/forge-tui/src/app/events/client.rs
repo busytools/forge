@@ -4345,6 +4345,7 @@ mod focus_seam_tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 

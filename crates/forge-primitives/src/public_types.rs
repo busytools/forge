@@ -138,6 +138,11 @@ pub struct SessionMessage {
     /// tool-result block beside it holds only as prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_use_result: Option<Value>,
+    /// The CLI's own mark that nobody typed this row: any of `isMeta`,
+    /// `isCompactSummary`, `isVisibleInTranscriptOnly` or `turnCompanion`.
+    /// The wire spells the same mark `isSynthetic`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synthetic: bool,
 }
 
 /// A session transcript's replayable rows plus the compaction count

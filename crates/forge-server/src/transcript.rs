@@ -1743,6 +1743,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -1775,6 +1776,7 @@ mod tests {
             uuid: None,
             tool_use_result: Some(recorded),
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -2585,6 +2587,7 @@ mod turn_report_tests {
             uuid: None,
             tool_use_result: None,
             timestamp: Some(at.to_owned()),
+            synthetic: false,
         }
     }
 
@@ -2898,6 +2901,7 @@ mod turn_report_tests {
                 uuid: None,
                 tool_use_result: None,
                 timestamp: None,
+                synthetic: false,
             },
             Message::Assistant {
                 message: AssistantEnvelope {
