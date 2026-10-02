@@ -78,6 +78,11 @@ impl Live {
         }
     }
 
+    /// Whether a page is holding `slot`.
+    pub fn is_attached(&self, slot: &SessionSlot) -> bool {
+        self.attached.contains_key(slot)
+    }
+
     /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for

@@ -304,6 +304,101 @@ async fn next_agent_command(
     tokio::time::timeout(std::time::Duration::from_millis(ms), commands.recv()).await.ok().flatten()
 }
 
+/// The frame the CLI sends when a turn ends, which is what the socket reads a
+/// finished turn off.
+fn a_finished_turn() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "s",
+    }))
+    .expect("parse a result message")
+}
+
+/// A frame from the middle of a turn, which is everything a turn sends before
+/// the result that ends it.
+fn an_assistant_chunk() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "id": "mid-turn",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{ "type": "text", "text": "a chunk" }],
+        },
+        "session_id": "s",
+    }))
+    .expect("parse an assistant message")
+}
+
+/// The frame the CLI sends once a compaction settles, which is the only status
+/// frame carrying the compaction's own result.
+fn a_compaction_settle() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "status": null,
+        "compact_result": "success",
+        "session_id": "s",
+    }))
+    .expect("parse a status message")
+}
+
+/// The CLI's report of a permission-mode change, which arrives on the same
+/// `status`/null shape the settle does and is why a bare null is not a settle.
+fn a_permission_mode_change() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "status": null,
+        "permissionMode": "plan",
+        "session_id": "s",
+    }))
+    .expect("parse a status message")
+}
+
+/// The lead seat with an agent behind it, reporting `reading`, and the receiver
+/// that stub records what it is asked.
+///
+/// The reading is the state the tests below have in common: a number the seat
+/// already holds, which a turn makes stale.
+fn a_reporting_seat(fleet: &Fleet, reading: ContextUsage) -> mpsc::UnboundedReceiver<AgentCommand> {
+    let asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("reporting")),
+            context: Some(reading),
+            ..ViewFacts::default()
+        },
+    );
+    asked
+}
+
+/// A reading small enough to pay a probe for.
+fn a_small_reading() -> ContextUsage {
+    ContextUsage { percent: Some(12), max_tokens: Some(200_000) }
+}
+
+/// A `[1m]`-class window past the socket's token gate, which is where a
+/// reading can only be lowered by a compaction.
+fn a_reading_past_the_gate() -> ContextUsage {
+    ContextUsage { percent: Some(80), max_tokens: Some(1_000_000) }
+}
+
+/// A connected client showing `what`, with the snapshot it was answered read
+/// and handed back beside it.
+async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
+    let mut socket = connect(url).await;
+    send(&mut socket, ClientMessage::Subscribe { what, answering: true }).await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    (socket, data)
+}
+
 /// A seat a client opens with no usage to report asks the core for one, so the
 /// header draws a bar rather than the dash an unasked seat carries for its
 /// whole life.
@@ -369,6 +464,361 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
     // waiting, and a probe wrongly fired lands a scheduling hop after the ask.
     let command = next_agent_command(&mut asked, 250).await;
     assert!(command.is_none(), "a seat that reports a reading is not probed again: {command:?}");
+}
+
+/// A turn finishing on a seat a page is holding is the moment its reading
+/// stops being true: the transcript grew by the turn, and the number the seat
+/// holds was taken before it.
+///
+/// The other half of the pair above: that one keeps an open page from costing a
+/// probe per read, and this one keeps a reading from standing for the life of
+/// its occupant.
+#[tokio::test]
+async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_small_reading());
+    let (_socket, data) = a_page_on(&url, Subject::Session(lead_seat())).await;
+    assert_eq!(
+        data["header"]["context"]["percent"], 12,
+        "precondition: the seat reports a reading, so there is nothing wrong yet: {data}",
+    );
+    // Every frame of a turn arrives before the one that ends it, so a trigger
+    // that took any of them would spend the interval on the first assistant
+    // chunk and decline the result - leaving the page with a mid-turn number
+    // that stops moving exactly when the turn ends.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: an_assistant_chunk(),
+        origin: None,
+    });
+    // One window for both negatives: the read that opened the seat asks for
+    // nothing, and a frame that is not the turn's end asks for nothing either.
+    assert!(
+        next_agent_command(&mut asked, 250).await.is_none(),
+        "opening a seat that already reports asks nothing, and neither does a frame that is \
+         not the turn's end",
+    );
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "the turn that just finished grew the transcript, so the reading is asked for again: \
+         {command:?}",
+    );
+}
+
+/// The other half of that trigger: a seat no page is holding is asked for
+/// nothing, because the probe is answered inline over the CLI's whole
+/// transcript and a fleet finishing turns with nobody watching would spend that
+/// computation for nobody.
+///
+/// **And being unwatched must not cost the seat its turn when a page does
+/// open.** A trigger that admitted before it asked who was watching would spend
+/// the interval on a seat nobody was reading, so the page that opened a moment
+/// later would wait up to a minute for a reading - the staleness this whole
+/// change is about, arrived at by its own path. The second half below is that
+/// page opening, and it is also what keeps the silence above from being an
+/// assertion about a channel that simply never fires.
+#[tokio::test]
+async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_small_reading());
+    // The home is every row and no seat's page, so nothing here is holding the
+    // lead's seat.
+    let _socket = a_page_on(&url, Subject::Home).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    // The window is the assertion: a probe that wrongly fired lands a
+    // scheduling hop after the frame.
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(
+        command.is_none(),
+        "a turn on a seat with no page open on it costs no probe: {command:?}",
+    );
+
+    // The same seat, now with a page on it and a turn that ends inside the
+    // interval the unwatched turn must not have spent.
+    let _page = a_page_on(&url, Subject::Session(lead_seat())).await;
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "and the turn after a page opens is asked for, so the silence above was the seat being \
+         unwatched rather than an interval it spent: {command:?}",
+    );
+}
+
+/// The bound cannot be what refuses the one ask whose whole point is to
+/// replace the reading it would be applied to.
+///
+/// The token gate reads the seat's held reading, and the only writer of that
+/// reading is the probe's own answer - so a seat past the gate refuses every
+/// ask, and with no way past the bound its number is frozen at the high value
+/// for the life of its occupant. A compaction is the one thing that lowers the
+/// transcript under a high reading, and the terminal's own post-compaction
+/// refresh is forced for exactly this: its gate reads the same stale number.
+#[tokio::test]
+async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_reading_past_the_gate());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    // Precondition, and the latch itself: an ordinary ask is refused at this
+    // reading, so a fix that only widened the ask would not be one.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+    let refused = next_agent_command(&mut asked, 250).await;
+    assert!(
+        refused.is_none(),
+        "precondition: a reading past the gate refuses an ordinary ask: {refused:?}",
+    );
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_compaction_settle(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "the compaction left the held reading wrong rather than merely old, so it is replaced \
+         whatever the bound says: {command:?}",
+    );
+    let again = next_agent_command(&mut asked, 250).await;
+    assert!(again.is_none(), "and one settle costs one ask, not one per frame: {again:?}");
+}
+
+/// A compaction is the one ask that does not wait for a page, because the
+/// reading it invalidates is the core's and every view reads it.
+///
+/// The page opened afterwards is the case this closes: it reads the number the
+/// seat already holds, the read path asks only for a seat that reports nothing,
+/// and no turn of its own would ask either while the stale number stands past
+/// the token gate.
+#[tokio::test]
+async fn a_compaction_settling_on_a_seat_no_page_holds_still_asks() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_reading_past_the_gate());
+    // The home is every row and no seat's page, so nothing here is holding the
+    // lead's seat.
+    let _socket = a_page_on(&url, Subject::Home).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_compaction_settle(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "a compaction leaves the reading wrong for whoever opens the seat next, so the ask does \
+         not wait for a page: {command:?}",
+    );
+}
+
+/// A permission-mode change is not a compaction, and the gate it would otherwise
+/// step past is the expensive one: a page-held `[1m]` seat past the token gate
+/// that fires on a mode toggle spends a whole-transcript walk on an ask whose
+/// reading never stopped being true.
+///
+/// The frame shares the `status`/null shape with the settle and is told apart
+/// only by carrying the mode rather than the compaction's result, which is what
+/// this pins.
+#[tokio::test]
+async fn a_permission_mode_change_is_not_a_settled_compaction() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_reading_past_the_gate());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_permission_mode_change(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(
+        command.is_none(),
+        "a mode change is not a compaction settling, so it is not asked past the bound: \
+         {command:?}",
+    );
+}
+
+/// The bypass is past both bounds, and the interval is the one this can only
+/// show end to end: an ordinary ask has already gone, so a forced ask that
+/// respected the interval would be dropped.
+///
+/// That is the state the bypass exists for - a turn ends, the user compacts, and
+/// the settle lands inside the minute - and the reading would stand at the
+/// pre-compaction number until the next compaction if the interval refused it.
+#[tokio::test]
+async fn a_compaction_settling_inside_the_interval_still_asks() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_small_reading());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+    let first = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(first, Some(AgentCommand::GetContextUsage { .. })),
+        "precondition: the turn's ask goes, which is what starts the interval: {first:?}",
+    );
+
+    // The compaction settles a scheduling hop later, which is as far inside the
+    // interval as this can be driven.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_compaction_settle(),
+        origin: None,
+    });
+
+    let second = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(second, Some(AgentCommand::GetContextUsage { .. })),
+        "the settle is asked for inside the interval the turn's ask opened: {second:?}",
+    );
+}
+
+/// A sink for every record a site emits, with a guard that has to be HELD for
+/// as long as a test means to catch them.
+///
+/// **A guard rather than the crate's `test_support::logged`, which runs a
+/// closure to completion on the caller's thread.** The record this exists for is
+/// emitted from the fold task `serve` spawns, and every test here is a
+/// current-thread `#[tokio::test]` - so that task is polled on this test's own
+/// thread, and the thread-local subscriber applies for as long as the guard is
+/// alive across the awaits.
+fn catch_records() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("the sink is not poisoned").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&written);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || Sink(Arc::clone(&sink)))
+        .with_ansi(false)
+        .finish();
+    (written, tracing::subscriber::set_default(subscriber))
+}
+
+/// Everything caught so far, one JSON record per line.
+fn caught(written: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8(written.lock().expect("the sink is not poisoned").clone())
+        .expect("the sink holds utf-8")
+}
+
+/// A seat with no agent has the ask ISSUED and its refusal recorded, which is
+/// what the socket page says happens: the socket issues the ask whether or not
+/// an agent is behind the seat, and where there is none it is refused.
+///
+/// The record is the only product of that refusal - the fold holds no
+/// connection, so nothing can be drawn for it - and it is emitted from the fold
+/// task rather than from anything the test drives. That is why the capture is
+/// installed across the awaits rather than around a call.
+#[tokio::test]
+async fn a_seat_with_no_agent_has_the_refused_ask_recorded() {
+    let (url, fleet) = a_server().await;
+    // A reading, so the ask is admitted and the refusal is the missing agent
+    // rather than one of the bounds.
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts { context: Some(a_small_reading()), ..ViewFacts::default() },
+    );
+    let (written, _guard) = catch_records();
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    // The record lands a scheduling hop after the frame, so the read is repeated
+    // and bounded rather than taken once.
+    for _ in 0..200 {
+        if caught(&written).contains("context_usage_request_failed") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let records = caught(&written);
+    let Some(refusal) = records.lines().find(|line| line.contains("context_usage_request_failed"))
+    else {
+        panic!("the ask is issued for a seat with no agent and the refusal is recorded: {records}")
+    };
+    assert!(
+        refusal.contains("TestOrg/proj/lead"),
+        "and the refusal names the seat it was for: {refusal}",
+    );
+}
+
+/// What bounds that trigger, and the half of the seat-opened rule it must not
+/// undo: refreshing on the frame must not become one probe per frame.
+///
+/// A turn is not the only thing that ends in a burst - a resumed session and a
+/// run of quick turns both produce several at once - and the terminal asks a
+/// seat at most once a minute. The seat here reports the reading the tests
+/// above seed, so the reads that opened its page are not what is being counted.
+#[tokio::test]
+async fn a_burst_of_finished_turns_on_a_reporting_seat_costs_one_probe() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_small_reading());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    for _ in 0..8 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            msg: a_finished_turn(),
+            origin: None,
+        });
+    }
+
+    let first = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(first, Some(AgentCommand::GetContextUsage { .. })),
+        "the first turn of the burst is worth a probe: {first:?}",
+    );
+    let second = next_agent_command(&mut asked, 250).await;
+    assert!(
+        second.is_none(),
+        "the rest of the burst is inside the minimum interval between asks, so eight frames \
+         cost one probe: {second:?}",
+    );
 }
 
 /// The role is decided by the client's first SUBSCRIBE, not by its first

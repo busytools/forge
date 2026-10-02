@@ -5,12 +5,14 @@
 //! first and the server sends only what a client asked for.
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::WebConfig;
+use forge_primitives::{Message, SessionSlot, WebConfig};
 use tokio::net::TcpListener;
 
+use crate::SessionUpdate;
 use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::work::WorkCache;
@@ -18,6 +20,7 @@ use crate::work::WorkCache;
 mod connection;
 pub mod conversation;
 pub mod envelope;
+mod probe;
 pub mod wire;
 
 /// The protocol this server speaks.
@@ -81,8 +84,133 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
 /// frames that follow it have one producer.
 async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
+    let mut probes = probe::ContextProbe::default();
     while let Some(update) = updates.recv().await {
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
+        request_context_usage(&state, &mut probes, &update);
+    }
+}
+
+/// Why the socket owes the core a fresh context reading, which is what an
+/// update says about a seat's held one.
+#[derive(PartialEq, Eq)]
+enum Ask {
+    /// A turn ended, so the reading is older than the transcript it was taken
+    /// from and is asked for again under [`probe`]'s bounds.
+    AfterATurn,
+    /// A compaction settled, so the reading was taken from a transcript that
+    /// no longer exists - wrong rather than merely old, and asked past the
+    /// bounds for that reason.
+    AfterACompaction,
+}
+
+/// Whether this update reports a compaction's own outcome, which is the frame
+/// that ends one.
+///
+/// **The compaction's result field rather than the null status that rides
+/// beside it.** The CLI reports a permission-mode change on that same
+/// `status`/null shape, and a bare null read as a settle would fire the
+/// post-compaction ask - past both bounds - on a mode toggle, mid-compaction,
+/// and spend the ask the settle itself is owed.
+///
+/// A settle with no result field would leave the post-compaction ask unfired
+/// and a reading past the token gate unable to be lowered, which is the state
+/// this bypass exists to close; the field is on the settle in both pinned
+/// captures and a fresh one is where a change to that would show.
+///
+/// The null half is traded for that, and both directions are disclosed: a result
+/// present but null would be read as no settle, and the reading would stand
+/// until the next compaction. No captured frame carries it - the corpus has
+/// exactly three status shapes, a `compacting` string twice and one settle with
+/// a string result - and the null is admitted nowhere else in this predicate.
+fn settles_a_compaction(update: &SessionUpdate) -> bool {
+    let SessionUpdate::ChatAppended { msg: Message::System { subtype, data, .. }, .. } = update
+    else {
+        return false;
+    };
+    subtype == "status" && data.get("compact_result").is_some_and(|result| !result.is_null())
+}
+
+/// What this update asks of the core about a seat's context reading.
+fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
+    let SessionUpdate::ChatAppended { key, msg, .. } = update else {
+        return None;
+    };
+    if settles_a_compaction(update) {
+        return Some((key, Ask::AfterACompaction));
+    }
+    matches!(msg, Message::Result { .. }).then_some((key, Ask::AfterATurn))
+}
+
+/// Ask the core for a fresh context reading on a seat a page is holding.
+///
+/// A turn finishing is when a reading stops being true: the transcript grew by
+/// the turn, and the number the seat holds was taken before it. The terminal
+/// refreshes on the same frame, for the seat it is addressing, and a client
+/// reading a seat is that same act - the answer lands as a
+/// [`SessionUpdate::ContextUsageSnapshot`] on the stream that page is already
+/// reading.
+///
+/// Only a seat a page holds, because the reading exists for the reader and the
+/// probe costs the CLI a walk over its whole transcript. Bounded by [`probe`],
+/// the same limits the terminal applies to its own ask - except for the
+/// post-compaction ask, which may not be refused by the reading it exists to
+/// replace.
+///
+/// Both records below are `debug` lines and nothing else. The refusal is the one
+/// asserted, and it is emitted from the spawned fold rather than from anything a
+/// test drives - so the test that reads it back holds a subscriber across its
+/// awaits rather than calling the crate's `test_support::logged`, which runs a
+/// closure to completion on the caller's thread and cannot span the fold. The
+/// read path's own ask in `transport::wire` has the same record and no test.
+///
+/// That refusal is not only the no-agent case: the same arm carries a seat with
+/// no stamped session id and one whose session has closed, which is what
+/// `refresh_context_usage` refuses.
+fn request_context_usage(
+    state: &TransportState,
+    probes: &mut probe::ContextProbe,
+    update: &SessionUpdate,
+) {
+    let Some((key, why)) = context_ask(update) else {
+        return;
+    };
+    // A page has to be holding the seat for a turn's ask, because that one is
+    // speculative: the reading may never be drawn.
+    //
+    // **A settled compaction is not speculative - it is corrective, and it
+    // does not wait for a page.** The reading it invalidates is the core's,
+    // and every view reads that one, so a seat nobody is holding keeps a
+    // number that is wrong rather than merely old - and a page opened on it
+    // afterwards reads that number and is never asked, the read path guarding
+    // on a reading being present. Nothing else asks for it either: a turn's
+    // ask is refused by the reading the settle has yet to replace.
+    if why == Ask::AfterATurn && !Live::lock(&state.live).is_attached(key) {
+        return;
+    }
+    let now = Instant::now();
+    match why {
+        Ask::AfterATurn => {
+            if let Err(declined) = probes.admit(key, || state.surface.header(key).context, now) {
+                tracing::debug!(
+                    event_name = "context_usage_refresh_skipped",
+                    ?declined,
+                    slot = %key.display(),
+                    "a turn ended on a seat a client reads and its context reading was not asked \
+                     for",
+                );
+                return;
+            }
+        }
+        Ask::AfterACompaction => probes.force(key, now),
+    }
+    if let Err(error) = state.surface.refresh_context_usage(key) {
+        tracing::debug!(
+            event_name = "context_usage_request_failed",
+            %error,
+            slot = %key.display(),
+            "a seat a client reads was due a context reading and its probe was not requested",
+        );
     }
 }
