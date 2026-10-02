@@ -432,7 +432,23 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+/* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
+   book page; a terminal draws one row per line at 1.231em of its own text
+   size, and 1.35 is nearer that without sitting on it - a browser still has to
+   fit a descender under a line of monospace. Scoped here rather than on `body`
+   so the rails, the home and the composer keep the leading they were drawn
+   with. */
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+  line-height: 1.35; }
+/* The measure, capped. Nothing bounded it, so the prose column was whatever
+   the window gave it - 147 characters in a 1600px column with the rails
+   collapsed, more on a wider screen, and past where the eye holds a line well
+   before that. 80ch sits just above the 65-75 a proportional face wants, which
+   is where a monospace column reads: the fixed advance is what lets it run
+   wider than a book, and 80 columns is the habit this interface is shaped
+   after. It binds only once the column would pass 80 characters, so an
+   ordinary window leaves it alone. */
+.conv .turn { max-width: 80ch; }
 /* The refusal above a conversation already drawn: the server's words for the
    ask that failed, at the column's own padding, with the rows left alone. */
 .refused { padding: 2px 8px 6px 0; color: var(--muted); }
@@ -648,9 +664,14 @@ details.sec[open] > summary .arw { color: var(--accent); }
    URL in a sentence would take the conversation sideways on its own. This
    inherits, which is what reaches a list item, a quote and a heading too. */
 .prose { overflow-wrap: anywhere; }
-.prose p + p { margin-top: 10px; }
+/* One blank line between blocks, which is the terminal's whole spacing policy:
+   a live reply is cut at paragraph boundaries and each block carries one
+   trailing break, so every gap it draws is one line box. Ten pixels was 0.59em
+   against the terminal's 1.23em, and this is the half of the change that makes
+   a message taller rather than shorter. The rules below carry the same value. */
+.prose p + p { margin-top: 20px; }
 /* The reset above zeroes the padding a list draws its markers in. */
-.prose ul, .prose ol { padding-left: 22px; margin: 8px 0; }
+.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -670,10 +691,17 @@ details.sec[open] > summary .arw { color: var(--accent); }
    own, and takes its block spacing below. */
 .prose h1, .prose h2, .prose h3,
 .prose h4, .prose h5, .prose h6 {
-  font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+  font-size: var(--fs-prose); font-weight: 500; margin: 20px 0; }
+/* Every mark a message draws in bold takes the heaviest cut the vendored face
+   ships. Fira Code ships static cuts and only Regular and Medium are vendored,
+   so a weight above 500 has no face behind it and the browser fakes it by
+   smearing the Medium - which is what made three emphasised phrases read as
+   three loud things where the terminal's own bold is a slight bump. `strong`
+   carried no rule at all before this and drew the browser's default 700. */
+.prose strong { font-weight: 500; }
 /* The panel is new markup inside prose, so it carries the block spacing every
    other unit here has rather than sitting on the paragraph's own line box. */
-.prose .code { margin: 10px 0; }
+.prose .code { margin: 20px 0; }
 /* A colour rather than the browser's own link blue, which is off the palette
    and measures about 2.2:1 on the page. The underline is the browser's, and
    stays: a link is not carried by its colour alone. */
@@ -681,9 +709,15 @@ details.sec[open] > summary .arw { color: var(--accent); }
 /* A rule down the left, which is how this sheet marks an inset everywhere else:
    the reader's own turn, a command's output, a search hit, a call. */
 .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
-  padding: 2px 0 2px 12px; margin: 10px 0; }
+  padding: 2px 0 2px 12px; margin: 20px 0; }
 /* No rule between body rows: the terminal draws the one line under the header. */
-.prose table { border-collapse: collapse; margin: 10px 0; }
+.prose table { border-collapse: collapse; margin: 20px 0; }
+/* Two pixels rather than four: a row's own leading is what separates it from
+   the next, and four top and bottom took a row to 1.96em where the terminal
+   draws 1.25em - airiness that made a six-row state table read as a page of
+   its own. The rule under the header comes with it: it sat clear of the row
+   below because that padding was holding it there. */
+.prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
 /* A data cell breaks a long token rather than widening the table past the
    column: the terminal stacks a table its grid cannot hold, and wrapping keeps
    the table the shape it is - while a header that may break anywhere has a
@@ -691,11 +725,10 @@ details.sec[open] > summary .arw { color: var(--accent); }
    width, so the header resets what it would otherwise inherit. A table whose
    own header words do not fit the column still exceeds it; stacking is the
    terminal's answer to that and not this one. */
-.prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
 .prose td { overflow-wrap: anywhere; }
-.prose th { color: var(--muted); font-weight: 700; overflow-wrap: normal;
+.prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
   border-bottom: 1px solid var(--line); }
-.prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
+.prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
 /* the family tree is the default view */
 .kind { margin: 3px 0; }
@@ -755,11 +788,14 @@ details.leaf.running > summary { color: var(--text); }
 .code { border: 1px solid var(--line); border-radius: 9px;
   background: var(--s2); overflow: hidden; }
 .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  padding: 5px 12px; border-bottom: 1px solid var(--line); }
+  padding: 4px 10px; border-bottom: 1px solid var(--line); }
 /* A long line wraps inside the panel rather than scrolling it, and a token with
-   nowhere to break is split the way the terminal's own wrapper splits one. */
-.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+   nowhere to break is split the way the terminal's own wrapper splits one.
+   Six pixels of padding rather than eight, and the conversation's leading: the
+   panel is a line and a hairline of air, where it was a line and a third, at
+   1.89x the one row the terminal draws for the same fence. */
+.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
   margin: 4px 0; border-left: 1px solid var(--line); }
