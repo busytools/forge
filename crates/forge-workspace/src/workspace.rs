@@ -3689,6 +3689,37 @@ impl Workspace {
         (cwd, launch_settings)
     }
 
+    /// Fill in the launch settings a caller did not build.
+    ///
+    /// The terminal builds them from its own snapshot of the documents and
+    /// hands them over; a client has no config to read, so a spawn it asks
+    /// for arrives with none, and a spawn that ran on those alone would carry
+    /// no language, no model and the CLI's own defaults for permissions,
+    /// effort and output style - a session launched differently from the one
+    /// the same click starts in the terminal.
+    fn fill_launch_settings(&self, launch_settings: &mut SessionLaunchSettings, cwd: Option<&str>) {
+        if launch_settings.settings.is_some() {
+            return;
+        }
+        let empty = || serde_json::Value::Object(serde_json::Map::new());
+        let documents_cwd = cwd.filter(|cwd| !cwd.is_empty()).map(std::path::Path::new);
+        let documents =
+            forge_agent::userdata::settings::settings_documents(self.config_dir(), documents_cwd);
+        let user = documents.user.unwrap_or_else(empty);
+        let local = documents.project_local.unwrap_or_else(empty);
+        let preferences = self.user_preferences().unwrap_or_else(empty);
+        let built = crate::launch_settings::session_launch_settings(
+            &crate::launch_settings::LaunchSettingsDocuments {
+                user: &user,
+                local: &local,
+                preferences: &preferences,
+            },
+        );
+        launch_settings.language = built.language;
+        launch_settings.settings = built.settings;
+        launch_settings.agent_progress_summaries = built.agent_progress_summaries;
+    }
+
     /// `/effort <level>`: write the level the next launch reads.
     ///
     /// A settings write rather than a session command - the CLI carries no
@@ -3971,12 +4002,17 @@ impl Workspace {
             // (which internally tokio::spawns the agent), and return.
             // Run them inline under the span; no detach needed.
             match cmd {
-                Command::SpawnProject { project_name, launch_settings } => {
+                Command::SpawnProject { project_name, mut launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_project",
                         project = %project_name,
                     );
                     let _enter = span.enter();
+                    let cwd = self
+                        .find_project_view_by_name(&project_name)
+                        .map(|project| project.path.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.fill_launch_settings(&mut launch_settings, Some(&cwd));
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::SpawnSession { key, role, launch_settings } => {

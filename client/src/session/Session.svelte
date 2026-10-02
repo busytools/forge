@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
 
   import Icon from '../components/Icon.svelte';
+  import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
@@ -66,6 +68,49 @@
   const facts = $derived(record === null ? null : headerFacts(record.header));
   /** The count the folded panel names, where the row's unit draws the figure. */
   const compactionCount = $derived(record?.conversation.compaction_count ?? 0);
+
+  /**
+   * The seams this page has already asked the core to start.
+   *
+   * The terminal refuses a second click on a seat that is mid-spawn for the
+   * same reason: a second ask races the first, and the seat scrambles. Here
+   * the ask is an effect rather than a click handler, so it re-runs on every
+   * frame that touches the roster - and the roster names a seat only once
+   * `Spawning` has landed, so without this the ask would repeat until then.
+   *
+   * Nothing draws from it, so an ordinary `Set` would do - the reactive one
+   * is what the sheet's lint takes for a mutable `Set`, and it costs nothing
+   * here.
+   */
+  const asked = new SvelteSet<string>();
+
+  /**
+   * Start a lead nothing is running behind, which is the terminal's own rail
+   * click (`switch_to_project_lead`). A seat the roster already names is up or
+   * on its way, and switching to it is what the route this page is on already
+   * did.
+   *
+   * A project's own lead is the one seat the core can start by name: a worker
+   * is spawned by the lead that owns it, so a worker seat with nothing behind
+   * it stays as it is rather than asking for a spawn the core cannot place.
+   */
+  $effect(() => {
+    const open = connection;
+    const seatSlot = slot;
+    if (seatSlot.label !== 'lead' || !seat.waking) return;
+    const key = subjectKey({ session: seatSlot });
+    if (asked.has(key)) return;
+    asked.add(key);
+    try {
+      void open.dispatch({
+        spawn_project: { project_name: seatSlot.project, launch_settings: {} },
+      });
+    } catch {
+      // A closed socket has nothing to start: the seat keeps drawing its
+      // not-running state, which is the truth about it.
+      asked.delete(key);
+    }
+  });
   // Beside the context figure, which is the row the terminal draws it on: the
   // count belongs to the conversation and not to the header, and the row is
   // where a reader looks for it.
