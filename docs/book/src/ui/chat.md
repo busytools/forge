@@ -202,7 +202,7 @@ While the session compacts the active assistant's status slot shows the spinner 
 <details>
 <summary>Compacting details</summary>
 
-The line trails the body after a blank line (the whole body on a body-less placeholder), is the slot's only non-dim line, arms wire-driven, never optimistically, and clears when the CLI reports the settle. Arming rides the session-status stream's `compacting` status, each typed `compact_boundary` re-arms it (recording the trigger and pre-tokens), and it clears on the settle - the same moment a manual `/compact` emits its success notice. It does not replace a turn-info row that already has figures; the two render together (the two-spinner case above).
+The line trails the body after a blank line (the whole body on a body-less placeholder), is the slot's only non-dim line, arms wire-driven, never optimistically, and clears when the CLI reports the settle. Arming rides the session-status stream's `compacting` status, a typed `compact_boundary` arriving live re-arms it (recording the trigger and pre-tokens - a boundary replayed from the transcript records one that already finished and arms nothing), and it clears on the settle - the same moment a manual `/compact` emits its success notice. It does not replace a turn-info row that already has figures; the two render together (the two-spinner case above).
 
 </details>
 
