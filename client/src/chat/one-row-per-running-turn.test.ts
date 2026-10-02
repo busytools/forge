@@ -66,6 +66,9 @@ const ended = (): unknown => ({
   is_error: false,
 });
 
+/** The frame the CLI gives up with, after which no result follows. */
+const failed = (): unknown => ({ type: 'error', error: 'read loop died' });
+
 /** The frame the CLI re-fires at the head of every turn. */
 const began = (): unknown => ({
   type: 'system',
@@ -280,6 +283,24 @@ describe('one row per running turn', () => {
     expect(bar(newest(chat)), 'so the bar is gone').toBe(false);
   });
 
+  it('reads a seat returned to after its turn died on the error frame', () => {
+    // The store's answer is its last snapshot stepped by the frames since, and
+    // the CLI's error - after which no result follows - is a frame that ends
+    // the turn. Read here rather than through a live frame because this is the
+    // path where the rule is alone: the page carries no frame that ended the
+    // turn, so nothing else can say the bar is over.
+    const server = fakeConnection({
+      running: true,
+      updates: [{ chat_appended: { key: LEAD, msg: failed() } }],
+    });
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([{ key: 't1', messages: [typed('mine'), said('working')] }], null));
+
+    expect(newest(chat)?.key, "the page's row is there").toBe('t1');
+    expect(writing(newest(chat)), 'the error frame ended the turn').toBe(false);
+  });
+
   it('reads a seat already visited from what its own store holds', () => {
     // A return subscribes nothing - the subscription is the client's for the
     // life of the connection - so the store is the only thing that can say, and
@@ -391,6 +412,21 @@ describe('one row per running turn', () => {
     server.says(true);
 
     expect(writing(newest(chat)), 'a row carrying its result is over for good').toBe(false);
+  });
+
+  it('leaves the bar off a row that carries the error it died on', () => {
+    // A page can carry the turn that died on the CLI's error while the seat's
+    // answer says the next turn is running - and a row whose own frames carry
+    // its end is over whatever the seat says.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([{ key: 't1', messages: [typed('mine'), said('working'), failed()] }], null));
+    server.says(true);
+
+    expect(newest(chat)?.key, "the page's row is there").toBe('t1');
+    expect(writing(newest(chat)), 'a row carrying its error is over').toBe(false);
+    expect(bar(newest(chat)), 'and no bar draws on it').toBe(false);
   });
 
   it('does not carry the bar onto the occupant that replaced it', () => {

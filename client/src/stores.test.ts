@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { SessionUpdate } from './protocol';
+import { REPLACES } from './session/apply';
 import { Stores } from './stores';
 
 const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' } as const;
@@ -66,4 +68,97 @@ describe('the stores one connection holds', () => {
     expect(store.state()).toEqual({ kind: 'refused', why: 'no such seat' });
     expect(store.snapshot()).toBeNull();
   });
+
+  /**
+   * A seat's store is keyed by the seat, and what it holds belongs to one
+   * occupant. A replacement that lands while nobody is reading it therefore
+   * has to leave nothing behind: a fresh mount seeds from the snapshot and
+   * replays the frames (the chat's `heldRunning`), so a store still holding
+   * the last occupant's answer draws its running state - `turn_in_flight`
+   * here - over the new occupant's newest row until the seat's own answer
+   * lands a round trip later.
+   */
+  it('holds nothing of the occupant a seat was replaced from', () => {
+    // Written out rather than read off `REPLACES`, following `live.test.ts`:
+    // a loop over the list under test cannot see the list change.
+    const replacing = ['spawning', 'connected', 'history_replayed', 'session_replaced'];
+    expect(
+      [...REPLACES].sort(),
+      'the list the store reads is not the list this test covers',
+    ).toEqual([...replacing].sort());
+    for (const name of replacing) {
+      const stores = new Stores();
+      const seat = { session: LEAD };
+      const store = stores.open(seat);
+      // Someone visited the seat: answered mid-turn, then stepped by its
+      // frames - and the swap lands with nobody reading, which is the case.
+      store.set({ header: { turn_in_flight: true } });
+      store.push(opening());
+      // A tail long enough to overflow the store's ceiling, so the store is
+      // holding a dropped count when the replacement lands. The clear has to
+      // reset it: a reader suppresses its replay while that count is nonzero,
+      // and the new occupant's own frames are then never read.
+      for (let at = 0; at < 520; at += 1) store.push('catalog_loaded');
+      expect(store.dropped(), 'precondition: the tail overflowed the ceiling').toBeGreaterThan(0);
+
+      store.push(occupantAs(name));
+
+      expect(
+        store.snapshot(),
+        `${name}: the last occupant's record was there to seed from`,
+      ).toBeNull();
+      expect(store.updates(), `${name}: the last occupant's frames were there to replay`).toEqual(
+        [],
+      );
+      expect(store.state(), `${name}: the seat's store was not put back to loading`).toEqual({
+        kind: 'loading',
+      });
+      expect(store.dropped(), `${name}: the cleared store kept the old tail's count`).toBe(0);
+
+      // And the seat's store is empty rather than dead: the next occupant's
+      // own frames land in it.
+      store.push(opening('the-one-that-arrived'));
+      expect(store.updates(), `${name}: the store took no frames after the swap`).toHaveLength(1);
+    }
+
+    // The fleet's own store holds a different subject: a seat's swap is news
+    // for the home rather than a replacement of what the home holds, so the
+    // rule stops at seats.
+    const fleet = new Stores();
+    const home = fleet.open('home');
+    home.set({ projects: [] });
+    home.push(occupantAs('connected'));
+    expect(home.snapshot(), 'a seat swap emptied the home store').toEqual({ projects: [] });
+  });
 });
+
+/** The frame a turn opens with, which is what a replay reads a turn out of. */
+function opening(sessionId = 'the-one-that-left'): SessionUpdate {
+  return {
+    chat_appended: {
+      key: LEAD,
+      msg: { type: 'system', subtype: 'init', session_id: sessionId, tools: [] },
+    },
+  };
+}
+
+/**
+ * A seat taking a new occupant, under any of the four names that replace it.
+ *
+ * One payload for all four: what the store's rule reads is the variant's
+ * name, and the fields past the slot are the page's business.
+ */
+function occupantAs(name: string): SessionUpdate {
+  return {
+    [name]: {
+      key: LEAD,
+      session_id: 'the-one-that-left',
+      cwd: '/tmp',
+      current_model: null,
+      available_models: [],
+      mode: null,
+      history: [],
+      compaction_count: 0,
+    },
+  };
+}

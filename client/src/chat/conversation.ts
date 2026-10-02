@@ -25,6 +25,7 @@ import { get, writable, type Readable } from 'svelte/store';
 
 import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
+import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { fold } from './units';
@@ -81,22 +82,6 @@ function carriesResult(messages: unknown[]): boolean {
 function runningOf(data: unknown): boolean {
   const header = (data as { header?: { turn_in_flight?: unknown } } | null)?.header;
   return header?.turn_in_flight === true;
-}
-
-/**
- * The seat's in-flight answer after one frame.
- *
- * The same rule the record folds (`apply.ts`'s `inFlightOf`), with one frame
- * more: the `error` the CLI gives up with ends a turn, and the record's copy
- * has no arm for it, so a turn that died would stay in flight there. Which copy
- * governs is settled by that frame being a real end; the record's is the stale
- * one.
- */
-function movedRunning(held: boolean, message: unknown): boolean {
-  const type = (message as { type?: unknown } | null)?.type;
-  if (type === 'result' || type === 'error') return false;
-  if (type === 'system' && (message as { subtype?: unknown }).subtype === 'init') return true;
-  return held;
 }
 
 /**
@@ -391,7 +376,7 @@ export class Chat {
     if (store.dropped() > 0) return held;
     for (const update of store.updates()) {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
-      if (message !== undefined) held = movedRunning(held, message);
+      if (message !== undefined) held = inFlightOf(held, message);
     }
     return held;
   }
@@ -748,7 +733,7 @@ export class Chat {
       if (message === undefined) return;
       // Stepped BEFORE the row is written, so a row that opens or grows answers
       // from the new state rather than the one before the frame.
-      this.turnRunning = movedRunning(this.turnRunning, message);
+      this.turnRunning = inFlightOf(this.turnRunning, message);
       this.append(message);
       return;
     }

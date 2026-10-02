@@ -433,15 +433,22 @@ function headerFrom(held: SessionHeader, message: unknown): SessionHeader {
 /**
  * What a frame says about a turn being in flight.
  *
- * The rising edge is the frame a turn opens with and the falling edge is its
- * result, whatever the result says. The third thing the core's own answer is
- * made of is the stamp forge puts on a dispatch of its own, which no update
- * carries: the gap it leaves is the one between a prompt being routed and the
- * CLI's first frame for it, and it closes on that frame.
+ * **One rule, read by both folds**: this record's header fold and the chat's
+ * row fold (`chat/conversation.ts`), which used to carry a second copy and
+ * could have drifted from this one the day a frame type split them.
+ *
+ * The rising edge is the frame a turn opens with and the falling edges are its
+ * result, whatever the result says, and the error the CLI gives up with, after
+ * which no result follows - the rule the core's own turn-commit marker clears
+ * on (`crates/forge-workspace/src/session_task.rs`). The third thing the
+ * core's own answer is made of is the stamp forge puts on a dispatch of its
+ * own, which no update carries: the gap it leaves is the one between a prompt
+ * being routed and the CLI's first frame for it, and it closes on that frame.
  */
-function inFlightOf(held: boolean, frame: Record<string, unknown>): boolean {
-  if (frame['type'] === 'result') return false;
-  if (frame['type'] === 'system' && frame['subtype'] === 'init') return true;
+export function inFlightOf(held: boolean, frame: unknown): boolean {
+  const said = record(frame);
+  if (said['type'] === 'result' || said['type'] === 'error') return false;
+  if (said['type'] === 'system' && said['subtype'] === 'init') return true;
   return held;
 }
 

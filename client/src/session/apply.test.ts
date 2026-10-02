@@ -178,6 +178,18 @@ describe('applyUpdate', () => {
       expect(next.header.turn_in_flight).toBe(false);
     });
 
+    // `Message::Error` is the CLI's last-gasp transport failure, after which
+    // no result follows - the rule the core's own turn-commit marker clears
+    // on (`crates/forge-workspace/src/session_task.rs`).
+    it('closes on the error frame the CLI gives up with', () => {
+      const held = { ...empty(), header: { ...empty().header, turn_in_flight: true } };
+      const next = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: { type: 'error', error: 'read loop died' } },
+      });
+
+      expect(next.header.turn_in_flight, 'a turn the CLI gave up on stayed in flight').toBe(false);
+    });
+
     it('closes on a turn error, which is the only one of the three the core emits', () => {
       const held = { ...empty(), header: { ...empty().header, turn_in_flight: true } };
       const next = applyUpdate(held, { turn_error: { key: SLOT, message: 'stdin write failed' } });
