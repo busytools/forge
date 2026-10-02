@@ -383,15 +383,15 @@ describe('applyUpdate', () => {
       expect(next).toBe(held);
     });
 
-    it('parks a held slack draft, and drops the one that expired', () => {
+    it('parks a held slack draft, and drops the one the core resolved', () => {
       const draft = { id: 'd1', workspace: 'Trust Machines', text: 'hello' };
       const held = applyUpdate(empty(), { slack_post_pending: { key: SLOT, draft } });
       expect(held.pending_ask).toEqual({ kind: 'slack_draft', request: draft });
 
       expect(
-        applyUpdate(held, { slack_draft_expired: { key: SLOT, id: 'd1' } }).pending_ask,
+        applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd1' } }).pending_ask,
       ).toBeNull();
-      expect(applyUpdate(held, { slack_draft_expired: { key: SLOT, id: 'd2' } })).toBe(held);
+      expect(applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd2' } })).toBe(held);
     });
   });
 
@@ -705,7 +705,7 @@ const EVERY_VARIANT = [
   'cron_prompt_appended',
   'slack_message_appended',
   'slack_post_pending',
-  'slack_draft_expired',
+  'slack_draft_resolved',
   'prompt_queued_while_busy',
   'review_activity_notice',
   'dictate_availability',

@@ -130,12 +130,10 @@
    * The prompt the dock draws, which is the one the seat is parked on - unless
    * this composer has answered a held draft.
    *
-   * A question's answer clears the ask with an update of its own. A draft's does
-   * not: the core drops it from its registry and says nothing, and a poll's
-   * answer takes only the slices no update carries, which an ask is not. So the
-   * draft this composer answered would stand until the seat was read whole.
-   * Suppressing it is the move the terminal makes by popping its own prompt, and
-   * a refusal brings it back with the reason.
+   * A question's answer clears the ask with an update of its own. A draft's
+   * leaves the core's registry, and the stand-down that says so is a round trip
+   * away - so the mark stands the dock down from the click until the update
+   * lands, and a refusal brings it back with the reason.
    */
   const dockAsk = $derived(
     ask !== null &&

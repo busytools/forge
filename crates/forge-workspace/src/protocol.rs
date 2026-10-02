@@ -1265,9 +1265,10 @@ pub enum SessionUpdate {
         key: SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     },
-    /// A held Slack draft expired without a decision. The TUI retires
-    /// the dock prompt; nothing was sent.
-    SlackDraftExpired {
+    /// A held Slack draft left the core's registry: answered in some view,
+    /// expired, or its asking session gone. Each view keeps its own copy of
+    /// the parked draft, and this is the only update that clears it.
+    SlackDraftResolved {
         key: SessionSlot,
         id: Uuid,
     },
@@ -1380,7 +1381,7 @@ impl SessionUpdate {
             | Self::PromptQueuedWhileBusy { key }
             | Self::DictateEnded { key, .. }
             | Self::SlackPostPending { key, .. }
-            | Self::SlackDraftExpired { key, .. }
+            | Self::SlackDraftResolved { key, .. }
             | Self::RuntimeReloadCompleted { key }
             | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
@@ -1588,8 +1589,8 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("workspace", &draft.workspace)
                 .field("conversation", &draft.conversation)
                 .finish_non_exhaustive(),
-            Self::SlackDraftExpired { key, id } => {
-                f.debug_struct("SlackDraftExpired").field("key", key).field("id", id).finish()
+            Self::SlackDraftResolved { key, id } => {
+                f.debug_struct("SlackDraftResolved").field("key", key).field("id", id).finish()
             }
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()

@@ -418,6 +418,10 @@ impl ProdSlackFacade {
     /// A generous timeout expires the draft rather than holding the
     /// session forever on a prompt nobody can answer; rejection and
     /// expiry are distinct outcomes the callers surface differently.
+    ///
+    /// The views hear `SlackDraftResolved` from the resolve below, expiry
+    /// included: the draft leaving the registry is the whole of what a view
+    /// does with it, so there is one signal rather than one per ending.
     async fn await_approval(
         workspace: &Arc<Workspace>,
         caller: &SessionSlot,
@@ -431,13 +435,6 @@ impl ProdSlackFacade {
             Ok(Ok(false) | Err(_)) => GateDecision::Rejected,
             Err(_elapsed) => GateDecision::Expired,
         };
-        if resolved == GateDecision::Expired {
-            let _ =
-                workspace.update_sender().send(crate::protocol::SessionUpdate::SlackDraftExpired {
-                    key: caller.clone(),
-                    id: guard.id,
-                });
-        }
         if resolved != GateDecision::Approved {
             workspace.resolve_slack_draft(guard.id, caller, false);
         }
@@ -1656,10 +1653,10 @@ mod tests {
 
     /// The approval window expiring is its own outcome, distinct from a
     /// rejection, and leaves nothing behind: no post, no registry entry,
-    /// and an update the TUI retires the dock prompt on.
+    /// and exactly one stand-down for the views.
     #[tokio::test(start_paused = true)]
     async fn a_draft_whose_window_expires_is_expired_not_rejected() {
-        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let (facade, ws, api, mut rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
@@ -1675,6 +1672,18 @@ mod tests {
         );
         assert!(api.posts().is_empty(), "an expired draft must not post");
         assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry");
+
+        let mut resolved = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id } = update {
+                resolved.push((key, id));
+            }
+        }
+        assert_eq!(
+            resolved.len(),
+            1,
+            "the expiry stands the views down once, whichever path resolved the draft",
+        );
     }
 
     #[tokio::test]

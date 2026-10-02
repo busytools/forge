@@ -276,10 +276,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // the user is pointed at it.
             app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
         }
-        SessionUpdate::SlackDraftExpired { key, id } => {
-            // The gate expired the draft unanswered, so nothing was sent:
-            // retire the dock prompt instead of leaving a decision the
-            // user's answer can no longer reach.
+        SessionUpdate::SlackDraftResolved { key, id } => {
+            // The draft left the core's registry - answered in another view,
+            // expired, or its session gone - so this dock is dead: retire it
+            // rather than leaving a decision no answer can reach. Idempotent:
+            // the answer given here arrives back as this same update.
             if let Some(session) = app.session_mut(&key) {
                 crate::app::prompt::retire_slack_draft(session, id);
             }
@@ -3713,6 +3714,43 @@ mod tests {
             session.prompt_queue.front().expect("head").tool_id,
             "tc-q-evt",
             "queued question prompt carries the event's tool_id"
+        );
+    }
+
+    /// A draft the core has already resolved - answered in another view, or
+    /// expired - is no longer the terminal's to offer: the stand-down names
+    /// the draft's own id, and the queued dock goes with it.
+    #[test]
+    fn a_resolved_draft_retires_the_queued_dock() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "C1".to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
+        };
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackPostPending { key: key.clone(), draft: draft.clone() },
+        );
+        assert_eq!(
+            app.sessions.get(&key).expect("the session").prompt_queue.len(),
+            1,
+            "the draft parks a dock in the queue",
+        );
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackDraftResolved { key: key.clone(), id: draft.id },
+        );
+
+        assert!(
+            app.sessions.get(&key).expect("the session").prompt_queue.is_empty(),
+            "the dock must not go on offering a decision the core has taken",
         );
     }
 

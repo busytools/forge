@@ -3909,6 +3909,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondSlackPost { key, id, .. } => {
+                let waiting = self.slack_draft_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoPromptWaiting {
+                        key: key.clone(),
+                        tool_id: id.to_string(),
+                    });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {

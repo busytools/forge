@@ -180,6 +180,20 @@ pub(crate) fn dispatch_slack_post_outcome(
     };
     let cmd = forge_workspace::Command::RespondSlackPost { key: session_key.clone(), id, approved };
     if let Err(err) = workspace.dispatch(cmd) {
+        // The same race the permission and question answers meet: another
+        // view answered the draft (or it expired) before this click landed.
+        // Debug, not warn - the dock is already gone, so the reader has
+        // nothing to act on.
+        if matches!(err, forge_workspace::DispatchError::NoPromptWaiting { .. }) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "slack_post_dispatch_prompt_gone",
+                slot = %session_key.display(),
+                draft_id = %id,
+                "slack post answer dropped: the draft is no longer waiting",
+            );
+            return;
+        }
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "slack_post_dispatch_failed",

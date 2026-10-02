@@ -208,6 +208,12 @@ impl Workspace {
         (id, receiver)
     }
 
+    /// Whether a draft with this id is still registered to `caller`, without
+    /// removing it - the read the dispatch guard makes before an answer.
+    pub(crate) fn slack_draft_waiting(&self, id: Uuid, caller: &SessionSlot) -> bool {
+        self.slack_drafts.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
+    }
+
     /// Remove every Slack subscription the worker `label` owns in
     /// `project_key`, from the active set and the store. Worker teardown
     /// calls this so a despawned worker cannot strand records - and so a
@@ -275,6 +281,10 @@ impl Workspace {
     /// still outstanding: it is true exactly once, for the entry that was
     /// there. A draft held for another session is refused rather than
     /// answered, and a caller that has gone away is not an error.
+    ///
+    /// The removal is the one point every end of a draft funnels through -
+    /// an answer, an expiry, a dead waiter - so the stand-down is emitted
+    /// here rather than at each caller.
     pub(crate) fn resolve_slack_draft(
         &self,
         id: Uuid,
@@ -285,8 +295,12 @@ impl Workspace {
         if !drafts.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
             return false;
         }
-        let Some((_, _, sender)) = drafts.remove(&id) else { return false };
+        let Some((owner, _, sender)) = drafts.remove(&id) else { return false };
+        drop(drafts);
         let _ = sender.send(approved);
+        let _ = self
+            .update_sender()
+            .send(crate::protocol::SessionUpdate::SlackDraftResolved { key: owner, id });
         true
     }
 
@@ -1341,6 +1355,32 @@ mod tests {
         assert!(!ws.resolve_slack_draft(id, &caller, true), "and is gone once answered");
     }
 
+    /// The draft leaving the registry is the one moment every view has to
+    /// hear about: the terminal's queued dock and the web client's parked
+    /// record each keep a copy of their own, and no other update clears
+    /// them.
+    #[test]
+    fn a_resolved_draft_stands_the_views_down() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        while rx.try_recv().is_ok() {}
+
+        assert!(ws.resolve_slack_draft(id, &caller, true), "the draft was waiting");
+
+        let mut resolved = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id } = update {
+                resolved.push((key, id));
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![(caller, id)],
+            "the stand-down names the draft's own id, so every view drops that one",
+        );
+    }
+
     /// An answer is only applied by the session the draft was addressed
     /// to; another session naming the id is refused, and the draft stays
     /// waiting for its owner.
@@ -1380,6 +1420,29 @@ mod tests {
         assert!(
             decision.await.expect("the held draft answers"),
             "the answer the dock gave reaches the awaiting caller",
+        );
+    }
+
+    /// A click on a dock the core has already resolved - answered in some
+    /// other view, expired - is refused with the reason, the same way the
+    /// permission and question answers are, rather than dropped: the
+    /// reader learns why the click did nothing.
+    #[tokio::test]
+    async fn a_stale_dock_answer_is_refused_with_the_reason() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        assert!(ws.resolve_slack_draft(id, &caller, true), "the draft was waiting");
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
+            key: caller,
+            id,
+            approved: true,
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::NoPromptWaiting { .. })),
+            "a stale dock must report why the answer did not land: {refused:?}",
         );
     }
 

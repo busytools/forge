@@ -209,7 +209,7 @@ const NOT_NEWS: readonly string[] = [
   'cron_prompt_appended',
   'slack_message_appended',
   'slack_post_pending',
-  'slack_draft_expired',
+  'slack_draft_resolved',
   'prompt_queued_while_busy',
   'review_activity_notice',
   'dictate_started',
