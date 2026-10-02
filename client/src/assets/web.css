@@ -881,10 +881,10 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
-.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 34px;
+.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 19px;
   font-size: var(--fs-base); color: var(--muted); }
 .card .q .qm { color: var(--accent); flex: none; }
-.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 24px;
+.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 9px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
 .card .a .am { color: var(--dim); }
 .card .a .picked { color: var(--ok); }
