@@ -335,13 +335,39 @@ fn an_assistant_chunk() -> forge_primitives::Message {
     .expect("parse an assistant message")
 }
 
-/// The frame the CLI sends when a compaction starts and again when it settles,
-/// the second carrying a null where the first carried `compacting`.
-fn a_compaction_status(status: Option<&str>) -> forge_primitives::Message {
+/// The frame the CLI sends when a compaction starts, which it sends twice - once
+/// before the `PreCompact` hook and once after.
+fn a_compaction_start() -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
         "type": "system",
         "subtype": "status",
-        "status": status,
+        "status": "compacting",
+        "session_id": "s",
+    }))
+    .expect("parse a status message")
+}
+
+/// The frame the CLI sends once a compaction settles, which is the only status
+/// frame carrying the compaction's own result.
+fn a_compaction_settle() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "status": null,
+        "compact_result": "success",
+        "session_id": "s",
+    }))
+    .expect("parse a status message")
+}
+
+/// The CLI's report of a permission-mode change, which arrives on the same
+/// `status`/null shape the settle does and is why a bare null is not a settle.
+fn a_permission_mode_change() -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "status",
+        "status": null,
+        "permissionMode": "plan",
         "session_id": "s",
     }))
     .expect("parse a status message")
@@ -578,14 +604,22 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
         "precondition: a reading past the gate refuses an ordinary ask: {refused:?}",
     );
 
+    // The whole sequence the CLI sends around a compaction, each frame of it
+    // one a bare null status would have read as the settle: the doubled
+    // `compacting` pair, and a permission-mode change, which shares the
+    // status/null shape and has nothing to do with a compaction.
+    for msg in [a_compaction_start(), a_compaction_start(), a_permission_mode_change()] {
+        fleet.emit(SessionUpdate::ChatAppended { key: lead_seat(), msg, origin: None });
+    }
+    let early = next_agent_command(&mut asked, 250).await;
+    assert!(
+        early.is_none(),
+        "none of those is the compaction's own result, so none of them fires the ask: {early:?}",
+    );
+
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
-        msg: a_compaction_status(Some("compacting")),
-        origin: None,
-    });
-    fleet.emit(SessionUpdate::ChatAppended {
-        key: lead_seat(),
-        msg: a_compaction_status(None),
+        msg: a_compaction_settle(),
         origin: None,
     });
 
@@ -594,6 +628,132 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
         matches!(command, Some(AgentCommand::GetContextUsage { .. })),
         "the compaction left the held reading wrong rather than merely old, so it is replaced \
          whatever the bound says: {command:?}",
+    );
+    let again = next_agent_command(&mut asked, 250).await;
+    assert!(again.is_none(), "and one settle costs one ask, not one per frame: {again:?}");
+}
+
+/// A compaction is the one ask that does not wait for a page, because the
+/// reading it invalidates is the core's and every view reads it.
+///
+/// The page opened afterwards is the case this closes: it reads the number the
+/// seat already holds, the read path asks only for a seat that reports nothing,
+/// and no turn of its own would ask either while the stale number stands past
+/// the token gate.
+#[tokio::test]
+async fn a_compaction_settling_on_a_seat_no_page_holds_still_asks() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_reading_past_the_gate());
+    // The home is every row and no seat's page, so nothing here is holding the
+    // lead's seat.
+    let _socket = a_page_on(&url, Subject::Home).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_compaction_settle(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetContextUsage { .. })),
+        "a compaction leaves the reading wrong for whoever opens the seat next, so the ask does \
+         not wait for a page: {command:?}",
+    );
+}
+
+/// A permission-mode change is not a compaction, and the gate it would otherwise
+/// step past is the expensive one: a page-held `[1m]` seat past the token gate
+/// that fires on a mode toggle spends a whole-transcript walk on an ask whose
+/// reading never stopped being true.
+///
+/// The frame shares the `status`/null shape with the settle and is told apart
+/// only by carrying the mode rather than the compaction's result, which is what
+/// this pins.
+#[tokio::test]
+async fn a_permission_mode_change_is_not_a_settled_compaction() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_reading_past_the_gate());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_permission_mode_change(),
+        origin: None,
+    });
+
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(
+        command.is_none(),
+        "a mode change is not a compaction settling, so it is not asked past the bound: \
+         {command:?}",
+    );
+}
+
+/// The bypass is past both bounds, and the interval is the one this can only
+/// show end to end: an ordinary ask has already gone, so a forced ask that
+/// respected the interval would be dropped.
+///
+/// That is the state the bypass exists for - a turn ends, the user compacts, and
+/// the settle lands inside the minute - and the reading would stand at the
+/// pre-compaction number until the next compaction if the interval refused it.
+#[tokio::test]
+async fn a_compaction_settling_inside_the_interval_still_asks() {
+    let (url, fleet) = a_server().await;
+    let mut asked = a_reporting_seat(&fleet, a_small_reading());
+    let _socket = a_page_on(&url, Subject::Session(lead_seat())).await;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+    let first = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(first, Some(AgentCommand::GetContextUsage { .. })),
+        "precondition: the turn's ask goes, which is what starts the interval: {first:?}",
+    );
+
+    // The compaction settles a scheduling hop later, which is as far inside the
+    // interval as this can be driven.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_compaction_settle(),
+        origin: None,
+    });
+
+    let second = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(second, Some(AgentCommand::GetContextUsage { .. })),
+        "the settle is asked for inside the interval the turn's ask opened: {second:?}",
+    );
+}
+
+/// A seat with no agent is asked for nothing and answers the client with
+/// nothing: the ask is refused before it reaches any CLI, and a refusal is a
+/// `debug` record rather than a message a page has to render.
+#[tokio::test]
+async fn a_seat_with_no_agent_is_asked_and_answers_the_client_with_nothing() {
+    let (url, fleet) = a_server().await;
+    // A reading, so the ask is admitted and the refusal is the missing agent
+    // rather than one of the bounds.
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts { context: Some(a_small_reading()), ..ViewFacts::default() },
+    );
+    let mut socket = a_page_on(&url, Subject::Session(lead_seat())).await.0;
+
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+
+    let heard = next_server_within(&mut socket, 5_000).await;
+    assert!(
+        matches!(heard, Some(ServerMessage::Update { .. })),
+        "the frame reaches the page it belongs to, and the refused ask is not an error it has to \
+         draw: {heard:?}",
     );
 }
 

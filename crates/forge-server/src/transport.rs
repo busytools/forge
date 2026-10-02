@@ -86,19 +86,15 @@ async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
     let mut probes = probe::ContextProbe::default();
     while let Some(update) = updates.recv().await {
-        // Read before the fold, because the TRANSITION is the news: a seat that
-        // was compacting and is not any more has had the transcript taken out
-        // from under whatever reading it holds.
-        let was_compacting = settles_a_compaction(&update)
-            && update.slot().is_some_and(|slot| Live::lock(&state.live).is_compacting(slot));
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
-        request_context_usage(&state, &mut probes, &update, was_compacting);
+        request_context_usage(&state, &mut probes, &update);
     }
 }
 
 /// Why the socket owes the core a fresh context reading, which is what an
 /// update says about a seat's held one.
+#[derive(PartialEq, Eq)]
 enum Ask {
     /// A turn ended, so the reading is older than the transcript it was taken
     /// from and is asked for again under [`probe`]'s bounds.
@@ -109,26 +105,33 @@ enum Ask {
     AfterACompaction,
 }
 
-/// Whether this update is the status frame that clears a compaction.
+/// Whether this update reports a compaction's own outcome, which is the frame
+/// that ends one.
 ///
-/// The status pair is the only place the CLI says either way, and the frame
-/// that clears one is where a probe reads the post-compaction transcript: the
-/// `compact_boundary` that records it and the turn's own result both land
-/// later.
+/// **The compaction's result field rather than the null status that rides
+/// beside it.** The CLI reports a permission-mode change on that same
+/// `status`/null shape, and a bare null read as a settle would fire the
+/// post-compaction ask - past both bounds - on a mode toggle, mid-compaction,
+/// and spend the ask the settle itself is owed.
+///
+/// A settle with no result field would leave the post-compaction ask unfired
+/// and a reading past the token gate unable to be lowered, which is the state
+/// this bypass exists to close; the field is on the settle in both pinned
+/// captures and a fresh one is where a change to that would show.
 fn settles_a_compaction(update: &SessionUpdate) -> bool {
     let SessionUpdate::ChatAppended { msg: Message::System { subtype, data, .. }, .. } = update
     else {
         return false;
     };
-    subtype == "status" && data.get("status").is_some_and(serde_json::Value::is_null)
+    subtype == "status" && data.get("compact_result").is_some()
 }
 
 /// What this update asks of the core about a seat's context reading.
-fn context_ask(update: &SessionUpdate, was_compacting: bool) -> Option<(&SessionSlot, Ask)> {
+fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
     let SessionUpdate::ChatAppended { key, msg, .. } = update else {
         return None;
     };
-    if was_compacting {
+    if settles_a_compaction(update) {
         return Some((key, Ask::AfterACompaction));
     }
     matches!(msg, Message::Result { .. }).then_some((key, Ask::AfterATurn))
@@ -157,12 +160,21 @@ fn request_context_usage(
     state: &TransportState,
     probes: &mut probe::ContextProbe,
     update: &SessionUpdate,
-    was_compacting: bool,
 ) {
-    let Some((key, why)) = context_ask(update, was_compacting) else {
+    let Some((key, why)) = context_ask(update) else {
         return;
     };
-    if !Live::lock(&state.live).is_attached(key) {
+    // A page has to be holding the seat for a turn's ask, because that one is
+    // speculative: the reading may never be drawn.
+    //
+    // **A settled compaction is not speculative - it is corrective, and it
+    // does not wait for a page.** The reading it invalidates is the core's,
+    // and every view reads that one, so a seat nobody is holding keeps a
+    // number that is wrong rather than merely old - and a page opened on it
+    // afterwards reads that number and is never asked, the read path guarding
+    // on a reading being present. The terminal recovers from a pane switch;
+    // this is the socket's own way to.
+    if why == Ask::AfterATurn && !Live::lock(&state.live).is_attached(key) {
         return;
     }
     let now = Instant::now();
