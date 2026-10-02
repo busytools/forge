@@ -830,6 +830,9 @@ details.leaf.running > summary { color: var(--text); }
    class reaches every row that draws one, and this belongs to one kind of row. */
 .patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
+/* The figures the marks follow, which are the line's own words rather than a
+   mark. Bare for the same reason `.patchmark` is. */
+.patchsize { margin-right: 8px; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }

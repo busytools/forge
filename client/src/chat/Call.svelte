@@ -55,6 +55,19 @@
    * nowhere to sit is a line dropped.
    */
   const tail = $derived(call.body.map((piece) => piece.kind).lastIndexOf('text'));
+
+  /**
+   * The size of a mutation's change, as the one line under its diff, or `null`
+   * for a call whose row draws no diff at all.
+   *
+   * Built here rather than in the markup: the line is one run of figures, and
+   * the marks that follow it are the only parts that are elements.
+   */
+  const size = $derived(
+    call.mutation === null || call.mutation.hunks === 0
+      ? null
+      : `${call.mutation.hunks} ${call.mutation.hunks === 1 ? 'hunk' : 'hunks'} \u{b7} +${call.mutation.added} \u{2212}${call.mutation.removed}`,
+  );
 </script>
 
 <details
@@ -150,13 +163,14 @@
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
         {/if}
-        {#if call.mutation !== null && (call.mutation.all || call.mutation.outside)}
-          <!-- Only what is true: a mark whose default is nothing to say is drawn
-               when it is not the default, so an ordinary edit carries no line. -->
-          <div class="term">
-            {#if call.mutation.all}<span class="patchmark">every match</span>{/if}
-            {#if call.mutation.outside}<span class="patchmark">changed outside this edit</span>{/if}
-          </div>
+        {#if size !== null}
+          <!-- The size always, then only the marks that are true: a reader acts
+               on "every match" and on a file that moved, and the default of
+               each is nothing to say.
+               On ONE line, because the box is `white-space: pre-wrap`: a
+               newline in this template is a newline on screen. -->
+          <!-- prettier-ignore -->
+          <div class="term"><span class="patchsize">{size}</span>{#if call.mutation?.all}<span class="patchmark">every match</span>{/if}{#if call.mutation?.outside}<span class="patchmark">changed outside this edit</span>{/if}</div>
         {/if}
       {/if}
     </div>

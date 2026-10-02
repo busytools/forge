@@ -53,7 +53,10 @@ describe('what a call body draws', () => {
     expect(hunk.lines[1]?.text, 'and a change loses its mark, which the row draws itself').toBe(
       '  flex: none;',
     );
-    expect(leaf.mutation, 'and the two marks the result carries').toEqual({
+    expect(leaf.mutation, 'and what the line under it counts, with the two marks').toEqual({
+      hunks: 1,
+      added: 1,
+      removed: 1,
       all: true,
       outside: true,
     });

@@ -27,8 +27,13 @@ export interface HunkLine {
   text: string;
 }
 
-/** What a mutation's result says about itself, where a reader acts on it only when it is not the default. */
+/** What a mutation's result says about itself, drawn as one line under its diff. */
 export interface MutationMarks {
+  /** How many hunks the change drew, which is what says there is a line to draw at all. */
+  hunks: number;
+  /** How many lines it added, and how many it removed: the size of the change. */
+  added: number;
+  removed: number;
   /** Whether the edit replaced every match rather than the first. */
   all: boolean;
   /** Whether the file changed outside this edit, which the CLI reports on the result. */
@@ -273,12 +278,40 @@ function mutationBody(name: string, input: unknown, record: unknown): CallBody[]
   return hunks.length > 0 ? hunks : diffsOf(name, input);
 }
 
-/** The marks a mutation's result carries, or `null` for a call that is not a mutation. */
-function marksOf(name: string, input: unknown, record: unknown): MutationMarks | null {
+/**
+ * What a mutation's row says under its diff, or `null` for a call that is not a
+ * mutation.
+ *
+ * **Counted from what the row actually drew**, so the figures cannot disagree
+ * with the change above them: the hunks the result carried, or the two sides
+ * the fallback drew as one.
+ */
+function marksOf(
+  name: string,
+  input: unknown,
+  body: CallBody[],
+  record: unknown,
+): MutationMarks | null {
   if (!isEdit(name)) return null;
+  let hunks = 0;
+  let added = 0;
+  let removed = 0;
+  for (const part of body) {
+    if (part.kind === 'hunk') {
+      hunks += 1;
+      for (const line of part.lines) {
+        if (line.kind === 'add') added += 1;
+        else if (line.kind === 'del') removed += 1;
+      }
+    } else if (part.kind === 'diff') {
+      hunks += 1;
+      if (part.new !== '') added += part.new.split('\n').length;
+      if (part.old !== '') removed += part.old.split('\n').length;
+    }
+  }
   const all = (input as { replace_all?: unknown } | null)?.replace_all === true;
   const outside = (record as { userModified?: unknown } | null)?.userModified === true;
-  return { all, outside };
+  return { hunks, added, removed, all, outside };
 }
 
 /**
@@ -352,7 +385,7 @@ export function leafOf(
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
     body: drawnBody(name, body, result),
-    mutation: marksOf(name, input, record),
+    mutation: marksOf(name, input, body, record),
   };
 }
 
