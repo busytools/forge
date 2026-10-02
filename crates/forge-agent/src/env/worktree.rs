@@ -241,8 +241,35 @@ pub fn worktree_creation_obstacle(repo: &Path, label: &str, path: &Path) -> Opti
     let branch = format!("worktree-{label}");
     let mut command = git_command::command("git");
     command.arg("-C").arg(repo).args(["worktree", "list", "--porcelain"]);
-    let output = command.output().ok()?;
+    // Both ways of failing to ask git leave nothing else to tell the two
+    // apart from a repo with no obstacle, and that is the one branch where
+    // this check silently does nothing.
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::env::worktree",
+                event_name = "worktree_obstacle_unavailable",
+                repo = %repo.display(),
+                label = %label,
+                %err,
+                "git could not be asked whether this worker's worktree can be created, so this \
+                 spawn is not refused here and may start without a worktree",
+            );
+            return None;
+        }
+    };
     if !output.status.success() {
+        tracing::warn!(
+            target: "forge_agent::env::worktree",
+            event_name = "worktree_obstacle_unreadable",
+            repo = %repo.display(),
+            label = %label,
+            status = %output.status,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git would not list this repo's worktrees, so this spawn is not refused here and \
+             may start without a worktree",
+        );
         return None;
     }
 
