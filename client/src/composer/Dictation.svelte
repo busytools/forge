@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
-  import { meterCells } from './meter';
+  import { meterWindow } from './meter';
   import type { Take } from './wire';
 
   let {
@@ -15,7 +15,7 @@
   } = $props();
 
   const transcribing = $derived(take.phase === 'transcribing');
-  const cells = $derived(meterCells(take.levels));
+  const cells = $derived(meterWindow(take.levels));
 
   /** How long the take has run, as a reader reads it. */
   const clock = $derived(

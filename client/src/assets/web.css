@@ -1080,11 +1080,14 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is
    one past sample, and the track is pinned right so the newest reading is
-   always at the right edge and the history flows off the left one. */
+   always at the right edge and the history flows off the left one. A cell
+   shares out the width the track has over its own 4px apiece, so the graph
+   reaches both ends of its box; the shrink of zero keeps a track narrower
+   than the window clipping its oldest readings instead of squeezing them. */
 .wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
 .wtr { display: flex; align-items: flex-end; justify-content: flex-end;
   gap: 2px; height: 100%; }
-.wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
+.wtr i { flex: 1 0 4px; border-radius: 1px; background: var(--s3); }
 .wtr i.mid { background: #ab6100; }
 .wtr i.hot { background: var(--hot); }
 .wave.tr .wtr i { background: #26354a; }

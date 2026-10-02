@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import Dictation from './Dictation.svelte';
+import { METER_CELLS } from '../wire/limits';
 import { SLOT, take } from './testing';
 import { composerFrom, type Take } from './wire';
 import type { Connection } from '../socket';
@@ -58,7 +59,18 @@ describe('the dictation row', () => {
     expect(drawn(), "the clock runs off the take's own length").toContain('0:07');
     expect(drawn(), 'the live level is its own figure').toContain('-18 dB');
     expect(drawn()).toContain('listening');
-    expect(document.querySelectorAll('.wave .wtr i'), 'a cell per reading').toHaveLength(3);
+    // The window is drawn full rather than as far as the take has got: the
+    // bars share out the track, so a window that grew with the take would
+    // resize every bar on every arriving reading.
+    const cells = [...document.querySelectorAll('.wave .wtr i')];
+    expect(
+      cells,
+      'the window is drawn at its own length, whatever the take has reported',
+    ).toHaveLength(METER_CELLS);
+    expect(
+      cells.slice(-3).map((cell) => cell.getAttribute('style')),
+      "the take's readings sit at the newest end, in order",
+    ).toEqual(['height: 29%;', 'height: 54%;', 'height: 96%;']);
     expect(document.querySelector('.dict .dot'), 'recording pulses its own colour').not.toBeNull();
     expect(document.querySelector('.dict .dot')?.classList.contains('tr')).toBe(false);
   });
@@ -74,7 +86,7 @@ describe('the dictation row', () => {
     expect(
       document.querySelectorAll('.wave .wtr i'),
       'the meter keeps its last readings',
-    ).toHaveLength(3);
+    ).toHaveLength(METER_CELLS);
   });
 
   it('abandons the take it was drawn for', () => {
