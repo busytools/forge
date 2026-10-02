@@ -1,12 +1,13 @@
 /**
  * A state class's rule, pinned to the tone that class names.
  *
- * **The defect this closes.** Swapping a token anywhere in the client's own
- * sheet - `details.hooks > summary .st.err` from `var(--bad)` to `var(--ok)`,
- * say - left the whole suite passing, so a failed hook's summary mark would
- * draw in the success tone and nothing would notice. No test pinned a colour
- * token in `assets/web.css` at all, and the same swap was invisible wherever
- * it was made.
+ * **The defect this closes.** Swapping a token in the client's own sheet -
+ * `details.hooks > summary .st.err` from `var(--bad)` to `var(--ok)`, say -
+ * left the whole suite passing, so a failed hook's summary mark would draw in
+ * the success tone and nothing would notice. No test pinned a STATE CLASS's
+ * tone in `assets/web.css`: `rail.test.ts` pins one rule's token, but nothing
+ * read the classes this file is about, so the same swap at any `.st.err` rule
+ * was invisible.
  *
  * `Hooks.test.ts` pins one rule of the BOOK DRAWING's copy of the sheet, by
  * regex, selector and token together. That made the drawing's rule better
