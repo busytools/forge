@@ -257,6 +257,10 @@ pub fn render(messages: &[Message]) -> Rendered {
     // claim is what keeps it there. Cleared wherever a turn opens, so a body
     // cannot join a turn whose calls are not the ones it belongs to.
     let mut turn_skills: Vec<String> = Vec::new();
+    // Whether a compaction boundary has landed in the open turn. The
+    // continuation prompt that follows belongs beside it - it is the row's own
+    // account - so it opens no turn of its own while this holds.
+    let mut turn_boundary = false;
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -278,6 +282,12 @@ pub fn render(messages: &[Message]) -> Rendered {
                 });
             }
             continue;
+        }
+        // The boundary a compaction left. It draws no unit of its own here -
+        // the web client folds the frame itself - but which turn it lands in
+        // is what the continuation prompt after it must join, so it is watched.
+        if matches!(message, Message::CompactBoundary { .. }) {
+            turn_boundary = true;
         }
         // What the turn has thought so far, summed from the frame deltas: the
         // wire's running counter restarts at every thinking block, so the
@@ -332,6 +342,15 @@ pub fn render(messages: &[Message]) -> Rendered {
                 // the arms below and opens a turn as it always did.
                 ContentBlock::Text { text }
                     if !assistant && claims_skill_call(&mut turn_skills, text) => {}
+                // The continuation prompt a compaction leaves behind, which
+                // belongs in the boundary's own turn: the client hangs it on
+                // that row, and a turn of its own draws the compaction twice.
+                // With no boundary in this turn it opens one as it always did.
+                ContentBlock::Text { text }
+                    if !assistant && turn_boundary && is_continuation(text) =>
+                {
+                    turn_boundary = false;
+                }
                 // The harness's task ending in its other carrier: the same XML
                 // written into a user row, which the scan hands on as this
                 // plain text. A turn opened for it draws a task id and an
@@ -364,6 +383,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                             ChatUnit::UserTurn { text } => {
                                 open_turn(&mut turns, &mut units, text, index);
                                 turn_skills.clear();
+                                turn_boundary = false;
                             }
                             other => units.push(other),
                         }
@@ -391,6 +411,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                         close_traced(&mut traced, &mut units, true, &mut keys);
                         open_turn(&mut turns, &mut units, text, index);
                         turn_skills.clear();
+                        turn_boundary = false;
                     }
                 }
                 ContentBlock::ToolUse { id, name, input }
@@ -856,6 +877,16 @@ fn skill_body_name(text: &str) -> Option<&str> {
     let lead = text.split('\n').next()?;
     let path = lead.strip_prefix("Base directory for this skill:")?.trim();
     path.split('/').rev().find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()))
+}
+
+/// Whether `text` is the continuation prompt a compaction leaves behind.
+///
+/// The CLI sends it as the reader's own user row right after the boundary
+/// frame, and it is the compaction's own account of what was cut. The client
+/// fold hangs it on the boundary's row (`attachContinuation` in its
+/// `units.ts`), and the two reads must agree.
+fn is_continuation(text: &str) -> bool {
+    text.starts_with("This session is being continued from a previous conversation")
 }
 
 /// Whether a `Skill` call's own input names the skill a body's path ended in.
@@ -1971,6 +2002,37 @@ mod tests {
         // The control: a body no call claimed opens a turn, so nothing is lost.
         let orphan = render(&[prompt(), body("/Users/ved/.claude/skills/other")]);
         assert_eq!(orphan.turns.len(), 2, "an unclaimed body opens a turn as it always did");
+    }
+
+    /// The continuation prompt a compaction leaves behind arrives as the
+    /// reader's own row, right after the boundary frame. It belongs in the
+    /// boundary's turn - the web client hangs it on that row - and a prompt
+    /// with no boundary opens a turn as it always did, so nothing is lost.
+    #[test]
+    fn a_continuation_prompt_stays_in_the_boundarys_turn() {
+        let boundary = || Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 68_031,
+            post_tokens: 9_149,
+            uuid: "cb-1".to_owned(),
+            session_id: "session".to_owned(),
+        };
+        let summary = user(vec![ContentBlock::Text {
+            text: "This session is being continued from a previous conversation that ran out of context. And so on.".to_owned(),
+        }]);
+        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+
+        let rendered = render(&[prompt(), boundary(), summary.clone()]);
+        assert_eq!(rendered.turns.len(), 1, "the prompt opens no turn of its own");
+        assert_eq!(
+            rendered.units.iter().filter(|unit| matches!(unit, ChatUnit::UserTurn { .. })).count(),
+            1,
+            "and draws no row under the reader's name"
+        );
+
+        // The control: no boundary in the turn, so it opens one as it did.
+        let orphan = render(&[prompt(), summary]);
+        assert_eq!(orphan.turns.len(), 2, "a prompt with no boundary still opens a turn");
     }
 
     #[test]
