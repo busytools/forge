@@ -297,6 +297,49 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe('# Ux\n\nDo it.');
   });
 
+  it("hangs the harness's image note on the call that read the picture", () => {
+    // The image rides the Read call's own result; the note arrives right after
+    // as a user frame. On that call's row it is the picture's caption; as the
+    // reader's turn it wears an attribution nobody earned.
+    const read = said([use('toolu_shot', 'Read', { file_path: '/Users/ved/shot.png' })]);
+    const picture = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_shot',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        ],
+      },
+    ]);
+    const note = heard([
+      text(
+        '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
+      ),
+    ]);
+
+    const units = fold([read, picture, note]);
+    const [group] = units.filter((unit) => unit.kind === 'group');
+    const held = group?.kind === 'group' ? families(group).flatMap((f) => f.calls)[0] : undefined;
+    expect(held?.image, 'the picture is on the call that read it').toEqual({
+      mime: 'image/png',
+      data: 'AAAA',
+    });
+    expect(held?.imageNote, "and the harness's line is its caption").toContain(
+      'original 2782x1034',
+    );
+    expect(kinds(units), 'nothing of the reader draws here').toEqual(['group']);
+
+    // A note with no picture behind it still draws, as a line of its own.
+    const orphan = fold([
+      heard([
+        text(
+          '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+        ),
+      ]),
+    ]);
+    expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
+  });
+
   it('draws an unclaimed skill body as its own row rather than as the reader own turn', () => {
     // The CLI injects a skill's body as a user frame and nobody typed it; the
     // row is built from the frame's own first line, which is the only marker

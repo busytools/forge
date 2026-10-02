@@ -66,6 +66,8 @@ const CALL = inPage(
         ],
         mutation: null,
         skill: null,
+        image: null,
+        imageNote: null,
       } as ToolLeaf,
     },
   }).body,

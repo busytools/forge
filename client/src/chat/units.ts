@@ -481,6 +481,12 @@ export function skillBody(text: string): { name: string; body: string } | null {
   return { name, body: rest.join('\n').trim() };
 }
 
+/** The harness's own line about an image, or null for every other text. */
+function imageNoteOf(text: string): string | null {
+  const held = text.trim();
+  return held.startsWith('[Image: original ') ? held : null;
+}
+
 /**
  * Whether a `Skill` call's own input names the skill a body's path ended in.
  *
@@ -1208,6 +1214,24 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    */
   let lastCompaction: number | null = null;
 
+  /**
+   * Hang the harness's line about an image on the call that read it.
+   *
+   * The note arrives as a user frame right after the result, while the call
+   * is still pending, so the last pending call holding an image is the row
+   * the note belongs to. A note no call holds draws as its own line instead.
+   */
+  const attachImageNote = (note: string): boolean => {
+    for (let at = pending.length - 1; at >= 0; at -= 1) {
+      const item = pending[at];
+      if (item?.tag === 'call' && item.leaf.image !== null && item.leaf.imageNote === null) {
+        item.leaf.imageNote = note;
+        return true;
+      }
+    }
+    return false;
+  };
+
   /** Attach a continuation prompt to the compaction row it belongs under. */
   const attachContinuation = (text: string, key: string): void => {
     flushWork();
@@ -1555,6 +1579,20 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           }
           if (isContinuation(stripped)) {
             attachContinuation(stripped, keyOf(at, frame, blockAt));
+            continue;
+          }
+          // The harness's own line about the image the call above it just
+          // read: it is the picture's caption on that call's row, not a turn
+          // of the reader's own.
+          const note = imageNoteOf(stripped);
+          if (note !== null) {
+            if (!attachImageNote(note)) {
+              push({
+                kind: 'notice',
+                key: keyOf(at, frame, blockAt),
+                notice: { severity: 'info', text: note },
+              });
+            }
             continue;
           }
         }

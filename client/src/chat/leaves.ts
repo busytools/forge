@@ -119,6 +119,23 @@ export interface ToolLeaf {
    * CLI talking to itself, and the body is what the skill is.
    */
   skill: string | null;
+  /**
+   * The image a call's result carried, or null for every other call.
+   *
+   * A `Read` of a screenshot comes back as an image block in its result, and
+   * the row that read it is where a reader looks for it. Held as the wire's
+   * own base64 so the page can draw it from a data URL, and drawn only when
+   * the row is open - the decode is real, and a column of closed rows must
+   * not pay it.
+   */
+  image: { mime: string; data: string } | null;
+  /**
+   * The harness's own line about that image ("original WxH, displayed at ..."),
+   * which arrives as a user frame right after the result. The fold attaches
+   * it here so it draws as the picture's caption rather than as a turn of the
+   * reader's own.
+   */
+  imageNote: string | null;
 }
 
 /** Whether a call's body is drawn without being asked for. */
@@ -443,7 +460,26 @@ export function leafOf(
     body: drawnBody(name, body, result),
     mutation: marksOf(name, input, body, record),
     skill: null,
+    image: imageOf(result),
+    imageNote: null,
   };
+}
+
+/** The image a result carried, as the wire's own mime and base64, or null. */
+function imageOf(result: Block | undefined): { mime: string; data: string } | null {
+  const inner = result?.content;
+  if (!Array.isArray(inner)) return null;
+  for (const held of inner) {
+    const block = held as { type?: unknown; source?: unknown } | null;
+    if (block?.type !== 'image') continue;
+    const source = block.source as { media_type?: unknown; data?: unknown } | null;
+    if (typeof source?.data !== 'string' || source.data === '') continue;
+    return {
+      mime: typeof source.media_type === 'string' ? source.media_type : 'image/png',
+      data: source.data,
+    };
+  }
+  return null;
 }
 
 /**

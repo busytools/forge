@@ -119,7 +119,21 @@
     <Chevron />
   </summary>
 
-  {#if call.skill !== null}
+  {#if call.image !== null}
+    <!-- The picture the call read, drawn only while the row is open: decoding
+         a screenshot is real work, and a column of closed rows must not pay
+         it. The harness's own line about it rides under as the caption. -->
+    <div class="body">
+      {#if opened}
+        <div class="shot">
+          <img src={`data:${call.image.mime};base64,${call.image.data}`} alt={call.title} />
+          {#if call.imageNote !== null}
+            <div class="note">{call.imageNote}</div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {:else if call.skill !== null}
     <!-- A `Skill` call's own result is the CLI's launching line; the row opens
          onto the skill itself, which is what anyone opening it wants to read. -->
     <div class="body">

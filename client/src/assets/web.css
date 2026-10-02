@@ -886,6 +886,12 @@ details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
    lane's dim rather than the ok tone a check wears. */
 details.leaf > summary .st.sk { color: var(--dim); }
 
+/* The picture a call read: the row opens onto it, with the harness's own
+   dimension line under it as the caption. */
+.shot img { max-width: 100%; max-height: 320px; display: block;
+  border: 1px solid var(--line); border-radius: 6px; }
+.shot .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 5px; }
+
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
 details.leaf > summary .k { color: var(--text); font-weight: 700; }
