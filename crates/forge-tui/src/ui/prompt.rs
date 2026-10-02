@@ -2,8 +2,8 @@
 //! active in the session's queue.
 
 use crate::app::{PromptMode, PromptSource, PromptState};
-use crate::ui::theme;
 use crate::ui::wrap::wrap_plain;
+use crate::ui::{fence, message, theme, wrap};
 use forge_primitives::permission_interaction::PermissionOptionKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -347,18 +347,45 @@ fn build_option_lines(
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )));
         }
-        for chunk in preview.lines() {
-            if chunk.is_empty() {
-                lines.push(Line::default());
-                continue;
-            }
-            for row in wrap_plain(chunk, content_width) {
-                lines.push(Line::from(Span::styled(row, Style::default().fg(theme::DIM))));
-            }
-        }
+        lines.extend(build_preview_lines(preview, content_width));
     }
 
     lines
+}
+
+/// The focused option's preview is markdown on the wire, so it draws the
+/// way a message body draws markdown. The dock's paragraph draws no wrap
+/// of its own, so each row is wrapped to the dock's width here rather
+/// than losing its tail off the right edge.
+fn build_preview_lines(preview: &str, content_width: usize) -> Vec<Line<'static>> {
+    let width = u16::try_from(content_width).unwrap_or(u16::MAX);
+    let (rows, _) = message::render_markdown_segments(preview, width, false, 0);
+    let mut out = Vec::new();
+    for row in rows {
+        // A newline inside a row (a `<br>` in the source) only becomes its
+        // own row by passing through the wrapper.
+        let splits_row = row.spans.iter().any(|span| span.content.contains('\n'));
+        if wrap::line_display_width(&row) <= content_width && !splits_row {
+            out.push(row);
+            continue;
+        }
+        let (indent, content) = fence::split_line_indent(row.spans);
+        let indent = wrap::truncate_to_width(&indent, content_width.saturating_sub(1));
+        let budget = content_width.saturating_sub(wrap::display_width(&indent));
+        let chunks: Vec<wrap::StyledChunk> = content
+            .into_iter()
+            .map(|span| wrap::StyledChunk { text: span.content.into_owned(), style: span.style })
+            .collect();
+        for piece in wrap::wrap_styled_chunks(&chunks, budget) {
+            let mut spans = Vec::with_capacity(piece.spans.len() + 1);
+            if !indent.is_empty() {
+                spans.push(Span::raw(indent.clone()));
+            }
+            spans.extend(piece.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 fn build_footer_line(prompt: &PromptState, blip: Option<&Span<'static>>) -> Line<'static> {
@@ -688,6 +715,9 @@ mod tests {
         );
     }
 
+    /// A preview with no markdown in it draws as itself, nothing dropped:
+    /// its two source lines join the way markdown joins a soft break, the
+    /// same shape the web client's renderer gives the same string.
     #[test]
     fn question_focused_option_with_preview_renders_inline_preview_block() {
         let mut request = make_question_request(false);
@@ -697,10 +727,59 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 22);
         assert!(out.contains("Preview:"), "expected Preview header; got:\n{out}");
         assert!(
-            out.contains("Bash · git push origin polish"),
-            "expected preview content line 1; got:\n{out}"
+            out.contains("Bash · git push origin polish ▸ ✓ Allow once"),
+            "expected the preview's plain lines to draw joined, nothing dropped; got:\n{out}"
         );
-        assert!(out.contains("✓ Allow once"), "expected preview content line 2; got:\n{out}");
+    }
+
+    /// The preview is markdown on the wire, so the dock draws it through
+    /// the message renderer rather than showing the source to the reader.
+    #[test]
+    fn question_preview_renders_markdown_not_its_source() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].preview = Some(
+            "## Staging\n\n**staging** runs `deploy`, see [the runbook](https://x.dev/rb).\n\n- one at a time"
+                .into(),
+        );
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 30);
+        assert!(
+            out.contains("staging runs deploy, see the runbook (https://x.dev/rb)."),
+            "expected bold, inline code and the link to draw as their text; got:\n{out}"
+        );
+        assert!(out.contains("Staging"), "expected the heading's text to draw; got:\n{out}");
+        assert!(out.contains("one at a time"), "expected the list item to draw; got:\n{out}");
+        assert!(!out.contains("**"), "bold markers must not reach the screen; got:\n{out}");
+        assert!(!out.contains('`'), "code backticks must not reach the screen; got:\n{out}");
+        assert!(!out.contains('#'), "heading markers must not reach the screen; got:\n{out}");
+        assert!(!out.contains("]("), "link syntax must not reach the screen; got:\n{out}");
+    }
+
+    /// A fenced block draws as its own panel, the way a message body draws
+    /// one, so the fence delimiters never reach the screen.
+    #[test]
+    fn question_preview_renders_a_fenced_block_as_a_panel() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].preview =
+            Some("Runs:\n\n```sh\ndeploy --env staging --skip-migrations\n```".into());
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 24);
+        assert!(
+            out.contains("deploy --env staging --skip-migrations"),
+            "expected the block's code to draw verbatim; got:\n{out}"
+        );
+        assert!(!out.contains("```"), "fence delimiters must not reach the screen; got:\n{out}");
+    }
+
+    /// The dock's paragraph draws without wrapping, so a long preview row
+    /// is wrapped here rather than losing its tail off the right edge.
+    #[test]
+    fn a_long_preview_row_wraps_instead_of_clipping() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].preview = Some(format!("AAA {}ZZZ", "word ".repeat(30)));
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 30);
+        assert!(out.contains("ZZZ"), "the row's tail must draw, not clip; got:\n{out}");
     }
 
     #[test]
