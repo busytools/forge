@@ -30,8 +30,15 @@ import { coversHome, fleetNews } from './fleet';
  * Neither this nor the control can see a variant the server MOVES between
  * arms, or one it adds inside the `chat_appended` arm, where the decision is
  * a frame's own fields rather than a variant's name.
+ *
+ * Called with no answer it returns every name in any arm, which is the
+ * server's half of the census at the foot of this file. A name spelled in a
+ * comment between two arms would be read as an arm's, which is the same
+ * assumption the paragraph above declares and the census does not depend on:
+ * it answers whether each variant is classified, and a comment cannot answer
+ * that for a variant the wildcard reaches.
  */
-function serverArms(arm: 'Redraw' | 'Occupant'): string[] {
+function serverArms(arm?: 'Redraw' | 'Occupant'): string[] {
   const source = readFileSync(
     new URL('../../../crates/forge-server/src/live.rs', import.meta.url),
     'utf8',
@@ -47,7 +54,8 @@ function serverArms(arm: 'Redraw' | 'Occupant'): string[] {
   // arrow and the answer at the start of the clause after it.
   const clauses = body.split('=>');
   for (let at = 0; at < clauses.length - 1; at += 1) {
-    if (!(clauses[at + 1] ?? '').trimStart().startsWith(`FleetNews::${arm}`)) continue;
+    const answers = (clauses[at + 1] ?? '').trimStart();
+    if (arm !== undefined && !answers.startsWith(`FleetNews::${arm}`)) continue;
     for (const match of (clauses[at] ?? '').matchAll(/SessionUpdate::([A-Za-z0-9]+)/g)) {
       if (match[1] !== undefined) names.add(match[1]);
     }
@@ -101,6 +109,111 @@ function serverSlots(): { keyed: string[]; seatless: string[]; declared: number 
 
   return { keyed: names('Some(key)'), seatless: names('None'), declared };
 }
+
+/**
+ * Every variant name `SessionUpdate` declares, as it crosses the wire, read
+ * off the enum in `crates/forge-workspace/src/protocol.rs`.
+ *
+ * The derivation is serde's own for this enum: `rename_all = "snake_case"`,
+ * so a variant's name snake-cased is the name it crosses under. `closed`
+ * reports whether the parse reached the enum's closing brace, and it is the
+ * denominator the census below needs - a parse that stopped early answers
+ * with a short list, and every name it lost is a name the census then finds
+ * classified.
+ *
+ * **The read assumes a shape:** the enum still opens with `pub enum
+ * SessionUpdate {` at column zero and closes with `}` at column zero, and
+ * every variant is still spelled at the top level of that body. The
+ * derivation implements `rename_all` and not an explicit `#[serde(rename)]`,
+ * which no variant of this enum carries; one added later reads as a name the
+ * census fails on rather than one it mis-states.
+ */
+function serverVariantNames(): { names: string[]; closed: boolean } {
+  const source = readFileSync(
+    new URL('../../../crates/forge-workspace/src/protocol.rs', import.meta.url),
+    'utf8',
+  );
+
+  const names: string[] = [];
+  let closed = false;
+  let inside = false;
+  for (const line of source.split('\n')) {
+    if (!inside) {
+      inside = line.startsWith('pub enum SessionUpdate {');
+      continue;
+    }
+    if (line === '}') {
+      closed = true;
+      break;
+    }
+    const trimmed = line.trim();
+    // A doc comment, an attribute or a blank line says nothing about the
+    // variants. A field inside a variant's body falls out below, by not
+    // starting with an uppercase letter.
+    if (trimmed === '' || trimmed.startsWith('//') || trimmed.startsWith('#[')) continue;
+    const variant = /^[A-Za-z0-9_]+/.exec(trimmed)?.[0] ?? '';
+    if (!/^[A-Z]/.test(variant)) continue;
+    names.push(snake(variant));
+  }
+  return { names, closed };
+}
+
+/**
+ * The variants `fleet_news` answers `Nothing` for through its wildcard arm
+ * rather than by naming them.
+ *
+ * A variant belongs here only when the fleet region really does draw nothing
+ * of it: the conversation frames, the dictation frames, the account and
+ * plugin snapshots. Most of the stream is here.
+ *
+ * It is a list rather than a rule because whether an update is news is a
+ * decision about a row and not a property of a name, so a rule that guessed
+ * would classify a new variant silently - which is the failure the census
+ * below exists to make loud. Adding a variant to the enum puts it in neither
+ * this list nor an arm, and the census goes red until it is in one of them.
+ */
+const NOT_NEWS: readonly string[] = [
+  'history_replayed',
+  'slash_command_error',
+  'runtime_reload_completed',
+  'runtime_reload_failed',
+  'set_mode_failed',
+  'set_model_failed',
+  'mcp_operation_error',
+  'turn_complete',
+  'hook_observation',
+  'status_snapshot',
+  'forge_account_identity',
+  'dictate_overrides',
+  'dictate_device_pin',
+  'oauth_credentials_snapshot',
+  'context_usage_snapshot',
+  'mcp_snapshot',
+  'sessions_listed',
+  'service_status',
+  'plugins_inventory_updated',
+  'plugins_inventory_refresh_failed',
+  'plugins_cli_action_succeeded',
+  'plugins_cli_action_failed',
+  'plugins_update_run_progress',
+  'plugins_update_run_finished',
+  'plugins_rollback_succeeded',
+  'plugins_rollback_failed',
+  'peer_envelope_appended',
+  'gotify_notification_appended',
+  'cron_prompt_appended',
+  'slack_message_appended',
+  'slack_post_pending',
+  'slack_draft_expired',
+  'prompt_queued_while_busy',
+  'review_activity_notice',
+  'dictate_started',
+  'dictate_level',
+  'dictate_transcribing',
+  'dictate_progress',
+  'dictate_ended',
+  'fatal_error',
+];
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -269,5 +382,71 @@ describe('what one update asks of the fleet', () => {
         `${name} is an occupant on the server`,
       ).toEqual({ kind: 'occupant', slot: LEAD });
     }
+  });
+});
+
+/**
+ * The census: every variant the enum declares is in one of the two buckets,
+ * and each is in exactly one.
+ *
+ * **What the arms above cannot see, and this can.** A variant the server
+ * adds, or one it drops from an arm, is classified by `fleet_news`'s
+ * wildcard as `Nothing` - and the home stops following that seat with the
+ * suite green, which is a page that reads as quiet rather than as broken.
+ * Reading the arms alone cannot report it, because the arms are the thing
+ * that went silent. Starting from the enum is what turns it into a red test
+ * naming the variant.
+ *
+ * The bucket a variant lands in is a decision, so the not-news list is
+ * written out rather than derived: `Nothing` is the right answer for most of
+ * the stream and the wrong one for a row, and nothing but a person can tell
+ * which a new variant is.
+ */
+describe('the variant census', () => {
+  it('classifies every variant the core can send', () => {
+    const { names, closed } = serverVariantNames();
+    const news = new Set(serverArms().map((name) => snake(name)));
+
+    // The denominators, because an emptiness assertion below that has stopped
+    // reading anything looks exactly like a clean one.
+    expect(
+      closed,
+      'the parse never reached the end of `SessionUpdate`, so it is the parse that moved and not ' +
+        'the classification',
+    ).toBe(true);
+    expect(names.length, 'the enum was not read out of protocol.rs at all').toBeGreaterThan(40);
+    expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
+      5,
+    );
+
+    const unclassified = names.filter((name) => !news.has(name) && !NOT_NEWS.includes(name));
+    expect(
+      unclassified,
+      'a variant in neither a `fleet_news` arm nor the not-news list is one the home stops ' +
+        'following in silence: name it in the arm it belongs in, or add it to NOT_NEWS when no ' +
+        'row draws it',
+    ).toEqual([]);
+  });
+
+  it('classifies each variant once', () => {
+    const news = new Set(serverArms().map((name) => snake(name)));
+    const twice = NOT_NEWS.filter((name) => news.has(name));
+
+    expect(
+      twice,
+      'a variant in both an arm and the not-news list is a decision nobody can read',
+    ).toEqual([]);
+  });
+
+  it('carries no name the enum no longer declares', () => {
+    const { names } = serverVariantNames();
+    const declared = new Set(names);
+    const stale = NOT_NEWS.filter((name) => !declared.has(name));
+
+    expect(
+      stale,
+      'the not-news list carries a variant the enum has dropped, so it is a decision about a ' +
+        'name that no longer exists',
+    ).toEqual([]);
   });
 });
