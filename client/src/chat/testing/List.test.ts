@@ -57,6 +57,8 @@ describe('the handle a list registers at the seam', () => {
   });
 
   it('leaves the surviving list holding the seam when its neighbour departs', () => {
+    // Where a departed list leaves the seam, which is the state this starts at.
+    register(null);
     const both = writable(true);
     app = mount(Siblings, { target: document.body, props: { both } });
     flushSync();
