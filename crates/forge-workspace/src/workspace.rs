@@ -3620,7 +3620,10 @@ impl Workspace {
                 Some(crate::prompt::Invocation::Misuse(usage)) => {
                     self.answer_forge_misuse(key, usage)
                 }
-                None => self.route(cmd),
+                None => match self.unrunnable_slash_name(key, text) {
+                    Some(refusal) => self.answer_forge_misuse(key, &refusal),
+                    None => self.route(cmd),
+                },
             },
             _ => self.route(cmd),
         };
@@ -3646,20 +3649,105 @@ impl Workspace {
         key: &SessionSlot,
         prompt: &crate::prompt::ForgePrompt,
     ) -> Result<(), DispatchError> {
-        let cwd = self.cwd_for_session(key).unwrap_or_default();
-        let launch_settings = self.launch_settings_for(key, &cwd);
+        use crate::prompt::ForgePrompt;
+        // A mode the CLI has no name for is answered rather than sent: the
+        // command carries the enum, so an unparsed one cannot be dispatched
+        // at all.
         let command = match prompt {
-            crate::prompt::ForgePrompt::NewSession => {
+            ForgePrompt::NewSession => {
+                let (cwd, launch_settings) = self.spawn_inputs(key);
                 Command::NewSession { key: key.clone(), cwd, launch_settings }
             }
-            crate::prompt::ForgePrompt::ResumeSession { session_id } => Command::ResumeSession {
-                key: key.clone(),
-                session_id: session_id.clone(),
-                cwd,
-                launch_settings,
-            },
+            ForgePrompt::ResumeSession { session_id } => {
+                let (cwd, launch_settings) = self.spawn_inputs(key);
+                Command::ResumeSession {
+                    key: key.clone(),
+                    session_id: session_id.clone(),
+                    cwd,
+                    launch_settings,
+                }
+            }
+            ForgePrompt::SetMode { mode } => {
+                let Some(mode) = forge_primitives::permission::PermissionMode::from_wire(mode)
+                else {
+                    return self.answer_forge_misuse(key, &format!("Unknown mode: {mode}"));
+                };
+                Command::SetMode { key: key.clone(), mode }
+            }
+            ForgePrompt::SetModel { model } => {
+                Command::SetModel { key: key.clone(), model: model.clone() }
+            }
+            ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
         };
         self.route(command)
+    }
+
+    /// The cwd and settings a re-spawn on `key` carries.
+    fn spawn_inputs(&self, key: &SessionSlot) -> (String, SessionLaunchSettings) {
+        let cwd = self.cwd_for_session(key).unwrap_or_default();
+        let launch_settings = self.launch_settings_for(key, &cwd);
+        (cwd, launch_settings)
+    }
+
+    /// `/effort <level>`: write the level the next launch reads.
+    ///
+    /// A settings write rather than a session command - the CLI carries no
+    /// control request for effort - so it lands in the same document the
+    /// launch builder reads and takes effect when the session next starts.
+    fn set_effort(self: &Arc<Self>, key: &SessionSlot, level: &str) -> Result<(), DispatchError> {
+        let Some(level) = forge_primitives::EffortLevel::from_stored(level) else {
+            return self.answer_forge_misuse(key, &format!("Unknown effort level: {level}"));
+        };
+        let Some(config_dir) = self.config_dir_for(key) else {
+            return self.answer_forge_misuse(key, "Effort: settings path is unavailable");
+        };
+        let path = config_dir.join("settings.json");
+        let mut document = self
+            .settings_documents(key, None)
+            .and_then(|documents| documents.user)
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(object) = document.as_object_mut() {
+            object.insert(
+                "effortLevel".to_owned(),
+                serde_json::Value::String(level.as_stored().to_owned()),
+            );
+        }
+        match forge_agent::userdata::settings::save_document(&path, &document) {
+            Ok(()) => {
+                self.notice(
+                    key,
+                    NoticeSeverity::Info,
+                    &format!("Effort: {} (takes effect next session)", level.label()),
+                );
+                Ok(())
+            }
+            Err(err) => self.answer_forge_misuse(key, &format!("Failed to save effort: {err}")),
+        }
+    }
+
+    /// The line to answer a slash name this session cannot run, or `None`
+    /// when the text is the CLI's to read.
+    ///
+    /// What a session can run is what its CLI advertised, or one of the names
+    /// the CLI resolves without advertising ([`crate::prompt::FORWARDED`]).
+    /// A session that has advertised nothing refuses nothing: an empty
+    /// catalogue is not knowing, and refusing on ignorance would drop names
+    /// the CLI has.
+    fn unrunnable_slash_name(&self, key: &SessionSlot, text: &str) -> Option<String> {
+        let name = text.split_whitespace().next()?;
+        if !name.starts_with('/') {
+            return None;
+        }
+        let advertised = self.available_commands_for(key);
+        if advertised.is_empty()
+            || advertised
+                .iter()
+                .any(|command| forge_agent::translate::commands::slash_name(&command.name) == name)
+            || crate::prompt::is_forwarded_name(name)
+        {
+            return None;
+        }
+        Some(format!("{name} is not yet supported"))
     }
 
     /// Answer a forge-name invocation the command does not take.
@@ -16601,6 +16689,112 @@ mod prompt_frame_origin_tests {
         );
     }
 
+    /// `/mode <id>` and `/model <id>` are the same commands the terminal
+    /// dispatched, so a view neither of them can run still changes both.
+    #[test]
+    fn mode_and_model_prompts_dispatch_their_own_commands() {
+        let (ws, _rx, seat) = a_fleet();
+
+        for (text, expected) in [
+            (
+                "/mode plan",
+                Box::new(|command: &Command| {
+                    matches!(
+                        command,
+                        Command::SetMode { mode, .. }
+                            if *mode == forge_primitives::permission::PermissionMode::Plan
+                    )
+                }) as Box<dyn Fn(&Command) -> bool>,
+            ),
+            (
+                "/model sonnet",
+                Box::new(
+                    |command: &Command| matches!(command, Command::SetModel { model, .. } if model == "sonnet"),
+                ),
+            ),
+        ] {
+            let dispatched = ws.dispatch_from_view(Command::Prompt {
+                key: seat.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+            });
+            assert!(dispatched.is_ok(), "{text}: {dispatched:?}");
+            let commands = ws.drain_test_dispatch_buffer();
+            assert!(
+                matches!(commands.as_slice(), [command] if expected(command)),
+                "{text} dispatches its own command: {commands:?}",
+            );
+        }
+    }
+
+    /// A mode the CLI has no name for is answered rather than sent: the
+    /// command carries the enum, so an unparsed one cannot be dispatched.
+    #[test]
+    fn a_mode_the_cli_does_not_have_is_answered() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/mode sideways".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "{dispatched:?}");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. })
+                    if text == "Unknown mode: sideways"
+            ),
+            "the reader is told the mode is not one the CLI has",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "and nothing is dispatched");
+    }
+
+    /// `/effort <level>` writes the document the next launch reads, rather
+    /// than dispatching: the CLI carries no control request for effort.
+    #[test]
+    fn effort_writes_the_launch_document_and_answers() {
+        let (ws, mut rx, seat) = a_fleet();
+        // The pool's stub handle is bound to a scratch config dir, so this
+        // write is a real one against a path no user reads.
+        ws.seed_test_bound_session(&seat, "acct-a");
+        let config_dir = ws.config_dir_for(&seat).expect("the pooled stub names a config dir");
+        let path = config_dir.join("settings.json");
+        let before = std::fs::read_to_string(&path).ok();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/effort high".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "{dispatched:?}");
+        let written: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("the effort level lands in the document"),
+        )
+        .expect("the document parses");
+        assert_eq!(written["effortLevel"], serde_json::json!("high"));
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Info, text, .. })
+                    if text.contains("Effort: High")
+            ),
+            "and the reader is told it took",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "nothing is dispatched");
+
+        match before {
+            Some(contents) => {
+                std::fs::write(&path, contents).expect("restore the stub's document");
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
     /// A forge name invoked wrongly is answered with the command's own usage
     /// line, and dispatched nowhere: a mistyped command that reached the model
     /// would read as a question.
@@ -16628,6 +16822,83 @@ mod prompt_frame_origin_tests {
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
+    }
+
+    /// Slash text this session cannot run is answered where it is typed,
+    /// rather than handed to the model as a question. What the session can
+    /// run is what the CLI advertised, so the guard reads that and nothing
+    /// else.
+    #[test]
+    fn a_slash_name_the_session_does_not_have_is_refused() {
+        let (ws, mut rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/spinner now".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. })
+                    if text == "/spinner is not yet supported"
+            ),
+            "the reader is told the name is not one this session has",
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and nothing reaches the model: {commands:?}");
+    }
+
+    /// A name the CLI advertised is the CLI's, and goes to it.
+    #[test]
+    fn a_slash_name_the_cli_advertised_is_forwarded() {
+        let (ws, _rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/compact".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/compact"),
+            "an advertised name is the CLI's: {commands:?}",
+        );
+    }
+
+    /// A session that has advertised nothing refuses nothing: an empty
+    /// catalogue is not knowing what the CLI offers, and refusing on
+    /// ignorance would drop names it does have.
+    #[test]
+    fn a_session_that_advertised_nothing_refuses_nothing() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/compact".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { .. }]),
+            "nothing is refused before the CLI has said what it has: {commands:?}",
+        );
     }
 
     /// A name that only LOOKS like a forge command is the reader's prose, and

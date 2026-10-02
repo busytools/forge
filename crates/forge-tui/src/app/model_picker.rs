@@ -202,27 +202,6 @@ mod tests {
     }
 
     #[test]
-    fn model_submit_falls_back_to_the_info_line_when_no_models() {
-        let mut app = App::test_default();
-
-        let handled = crate::app::slash::try_handle_submit(&mut app, "/model");
-
-        assert!(handled);
-        assert!(app.model_picker.is_none(), "no picker without models");
-        let last =
-            app.messages().expect("active session").last().expect("the info line still shows");
-        let text: String = last
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(text.contains("Model:"), "the info line names the model, got: {text}");
-    }
-
-    #[test]
     fn open_seeds_the_highlight_to_the_current_model() {
         let mut app = app_with_rows(declared_rows());
         app.set_current_model(Some(model::CurrentModel::new(

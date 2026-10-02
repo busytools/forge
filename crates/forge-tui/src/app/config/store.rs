@@ -1,11 +1,6 @@
 use serde_json::{Map, Value};
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
@@ -90,64 +85,6 @@ pub fn load(
     })
 }
 
-pub fn save(path: &Path, document: &Value) -> Result<(), String> {
-    let resolved = resolve_symlink(path)
-        .map_err(|err| format!("Failed to resolve settings symlink: {err}"))?;
-    let path = resolved.as_path();
-    let parent = path.parent().ok_or_else(|| "Settings path has no parent directory".to_owned())?;
-    if !parent.is_dir() {
-        // A link whose target directory is gone. Writing still repairs
-        // the canonical file, but building a tree for a stale link
-        // should not happen silently.
-        tracing::warn!(
-            target: "forge_tui::config",
-            path = %path.display(),
-            "settings symlink resolved to a path whose parent does not exist; creating it"
-        );
-    }
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("Failed to create settings directory: {err}"))?;
-
-    let normalized = normalized_root(document);
-    let temp_path = unique_temp_path(parent, path.file_name().and_then(std::ffi::OsStr::to_str));
-    let result = write_then_rename(&temp_path, path, &normalized);
-    if result.is_err() {
-        // Best-effort: a failed rename would otherwise leave
-        // `.settings.json.<nanos>.tmp` in the config dir forever.
-        // Propagate the original error, not the cleanup's.
-        if let Err(cleanup) = std::fs::remove_file(&temp_path) {
-            tracing::debug!(
-                target: "forge_tui::config",
-                error = %cleanup,
-                "failed to clean up settings temp file; original error follows"
-            );
-        }
-    }
-    result
-}
-
-fn write_then_rename(temp_path: &Path, path: &Path, document: &Value) -> Result<(), String> {
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temp_path)
-        .map_err(|err| format!("Failed to create settings temp file: {err}"))?;
-    serde_json::to_writer_pretty(&mut temp, document)
-        .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-    temp.write_all(b"\n").map_err(|err| format!("Failed to finalize settings file: {err}"))?;
-    temp.flush().map_err(|err| format!("Failed to flush settings file: {err}"))?;
-    temp.sync_all().map_err(|err| format!("Failed to sync settings file: {err}"))?;
-    drop(temp);
-    // Carry the existing file's mode over. settings.json is 0600 for a
-    // reason and a fresh temp file would otherwise widen it to 0644.
-    if let Ok(existing) = std::fs::metadata(path) {
-        std::fs::set_permissions(temp_path, existing.permissions())
-            .map_err(|err| format!("Failed to apply settings file mode: {err}"))?;
-    }
-    std::fs::rename(temp_path, path)
-        .map_err(|err| format!("Failed to move settings file into place: {err}"))
-}
-
 fn read_bool(document: &Value, path: &[&str]) -> Result<Option<bool>, ()> {
     match read_json_path(document, path) {
         None => Ok(None),
@@ -169,6 +106,7 @@ fn write_bool(document: &mut Value, path: &[&str], enabled: bool) {
     set_json_path(document, path, Value::Bool(enabled));
 }
 
+#[cfg(test)]
 fn write_string(document: &mut Value, path: &[&str], value: &str) {
     set_json_path(document, path, Value::String(value.to_owned()));
 }
@@ -176,10 +114,6 @@ fn write_string(document: &mut Value, path: &[&str], value: &str) {
 #[cfg(test)]
 fn write_missing(document: &mut Value, path: &[&str]) {
     remove_json_path(document, path);
-}
-
-pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
-    write_string(document, &["effortLevel"], level.as_stored());
 }
 
 pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
@@ -287,46 +221,6 @@ fn read_json_or_empty(path: &Path) -> Value {
     }
 }
 
-fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
-    let stamp =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    let filename = filename_hint.unwrap_or(SETTINGS_FILENAME);
-    parent.join(format!(".{filename}.{stamp}.tmp"))
-}
-
-/// Walk a symlink chain to the file it ultimately names, resolving
-/// each relative target against its own link's parent. Renaming onto
-/// a symlink replaces the link itself, which would break profile
-/// setups that point `~/.claude-<profile>/settings.json` at the
-/// canonical `~/.claude/settings.json`.
-///
-/// Not `canonicalize`, which fails on a dangling link - here a link
-/// whose target is missing should still resolve, so the write
-/// recreates the canonical file rather than clobbering the link.
-fn resolve_symlink(path: &Path) -> std::io::Result<PathBuf> {
-    // Chains are one hop in practice; the cap is only a cycle guard.
-    const MAX_HOPS: usize = 32;
-
-    let mut current = path.to_path_buf();
-    for _ in 0..MAX_HOPS {
-        match std::fs::symlink_metadata(&current) {
-            Ok(md) if md.file_type().is_symlink() => {
-                let link = std::fs::read_link(&current)?;
-                current = if link.is_absolute() {
-                    link
-                } else {
-                    current.parent().map_or_else(|| link.clone(), |parent| parent.join(&link))
-                };
-            }
-            _ => return Ok(current),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        format!("settings symlink chain exceeded {MAX_HOPS} hops: {}", path.display()),
-    ))
-}
-
 fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = document;
     for key in path {
@@ -335,6 +229,7 @@ fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
     Some(current)
 }
 
+#[cfg(test)]
 fn set_json_path(document: &mut Value, path: &[&str], value: Value) {
     let Some((last_key, parents)) = path.split_last() else {
         return;
@@ -389,13 +284,7 @@ fn remove_from_object_path(object: &mut Map<String, Value>, path: &[&str]) -> bo
     object.is_empty()
 }
 
-fn normalized_root(document: &Value) -> Value {
-    match document {
-        Value::Object(object) => Value::Object(object.clone()),
-        _ => Value::Object(Map::new()),
-    }
-}
-
+#[cfg(test)]
 fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
     if !document.is_object() {
         *document = Value::Object(Map::new());
@@ -514,127 +403,12 @@ mod tests {
     }
 
     #[test]
-    fn set_thinking_effort_level_writes_string_value() {
-        let mut document = Value::Object(Map::new());
-        set_thinking_effort_level(&mut document, EffortLevel::High);
-        assert_eq!(document["effortLevel"], serde_json::json!("high"));
-    }
-
-    #[test]
     fn set_model_writes_or_removes_value() {
         let mut document = serde_json::json!({ "model": "sonnet" });
         set_model(&mut document, Some("opus"));
         assert_eq!(document["model"], serde_json::json!("opus"));
         set_model(&mut document, None);
         assert!(document.get("model").is_none(), "a cleared model is removed, not blanked");
-    }
-
-    /// Regression: a symlink at the write target must be preserved.
-    /// `std::fs::rename(temp, symlink_path)` replaces the symlink
-    /// itself, clobbering profile setups such as
-    /// `/tmp/forge-test-stargate/settings.json -> ~/.claude/settings.json`.
-    #[test]
-    fn save_preserves_a_symlink_at_the_write_target() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical_dir = dir.path().join("canonical");
-        let profile_dir = dir.path().join("profile");
-        std::fs::create_dir_all(&canonical_dir).expect("mkdir canonical");
-        std::fs::create_dir_all(&profile_dir).expect("mkdir profile");
-
-        let canonical = canonical_dir.join(SETTINGS_FILENAME);
-        let profile = profile_dir.join(SETTINGS_FILENAME);
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(&canonical, &profile).expect("symlink");
-
-        save(&profile, &serde_json::json!({ "effortLevel": "max" })).expect("save");
-
-        let md = std::fs::symlink_metadata(&profile).expect("symlink_metadata");
-        assert!(md.file_type().is_symlink(), "profile path got clobbered into a real file");
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("effortLevel"), Some(&serde_json::json!("max")));
-    }
-
-    #[test]
-    fn save_resolves_a_relative_symlink_against_its_own_parent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical = dir.path().join(SETTINGS_FILENAME);
-        let profile_dir = dir.path().join("profile");
-        std::fs::create_dir_all(&profile_dir).expect("mkdir profile");
-        let profile = profile_dir.join(SETTINGS_FILENAME);
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(Path::new("..").join(SETTINGS_FILENAME), &profile)
-            .expect("symlink");
-
-        save(&profile, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        let md = std::fs::symlink_metadata(&profile).expect("symlink_metadata");
-        assert!(md.file_type().is_symlink(), "profile path got clobbered into a real file");
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("model"), Some(&serde_json::json!("opus")));
-    }
-
-    /// A profile link can point at another link. Resolving only one hop
-    /// writes the intermediate and leaves the canonical file stale.
-    #[test]
-    fn save_walks_a_symlink_chain_to_the_canonical_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical = dir.path().join("real.json");
-        let mid = dir.path().join("mid.json");
-        let top = dir.path().join("top.json");
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(&canonical, &mid).expect("symlink mid");
-        std::os::unix::fs::symlink(&mid, &top).expect("symlink top");
-
-        save(&top, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        for (label, p) in [("top", &top), ("mid", &mid)] {
-            let md = std::fs::symlink_metadata(p).expect("symlink_metadata");
-            assert!(md.file_type().is_symlink(), "{label} got clobbered into a real file");
-        }
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("model"), Some(&serde_json::json!("opus")));
-    }
-
-    #[test]
-    fn save_preserves_the_existing_file_mode() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(SETTINGS_FILENAME);
-        std::fs::write(&path, b"{}\n").expect("seed");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-
-        save(&path, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "a restricted settings file must not become world-readable");
-    }
-
-    #[test]
-    fn save_leaves_no_temp_file_behind_when_the_rename_fails() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A directory at the target path makes rename fail after the temp
-        // has been written and synced.
-        let path = dir.path().join(SETTINGS_FILENAME);
-        std::fs::create_dir(&path).expect("mkdir at target");
-
-        assert!(save(&path, &serde_json::json!({ "model": "opus" })).is_err());
-
-        let strays: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("read_dir")
-            .filter_map(Result::ok)
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| Path::new(n).extension().is_some_and(|ext| ext == "tmp"))
-            .collect();
-        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
     }
 
     /// With no project root no project-local path is resolved, and the

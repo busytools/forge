@@ -14,6 +14,12 @@ pub enum ForgePrompt {
     /// `/resume <session_id>`: move the seat onto a session that already
     /// exists.
     ResumeSession { session_id: String },
+    /// `/mode <id>`: switch the session's permission mode.
+    SetMode { mode: String },
+    /// `/model <id>`: switch the model the session runs on.
+    SetModel { model: String },
+    /// `/effort <level>`: set the thinking effort the next launch carries.
+    SetEffort { level: String },
 }
 
 /// What one of forge's command names was asked to do.
@@ -33,14 +39,31 @@ impl ForgePrompt {
         match self {
             Self::NewSession => "/new",
             Self::ResumeSession { .. } => "/resume",
+            Self::SetMode { .. } => "/mode",
+            Self::SetModel { .. } => "/model",
+            Self::SetEffort { .. } => "/effort",
         }
     }
 }
 
 /// The names forge answers, and the line each answers a wrong invocation
 /// with. The one place a name is written down.
-const USAGE: &[(&str, &str)] =
-    &[("/new", "Usage: /new"), ("/resume", "Usage: /resume <session_id>")];
+const USAGE: &[(&str, &str)] = &[
+    ("/new", "Usage: /new"),
+    ("/resume", "Usage: /resume <session_id>"),
+    ("/mode", "Usage: /mode <id>"),
+    ("/model", "Usage: /model <id>"),
+    ("/effort", "Usage: /effort <level>"),
+];
+
+/// The names the CLI resolves itself though it does not advertise them, so a
+/// view forwards them rather than answering or refusing.
+///
+/// Measured on 2.1.280 under forge's own argv: `/help`, `/plugins` and
+/// `/quit` each come back as a local line ("isn't available in this
+/// environment") with no model call, where a name the CLI does not know at
+/// all is sent to the model as a question.
+pub const FORWARDED: [&str; 4] = ["/help", "/mcp", "/plugins", "/quit"];
 
 /// Every name forge answers, which a view reads to decide to forward rather
 /// than refuse.
@@ -51,6 +74,11 @@ pub fn forge_prompt_names() -> impl Iterator<Item = &'static str> {
 /// Whether `name` is one of forge's command names, invoked well or not.
 pub fn is_forge_prompt_name(name: &str) -> bool {
     usage_for(name).is_some()
+}
+
+/// Whether the CLI resolves `name` itself, advertised or not.
+pub fn is_forwarded_name(name: &str) -> bool {
+    FORWARDED.contains(&name)
 }
 
 /// The forge command `text` invokes, or `None` when the text is the reader's
@@ -64,9 +92,10 @@ pub fn forge_invocation(text: &str) -> Option<Invocation> {
     let arguments: Vec<&str> = words.collect();
     let command = match (name, arguments.as_slice()) {
         ("/new", []) => Some(ForgePrompt::NewSession),
-        ("/resume", [session_id]) => {
-            Some(ForgePrompt::ResumeSession { session_id: (*session_id).to_owned() })
-        }
+        ("/resume", [arg]) => Some(ForgePrompt::ResumeSession { session_id: (*arg).to_owned() }),
+        ("/mode", [arg]) => Some(ForgePrompt::SetMode { mode: (*arg).to_owned() }),
+        ("/model", [arg]) => Some(ForgePrompt::SetModel { model: (*arg).to_owned() }),
+        ("/effort", [arg]) => Some(ForgePrompt::SetEffort { level: (*arg).to_owned() }),
         _ => None,
     };
     match command {

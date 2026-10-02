@@ -496,148 +496,14 @@ mod tests {
         }
     }
 
+    /// A refused mode change still lands as a system message, whichever view
+    /// asked for it: this reducer is what the CLI's `SetModeFailed` becomes.
     #[tokio::test(flavor = "current_thread")]
-    async fn mode_apply_synchronously_during_submit() {
-        // /mode applies CurrentModeUpdate + ModeStateUpdate optimistically
-        // App-side. The apply is synchronous, so no CommandPending
-        // state is needed.
+    async fn a_refused_set_mode_surfaces_as_a_system_message() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let _rx = app.install_testing_stub();
-                app.set_session_id(Some("sess-1".into()));
-                app.set_mode(Some(super::super::ModeState {
-                    current_mode_id: "code".to_owned(),
-                    current_mode_name: "Code".to_owned(),
-                    available_modes: vec![
-                        super::super::ModeInfo {
-                            id: "plan".to_owned(),
-                            name: "Plan".to_owned(),
-                            description: None,
-                        },
-                        super::super::ModeInfo {
-                            id: "code".to_owned(),
-                            name: "Code".to_owned(),
-                            description: None,
-                        },
-                    ],
-                }));
-
-                let consumed = try_handle_submit(&mut app, "/mode plan");
-                assert!(consumed);
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("plan"),
-                    "expected mode applied synchronously to plan"
-                );
-                assert!(app.pending_command_label().is_none());
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn mode_bypass_dispatches_like_the_other_modes() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let mut rx = app.install_testing_stub();
-                app.set_session_id(Some("sess-1".into()));
-                // The candidate list is the real producer's output for a
-                // bypass-launched session, not a hand-written list.
-                let supported =
-                    forge_workspace::commands::supported_mode_ids_filtered(false, true, None, &[]);
-                app.set_mode(Some(forge_workspace::commands::build_mode_state_from_supported(
-                    forge_workspace::PermissionMode::Ask,
-                    &supported,
-                )));
-
-                let consumed = try_handle_submit(&mut app, "/mode bypassPermissions");
-                assert!(consumed);
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("bypassPermissions"),
-                    "bypass applies synchronously like the other modes",
-                );
-                tokio::task::yield_now().await;
-                let cmd = rx.try_recv().expect("SetMode dispatched");
-                assert!(
-                    matches!(
-                        cmd,
-                        forge_primitives::AgentCommand::SetMode { ref session_id, mode }
-                            if session_id.as_str() == "sess-1"
-                                && mode
-                                    == forge_primitives::permission::PermissionMode::BypassPermissions
-                    ),
-                    "bypass dispatches the SetMode the other modes dispatch: {cmd:?}",
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn mode_switching_away_keeps_bypass_offered() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let _rx = app.install_testing_stub();
-                app.set_session_id(Some("sess-1".into()));
-                // A bypass-launched session sitting in bypass.
-                let supported =
-                    forge_workspace::commands::supported_mode_ids_filtered(false, true, None, &[]);
-                app.set_mode(Some(forge_workspace::commands::build_mode_state_from_supported(
-                    forge_workspace::PermissionMode::BypassPermissions,
-                    &supported,
-                )));
-
-                let consumed = try_handle_submit(&mut app, "/mode plan");
-                assert!(consumed);
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("plan"),
-                    "optimistic away-leg applies the switch to plan",
-                );
-                let still_offered = app
-                    .mode()
-                    .is_some_and(|m| m.available_modes.iter().any(|e| e.id == "bypassPermissions"));
-                assert!(still_offered, "switching away keeps bypass in the picker list");
-            })
-            .await;
-    }
-
-    fn seed_ask_session(app: &mut App) {
-        app.set_session_id(Some("sess-1".into()));
-        let supported =
-            forge_workspace::commands::supported_mode_ids_filtered(false, true, None, &[]);
-        app.set_mode(Some(forge_workspace::commands::build_mode_state_from_supported(
-            forge_workspace::PermissionMode::Ask,
-            &supported,
-        )));
-        app.with_turn_state_mut(|ts| ts.mode = Some(forge_workspace::PermissionMode::Ask));
-    }
-
-    fn first_block_text(msg: &ChatMessage) -> String {
-        match msg.blocks.first() {
-            Some(MessageBlock::Text(block)) => block.text.clone(),
-            _ => panic!("expected a text block in the rejection message"),
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn rejected_set_mode_rolls_back_chip_and_pushes_message() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let _rx = app.install_testing_stub();
-                seed_ask_session(&mut app);
-                let seeded_supported = app.with_turn_state(|ts| ts.supported_mode_ids.clone());
-
-                let consumed = try_handle_submit(&mut app, "/mode plan");
-                assert!(consumed);
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("plan"),
-                    "optimistic apply flipped the chip before the rejection lands",
-                );
 
                 let key = app.active_session_key.clone().expect("test bucket key");
                 crate::app::events::apply_session_update(
@@ -649,21 +515,6 @@ mod tests {
                     },
                 );
 
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("default"),
-                    "rejection must roll the chip back to the pre-apply mode",
-                );
-                assert_eq!(
-                    app.with_turn_state(|ts| ts.mode),
-                    Some(forge_workspace::PermissionMode::Ask),
-                    "rejection must restore the pre-apply typed turn-state mode",
-                );
-                assert_eq!(
-                    app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
-                    seeded_supported,
-                    "rejection must restore the pre-apply supported-mode list",
-                );
                 let last = app
                     .messages()
                     .and_then(|messages| messages.last())
@@ -671,134 +522,25 @@ mod tests {
                 assert!(
                     matches!(last.role, MessageRole::System(None)),
                     "rejection surfaces as a system message, got {:?}",
-                    last.role
+                    last.role,
                 );
-                let text = first_block_text(last);
-                assert!(text.contains("plan"), "message names the refused mode: {text}");
-                assert!(
-                    text.contains("mode not permitted"),
-                    "CLI rejection text reaches the chat: {text}"
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn accepted_set_mode_keeps_optimistic_apply_and_no_error_message() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let mut rx = app.install_testing_stub();
-                seed_ask_session(&mut app);
-                let messages_before = app.messages().expect("active session").len();
-
-                let consumed = try_handle_submit(&mut app, "/mode plan");
-                assert!(consumed);
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("plan"),
-                    "an accepted switch keeps the optimistic apply",
-                );
-                tokio::task::yield_now().await;
-                assert!(
-                    matches!(rx.try_recv(), Ok(forge_primitives::AgentCommand::SetMode { .. })),
-                    "success still dispatches SetMode",
-                );
-                assert_eq!(
-                    app.messages().expect("active session").len(),
-                    messages_before,
-                    "no rejection message on the success path",
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn stale_mode_rejection_does_not_consume_the_live_rollback() {
-        // Two rapid submits overlap: the first refusal must leave the
-        // newer optimistic apply (and its rollback snapshot) alone, and
-        // the second refusal must restore the true pre-apply state so
-        // the chip never shows a doubly-refused mode.
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let _rx = app.install_testing_stub();
-                seed_ask_session(&mut app);
-
-                assert!(try_handle_submit(&mut app, "/mode plan"));
-                assert!(try_handle_submit(&mut app, "/mode acceptEdits"));
-                assert_eq!(app.mode().map(|m| m.current_mode_id.as_str()), Some("acceptEdits"));
-
-                let key = app.active_session_key.clone().expect("test bucket key");
-                let refused = |mode| forge_workspace::SessionUpdate::SetModeFailed {
-                    key: key.clone(),
-                    mode,
-                    message: "refused".into(),
+                let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+                    panic!("expected a text block in the rejection message");
                 };
-                crate::app::events::apply_session_update(
-                    &mut app,
-                    refused(forge_primitives::permission::PermissionMode::Plan),
-                );
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("acceptEdits"),
-                    "a refusal for a superseded request must not roll the chip back",
-                );
-
-                crate::app::events::apply_session_update(
-                    &mut app,
-                    refused(forge_primitives::permission::PermissionMode::AcceptEdits),
-                );
-                assert_eq!(
-                    app.mode().map(|m| m.current_mode_id.as_str()),
-                    Some("default"),
-                    "the chip must restore the pre-apply mode, not a refused one",
-                );
-                assert_eq!(
-                    app.with_turn_state(|ts| ts.mode),
-                    Some(forge_workspace::PermissionMode::Ask),
-                    "the typed turn-state mode restores with the chip",
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn confirmed_mode_clears_the_rollback_snapshot() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let _rx = app.install_testing_stub();
-                seed_ask_session(&mut app);
-                assert!(try_handle_submit(&mut app, "/mode plan"));
-
-                let key = app.active_session_key.clone().expect("active key");
-                crate::app::events::apply_session_update(
-                    &mut app,
-                    forge_workspace::SessionUpdate::ChatAppended {
-                        key,
-                        origin: None,
-                        msg: forge_primitives::Message::System {
-                            subtype: "status".into(),
-                            data: serde_json::json!({"permissionMode": "plan"}),
-                            session_id: None,
-                        },
-                    },
-                );
-
+                assert!(block.text.contains("plan"), "message names the refused mode");
                 assert!(
-                    app.pending_mode_rollback().is_none(),
-                    "a CLI-confirmed mode retires the pending rollback",
+                    block.text.contains("mode not permitted"),
+                    "CLI rejection text reaches the chat",
                 );
             })
             .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn model_apply_synchronously_during_submit() {
-        // /model applies CurrentModelUpdate optimistically App-side.
-        // The apply is synchronous, so no CommandPending state is
-        // needed.
+    async fn the_model_picker_applies_its_choice_synchronously() {
+        // The picker is the one place this view still picks a model, so the
+        // optimistic apply it makes is what keeps the header honest until the
+        // CLI confirms.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
@@ -808,15 +550,15 @@ mod tests {
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                         .authoritative(true),
                 ));
+                let key = app.active_session_key.clone().expect("active session");
 
-                let consumed = try_handle_submit(&mut app, "/model sonnet");
-                assert!(consumed);
+                switch_model(&mut app, key, "sonnet");
+
                 assert_eq!(
                     app.current_model().map(|m| m.resolved_id.as_str()),
                     Some("sonnet"),
                     "expected current_model applied synchronously to sonnet"
                 );
-                assert!(app.pending_command_label().is_none());
             })
             .await;
     }
@@ -902,54 +644,24 @@ mod tests {
         assert_eq!(block.text, "Usage: /compact");
     }
 
+    /// With no rows to pick from, a bare `/model` is the core's: it answers,
+    /// and a picker nobody could choose from does not open.
     #[test]
-    fn mode_with_extra_args_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/mode plan extra");
-        assert!(consumed);
-        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
-            panic!("expected system usage message");
-        };
-        assert!(matches!(last.role, MessageRole::System(_)));
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /mode [id]");
-    }
-
-    #[test]
-    fn model_with_no_arg_reports_current_model() {
+    fn model_with_no_models_falls_through_to_the_core() {
         let mut app = App::test_default();
         app.set_current_model(Some(
             crate::agent::model::CurrentModel::new("opus", "Opus", "Opus 4.7").authoritative(true),
         ));
 
         let consumed = try_handle_submit(&mut app, "/model");
-        assert!(consumed);
-        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
-            panic!("expected system message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.starts_with("Model: "), "got `{}`", block.text);
-        assert!(block.text.contains("Opus"));
-    }
 
-    #[test]
-    fn model_with_extra_args_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/model sonnet extra");
         assert!(consumed);
-        let Some(last) = app.messages().and_then(|messages| messages.last()) else {
-            panic!("expected system usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /model [id]");
+        assert!(app.model_picker.is_none(), "there are no rows to choose from");
+        let last = app.messages().and_then(|messages| messages.last());
+        assert!(
+            matches!(last, Some(message) if message.role == MessageRole::User),
+            "the words go out to the core, which answers",
+        );
     }
 
     #[test]
