@@ -8,7 +8,7 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Five places it deliberately differs from the terminal, and each is a
+ * Six places it deliberately differs from the terminal, and each is a
  * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
@@ -21,7 +21,10 @@
  *   user text live as an input echo and draws this one as a user turn on
  *   resume;
  * - a monitor is not in the conversation at all, because the inspector is its
- *   surface.
+ *   surface;
+ * - a compaction boundary is a row at the cut, where the terminal draws none:
+ *   the count is the terminal's marker, the cut is unmarked there, and this
+ *   fold's `push` ends a run of calls at it.
  *
  * **And a dispatched agent's frames are not the conversation either.** A
  * sub-agent's prose and calls belong to the SUBAGENTS surface, and drawn here
@@ -200,6 +203,17 @@ export type Unit =
   | { kind: 'messages'; key: string; lanes: MessageLane[]; status: CallStatus }
   | { kind: 'notice'; key: string; notice: Notice }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[]; errors: string[] }
+  /**
+   * Where the conversation was cut and the transcript replaced.
+   *
+   * The wire carries it as a `system` frame of its own subtype, and the fold
+   * had no arm for it - so the frame that records the boundary drew nothing,
+   * which is a frame dropped rather than a shape chosen. Its metadata carries
+   * the trigger and the count before the cut; the CLI also sends the count
+   * after it, which the decode drops before this view ever sees the frame, so
+   * the row says only what survives to it.
+   */
+  | { kind: 'compaction'; key: string; trigger: string | null; preTokens: number | null }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -241,6 +255,7 @@ interface Frame {
   type?: unknown;
   subtype?: unknown;
   uuid?: unknown;
+  compact_metadata?: unknown;
   parent_tool_use_id?: unknown;
   hookCount?: unknown;
   hookInfos?: unknown;
@@ -1063,6 +1078,20 @@ export function fold(
             ),
           });
         }
+        continue;
+      }
+      if (frame.subtype === 'compact_boundary') {
+        const metadata = obj(frame.compact_metadata);
+        const before = metadata['pre_tokens'];
+        push({
+          kind: 'compaction',
+          key: keyOf(at, frame, 'compaction'),
+          trigger: str(metadata, 'trigger'),
+          // The server's serialization, not the CLI's disk spelling
+          // (`preTokens`): this fold has no link to the type it reads, so a
+          // rename would stop matching in silence.
+          preTokens: typeof before === 'number' ? before : null,
+        });
         continue;
       }
       continue;

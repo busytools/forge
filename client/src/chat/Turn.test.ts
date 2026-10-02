@@ -423,6 +423,30 @@ describe('one turn, as the page draws it', () => {
     expect(at('Compacting context'), 'and above the report row').toBeLessThan(at('turninfo'));
   });
 
+  it('draws the compaction point where the boundary landed, and keeps the in-flight line beside it', () => {
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'cb-1',
+      compact_metadata: { trigger: 'auto', pre_tokens: 68_031 },
+    };
+
+    const body = draw(
+      prompt('compact it and carry on'),
+      said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
+      boundary,
+    );
+
+    expect(body, 'the boundary leaves the row the settled shape draws').toContain('class="cpoint"');
+    expect(body, 'carrying the count the frame gave it').toContain('68.0k before');
+
+    // The line and the row are two states of one thing, so a boundary landing
+    // does not stand in for the line while a compaction is still running.
+    expect(compacting(boundary), 'the in-flight line still draws while one is in flight').toContain(
+      'Compacting context',
+    );
+  });
+
   it('draws a mutation with its diff already open', () => {
     const body = draw(
       said([

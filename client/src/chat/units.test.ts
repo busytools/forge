@@ -101,6 +101,46 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([empty])), 'and an empty one is not a row').toEqual([]);
   });
 
+  /**
+   * The compaction boundary, which the CLI sends and this fold dropped.
+   *
+   * A recorded boundary is a `system` frame of its own subtype, and the system
+   * arm read `thinking_tokens` and `stop_hook_summary` and fell off the end for
+   * everything else - so the frame that says where the conversation was cut
+   * drew nothing, which is a frame dropped rather than a shape chosen.
+   */
+  it('draws the compaction boundary, which the wire sends and nothing drew', () => {
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'cb-1',
+      session_id: 's1',
+      compact_metadata: { trigger: 'auto', pre_tokens: 68_031 },
+    };
+
+    const units = fold([boundary]);
+
+    expect(kinds(units), 'the boundary is a row rather than a drop').toEqual(['compaction']);
+    const [row] = units;
+    expect(row?.kind === 'compaction' ? row.trigger : null, 'the trigger rides it').toBe('auto');
+    expect(
+      row?.kind === 'compaction' ? row.preTokens : null,
+      'with the count read before the cut',
+    ).toBe(68_031);
+  });
+
+  it('draws a boundary that carries no metadata, saying only that it happened', () => {
+    // The bare shape comes from drift: a rename of the outer key (`compact
+    // _metadata` on the wire, `compactMetadata` on disk) drops the frame to the
+    // CLI's generic bucket with no metadata anywhere in it. The row is the
+    // compaction itself, so it draws without its facts.
+    const [row] = fold([{ type: 'system', subtype: 'compact_boundary', uuid: 'cb-2' }]);
+
+    expect(row?.kind, 'the boundary still draws').toBe('compaction');
+    expect(row?.kind === 'compaction' ? row.trigger : 'x').toBeNull();
+    expect(row?.kind === 'compaction' ? row.preTokens : 0).toBeNull();
+  });
+
   it('keeps a run whole across a thinking row', () => {
     // A thinking block is commentary ON the work rather than a separator
     // between pieces of it: the terminal has no thinking variant at all, so its

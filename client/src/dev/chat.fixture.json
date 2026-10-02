@@ -210,7 +210,8 @@
         {
           "type": "system",
           "subtype": "compact_boundary",
-          "uuid": "compact-1"
+          "uuid": "compact-1",
+          "compact_metadata": { "trigger": "auto", "pre_tokens": 41207 }
         },
         {
           "type": "assistant",

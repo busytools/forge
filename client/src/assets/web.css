@@ -878,6 +878,20 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 /* A compaction in flight, and the chip a turn's hooks collapse to. */
 .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
   font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
+/* The compaction point: the SETTLED form of the line above. A hint you open
+   rather than a block that is already open. */
+details.cpoint { margin: 12px 0; font-family: var(--mono); font-size: var(--fs-base); }
+details.cpoint > summary { list-style: none; display: flex; align-items: center; gap: 10px;
+  cursor: pointer; }
+details.cpoint > summary::-webkit-details-marker { display: none; }
+.cpoint .rule { flex: 1; height: 1px; background: var(--line); }
+.cpoint .word { color: var(--muted); }
+.cpoint .n { color: var(--dim); }
+.cpoint:hover .word { color: var(--text); }
+details.cpoint[open] > summary .word { color: var(--accent); }
+details.cpoint[open] > summary .arw { color: var(--accent); }
+.cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
+.cpoint .cpbody b { color: var(--text); font-weight: 500; }
 /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
 .hooks { margin: 4px 0;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
