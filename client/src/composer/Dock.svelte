@@ -183,10 +183,14 @@
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
 
-  // The dock takes the keyboard the moment it arrives: its rows are the only
-  // thing to answer, and a prompt nobody has clicked answers no keys at all -
-  // which is what made Escape look broken on a prompt that had just appeared.
+  // The dock takes the keyboard the moment it arrives, and again for every
+  // question of a batch: its rows are the only thing to answer, a prompt nobody
+  // has clicked answers no keys at all, and the listbox element survives the
+  // swap from one question to the next - so an effect keyed on the element
+  // alone never re-ran and the keys were dead at the start of every question
+  // after the first.
   $effect(() => {
+    void ask.request;
     if (listbox !== null) listbox.focus({ preventScroll: true });
   });
 
