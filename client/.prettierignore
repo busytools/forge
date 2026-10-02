@@ -5,6 +5,9 @@ src/dev/fixtures/*.json
 # Build output.
 dist/
 node_modules/
+# Stryker's sandbox copy of this tree and the reports it writes.
+.stryker-tmp/
+reports/
 # The Tauri shell's crate target dir and its generated capability schemas.
 src-tauri/target/
 src-tauri/gen/

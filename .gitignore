@@ -18,3 +18,7 @@ client/dist/
 # anchors at the repo root and misses this one.
 client/src-tauri/target/
 client/src-tauri/gen/schemas/
+# Stryker's sandbox copy of the client tree and the reports a run writes; the
+# sandbox survives a crashed run, so it must not read as a dirty tree.
+client/.stryker-tmp/
+client/reports/

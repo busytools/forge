@@ -109,6 +109,64 @@ conformance-record-socket:
 bench:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture
 
+# Mutation-test the client with Stryker: break each line the tests claim to
+# cover and see whether anything fails. `vitest` reports what ran and never
+# whether a passing assertion discriminates, so this is the client's only
+# instrument for a test that passes for the wrong reason.
+#
+# Not part of `check`, and deliberately a recipe rather than a CI job: a run
+# is minutes and belongs to whoever asks for it, not to every push.
+#
+# The target set is the client's logic modules, listed in
+# `client/stryker.conf.json`; a run reports a score per file and lists every
+# mutant that survived, which is a list of assertions that look like they test
+# something and do not. Mutating the Svelte components is out on purpose: a
+# full render per mutant finds much less than it costs. `src/wire/limits.ts` is
+# out because it cannot earn a place in a run that scores files: it is one
+# numeric literal, Stryker has no mutator for one, and a run against it prints
+# an n/a row with "Ran NaN tests per mutant" that reads as a clean module.
+#
+# This drives Stryker's `command` runner rather than the vitest runner, and
+# the reason is worth keeping: the vitest runner filters a mutant's tests by a
+# name it joins with a space, where vitest 5 matches its " > " joined full
+# test name, so every nested test is skipped and every covered mutant reports
+# Survived. Fixes for it exist upstream (#6214, #6220) but are unreleased, and
+# the command runner has no such filter. Its numbers were checked against a
+# hand-patched runner on this client: `src/composer/meter.ts` 100%,
+# `src/chat/report.ts` 68%.
+#
+# A full-suite command cannot run in the sandbox: nine test files read outside
+# the client tree (crates/, docs/) and fail there. The command therefore runs
+# `./node_modules/.bin/vitest related` and reads its file list from the
+# `mutate` array at run time, so a module added there is scored against its own
+# tests with no second list to keep in step. A target that is not in the set is
+# refused rather than scored against tests that never import it.
+#
+# Cost is about 2 seconds a mutant, so `just mutate src/composer/meter.ts` is
+# roughly a minute and the whole 4,227-mutant set is hours. Run it per module,
+# not per handover. A run is bounded at both levels: `concurrency` in
+# `stryker.conf.json` caps Stryker's workers at four, and the command pins each
+# worker's vitest fleet with `--maxWorkers=2`, so a run holds the box to about
+# twelve test processes rather than the ~60 the defaults allow - this machine
+# is used while a campaign runs.
+#
+# The sandbox is `client/.stryker-tmp/sandbox-*/`; a successful run deletes it
+# and a crashed one leaves it. `.gitignore`, `.prettierignore` and
+# `eslint.config.js` ignore it, and `vite.config.ts` excludes it from test
+# collection, so a leftover cannot redden `just check`.
+#
+# Usage: `just mutate` for the configured set, or `just mutate src/chat/units.ts`
+# for one module from the set.
+mutate target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{target}}" ]; then
+        npm --prefix client run mutate
+    else
+        node -e "const { mutate } = require('./client/stryker.conf.json'); if (!mutate.includes(process.argv[1])) { console.error('just mutate: ' + process.argv[1] + ' is not in stryker.conf.json, so its own tests would not run; add it to the mutate set first'); process.exit(1); }" {{quote(target)}}
+        npm --prefix client run mutate -- --mutate {{quote(target)}}
+    fi
+
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
 # Burns API tokens. Baseline goes to target/wire-traces/; promote with
 # `cp target/wire-traces/capture-<scenario>-<ts>.jsonl \
