@@ -10,11 +10,13 @@ import {
   questionAsk,
   record,
   seatRead,
+  SLOT,
   slackDraftAsk,
   take,
   wire,
   type Wire,
 } from './testing';
+import type { SessionSlot } from '../wire/types';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
@@ -64,6 +66,8 @@ afterEach(() => {
 interface Page {
   record: ComposerRecord;
   seat: SeatRead;
+  /** The seat the page is showing, which moves with the record as a reader does. */
+  slot: SessionSlot;
 }
 
 function pageOf(instance: Record<string, unknown>): Page {
@@ -104,6 +108,31 @@ function openBoth(over: Partial<ComposerProps> = {}) {
       say: (message: ServerMessage) => shared.say(message),
     },
   };
+}
+
+/** A record whose composer holds what a case wants it to. */
+function withNotice(notice: unknown, held: Record<string, unknown> | null = null): ComposerRecord {
+  return record({ composer: { take: held, notice, compacting: false, sign_in: null } });
+}
+
+/** A take that landed, as the core sends one: the words, and whether they were cut. */
+const LANDED = { kind: 'landed', text: 'push it once CI is green', truncated: false };
+
+/** A seat that is not the one under test, which is the one a reader moves to. */
+const ELSEWHERE: SessionSlot = { org: 'Busytools', project: 'forge', label: 'other' };
+
+/** Send what is in the box, as the reader's Enter does. */
+function sendBox(): void {
+  field().dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+  );
+  flushSync();
+}
+
+/** A take the box has seen, which is what arms the landing. */
+function seesTake(harness: { page: { record: ComposerRecord } }): void {
+  harness.page.record = withNotice(null, take());
+  flushSync();
 }
 
 /** Both clients' boxes, in mount order, which is one field per composer. */
@@ -831,28 +860,6 @@ describe('the key', () => {
  * cases are about.
  */
 describe('a sent message', () => {
-  /** A record whose composer holds what the case wants it to. */
-  const withNotice = (notice: unknown, held: Record<string, unknown> | null = null) =>
-    record({
-      composer: { take: held, notice, compacting: false, sign_in: null },
-    });
-
-  const LANDED = { kind: 'landed', text: 'push it once CI is green', truncated: false };
-
-  /** Send what is in the box, as the reader's Enter does. */
-  function sendBox(): void {
-    field().dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-    );
-    flushSync();
-  }
-
-  /** A take the box has seen, which is what arms the landing. */
-  function seesTake(harness: { page: { record: ComposerRecord } }): void {
-    harness.page.record = withNotice(null, take());
-    flushSync();
-  }
-
   /**
    * The composer's own contract, and the one this file can speak for: a
    * landing that is still the record's notice lands ONCE, however many times
@@ -894,6 +901,106 @@ describe('a sent message', () => {
     expect(field().value, "the next take's words land as they always did").toBe(
       'and run the gate too',
     );
+  });
+
+  /**
+   * #1499, the same property one move over: words the reader already sent must
+   * not come back into the box.
+   *
+   * The page hands this component one record after another as the reader moves
+   * between seats, and the composer itself stays mounted across that move. The
+   * landed notice is the SEAT's, and the core holds it until that seat starts
+   * another take - so a box that reads the notice it meets on returning as a
+   * landing it has not taken puts back words that were sent before the reader
+   * left.
+   */
+  it("does not put a sent take's words back when the reader leaves the seat and returns", () => {
+    const harness = open();
+    seesTake(harness);
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    sendBox();
+    expect(field().value, 'the reader sent the words, so the box is empty').toBe('');
+
+    // Another seat, which has no take of its own.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = withNotice(null);
+    flushSync();
+
+    // Back to the seat the take landed on, whose notice the core still holds.
+    harness.page.slot = SLOT;
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    expect(field().value, 'the words the reader already sent came back into the box').toBe('');
+  });
+});
+
+/**
+ * The box belongs to the seat, not to this component.
+ *
+ * The page hands the composer one record after another as the reader moves
+ * between seats, and the composer stays mounted across the move: so everything
+ * the reader's own doing leaves behind - their words, the landing they have
+ * taken, what a send is still waiting on - is kept per seat and swapped when
+ * the seat is. `forge-tui` holds the same state the same way, on `UiSession`
+ * rather than on `App`, which is what makes a draft come back with its seat
+ * and stops one seat's words reaching another's box.
+ */
+describe('the seat the box belongs to', () => {
+  it('keeps the draft for its own seat, and shows none of it on another', () => {
+    const harness = open();
+    type('fix the flaky retry');
+
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    expect(field().value, "another seat's box is not this reader's draft").toBe('');
+
+    harness.page.slot = SLOT;
+    flushSync();
+    expect(field().value, 'the draft comes back with the seat it was typed on').toBe(
+      'fix the flaky retry',
+    );
+  });
+
+  it('lands a take only on the seat that watched it, and lands it there', () => {
+    const harness = open();
+    // The seat's own take, which is what arms a landing for THIS box.
+    seesTake(harness);
+
+    // A landing on another seat is not this box's to take: this box never
+    // watched that seat's take, so the words would be put back where nothing of
+    // the reader's was ever typed.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    expect(field().value, 'a take this box never watched is not its to land').toBe('');
+
+    // And back on the seat whose take it did watch, a landing lands HERE - the
+    // seat the record says it belongs to, not the one just left.
+    harness.page.slot = SLOT;
+    harness.page.record = withNotice({ ...LANDED, text: 'and run the gate too' });
+    flushSync();
+    expect(field().value, 'the words land in the box of the seat they belong to').toBe(
+      'and run the gate too',
+    );
+  });
+
+  it('does not give a refused send back in another seat, where the words were never typed', () => {
+    const shared = wire();
+    const harness = open({}, shared);
+    type('push it once CI is green');
+    sendBox();
+
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+
+    // The core refuses that dispatch, and the connection says so to every page
+    // on it - the error names the operation, never the seat.
+    shared.say({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
+    flushSync();
+
+    expect(field().value, "another seat's box is not where a refusal lands").toBe('');
   });
 });
 

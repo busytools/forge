@@ -11,6 +11,7 @@
    *
    * Test support rather than a page: nothing the app ships imports this file.
    */
+  import type { SessionSlot } from '../wire/types';
   import type { ComposerProps, ComposerRecord, SeatRead } from './view';
   import { props as start, type Wire } from './testing';
   import Composer from './Composer.svelte';
@@ -54,6 +55,16 @@
     },
     set seat(next: SeatRead) {
       held = { ...held, seat: next };
+    },
+    /**
+     * The seat the page is showing, which moves with the record when a reader
+     * leaves one seat and lands on another.
+     */
+    get slot() {
+      return held.slot;
+    },
+    set slot(next: SessionSlot) {
+      held = { ...held, slot: next };
     },
   };
 </script>
