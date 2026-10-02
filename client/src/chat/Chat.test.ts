@@ -865,6 +865,23 @@ describe('the reader own words before the core has them', () => {
     expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
   });
 
+  it('stops when a page read carries the words, which is where a dropped send lands', () => {
+    // The other end of a turn: a read rebuilds the turn with the reader's own
+    // words at its head, which is the shape a send that outlived a dropped
+    // socket comes back in. Read only from the ends, so this end has to be
+    // looked at as well as the appended one.
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and the gate again');
+    flushSync();
+    expect(drawn(), 'the row is up before the read lands').toContain('and the gate again');
+
+    server.answer([{ key: 't2', messages: [said('and the gate again'), frame('a2', 12)] }]);
+    expect(echoes.of(key), 'the page carrying the words at the head settles it').toBeUndefined();
+  });
+
   it('draws a send on a seat with no history, which is the first thing it says', () => {
     const server = stub();
     draw({}, server);

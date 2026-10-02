@@ -236,8 +236,24 @@ export function leafOf(
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
-    body: result === undefined ? body : [...body, ...bodyOf(result.content)],
+    body: drawnBody(name, body, result),
   };
+}
+
+/**
+ * What a call's body draws, which for a mutation is its diff and nothing else.
+ *
+ * The result's own text repeats the diff's path and carries the CLI's note on
+ * the file state, which is an instruction to the model rather than anything a
+ * reader acts on; the terminal draws the diff and returns there for both `Edit`
+ * and `Write` (`build_tool_result_fields`). Where there is no diff the text is
+ * all there is, and either way the call still settles on its result.
+ */
+function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
+  if (result === undefined) return body;
+  const answered = bodyOf(result.content);
+  if (isEdit(name) && body.some((part) => part.kind === 'diff')) return body;
+  return [...body, ...answered];
 }
 
 /** What settles a call with no task frame of its own: its result, or the turn that never sent one. */

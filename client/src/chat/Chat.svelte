@@ -111,15 +111,44 @@
    * instead. The composer's own backstop is the turn going in flight, which is
    * a signal a queued prompt never gives - so a reconcile that knew one
    * carrier would leave the row saying "sending" for the rest of the turn.
+   *
+   * **And it reads only the two ENDS of the newest turn.** The core's copy
+   * lands at one end or the other - appended by the live path, at the head of
+   * the turn a page read rebuilds - while a turn can be thousands of messages
+   * long and this runs on every arriving frame. A scan of the whole thing is a
+   * cost that grows with exactly the turn the reader is sending into, which is
+   * #1591's shape one layer down.
    */
   $effect(() => {
     const held = echoes.of(seat);
     if (held === undefined) return;
     const turn = newestTurn;
     if (turn === null) return;
-    if (!turn.messages.some((message) => ownWords(message).includes(held.words))) return;
+    if (!carries(turn.messages, held.words)) return;
     echoes.clear(seat);
   });
+
+  /**
+   * Whether a turn's own messages carry these words.
+   *
+   * **Each end, and stopped by the first frame that is not the reader's**: a run
+   * of their own words is what either end of a turn holds - the live path
+   * appends one, and a page read opens the turn with one - and everything
+   * between is the work the turn did, which is where the length is.
+   */
+  function carries(messages: unknown[], words: string): boolean {
+    const run = (from: number, step: number): boolean => {
+      for (let at = from; at >= 0 && at < messages.length; at += step) {
+        const message = messages[at];
+        if (message === undefined) break;
+        const said = ownWords(message);
+        if (said.length === 0) break;
+        if (said.includes(words)) return true;
+      }
+      return false;
+    };
+    return run(messages.length - 1, -1) || run(0, 1);
+  }
 
   /**
    * Send the words again, from the row that says they did not go.
