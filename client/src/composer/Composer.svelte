@@ -272,12 +272,11 @@
     if (!record.header.turn_in_flight) box.sent = null;
   });
 
-  // A turn going in flight is a send landing: the words are the core's now, so
-  // the row that says they are not goes. This is the whole of the signal for a
-  // command the conversation never carries back as the reader's own row; where
-  // it does carry one, the column clears the echo on those words instead.
+  // A turn going in flight is the core taking the send: the mark that says it
+  // has not come off, and the words stay on screen until the conversation
+  // carries its own copy of them (the column clears the echo on those).
   $effect(() => {
-    if (record.header.turn_in_flight) echoes.clear(boxKey(slot));
+    if (record.header.turn_in_flight) echoes.take(boxKey(slot));
   });
 
   /**

@@ -555,6 +555,25 @@ describe('the box', () => {
     }
   });
 
+  it('takes the mark off a send the core has started, and keeps the words', () => {
+    const harness = open();
+    type('push it once CI is green');
+    press('Enter');
+    expect(echoAt(SLOT)?.state, 'the send is on its way').toBe('sending');
+
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+
+    // The row is the reader's message from here on: the mark goes and the words
+    // stay, because the core's own copy of them does not arrive as a frame - a
+    // prompt forge injects is not echoed on stream-json - so a row that went
+    // with the mark would take the words off screen for the length of the turn.
+    expect(echoAt(SLOT), 'the words stay where they were sent from').toMatchObject({
+      state: 'taken',
+      words: 'push it once CI is green',
+    });
+  });
+
   it('names the slash command a turn is still working on', () => {
     const harness = open();
     type('/compact');

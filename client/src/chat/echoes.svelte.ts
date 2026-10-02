@@ -21,11 +21,23 @@ import { SvelteMap } from 'svelte/reactivity';
 
 import { queuedWords } from './units';
 
-/** One outstanding send: the words, and whether the core has refused them. */
+/**
+ * One send, from the enter that started it to the core's own copy of the words.
+ *
+ * **Three states, because the question the row answers changes halfway.** At
+ * first it is "has the core got this", which the turn going in flight answers.
+ * After that it is "where are my words", and that one is not answered until the
+ * core's own copy of them is in the conversation - which arrives on the next
+ * page read rather than as a frame, since a prompt forge injects is not echoed
+ * back on stream-json. A row that went with the first answer would take the
+ * reader's words off the screen for the length of the turn.
+ */
 export type Echo =
-  { state: 'sending'; words: string } | { state: 'failed'; words: string; why: string };
+  | { state: 'sending'; words: string }
+  | { state: 'taken'; words: string }
+  | { state: 'failed'; words: string; why: string };
 
-/** A send the core has taken or refused leaves nothing behind, which is a delete rather than a third state. */
+/** A send the core's copy of has arrived leaves nothing behind, which is a delete rather than a fourth state. */
 export class Echoes {
   #held = new SvelteMap<string, Echo>();
 
@@ -43,6 +55,19 @@ export class Echoes {
    */
   post(key: string, words: string): void {
     this.#held.set(key, { state: 'sending', words });
+  }
+
+  /**
+   * The core has them: it started the turn they asked for.
+   *
+   * The mark goes and the words stay. This is the whole of "it is sent" - the
+   * row is the reader's own message from here until the conversation carries
+   * its own copy of it.
+   */
+  take(key: string): void {
+    const held = this.#held.get(key);
+    if (held === undefined || held.state !== 'sending') return;
+    this.#held.set(key, { state: 'taken', words: held.words });
   }
 
   /**

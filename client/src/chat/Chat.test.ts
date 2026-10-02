@@ -860,6 +860,17 @@ describe('the reader own words before the core has them', () => {
     );
     expect(drawn(), 'and the row says so').toContain('sending');
 
+    // The core starting the turn takes the MARK off, not the words: the core's
+    // own copy of a prompt forge injected is not echoed as a frame, so the row
+    // is the reader's message until the next page read carries one.
+    echoes.take(key);
+    flushSync();
+    expect(drawn(), 'the words stay on screen').toContain('and run the gate too');
+    expect(
+      drawn(),
+      'and the mark holds its beat, which is what makes an instant answer visible',
+    ).toContain('sending');
+
     // The core's own copy is the signal, and it arrives as its own frame.
     server.send(appended(said('and run the gate too')));
     expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
