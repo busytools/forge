@@ -28,7 +28,7 @@ import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { fold, queuedWords } from './units';
+import { fold, namesSkill, queuedWords, skillBody } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -332,6 +332,42 @@ function opensATurn(message: unknown): boolean {
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */
 function isSystem(message: unknown): boolean {
   return (message as { type?: unknown } | null)?.type === 'system';
+}
+
+/** Every content block of a frame, when it carries any. */
+function blocksIn(message: unknown): unknown[] {
+  const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+/**
+ * The skill a frame is the body of, or null for every other frame.
+ *
+ * The CLI injects a skill's body as a user frame; the fold pairs it with the
+ * `Skill` call that loaded it, and this is the same reading for the store,
+ * which is what keeps the frame in that call's turn.
+ */
+function skillNameOf(message: unknown): string | null {
+  for (const block of blocksIn(message)) {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    if (held?.type !== 'text' || typeof held.text !== 'string') continue;
+    const skill = skillBody(held.text);
+    if (skill !== null) return skill.name;
+  }
+  return null;
+}
+
+/** Whether a turn holds the `Skill` call a body of `name` belongs to. */
+function holdsSkillCall(turn: Turn, name: string): boolean {
+  return turn.messages.some((held) =>
+    blocksIn(held).some((block) => {
+      const use = block as { type?: unknown; name?: unknown; input?: unknown } | null;
+      if (use?.type !== 'tool_use' || typeof use.name !== 'string') return false;
+      if (use.name.toLowerCase() !== 'skill') return false;
+      const want = (use.input as { skill?: unknown } | null)?.skill;
+      return typeof want === 'string' && namesSkill(want, name);
+    }),
+  );
 }
 
 /** What a refused mode or model carries, as the wire names the fields. */
@@ -969,6 +1005,23 @@ export class Chat {
       // something to arrive, so a column left where they had scrolled to would
       // hide the very answer they are waiting on.
       const follow = held.following || units.some((unit) => unit.kind === 'user');
+      // **A skill's body belongs to the turn whose `Skill` call loaded it.**
+      // The CLI injects the frame mid-turn, but it can arrive above a settled
+      // turn, and a row of its own is a second telling of the same thing under
+      // the reader's name. The turn is found by the skill's own name, the same
+      // match the fold pairs the two by.
+      const skill = skillNameOf(message);
+      if (skill !== null) {
+        for (let at = held.turns.length - 1; at >= 0; at -= 1) {
+          const target = held.turns[at];
+          if (target === undefined || !holdsSkillCall(target, skill)) continue;
+          const grown: Turn = { ...target, messages: [...target.messages, message] };
+          return this.answered({
+            ...held,
+            turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
+          });
+        }
+      }
       // A frame that draws opens a row of its own only where no turn is being
       // written. A row the core says is running is one of those too, whichever
       // way the client learned it: a seat reached mid-turn has its row from a

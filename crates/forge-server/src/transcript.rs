@@ -252,6 +252,11 @@ pub fn render(messages: &[Message]) -> Rendered {
     // Where each turn opens, taken as the fold pushes the unit that opens it:
     // one push per turn, in order, so the keys below line up with them.
     let mut turns: Vec<TurnSpan> = Vec::new();
+    // The skills whose `Skill` call the open turn holds and whose body has not
+    // arrived yet, oldest first: a body belongs in the call's turn, and the
+    // claim is what keeps it there. Cleared wherever a turn opens, so a body
+    // cannot join a turn whose calls are not the ones it belongs to.
+    let mut turn_skills: Vec<String> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -320,6 +325,13 @@ pub fn render(messages: &[Message]) -> Rendered {
         };
         for block in content {
             match block {
+                // A skill's body, which the CLI injects as the reader's own
+                // row right after the call that loaded it. It stays in that
+                // call's turn - the second telling of what the call's row
+                // already carries - and a body no call holds falls through to
+                // the arms below and opens a turn as it always did.
+                ContentBlock::Text { text }
+                    if !assistant && claims_skill_call(&mut turn_skills, text) => {}
                 // The harness's task ending in its other carrier: the same XML
                 // written into a user row, which the scan hands on as this
                 // plain text. A turn opened for it draws a task id and an
@@ -351,6 +363,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                         match unit {
                             ChatUnit::UserTurn { text } => {
                                 open_turn(&mut turns, &mut units, text, index);
+                                turn_skills.clear();
                             }
                             other => units.push(other),
                         }
@@ -377,10 +390,21 @@ pub fn render(messages: &[Message]) -> Rendered {
                         flush_peers(&mut peers, &mut units);
                         close_traced(&mut traced, &mut units, true, &mut keys);
                         open_turn(&mut turns, &mut units, text, index);
+                        turn_skills.clear();
                     }
                 }
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
+                    // A `Skill` call's own name for the skill it loads, held
+                    // until that skill's body arrives: the body is what this
+                    // claim decides the turn of.
+                    if let Some(want) = input
+                        .get("skill")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|_| name.eq_ignore_ascii_case("skill"))
+                    {
+                        turn_skills.push(want.to_owned());
+                    }
                     push_call(
                         id, name, input, &results, &endings, &answers, &mut run, &mut peers,
                         &mut units,
@@ -819,6 +843,48 @@ fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) 
 /// here and not elsewhere.
 fn is_task_notice(text: &str) -> bool {
     text.trim_start().starts_with("<task-notification>")
+}
+
+/// The skill a body's own frame names, off its first line's directory.
+///
+/// The CLI injects a skill's body as a user row whose first line names the
+/// skill's directory and whose remainder is the skill's markdown. The name is
+/// the path's last segment that is not a version, so a plugin-cached skill
+/// (`.../ui-ux-pro-max/2.13.0`) is named as its directory names it - the same
+/// reading the web client's fold makes (`skillBody` in its `units.ts`).
+fn skill_body_name(text: &str) -> Option<&str> {
+    let lead = text.split('\n').next()?;
+    let path = lead.strip_prefix("Base directory for this skill:")?.trim();
+    path.split('/').rev().find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()))
+}
+
+/// Whether a `Skill` call's own input names the skill a body's path ended in.
+///
+/// The two spellings differ for a plugin skill: the call says
+/// `ui-ux-pro-max:ui-ux-pro-max` where the path ends `ui-ux-pro-max`. The
+/// client fold matches the same way (`namesSkill` in its `units.ts`); the two
+/// must agree, or the same frame lands in one view and not the other.
+fn names_skill(want: &str, name: &str) -> bool {
+    want == name || want.ends_with(&format!(":{name}")) || want.starts_with(&format!("{name}:"))
+}
+
+/// Whether `text` is the body of a skill the open turn holds a call for,
+/// consuming that claim.
+///
+/// A body belongs in the turn whose call loaded it: it is the same telling the
+/// call's row already carries, and a turn of its own draws it a second time
+/// under the reader's name. The claim is consumed so a later body for the same
+/// skill lands on the call after it, and a body no call holds opens a turn as
+/// it did before - nothing may be dropped.
+fn claims_skill_call(turn_skills: &mut Vec<String>, text: &str) -> bool {
+    let Some(name) = skill_body_name(text) else {
+        return false;
+    };
+    let Some(at) = turn_skills.iter().position(|want| names_skill(want, name)) else {
+        return false;
+    };
+    turn_skills.remove(at);
+    true
 }
 
 /// What a persisted task ending says, which is what the live wire's
@@ -1863,6 +1929,50 @@ mod tests {
     /// in this machine's transcripts, 3,113 carry the mode, 3,113 open with
     /// the tag, and none disagrees - so the pair looks redundant, and a row
     /// carrying both could not tell a two-signal guard from a one-signal one.
+    /// A skill's body arrives as the reader's own user row, right after the
+    /// call that loaded it - and a page read can cut the two apart. The body
+    /// belongs in the call's turn, where the call's row is what tells the
+    /// story: a turn of its own is the same thing said twice under the
+    /// reader's name, and the web client pairs the two by name whatever their
+    /// turns say.
+    #[test]
+    fn a_skill_body_stays_in_the_turn_whose_call_loaded_it() {
+        let call = |want: &str| {
+            assistant(vec![ContentBlock::ToolUse {
+                id: format!("toolu_{want}"),
+                name: "Skill".to_owned(),
+                input: serde_json::json!({ "skill": want }),
+            }])
+        };
+        let body = |path: &str| {
+            user(vec![ContentBlock::Text {
+                text: format!("Base directory for this skill: {path}\n\n# The skill\n\nDo it."),
+            }])
+        };
+        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+
+        let rendered =
+            render(&[prompt(), call("unslop"), body("/Users/ved/.claude/skills/unslop")]);
+        assert_eq!(rendered.turns.len(), 1, "the body opens no turn of its own");
+        assert_eq!(
+            rendered.units.iter().filter(|unit| matches!(unit, ChatUnit::UserTurn { .. })).count(),
+            1,
+            "and draws no second row under the reader's name"
+        );
+
+        // The plugin spelling: the call says `a:b` where the path ends `b`.
+        let cached = render(&[
+            prompt(),
+            call("ui-ux-pro-max:ui-ux-pro-max"),
+            body("/Users/ved/.claude/plugins/cache/x/ui-ux-pro-max/2.13.0"),
+        ]);
+        assert_eq!(cached.turns.len(), 1, "a versioned plugin path still matches its call");
+
+        // The control: a body no call claimed opens a turn, so nothing is lost.
+        let orphan = render(&[prompt(), body("/Users/ved/.claude/skills/other")]);
+        assert_eq!(orphan.turns.len(), 2, "an unclaimed body opens a turn as it always did");
+    }
+
     #[test]
     fn a_notification_row_opens_no_turn() {
         let by_mode = user(vec![ContentBlock::QueuedCommand {

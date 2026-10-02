@@ -471,7 +471,7 @@ function isSkillReminder(text: string): boolean {
  * the disk's own meta flag does not survive to it - so the row is built from
  * it, its name read off the path, and the line itself dropped from the body.
  */
-function skillBody(text: string): { name: string; body: string } | null {
+export function skillBody(text: string): { name: string; body: string } | null {
   const [lead, ...rest] = text.split('\n');
   if (lead === undefined || !lead.startsWith('Base directory for this skill:')) return null;
   const parts = lead.slice('Base directory for this skill:'.length).trim().split('/');
@@ -487,7 +487,7 @@ function skillBody(text: string): { name: string; body: string } | null {
  * The two spellings differ for a plugin skill: the call says
  * `ui-ux-pro-max:ui-ux-pro-max` where the path ends `ui-ux-pro-max`.
  */
-function namesSkill(want: string, name: string): boolean {
+export function namesSkill(want: string, name: string): boolean {
   return want === name || want.endsWith(`:${name}`) || want.startsWith(`${name}:`);
 }
 

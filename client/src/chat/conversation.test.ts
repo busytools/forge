@@ -342,6 +342,72 @@ describe('the conversation the chat draws', () => {
     ).toEqual(before.turns.slice(0, before.turns.length - 1));
   });
 
+  it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
+    // The CLI injects the body as a user frame, and it can arrive above a
+    // settled turn - where it opened a second row telling the same thing the
+    // skill lane's call already tells. The store keeps it in that call's turn,
+    // which is where the fold pairs the two.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'assistant',
+                uuid: 'a-skill',
+                message: {
+                  id: 'm-skill',
+                  role: 'assistant',
+                  model: 'claude-opus-5',
+                  content: [
+                    { type: 'tool_use', id: 'toolu_s', name: 'Skill', input: { skill: 'unslop' } },
+                  ],
+                },
+              },
+              ended(),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-body',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Base directory for this skill: /Users/ved/.claude/skills/unslop\n\n# Unslop\n\nEdit text.',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'one turn, not a row beside it').toHaveLength(1);
+    const units = fold(turns[0]?.messages ?? []);
+    const [group] = units.filter((unit) => unit.kind === 'group');
+    const calls =
+      group?.kind === 'group'
+        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+        : [];
+    expect(calls[0]?.skill, "the call's row is where the body landed").toBe(
+      '# Unslop\n\nEdit text.',
+    );
+  });
+
   it('re-renders only the turn in flight when its frames arrive', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
