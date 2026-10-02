@@ -234,10 +234,30 @@ function uuidOf(message: unknown): string | null {
   return typeof id === 'string' && id !== '' ? id : null;
 }
 
-/** Whether a row already says a frame's words, whatever carrier they arrived in. */
-function saysWords(messages: unknown[], message: unknown): boolean {
+/**
+ * The frame in `messages` that is the same message as `message` under its other
+ * carrier - the words it says - or `null` when none is left to pair with it.
+ *
+ * **One frame answers for one copy**, which is why the frames that have already
+ * answered are carried in: two prompts saying the same words inside one turn are
+ * two messages, and the second would otherwise be read as a repeat of the first
+ * and dropped - the reader's own words, gone.
+ *
+ * By identity rather than by position, because the frames it is asked about
+ * belong to rows that are merged into one: a pairing counted by where a frame
+ * sits is lost as soon as the row grows.
+ */
+function pairedWith(
+  messages: unknown[],
+  message: unknown,
+  answered: ReadonlySet<unknown>,
+): unknown {
   const words = wordsOf(message);
-  return words.length > 0 && messages.some((held) => sameWords(words, wordsOf(held)));
+  if (words.length === 0) return null;
+  for (const held of messages) {
+    if (!answered.has(held) && sameWords(words, wordsOf(held))) return held;
+  }
+  return null;
 }
 
 /**
@@ -583,6 +603,17 @@ export class Chat {
       const named: Turn[] = [];
       /** Each row's messages after the reconciliation, which hold the page's own. */
       const copies: unknown[][] = [];
+      /**
+       * The frames that have answered for a copy of the reader's own words,
+       * for the WHOLE page.
+       *
+       * The row it is read against spans rows: the fold opens a turn on every
+       * queued prompt, so two of them arrive as two rows and both join the one
+       * above - and a count minted per row forgets what the row before it
+       * paired with, which lets the next copy consume the same frame and drop
+       * the words.
+       */
+      const answered = new Set<unknown>();
       for (const row of pageTurns(rows)) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -619,12 +650,22 @@ export class Chat {
         const above = named[named.length - 1];
         if (above !== undefined && queuedPrompt(row)) {
           const messages = [...(copies[copies.length - 1] ?? [])];
+          // The prompt the row already grew with is the SAME words under the
+          // carrier a page holds them in, and the two carriers mint different
+          // ids - so a copy is paired with the frame it is, and no other frame
+          // answers for it twice.
           for (const message of messagesOf(row)) {
-            // The prompt the row already grew with is the SAME words under the
-            // carrier a page holds them in, and the two carriers mint different
-            // ids - so a copy already said is not added beside the one held.
-            if (!carries(messages, message) && !saysWords(messages, message))
+            if (carries(messages, message)) continue;
+            const paired = pairedWith(messages, message, answered);
+            if (paired === null) {
+              // An unmatched copy lands here, at the END of the row, so where
+              // its live echo never arrived it can sit below frames the row
+              // already held (#1584).
               messages.push(message);
+              answered.add(message);
+            } else {
+              answered.add(paired);
+            }
           }
           named[named.length - 1] = { ...above, messages };
           copies[copies.length - 1] = messages;
@@ -796,14 +837,16 @@ export class Chat {
   /**
    * One arriving message, into the turn it belongs to.
    *
-   * It joins the turn being written when there is one. With none open it opens
-   * a turn of its own.
+   * Where it goes is the `opens` below, read there rather than restated here:
+   * the row above takes it, one opens for it, or it is held nowhere.
    *
    * **What a person said joins a turn being written like anything else.** The
    * CLI fuses a mid-turn prompt into the turn it interrupted rather than
-   * opening one, and the terminal draws that shape: the running row keeps its
-   * clock and the words draw inside it. A row of its own leaves one turn as
-   * two rows, both counting - which is the whole of what this rule decides.
+   * opening one, and the terminal keeps its clock: a mid-turn submit there
+   * carries the live bar onto a fresh tail placeholder instead of restarting
+   * it. One turn stays one row here, with the words drawn inside it and the
+   * clock the row opened with; a row of its own leaves one turn as two rows,
+   * both counting - which is the whole of what the join decides.
    *
    * **A frame the fold draws nothing out of never opens a row: it joins the
    * turn it arrived in, settled or not, and is held nowhere when there is

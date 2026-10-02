@@ -77,10 +77,13 @@ const ended = (): unknown => ({
  * A mid-turn prompt as a PAGE holds it: the scan hoists the transcript's
  * `attachment` row into a user envelope carrying this block, and the fold opens
  * a turn on it.
+ *
+ * `id` is the row's own, kept apart from the words so a test counting one does
+ * not count the other.
  */
-const queued = (text: string): unknown => ({
+const queued = (text: string, id: string): unknown => ({
   type: 'user',
-  uuid: `q-${text}`,
+  uuid: `q-${id}`,
   timestamp: '2026-10-01T10:00:02Z',
   message: {
     role: 'user',
@@ -373,7 +376,7 @@ describe('one row per running turn', () => {
     // holds it when the page repeats it.
     const cut = [
       { key: 't1', messages: [typed('mine'), said('working')] },
-      { key: null, messages: [queued('now do this'), said('more'), ended()] },
+      { key: null, messages: [queued('now do this', '1'), said('more'), ended()] },
     ];
     server.send(page(cut, null));
 
@@ -403,6 +406,75 @@ describe('one row per running turn', () => {
       get(chat.value).turns.map((turn) => turn.key),
       'the repeated cut is the row already held, not a second one',
     ).toEqual(['t1']);
+  });
+
+  it('draws a second prompt saying the same words', () => {
+    // Two prompts saying "yes" inside one turn are two messages, and the page
+    // carries them as TWO ROWS: the fold opens a turn on every queued block,
+    // so no page can hold two of them in one row. The pairing is counted across
+    // the whole page rather than per row, so neither copy consumes the frame
+    // the other is the same message as - the reader's own words, gone.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([{ key: 't1', messages: [typed('mine')] }], null));
+    server.says(true);
+    // The row grew with the second prompt's own frame, and nothing pairs with
+    // a frame twice: the first page row's copy is the one that has it.
+    server.update({ chat_appended: { key: LEAD, msg: forged('yes') } });
+
+    server.send(
+      page(
+        [
+          { key: 't1', messages: [typed('mine')] },
+          { key: null, messages: [queued('yes', '1'), said('more')] },
+          { key: null, messages: [queued('yes', '2'), said('even more')] },
+        ],
+        null,
+      ),
+    );
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.map((turn) => turn.key),
+      'both prompts landed in the turn they interrupted',
+    ).toEqual(['t1']);
+    expect(
+      JSON.stringify(turns[0]?.messages).split('"yes"').length - 1,
+      'and the words are drawn twice, once per prompt',
+    ).toBe(2);
+  });
+
+  it('keeps both prompts when a page holds no frame to pair them with', () => {
+    // The same two rows on a seat whose prompt frames this client never saw,
+    // which a page read from the transcript is: nothing pairs with anything,
+    // and the copy added for the first row must not answer for the second.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([{ key: 't1', messages: [typed('mine')] }], null));
+    server.says(true);
+
+    server.send(
+      page(
+        [
+          { key: 't1', messages: [typed('mine')] },
+          { key: null, messages: [queued('yes', '1'), said('more')] },
+          { key: null, messages: [queued('yes', '2'), said('even more')] },
+        ],
+        null,
+      ),
+    );
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.map((turn) => turn.key),
+      'both prompts landed in the turn they interrupted',
+    ).toEqual(['t1']);
+    expect(
+      JSON.stringify(turns[0]?.messages).split('"yes"').length - 1,
+      'and both are drawn, neither read as the other',
+    ).toBe(2);
   });
 
   it('takes the bar back when the turn ends', () => {
