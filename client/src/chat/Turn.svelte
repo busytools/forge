@@ -2,7 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
   import Compacting from './Compacting.svelte';
-  import type { Turn as HeldTurn } from './conversation';
+  import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
   import Messages from './Messages.svelte';
@@ -30,13 +30,37 @@
     cwd,
     slot = null,
     compacting = false,
-  }: { turn: HeldTurn; cwd: string | null; slot?: Self | null; compacting?: boolean } = $props();
+    carried = null,
+  }: {
+    turn: HeldTurn;
+    cwd: string | null;
+    slot?: Self | null;
+    compacting?: boolean;
+    /**
+     * The key of this turn's report row that the pin above the box is drawing,
+     * or `null` where the pin is drawing none of them.
+     *
+     * **The row rather than a yes**, so the turn stands aside for exactly what
+     * the pin holds and nothing else: a turn can carry more than one report
+     * row - one per Result that landed in it - and the pin takes one of them.
+     * Dropping every report row here would lose the rows the pin never took,
+     * and dropping none would draw the one it holds twice.
+     */
+    carried?: string | null;
+  } = $props();
 
-  // Whether the turn is still being written, which the fold cannot read off the
-  // frames: a page carries no result frame for a turn that has not ended.
-  // `live` is a turn the frames built and `running` is the seat's own answer,
-  // which the turn's end or a later page can take back.
-  const units = $derived(fold(turn.messages, cwd, slot, turn.live || turn.running === true));
+  const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
+
+  /**
+   * The fold's units, less the one row the pin is carrying.
+   *
+   * The row moves out of the turn and above the composer while the pin holds
+   * it - the running row while the turn is written, and the finished one for
+   * the beat after it ends - so it is not drawn here as well. Nothing is lost
+   * by that: the same row is on the page, in the pin, and the turn takes it
+   * back the moment the pin lets go.
+   */
+  const units = $derived(carried === null ? folded : folded.filter((unit) => unit.key !== carried));
 
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
@@ -143,7 +167,7 @@
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
         {:else if unit.kind === 'hooks'}
-          <Hooks actions={unit.actions} infos={unit.infos} />
+          <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

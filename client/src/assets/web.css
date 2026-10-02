@@ -432,7 +432,14 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+/* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
+   book page; a terminal draws one row per line at 1.231em of its own text
+   size, and 1.35 is nearer that without sitting on it - a browser still has to
+   fit a descender under a line of monospace. Scoped here rather than on `body`
+   so the rails, the home and the composer keep the leading they were drawn
+   with. */
+.conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+  line-height: 1.35; }
 /* The refusal above a conversation already drawn: the server's words for the
    ask that failed, at the column's own padding, with the rows left alone. */
 .refused { padding: 2px 8px 6px 0; color: var(--muted); }
@@ -644,9 +651,18 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .work { padding: 4px 0 8px; }
 /* Prose draws in both blocks - the work a turn did, and what the reader typed,
    which the terminal folds as a document too - so these read `.prose` alone. */
-.prose p + p { margin-top: 10px; }
+/* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
+   URL in a sentence would take the conversation sideways on its own. This
+   inherits, which is what reaches a list item, a quote and a heading too. */
+.prose { overflow-wrap: anywhere; }
+/* One blank line between blocks, which is the terminal's whole spacing policy:
+   a live reply is cut at paragraph boundaries and each block carries one
+   trailing break, so every gap it draws is one line box. Ten pixels was 0.59em
+   against the terminal's 1.23em, and this is the half of the change that makes
+   a message taller rather than shorter. The rules below carry the same value. */
+.prose p + p { margin-top: 20px; }
 /* The reset above zeroes the padding a list draws its markers in. */
-.prose ul, .prose ol { padding-left: 22px; margin: 8px 0; }
+.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -666,10 +682,17 @@ details.sec[open] > summary .arw { color: var(--accent); }
    own, and takes its block spacing below. */
 .prose h1, .prose h2, .prose h3,
 .prose h4, .prose h5, .prose h6 {
-  font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+  font-size: var(--fs-prose); font-weight: 500; margin: 20px 0; }
+/* Every mark a message draws in bold takes the heaviest cut the vendored face
+   ships. Fira Code ships static cuts and only Regular and Medium are vendored,
+   so a weight above 500 has no face behind it and the browser fakes it by
+   smearing the Medium - which is what made three emphasised phrases read as
+   three loud things where the terminal's own bold is a slight bump. `strong`
+   carried no rule at all before this and drew the browser's default 700. */
+.prose strong { font-weight: 500; }
 /* The panel is new markup inside prose, so it carries the block spacing every
    other unit here has rather than sitting on the paragraph's own line box. */
-.prose .code { margin: 10px 0; }
+.prose .code { margin: 20px 0; }
 /* A colour rather than the browser's own link blue, which is off the palette
    and measures about 2.2:1 on the page. The underline is the browser's, and
    stays: a link is not carried by its colour alone. */
@@ -677,13 +700,26 @@ details.sec[open] > summary .arw { color: var(--accent); }
 /* A rule down the left, which is how this sheet marks an inset everywhere else:
    the reader's own turn, a command's output, a search hit, a call. */
 .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
-  padding: 2px 0 2px 12px; margin: 10px 0; }
+  padding: 2px 0 2px 12px; margin: 20px 0; }
 /* No rule between body rows: the terminal draws the one line under the header. */
-.prose table { border-collapse: collapse; margin: 10px 0; }
-.prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
-.prose th { color: var(--muted); font-weight: 700;
+.prose table { border-collapse: collapse; margin: 20px 0; }
+/* Two pixels rather than four: a row's own leading is what separates it from
+   the next, and four top and bottom took a row to 1.96em where the terminal
+   draws 1.25em - airiness that made a six-row state table read as a page of
+   its own. The rule under the header comes with it: it sat clear of the row
+   below because that padding was holding it there. */
+.prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
+/* A data cell breaks a long token rather than widening the table past the
+   column: the terminal stacks a table its grid cannot hold, and wrapping keeps
+   the table the shape it is - while a header that may break anywhere has a
+   one-character minimum and is sliced by a neighbouring column's demand for
+   width, so the header resets what it would otherwise inherit. A table whose
+   own header words do not fit the column still exceeds it; stacking is the
+   terminal's answer to that and not this one. */
+.prose td { overflow-wrap: anywhere; }
+.prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
   border-bottom: 1px solid var(--line); }
-.prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
+.prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
 /* the family tree is the default view */
 .kind { margin: 3px 0; }
@@ -729,7 +765,7 @@ details.leaf.running > summary { color: var(--text); }
 .body { margin: 3px 0 6px 27px; }
 .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-  white-space: pre-wrap; overflow-x: auto; }
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 .term .pfx { color: var(--dim); }
 /* A line a command reported as its own result: the book's drawing has the
    summary half, and a task that ended badly is the same line in the bad tone. */
@@ -743,25 +779,34 @@ details.leaf.running > summary { color: var(--text); }
 .code { border: 1px solid var(--line); border-radius: 9px;
   background: var(--s2); overflow: hidden; }
 .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  padding: 5px 12px; border-bottom: 1px solid var(--line); }
-.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-  white-space: pre; overflow-x: auto; line-height: 1.55; }
+  padding: 4px 10px; border-bottom: 1px solid var(--line); }
+/* A long line wraps inside the panel rather than scrolling it, and a token with
+   nowhere to break is split the way the terminal's own wrapper splits one.
+   Six pixels of padding rather than eight, and the conversation's leading: the
+   panel is a line and a hairline of air, where it was a line and a third, at
+   1.89x the one row the terminal draws for the same fence. */
+.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
   margin: 4px 0; border-left: 1px solid var(--line); }
 .searchhit .ln { color: var(--accent); }
 .searchhit .fl { color: var(--muted); }
 .searchhit .hit { color: var(--warn); }
-/* One grid for the whole diff, with the rows as `display: contents`: the
-   scroller runs as wide as its longest line, and a grid per ROW would end each
-   tint at the container's edge, leaving the scrolled overflow bare. */
+/* One grid for the whole diff, with the rows as `display: contents`, so a
+   line's number and its text stay one row and the tint covers both. The grid
+   used to span the scroller's full width - a grid per ROW would have ended each
+   tint at the container's edge with the scrolled overflow left bare - and
+   wrapping retires that premise rather than working around it:
+   `overflow-wrap: anywhere` holds the column at the container's own width, so
+   nothing overflows and no tint can fall short of one. */
 .dif { display: grid; grid-template-columns: 22px 1fr;
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-data); }
 .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
 .dif .ln { display: contents; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
-.dif .ln .l { white-space: pre; padding-right: 12px; }
+.dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
@@ -841,6 +886,8 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 .hooks:hover { color: var(--muted); }
 details.hooks > summary .arw { color: var(--dim); }
 details.hooks[open] > summary .arw { color: var(--accent); }
+/* A failed summary's mark takes the bad tone rather than the chip's DIM. */
+details.hooks > summary .st.err { color: var(--bad); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
@@ -904,17 +951,9 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 
 /* ---------- the built-in typefaces ---------- */
 
-/* The faces [web] font's built-in set names, which are the mockups' own
-   weights. `font-weight` is the axis range rather than one value on Inter:
-   a single one makes 650 snap to a synthesized Bold. */
-
-@font-face {
-  font-family: "Inter";
-  src: url("/fonts/InterVariable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
+/* The built-in face, at the two weights the mockups ask of it. Fira Code
+   ships static cuts, so a rule wanting a third weight gets a synthesized
+   one. */
 
 @font-face {
   font-family: "Fira Code";
@@ -931,6 +970,26 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   font-style: normal;
   font-display: swap;
 }
+
+/* ---------- the strip pinned above the box ---------- */
+
+/* The running turn's metadata row, pinned above the composer for exactly as
+   long as the turn is incomplete. It shares the box's edges and sits outside
+   its ring, so the row's height is the only thing it ever costs the column.
+   Its fields are the settled row's own, under `.turninfo`, and its element is
+   the flex row the fields wrap in - the strip renders no box of its own.
+   No margin of its own: it lands in the space the grid already leaves between
+   the column and the composer's slot, which is what puts it nearer the box
+   than the turn above it. */
+.strip { flex: none; padding: 8px 13px 9px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
+.strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
+  font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+/* Wrap between fields, never inside one: a broken token pair reads as two
+   numbers rather than as in and out. */
+.strip .ti > span { white-space: nowrap; }
+.strip .ti .sep { opacity: .5; }
+.strip .ti .st.err { color: var(--bad); }
 
 /* ---------- the composer ----------
    Taken from the mock at docs/book/src/ui/client/web-composer.html: the box, the list
@@ -1032,11 +1091,14 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is
    one past sample, and the track is pinned right so the newest reading is
-   always at the right edge and the history flows off the left one. */
+   always at the right edge and the history flows off the left one. A cell
+   shares out the width the track has over its own 4px apiece, so the graph
+   reaches both ends of its box; the shrink of zero keeps a track narrower
+   than the window clipping its oldest readings instead of squeezing them. */
 .wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
 .wtr { display: flex; align-items: flex-end; justify-content: flex-end;
   gap: 2px; height: 100%; }
-.wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
+.wtr i { flex: 1 0 4px; border-radius: 1px; background: var(--s3); }
 .wtr i.mid { background: #ab6100; }
 .wtr i.hot { background: var(--hot); }
 .wave.tr .wtr i { background: #26354a; }
@@ -1195,6 +1257,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+/* The message a held Slack post would send, set apart because it is the thing
+   being approved. */
+.dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
+  font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
+  border-radius: 0 10px 10px 0; padding: 9px 13px;
+  background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
 .opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
@@ -1202,17 +1270,21 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .ic.ok { color: var(--ok); }
 .opt .ic.no { color: var(--bad); }
 .opt .ic.ed { color: var(--blue); }
+.opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
+/* What choosing an option means, on its own line under the name and in the
+   name's own column, which is where the terminal draws it. */
+.opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
+  margin-top: 1px; }
 .opt.sel { background: var(--sel); }
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
+.opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   border: 1.5px solid var(--ctl); display: grid; place-items: center; }
 /* A question's row that is on, which the answer carries with it. The box is
    the only mark of it, so it is drawn rather than implied by the pointer. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
-.opt .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 .dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
@@ -1367,15 +1439,7 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    tokens on purpose, and a page adding them back would be a second entry in a
    list another page is already changing. The values are `theme.rs`'s, so the
    diff draws the ground forge drew. */
-.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
-  overflow-x: auto; overflow-y: hidden; }
-/* The path above a diff is one unbroken token and often longer than a phone,
-   where it ran off the card and took the sideways scroll with it. It is a
-   location rather than code, so it wraps rather than scrolling. */
+.dif { --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5); }
+/* The path above a diff is one unbroken token and often longer than a phone. It
+   is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
-
-@media (max-width: 560px) {
-  /* A diff line is as long as the line it quotes and a phone is not, so at
-     this width the file wraps rather than scrolling a gutter off the screen. */
-  .dif .ln .l { white-space: pre-wrap; }
-}

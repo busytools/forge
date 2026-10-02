@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import Field from './Field.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
@@ -11,6 +12,9 @@
     depth = 1,
     notice = null,
     take = null,
+    notes = $bindable(''),
+    ownOpen = $bindable(false),
+    land = null,
     onanswer = () => {},
     onabandon = () => {},
   }: {
@@ -23,6 +27,17 @@
     notice?: string | null;
     /** A take still running behind the dock, which the blip names. */
     take?: Take | null;
+    /**
+     * What the reader has said in their own words.
+     *
+     * Held by the composer rather than here, because a landed take has to reach
+     * whichever box the table names and this one has no other way in.
+     */
+    notes?: string;
+    /** Whether that box is open, which is what makes this dock a destination. */
+    ownOpen?: boolean;
+    /** A take's words that landed in this box, which come with the keyboard. */
+    land?: string | null;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
   } = $props();
@@ -88,6 +103,33 @@
         own: option.kind === 'notes',
       }));
     }
+    if (prompt.kind === 'slack_draft') {
+      // A held post has two answers and no more: the draft goes out, or it does
+      // not. The rows are the dock's own because the wire carries the draft
+      // rather than a set of options to choose from.
+      return [
+        {
+          key: 'send',
+          icon: 'check',
+          tone: 'ok',
+          label: 'Send it',
+          detail: null,
+          preview: null,
+          optionId: null,
+          own: false,
+        },
+        {
+          key: 'drop',
+          icon: 'x',
+          tone: 'no',
+          label: "Don't send",
+          detail: null,
+          preview: null,
+          optionId: null,
+          own: false,
+        },
+      ];
+    }
     if (prompt.kind === 'question') {
       return [
         ...prompt.request.options.map((option) => ({
@@ -106,7 +148,7 @@
           key: 'own',
           icon: null,
           tone: 'ok',
-          label: 'Tell Claude something else:',
+          label: 'Tell the agent something else:',
           detail: null,
           preview: null,
           optionId: null,
@@ -121,15 +163,27 @@
   let marked = $state(0);
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
-  /** What the reader has said in their own words, which the notes row carries. */
-  let notes = $state('');
   /** The field, so marking the own-words row can put the caret in it. */
-  let field = $state<HTMLTextAreaElement | null>(null);
+  let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
   let listbox = $state<HTMLDivElement | null>(null);
 
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
+
+  // The composer decides where a take's words land, and this dock is only a
+  // destination while its box is open - so it has to say whether it is.
+  //
+  // The cleanup is load-bearing: a seat can fail with a prompt still waiting,
+  // which puts the blocker in the slot and takes this dock off screen while the
+  // prompt stays, and a `true` left standing here would route a take's words to
+  // a box that is no longer there.
+  $effect(() => {
+    ownOpen = notesOpen;
+    return () => {
+      ownOpen = false;
+    };
+  });
 
   /**
    * Focus follows the marked row.
@@ -142,6 +196,12 @@
   $effect(() => {
     const wanted = notesOpen ? field : listbox;
     if (wanted !== null) wanted.focus();
+  });
+
+  // A take's words come with the keyboard, and this is the box they landed in.
+  $effect(() => {
+    if (land === null) return;
+    if (field !== null) field.focus();
   });
 
   /** The tool the prompt is waiting on, which an answer is addressed by. */
@@ -179,7 +239,21 @@
    */
   function submit(): void {
     const row = rows[marked];
-    if (row === undefined || toolId === null) return;
+    if (row === undefined) return;
+
+    if (ask.kind === 'slack_draft') {
+      // A draft is answered by its own id rather than by a tool call, which is
+      // the command the terminal sends for the same two rows. Both are read
+      // before the answer is remembered: remembering it is what takes this dock
+      // off screen, and the prop is gone by the next read.
+      const id = ask.request.id;
+      const approved = row.key === 'send';
+      onanswer(id);
+      void connection.dispatch({ respond_slack_post: { key: slot, id, approved } });
+      return;
+    }
+
+    if (toolId === null) return;
     const words = notes.trim() === '' ? null : notes;
 
     if (ask.kind === 'permission') {
@@ -236,6 +310,34 @@
     });
   }
 
+  /**
+   * Answer with the prompt's own way out.
+   *
+   * A question refuses with an outcome of its own rather than a row, which is
+   * the shape the core offers and the one the terminal sends - a question whose
+   * options are all wrong has no row to say so with, and an empty `answered`
+   * would pick nothing on the reader's behalf.
+   */
+  function reject(): void {
+    if (ask.kind === 'question') {
+      onanswer(ask.request.toolId);
+      void connection.dispatch({
+        respond_question: {
+          key: slot,
+          tool_id: ask.request.toolId,
+          outcome: { outcome: 'cancelled' },
+        },
+      });
+      return;
+    }
+    // Every other prompt refuses with a row of its own: choosing that row keeps
+    // the action the core sent as the action taken, rather than one this client
+    // named.
+    const deny = rows.findIndex((row) => row.tone === 'no');
+    marked = deny < 0 ? rows.length - 1 : deny;
+    submit();
+  }
+
   function move(step: number): void {
     if (rows.length === 0) return;
     marked = (marked + step + rows.length) % rows.length;
@@ -258,9 +360,14 @@
       : [...toggled, row.optionId];
   }
 
-  /** Whether a key landed in the field the own-words row opened. */
+  /**
+   * Whether a key landed in the field the own-words row opened.
+   *
+   * By the editor it names rather than by its class: the class is the sheet's
+   * styling hook, and a restyle that renamed it would silently reroute keys.
+   */
   const inField = (event: KeyboardEvent): boolean =>
-    event.target instanceof HTMLElement && event.target.classList.contains('notes');
+    event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
@@ -287,8 +394,17 @@
         return;
       }
       if (event.key === 'Escape') {
-        // Back to the options, which is where the terminal's Escape goes from
-        // its own notes editor - and the words typed so far stay in the state.
+        // A question's way out from here is the reject, which is the terminal's
+        // own: its notes box cancels the prompt. The words typed so far go with
+        // it, because the prompt does.
+        if (question) {
+          event.preventDefault();
+          reject();
+          return;
+        }
+        // A permission steps back to its options instead, so the words typed so
+        // far stay in the state - a divergence from the terminal, which cancels
+        // from its notes box for this kind too.
         event.preventDefault();
         move(-1);
       }
@@ -315,13 +431,9 @@
       submit();
       return;
     }
-    // A question's rows draw a box per option and its answer carries one of
-    // them, so a reject key would name a key that cannot do what it says.
-    if (event.key === 'Escape' && !question) {
+    if (event.key === 'Escape') {
       event.preventDefault();
-      const deny = rows.findIndex((row) => row.tone === 'no');
-      marked = deny < 0 ? rows.length - 1 : deny;
-      submit();
+      reject();
     }
   }
 
@@ -360,7 +472,9 @@
     <div class="head">
       <span class="qm"><Icon name="question" /></span>
       <span class="t">{ask.request.header}</span>
-      <span class="q">Q{ask.request.index + 1} of {ask.request.total}</span>
+      {#if ask.request.total > 1}
+        <span class="q">Q{ask.request.index + 1} of {ask.request.total}</span>
+      {/if}
     </div>
     <div class="desc">{ask.request.question}</div>
   {:else}
@@ -369,16 +483,13 @@
         {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
       </span>
       <span class="q">
-        {ask.request.workspace} · {ask.request.conversationLabel}
+        {ask.request.workspace} · {ask.request.conversationLabel}{#if ask.request.threadTs !== null}
+          · thread {ask.request.threadTs}{/if}
       </span>
     </div>
-    <!-- This client holds no approval dock for a held post, which is the
-         session view's Slack surface rather than the composer's. What it can
-         do is say what is waiting, rather than explain an empty dock away. -->
-    <div class="desc">
-      {ask.request.tool} is waiting to send: approve it from the terminal, and the words land in your
-      draft either way.
-    </div>
+    <!-- The body verbatim: this is what would go out, so the reader approves
+         the text itself rather than a summary of it. -->
+    <div class="sent">{ask.request.text}</div>
   {/if}
 
   {#if rows.length > 0}
@@ -428,10 +539,12 @@
               {/if}
             </span>
           {/if}
-          <span class="lbl">{row.label}</span>
-          {#if row.detail !== null}
-            <span class="d">{row.detail}</span>
-          {/if}
+          <span class="tx">
+            <span class="lbl">{row.label}</span>
+            {#if row.detail !== null}
+              <span class="why">{row.detail}</span>
+            {/if}
+          </span>
         </div>
       {/each}
     </div>
@@ -443,13 +556,17 @@
     {#if notesOpen}
       <!-- The reader's own words, which the answer carries as its annotation
            rather than as an option id. -->
-      <textarea
+      <Field
+        editor="dock"
         class="notes"
-        bind:this={field}
         bind:value={notes}
-        rows="1"
+        rows={1}
         placeholder="answer with your own words"
-        onkeydown={onkey}></textarea>
+        onkeydown={onkey}
+        field={(el: HTMLElement | null) => {
+          field = el;
+        }}
+      />
     {/if}
 
     <div class="keys">
@@ -460,7 +577,7 @@
       <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
       {#if take !== null}
         <span><kbd>Esc</kbd> cancel the take</span>
-      {:else if !question}
+      {:else}
         <span><kbd>Esc</kbd> reject</span>
       {/if}
     </div>

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, type PageTurn, type Turn } from './conversation';
+import { Chat, beingWritten, type PageTurn, type Turn } from './conversation';
 import { fold, type Unit } from './units';
 
 /**
@@ -152,8 +152,7 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
 
 /** Whether the draw carries the bar, asked the way the row asks it. */
 const bar = (turn: Turn | undefined): boolean =>
-  turn !== undefined &&
-  running(fold(turn.messages, null, null, turn.live || turn.running === true));
+  turn !== undefined && running(fold(turn.messages, null, null, beingWritten(turn)));
 
 /** Whether a row is the turn being written, asked the way the column asks it. */
 const writing = (turn: Turn | undefined): boolean => turn?.running === true;

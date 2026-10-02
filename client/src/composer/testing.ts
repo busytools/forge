@@ -102,8 +102,20 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
   };
 }
 
-/** A question as the core offers one, with whatever the test overrides in its prompt. */
-export function questionAsk(toolId = 'tu-q', prompt: Record<string, unknown> = {}): unknown {
+/**
+ * A question as the core offers one, with whatever the test overrides in its
+ * prompt.
+ *
+ * The index is a parameter because one tool call carries every question in a
+ * batch: the core reuses the tool id and advances this, so a test that needs two
+ * questions of one call needs two of these.
+ */
+export function questionAsk(
+  toolId = 'tu-q',
+  prompt: Record<string, unknown> = {},
+  index = 0,
+  total = 1,
+): unknown {
   return {
     kind: 'question',
     request: {
@@ -131,8 +143,25 @@ export function questionAsk(toolId = 'tu-q', prompt: Record<string, unknown> = {
         ],
         ...prompt,
       },
-      question_index: 1,
-      total_questions: 3,
+      question_index: index,
+      total_questions: total,
+    },
+  };
+}
+
+/** A held Slack post as the core offers one, with whatever the test overrides. */
+export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'slack_draft',
+    request: {
+      id: '0192e1c0-0000-7000-8000-000000000000',
+      workspace: 'Trust Machines',
+      conversation: 'C0123456789',
+      conversation_label: 'granite-staging-alerts',
+      thread_ts: null,
+      text: 'Deploy finished on staging.',
+      tool: 'slack__post',
+      ...over,
     },
   };
 }

@@ -272,12 +272,13 @@ fn push_queued_group(app: &mut App, prompts: &[String]) {
     );
 }
 
-/// True when a user-role turn's text is harness-injected scaffolding
-/// never meant for the chat buffer: `<task-notification>` completion
-/// notices and Claude Code's slash-command wrappers. Live sessions
-/// drop these as input echoes, so only resume re-renders them; both
-/// replay filter sites route through here to stay in sync.
-fn is_suppressed_user_scaffolding(text: &str) -> bool {
+/// True when a user-role turn's text is harness-injected scaffolding never
+/// meant for the chat buffer: `<task-notification>` completion notices and
+/// Claude Code's slash-command wrappers, whose command the reader's own turn
+/// already drew. Read at both draw sites - the live walk's stamped draw and
+/// the resume render - so neither path can start showing raw wrapper text on
+/// its own.
+pub(super) fn is_suppressed_user_scaffolding(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("<task-notification>")
         || t.starts_with("<local-command-caveat>")
@@ -474,21 +475,17 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         }
 
         let msg = &history_messages[i];
-        // The raw walker (`handle_sdk_message`) processes user
-        // messages by walking tool_results only - live wire user
-        // text content blocks are echoes of the user's input that
-        // the input handler already rendered, so the walker
-        // correctly drops them. Replay has no input handler
-        // contribution, so render the user text content blocks here
-        // before dispatch.
-        if let forge_primitives::Message::User { message: envelope, .. } = msg {
-            // Render replay-time user text content blocks. The live raw
-            // walker drops user text (those are echoes of input the input
-            // handler already rendered); replay has no input handler
-            // contribution, so render here. Only clear the active-turn
-            // assistant pointer when we're about to actually render - an
-            // empty Text block isn't a render and shouldn't move the
-            // pointer.
+        // A stamped turn is the harness speaking, and the walker below draws
+        // it on a line of its own - drawing it here too would show the same
+        // words twice, the second time as the reader's. Replay has no input
+        // handler contribution, so the unmarked turns, which are the reader's
+        // own words, render here before dispatch.
+        if let forge_primitives::Message::User { message: envelope, .. } = msg
+            && !super::sdk_message::is_harness_user_turn(msg)
+        {
+            // Only clear the active-turn assistant pointer when we're about
+            // to actually render - an empty Text block isn't a render and
+            // shouldn't move the pointer.
             let mut rendered_user_text = false;
             for block in &envelope.content {
                 if let forge_primitives::ContentBlock::Text { text } = block {
@@ -622,6 +619,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -656,6 +654,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -1558,6 +1557,7 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 
@@ -1572,7 +1572,40 @@ mod tests {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
+    }
+
+    /// A user turn the CLI stamped as its own, which is the shape the scan
+    /// hands a replayed harness row back as.
+    fn harness_user_text(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: None,
+            synthetic: true,
+        }
+    }
+
+    /// Every line the chat carries on a system row, which is the shape the
+    /// terminal draws a notice in.
+    fn system_row_texts(app: &App) -> Vec<String> {
+        app.messages()
+            .expect("active session")
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::System(_)))
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn user_bubble_texts(app: &App) -> Vec<String> {
@@ -1656,6 +1689,107 @@ mod tests {
         assert!(
             !app.replay_in_progress,
             "replay_in_progress must be cleared at end of load_resume_history",
+        );
+    }
+
+    /// Both halves on one rule: a user turn the CLI stamped as synthetic is
+    /// the harness speaking, so a view draws it, and never as the reader's
+    /// own words.
+    ///
+    /// Live, the walker dropped every wire user text as an input echo the
+    /// input handler had already drawn. On resume the replay drew this same
+    /// turn as a user bubble, because the suppression list is tag-based and
+    /// the harness's reminder carries no tag. The evidence for "not the
+    /// reader's" is the CLI's own stamp on the frame, never a match on the
+    /// words.
+    #[test]
+    fn a_stamped_user_turn_is_drawn_and_never_as_the_readers_own() {
+        const REMINDER: &str = "Skill /unslop was loaded earlier (see the invoked-skills \
+                                 reminder above); this is a NEW invocation - follow those \
+                                 instructions now, including any setup steps.";
+
+        // Live: the frame exactly as the CLI emits it, decoded from the wire
+        // so the stamp's own spelling is under test.
+        let frame: Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "sess-live",
+            "uuid": "u-reminder-live",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": REMINDER}],
+            },
+        }))
+        .expect("the CLI's frame decodes");
+        let mut live = App::test_default();
+        super::super::sdk_message::handle_sdk_message(&mut live, frame);
+
+        assert!(
+            !user_bubble_texts(&live).iter().any(|text| text == REMINDER),
+            "live: the harness's words must not claim the reader's turn",
+        );
+        assert!(
+            system_row_texts(&live).iter().any(|text| text == REMINDER),
+            "live: and the words must still be drawn (rule 25), on a line of their own",
+        );
+
+        // Resume: the same turn, as the transcript read hands it back.
+        let mut resumed = App::test_default();
+        load_resume_history(&mut resumed, &[harness_user_text(REMINDER)]);
+
+        assert!(
+            !user_bubble_texts(&resumed).iter().any(|text| text == REMINDER),
+            "resume: the harness's words must not claim the reader's turn",
+        );
+        assert!(
+            system_row_texts(&resumed).iter().any(|text| text == REMINDER),
+            "resume: and the words must still be drawn (rule 25), on a line of their own",
+        );
+    }
+
+    /// The suppression list keeps hiding the wrapper shapes a slash command
+    /// comes back in, stamped or not: the reader's own command already drew
+    /// as their turn, and the markup beside it would be the same command
+    /// twice. The live walk and the resume walk read the one filter, so
+    /// neither can start showing raw wrapper text on its own.
+    #[test]
+    fn a_stamped_wrapper_turn_stays_suppressed_on_both_paths() {
+        const CAVEAT: &str = "<local-command-caveat>Caveat: The messages below were generated \
+                              by the user while running local commands.</local-command-caveat>";
+
+        let frame: Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "sess-live",
+            "uuid": "u-caveat-live",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": CAVEAT}],
+            },
+        }))
+        .expect("the CLI's frame decodes");
+        let mut live = App::test_default();
+        super::super::sdk_message::handle_sdk_message(&mut live, frame);
+
+        assert!(
+            !system_row_texts(&live).iter().any(|text| text == CAVEAT),
+            "live: wrapper markup must not reach the chat as a notice",
+        );
+        assert!(
+            !user_bubble_texts(&live).iter().any(|text| text == CAVEAT),
+            "live: nor as the reader's own turn",
+        );
+
+        let mut resumed = App::test_default();
+        load_resume_history(&mut resumed, &[harness_user_text(CAVEAT)]);
+
+        assert!(
+            !system_row_texts(&resumed).iter().any(|text| text == CAVEAT),
+            "resume: wrapper markup must not reach the chat as a notice",
+        );
+        assert!(
+            !user_bubble_texts(&resumed).iter().any(|text| text == CAVEAT),
+            "resume: nor as the reader's own turn",
         );
     }
 

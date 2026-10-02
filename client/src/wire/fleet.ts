@@ -25,9 +25,12 @@
  *
  * `fleet.test.ts` reads the server's arms out of `live.rs` and fails when
  * either set here is narrower than the set there, so that day is a red build
- * rather than a silent one. It cannot see a variant the server MOVES between
- * arms, or one it adds inside the `chat_appended` arm, because those are
- * decided by a frame's own fields rather than by a variant's name.
+ * rather than a silent one. That read cannot see a variant the server DROPS
+ * from the redraw arm back to the wildcard - a move between the two arms is
+ * caught, because the occupant count it asserts is exact - nor one the server
+ * adds inside the `chat_appended` arm, where the decision is a frame's own
+ * fields rather than a variant's name. The census beside it closes the drop,
+ * by starting from the enum rather than from the arms.
  */
 
 import type { SessionUpdate } from '../protocol';

@@ -1,12 +1,21 @@
 <script lang="ts">
-  import { VList, type VListHandle } from 'virtua/svelte';
+  import { untrack } from 'svelte';
+  import { VList } from 'virtua/svelte';
 
   import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Compacting from './Compacting.svelte';
-  import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
+  import {
+    Chat,
+    NOTHING,
+    beingWritten,
+    type Conversation,
+    type Turn as HeldTurn,
+  } from './conversation';
+  import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
+  import { fold, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -47,7 +56,6 @@
   const REACH = 400;
 
   let held = $state<Conversation>(NOTHING);
-  let list = $state<VListHandle | null>(null);
   /**
    * The element that scrolls, which is the list's own viewport.
    *
@@ -56,6 +64,8 @@
    * this update, and the element's own `scrollHeight` does not.
    */
   let viewport: HTMLElement | null = $state(null);
+  /** Where the column last left the reader, which its own pin's echo cannot disarm. */
+  let placed: number | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -68,8 +78,12 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /** The newest turn, which is the one a running row is folded for. */
+  const newestTurn = $derived(
+    held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
+  );
   /** The newest turn's key: the row a compaction in flight belongs under. */
-  const newest = $derived(held.turns[held.turns.length - 1]?.key ?? null);
+  const newest = $derived(newestTurn?.key ?? null);
   let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
   /**
    * Pages of older turns asked for and not yet answered.
@@ -124,11 +138,16 @@
     };
   }
 
-  /** Whether the reader sits at the very end of what the list holds. */
+  /**
+   * Whether the reader sits at the very end of what the list holds.
+   *
+   * **The element's own clamp, not the list's reported size**: that is a model
+   * - estimates for rows never drawn, a viewport unmeasured in the flush a pin
+   * runs in - under which a reader the browser has clamped to the foot still
+   * reads as short of it.
+   */
   function atFoot(): boolean {
-    const total = list?.getScrollSize() ?? 0;
-    const height = list?.getViewportSize() ?? 0;
-    return (list?.getScrollOffset() ?? 0) + height >= Math.floor(total);
+    return viewport !== null && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight;
   }
 
   $effect(() => {
@@ -136,6 +155,8 @@
     const open = connection;
     if (opened !== null && opened.seat === which && opened.connection === open) return;
     opened?.stop();
+    // The placement belonged to the conversation that is going.
+    placed = null;
     const chat = new Chat(open, slot);
     working = chat;
     const unsubscribe = chat.value.subscribe((value) => {
@@ -205,6 +226,101 @@
   const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
 
   /**
+   * The newest turn's own report row - the unit, and the figures in it -
+   * folded the way the turn folds itself.
+   *
+   * **One fold and one pick, because the row has two readers**: the pin draws
+   * it, and the turn's own copy of it stands aside. Which row that is is
+   * answered here rather than worked out again at each of them.
+   */
+  const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
+    const turn = newestTurn;
+    if (turn === null) return null;
+    const units = fold(turn.messages, cwd, slot, beingWritten(turn));
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
+    }
+    return null;
+  });
+
+  /**
+   * How long the finished row holds before it detaches into the turn.
+   *
+   * **A twin of the composer's beat rather than one shared value**: that one
+   * holds a landed take's border green (`Composer.svelte`), this one holds a
+   * finished turn's row, and the two are the same idiom at the same length.
+   */
+  const BEAT_MS = 450;
+
+  /** The turn whose row the pin is holding, which is what the beat is about. */
+  let carried: string | null = $state(null);
+  /** Whether the row being held is the finished one, on its beat before it detaches. */
+  let beating = $state(false);
+  /** The beat's own timer, held rather than returned as a cleanup: a frame arriving mid-beat re-runs this effect. */
+  let beatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function stopBeat(): void {
+    if (beatTimer !== null) {
+      clearTimeout(beatTimer);
+      beatTimer = null;
+    }
+  }
+
+  // The pin follows the newest turn: a turn being written takes the row, and a
+  // turn that finished under the pin keeps it for one beat before it detaches
+  // into the turn.
+  //
+  // **The effect re-runs on every frame**, so what it reads of its own state it
+  // reads untracked - a tracked read of `carried` would make its own write a
+  // reason to run again, and the beat a reason to re-arm itself forever.
+  $effect(() => {
+    const which = newest;
+    const holding = newestRow !== null && newestRow.info.running;
+    if (which === null || newestRow === null) return;
+    if (holding) {
+      // A turn being written takes the row back, whichever turn was beating
+      // under it - the next turn can start inside the last one's beat.
+      if (untrack(() => carried) !== which || untrack(() => beating)) {
+        carried = which;
+        beating = false;
+        stopBeat();
+      }
+      return;
+    }
+    // A row that arrived finished is the turn's own, not the pin's: only the
+    // turn this column watched run is carried over, and only once.
+    if (untrack(() => carried) !== which || untrack(() => beating)) return;
+    carried = which;
+    beating = true;
+    stopBeat();
+    beatTimer = setTimeout(() => {
+      beating = false;
+      carried = null;
+      beatTimer = null;
+    }, BEAT_MS);
+  });
+
+  // The timer goes with the column, which is the one thing the effect above
+  // cannot do for itself.
+  $effect(() => () => stopBeat());
+
+  /**
+   * The row the pin is holding right now, if any: the whole of the turn being
+   * written, and the beat after it ends.
+   *
+   * **One fact with two readers**, and it is the ROW rather than a yes: the
+   * pin draws it, and the turn's own copy of that same row stands aside. The
+   * key is checked rather than trusted, so a beat that outlived its turn - an
+   * occupant swapped under the page - holds nothing.
+   */
+  const pinned = $derived(
+    newestRow !== null && (newestRow.info.running || (beating && carried === newest))
+      ? newestRow
+      : null,
+  );
+
+  /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.
    *
    * **Through the element rather than through the list's handle, and that is
@@ -222,6 +338,9 @@
   function land(): void {
     if (viewport === null) return;
     viewport.scrollTop = viewport.scrollHeight;
+    // Where the column last left the reader, which is the foot the browser
+    // clamped the pin to. A scroll event at this offset is the pin's own echo.
+    placed = viewport.scrollTop;
   }
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -249,14 +368,19 @@
     // - the terminal's clamp re-engages its follow only at `scroll_offset >=
     // max_scroll` for exactly this reason.
     //
-    // Floored, and that is arithmetic rather than tolerance: the list reports
-    // its size as a fraction of a pixel and the browser clamps the scroll to a
-    // whole one, so the two are never equal at the foot and comparing them
-    // straight would read the very end as short of itself - the flag would
-    // switch itself off exactly where it has to hold.
-    const height = list?.getViewportSize() ?? 0;
-    const total = list?.getScrollSize() ?? 0;
-    working?.following(offset + height >= Math.floor(total));
+    // Nothing is owed to arithmetic either: both sides are the element's own
+    // numbers, and the clamp makes them meet at the foot - swept over whole
+    // and fractional heights at device pixel ratios 1 to 3, the gap is 0 in
+    // WebKit and Chromium alike (CSS `zoom` past 1 is the one divergence
+    // found, and nothing here zooms the column) - so a tolerance could only
+    // re-arm the follow for a reader who has moved off it.
+    //
+    // **And only a reader who has moved may switch it off.** A pin fires a
+    // scroll event of its own, and the foot can settle past the height one
+    // asked for: both read as the reader back above the foot with nothing
+    // moving them, and disarming there is a column stuck where it opened.
+    if (atFoot()) working?.following(true);
+    else if (placed !== null && offset < placed) working?.following(false);
     if (offset < REACH) loadOlder();
   }
 
@@ -334,7 +458,6 @@
        padding, its scrollbar gutter and its scrollbar, and a wrapper would put
        them outside the thing that scrolls. -->
   <VList
-    bind:this={list}
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
@@ -344,8 +467,20 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} {slot} compacting={compacting && turn.key === newest} />
+        <Turn
+          {turn}
+          {cwd}
+          {slot}
+          compacting={compacting && turn.key === newest}
+          carried={turn.key === newest ? (pinned?.key ?? null) : null}
+        />
       </div>
     {/snippet}
   </VList>
+  <!-- Outside the list rather than in it, which is what makes the row pinned:
+       the turns scroll under it, and the answer to whether the turn is still
+       being written stops depending on where the reader is looking. It is a
+       sibling of the scroller rather than a row of the grid, so the composer
+       and the dock - both drawn under this column - never have to know it. -->
+  <Pinned info={pinned?.info ?? null} />
 {/if}

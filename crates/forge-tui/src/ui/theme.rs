@@ -2,6 +2,9 @@ use forge_server::family::{ToolFamily, tool_family, tool_label};
 use forge_server::grouping::KindRow;
 use ratatui::style::Color;
 
+#[cfg(test)]
+mod contrast;
+
 // Accent
 pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
 
@@ -18,7 +21,7 @@ pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 // Fenced code block surface: a quiet panel lifted above the terminal
 // canvas, with the fence's info string dimmed inside it.
 pub const CODE_PANEL_BG: Color = Color::Rgb(23, 27, 35);
-pub const CODE_PANEL_LABEL: Color = Color::Rgb(85, 92, 104);
+pub const CODE_PANEL_LABEL: Color = Color::Rgb(124, 133, 152);
 
 // Tool status icons
 pub const ICON_COMPLETED: &str = "\u{2713}";

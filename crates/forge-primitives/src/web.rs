@@ -26,8 +26,8 @@ pub struct WebConfig {
     /// The palette, by name from [`THEME_NAMES`].
     pub theme: Option<String>,
     /// The typefaces, by name from [`FONT_NAMES`]. `None` is the built-in
-    /// pair - Inter for prose, Fira Code for code - shipped beside the
-    /// view rather than left to whatever the OS has.
+    /// face - Fira Code for prose and code alike - shipped beside the view
+    /// rather than left to whatever the OS has.
     pub font: Option<String>,
 }
 
@@ -57,7 +57,7 @@ pub const MARK_NAMES: &[&str] = &[
 pub const THEME_NAMES: &[&str] = &["dark"];
 
 /// The typeface sets forge ships, by the name `[web] font` takes. The
-/// built-in pair has no name of its own: an unset key draws it, and the
+/// built-in face has no name of its own: an unset key draws it, and the
 /// one name here is the opt-out to the stacks the OS already has.
 pub const FONT_NAMES: &[&str] = &["system"];
 

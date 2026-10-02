@@ -8,7 +8,7 @@
      forge-web/assets and picks it by name from [web] font. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@100..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -42,7 +42,7 @@
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --syn-key:#c9a13b; --syn-str:#8fd07a; --syn-fn:#8fb4e0;
     --add-bg: rgba(15,49,30,.5); --del-bg: rgba(58,22,26,.5);
-    --ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
     /* One type scale, anchored on the home: 15.5 is its body and 13.5 its
        mono, so nothing here goes below what that surface already uses.
@@ -63,7 +63,7 @@
       var(--bg);
     background-attachment: fixed;
     color: var(--text); font-family: var(--ui); font-size: var(--fs-prose);
-    line-height: 1.62; -webkit-font-smoothing: antialiased;
+    line-height: 1.5; -webkit-font-smoothing: antialiased;
     /* Switched on for Fira Code, whose ligatures ride the calt feature. */
     font-variant-ligatures: contextual; font-feature-settings: "calt" 1;
   }
@@ -248,7 +248,12 @@
   .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
   .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
 
-  .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable; }
+  /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
+     book page; a terminal draws one row per line at 1.231em of its own text
+     size, and 1.35 is nearer that without sitting on it - a browser still has to
+     fit a descender under a line of monospace. */
+  .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
+    line-height: 1.35; }
   .conv::-webkit-scrollbar { width: 8px; }
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
@@ -284,9 +289,12 @@
   details.think[open] > summary .arw { color: var(--accent); }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
-  .prose p + p { margin-top: 10px; }
+  /* One blank line between blocks, which is the terminal's whole spacing policy:
+     a live reply is cut at paragraph boundaries and each block carries one
+     trailing break, so every gap it draws is one line box. */
+  .prose p + p { margin-top: 20px; }
   /* The reset above zeroes the padding a list draws its markers in. */
-  .prose ul, .prose ol { padding-left: 22px; margin: 8px 0; }
+  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
   .prose li + li { margin-top: 4px; }
   .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -300,24 +308,46 @@
      own, and takes its block spacing below. */
   .prose h1, .prose h2, .prose h3,
   .prose h4, .prose h5, .prose h6 {
-    font-size: var(--fs-prose); font-weight: 700; margin: 12px 0 6px; }
+    font-size: var(--fs-prose); font-weight: 500; margin: 20px 0; }
+  /* Every mark a message draws in bold takes the heaviest cut the vendored face
+     ships: Fira Code ships static cuts and only Regular and Medium are
+     vendored, so a weight above 500 has no face behind it and the browser fakes
+     it by smearing the Medium. `strong` carried no rule at all before this and
+     drew the browser's default 700. */
+  .prose strong { font-weight: 500; }
   /* The panel is new markup inside prose, so it carries the block spacing every
      other unit here has rather than sitting on the paragraph's own line box. */
-  .prose .code { margin: 10px 0; }
+  .prose .code { margin: 20px 0; }
   /* A colour rather than the browser's own link blue, which is off the palette
      and measures about 2.2:1 on the page. The underline is the browser's, and
      stays: a link is not carried by its colour alone. */
   .prose a { color: var(--blue); }
+  /* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
+     URL in a sentence would take the conversation sideways on its own. This
+     inherits, which is what reaches a list item, a quote and a heading too. */
+  .prose { overflow-wrap: anywhere; }
   /* A rule down the left, which is how this sheet marks an inset everywhere else:
      the reader's own turn, a command's output, a search hit, a call. */
   .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
-    padding: 2px 0 2px 12px; margin: 10px 0; }
+    padding: 2px 0 2px 12px; margin: 20px 0; }
   /* No rule between body rows: the terminal draws the one line under the header. */
-  .prose table { border-collapse: collapse; margin: 10px 0; }
-  .prose th, .prose td { text-align: left; padding: 4px 12px 4px 0; }
-  .prose th { color: var(--muted); font-weight: 700;
+  .prose table { border-collapse: collapse; margin: 20px 0; }
+  /* Two pixels rather than four: a row's own leading is what separates it from
+     the next, and four top and bottom took a row to 1.96em where the terminal
+     draws 1.25em. The rule under the header comes with it: it sat clear of the
+     row below because that padding was holding it there. */
+  .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
+  /* A data cell breaks a long token rather than widening the table past the
+     column: the terminal stacks a table its grid cannot hold, and wrapping keeps
+     the table the shape it is - while a header that may break anywhere has a
+     one-character minimum and is sliced by a neighbouring column's demand for
+     width, so the header resets what it would otherwise inherit. A table whose
+     own header words do not fit the column still exceeds it; stacking is the
+     terminal's answer to that and not this one. */
+  .prose td { overflow-wrap: anywhere; }
+  .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
     border-bottom: 1px solid var(--line); }
-  .prose hr { border: 0; height: 1px; background: var(--line); margin: 12px 0; }
+  .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
   /* ---------- the family tree is the DEFAULT view ---------- */
   .kind { margin: 3px 0; }
@@ -365,16 +395,21 @@
   .code { border: 1px solid var(--line); border-radius: 9px;
     background: var(--s2); overflow: hidden; }
   .code .lang { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    padding: 5px 12px; border-bottom: 1px solid var(--line); }
-  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 8px 12px;
-    white-space: pre; overflow-x: auto; line-height: 1.55; }
+    padding: 4px 10px; border-bottom: 1px solid var(--line); }
+  /* A long line wraps inside the panel rather than scrolling it, and a token with
+     nowhere to break is split the way the terminal's own wrapper splits one.
+     Six pixels of padding rather than eight, and the conversation's leading: the
+     panel is a line and a hairline of air, where it was a line and a third, at
+     1.89x the one row the terminal draws for the same fence. */
+  .code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
   .k { color: var(--syn-key); } .s { color: var(--syn-str); }
   .c2 { color: var(--dim); font-style: italic; }
   .f { color: var(--syn-fn); }
 
   .term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
-    white-space: pre-wrap; overflow-x: auto; }
+    white-space: pre-wrap; overflow-wrap: anywhere; }
   .term .pfx { color: var(--dim); }
   .term .sum { color: var(--ok); }
   /* A task that ended badly is the same line in the bad tone. */
@@ -385,16 +420,24 @@
   .searchhit .fl { color: var(--muted); }
   .searchhit .hit { color: var(--warn); }
 
-  /* One grid for the whole diff, rows as `display: contents`, so every line's
-     ground spans the scroller's widest line rather than the container's edge. */
+  /* One grid for the whole diff, with the rows as `display: contents`, so a
+     line's number and its text stay one row and the tint covers both. The grid
+     used to span the scroller's full width - a grid per ROW would have ended
+     each tint at the container's edge with the scrolled overflow left bare - and
+     wrapping retires that premise rather than working around it:
+     `overflow-wrap: anywhere` holds the column at the container's own width, so
+     nothing overflows and no tint can fall short of one. */
   .dif { display: grid; grid-template-columns: 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
-    overflow-x: auto; overflow-y: hidden;
+    overflow: hidden;
     font-family: var(--mono); font-size: var(--fs-data); }
   .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
+  /* The path above a diff is one unbroken token and often longer than a phone. It
+     is a location rather than code, so it wraps rather than scrolling. */
+  .dif .h { overflow-wrap: anywhere; }
   .dif .ln { display: contents; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
-  .dif .ln .l { white-space: pre; padding-right: 12px; }
+  .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
   .dif .ln.d .l { background: var(--del-bg); }
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
@@ -444,6 +487,8 @@
   .hooks:hover { color: var(--muted); }
   details.hooks > summary .arw { color: var(--dim); }
   details.hooks[open] > summary .arw { color: var(--accent); }
+  /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
+  details.hooks > summary .st.err { color: var(--bad); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -457,6 +502,19 @@
   .turninfo > summary .st.err { color: var(--bad); }
   .turninfo > summary .arw { color: var(--dim); }
   .turninfo[open] > summary .arw { color: var(--accent); }
+  /* The strip pinned above the box while a turn runs: its own row, sharing the
+     composer's edges and outside its ring. Its fields are the settled row's
+     own - the row moved to the pin is the same one - so its element is the flex
+     row they wrap in and it draws no box of its own. */
+  .strip { flex: none; padding: 8px 13px 9px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--s1); }
+  .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+  /* Wrap between fields, never inside one: a broken token pair reads as two
+     numbers rather than as in and out. */
+  .strip .ti > span { white-space: nowrap; }
+  .strip .ti .sep { opacity: .5; }
+  .strip .ti .st.err { color: var(--bad); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -1340,6 +1398,25 @@ docs: Render the message body into rows.</div>
 
       <div class="mine">
         <div class="prose">
+          <p>And a chip whose hooks failed: the mark and the count ride the closed chip, and each error draws under the hooks.</p>
+        </div>
+      </div>
+
+      <div class="work">
+        <details class="hooks" open>
+          <summary>
+            <svg class="ic st err"><use href="#i-x"/></svg>
+            <span>hook summary &#183; 1 action &#183; 1 error</span>
+            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="term">${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh &#183; 0ms</div>
+            <div class="term"><span class="fail">JSON validation failed</span></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="mine">
+        <div class="prose">
           <p>Here is the mock I am working from - the rail covers the composer in it.</p>
           <p>A prompt is a document too: run <code>just client-preview</code> and read the rail.</p>
           <div class="code">
@@ -1365,6 +1442,7 @@ docs: Render the message body into rows.</div>
       <div class="mine">
         <div class="prose" id="lv-prompt">
           <p>Add the live-turn states to the mock: text streaming, calls landing one at a time, the row counting up.</p>
+          <p>And pin that row above the box while the turn runs, so I can tell from anywhere in the column whether it is still working. It keeps its place here while the turn is pinned and goes back into the turn at the end.</p>
         </div>
       </div>
 
@@ -1426,24 +1504,6 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="beat" data-beat="7">
-          <details class="turninfo" open>
-            <summary>
-              <span id="lv-mark"><span class="ring"></span></span>
-              <span id="lv-time">0.4s</span><span class="sep">&#183;</span>
-              <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
-              <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
-              <span>93% cached</span><span class="sep">&#183;</span>
-              <span>3.1k written</span>
-              <!-- The cumulative cost is the one figure only the Result carries,
-                   so a running row has no segment for it at all: a slot with no
-                   value is not drawn, rather than held empty for a figure that
-                   has not arrived. -->
-              <svg class="ic arw"><use href="#i-chev"/></svg>
-            </summary>
-          </details>
-        </div>
-
-        <div class="beat" data-beat="8">
           <details class="hooks">
             <summary><span>hook summary &#183; 2 actions</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1452,6 +1512,42 @@ docs: Render the message body into rows.</div>
       </div>
 
     <div class="composer">
+      <!-- The strip pinned above the box: the running turn's row, outside the
+           scroll, so a reader who has scrolled up can still see whether the
+           turn is working. Its own row, sharing the composer's edges and
+           outside its ring, for exactly as long as the turn is incomplete.
+
+           One row of a turn, never two: while the row is pinned the turn above
+           draws none of it, and when the turn ends the finished row holds here
+           for a beat - the check and the cumulative - before it goes back into
+           the turn. The settled rows higher up the page are that half drawn.
+
+           Early in a turn it carries only what has arrived: the mark and the
+           clock at the barest, then thinking, the token pair, cached and
+           written as their frames land. An absent field is dropped rather than
+           dashed, because a dash is a claim that a value exists. A dock takes
+           the box's place beneath it and the row is unchanged - one row above
+           one box.
+
+           The terminal draws these figures inside the turn and pins nothing
+           above its input; the client has a scroll position the terminal does
+           not, and that is the whole reason for the row. -->
+      <div class="strip" id="pin">
+        <div class="ti">
+          <span id="lv-mark"><span class="ring"></span></span>
+          <span id="lv-time">0.4s</span><span class="sep" id="lv-think-sep">&#183;</span>
+          <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
+          <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
+          <span>93% cached</span><span class="sep">&#183;</span>
+          <span>3.1k written</span>
+          <!-- The cumulative cost is the one figure only the Result carries,
+               so the running row has no segment for it at all: it appears with
+               the check when the turn ends, and a slot held empty for a figure
+               that has not arrived is the thing this row never draws. -->
+          <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
+          <span id="lv-cost" style="display:none">$4.82 cumulative</span>
+        </div>
+      </div>
       <div class="cstates" data-mock-ignore>
         <span class="cl">composer</span>
         <button class="cs on" data-cs="idle">idle</button>
@@ -1819,7 +1915,10 @@ docs: Render the message body into rows.</div>
     $('lv-mark').innerHTML = TICK;
     $('lv-time').textContent = '0.4s';
     $('lv-think').style.display = '';
+    $('lv-think-sep').style.display = '';
     $('lv-tok').textContent = '1.1k↑ 62↓';
+    $('lv-cost').style.display = 'none';
+    $('lv-cost-sep').style.display = 'none';
 
     at(200, () => { reveal(1); stream($('lv-t1'), $('lv-c1'), T1, 1300); });
     at(1500, () => { reveal(2); t0 = performance.now();
@@ -1837,9 +1936,17 @@ docs: Render the message body into rows.</div>
       if (clock) { clearInterval(clock); clock = null; }
       $('lv-mark').innerHTML = OK;
       $('lv-time').textContent = elapsed((performance.now() - t0) / 1000);
+      /* The count is only a running row's: the finished row drops the segment
+         and its separator together, the way the app draws it. */
       $('lv-think').style.display = 'none';
+      $('lv-think-sep').style.display = 'none';
       $('lv-tok').textContent = '4.2k↑ 1.1k↓';
-      reveal(8);
+      /* The turn has ended, so the pinned row shows the finished state - the
+         check and the cumulative - for a beat before it detaches into the
+         turn. This is that beat: the row still above the box, finished. */
+      $('lv-cost').style.display = '';
+      $('lv-cost-sep').style.display = '';
+      reveal(7);
     });
   }
 

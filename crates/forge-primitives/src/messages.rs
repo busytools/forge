@@ -61,6 +61,14 @@ pub enum Message {
         /// When the CLI wrote this frame, RFC 3339. The only record of when
         /// a turn ran that a transcript holds: no result frame reaches one.
         timestamp: Option<String>,
+        /// The CLI's own mark that nobody typed this turn, folded from every
+        /// spelling the CLI gives it: the wire's `isSynthetic` (itself the
+        /// union of `isMeta`, `isVisibleInTranscriptOnly` and
+        /// `isCompactSummary`), and the transcript row's `isMeta`,
+        /// `isCompactSummary`, `isVisibleInTranscriptOnly` or
+        /// `turnCompanion`. A view that reads it draws the harness speaking
+        /// rather than the reader.
+        synthetic: bool,
     },
 
     /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
@@ -226,6 +234,10 @@ pub enum Message {
         /// Per-hook breakdown. Wire field is `hookInfos`. Each entry
         /// carries the command string + its duration in ms.
         hook_infos: Vec<StopHookInfo>,
+        /// Errors the hook batch reported, empty when nothing failed.
+        /// Wire field is `hookErrors`; the client's hooks chip draws
+        /// these against the batch rather than against one entry.
+        hook_errors: Vec<String>,
         /// Whether any hook produced output. Wire field is
         /// `hasOutput`. Forwarded to the renderer so a zero-actions
         /// + has-output edge case can be surfaced if needed.
@@ -561,6 +573,7 @@ impl Message {
             uuid: None,
             tool_use_result: None,
             timestamp: None,
+            synthetic: false,
         }
     }
 }
@@ -952,6 +965,11 @@ enum MessageRepr {
         tool_use_result: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<String>,
+        // The predicate is `not`, so only a set stamp is written: an unmarked
+        // frame keeps the shape every existing fixture and relayed payload was
+        // written against.
+        #[serde(default, rename = "isSynthetic", skip_serializing_if = "std::ops::Not::not")]
+        synthetic: bool,
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -1077,6 +1095,8 @@ enum TypedSystemRepr {
         actions: u32,
         #[serde(default, rename = "hookInfos")]
         hook_infos: Vec<StopHookInfo>,
+        #[serde(default, rename = "hookErrors")]
+        hook_errors: Vec<String>,
         #[serde(rename = "hasOutput")]
         has_output: bool,
         level: String,
@@ -1197,6 +1217,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             } => Message::User {
                 message,
                 session_id,
@@ -1204,6 +1225,7 @@ impl From<MessageRepr> for Message {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -1287,6 +1309,7 @@ impl From<MessageRepr> for Message {
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1298,6 +1321,7 @@ impl From<MessageRepr> for Message {
             })) => Message::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1489,6 +1513,7 @@ impl From<Message> for MessageRepr {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             } => MessageRepr::User {
                 message,
                 session_id,
@@ -1496,6 +1521,7 @@ impl From<Message> for MessageRepr {
                 uuid,
                 tool_use_result,
                 timestamp,
+                synthetic,
             },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
@@ -1599,6 +1625,7 @@ impl From<Message> for MessageRepr {
             Message::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -1610,6 +1637,7 @@ impl From<Message> for MessageRepr {
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
+                hook_errors,
                 has_output,
                 level,
                 prevented_continuation,
@@ -2048,6 +2076,110 @@ mod tests_message_extras {
         }
     }
 
+    /// The CLI stamps a user frame whose words nobody typed, and the
+    /// view layer cannot tell the harness speaking from the reader
+    /// without it. The reminder the harness injects is built with
+    /// `isMeta` internally and the emitter writes that as `isSynthetic`
+    /// (measured shape: the one user frame carrying text in
+    /// `.claude/skills/claude-cli-upgrade/reference-captures/skill.jsonl`).
+    #[test]
+    fn user_frame_keeps_the_clis_synthetic_stamp() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "uuid": "user-uuid-2",
+            "isSynthetic": true,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation."
+                }]
+            }
+        });
+
+        let msg: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            Some(&json!(true)),
+            "the stamp must survive decode and re-encode, or every view reads these words as \
+             the reader's own: {encoded}",
+        );
+
+        // The carrier that is not the reminder: the compaction summary, whose
+        // frame the CLI emits with the mark computed from `isCompactSummary`.
+        // Shape taken from `baselines/sdk/2.1.280/compact.jsonl`.
+        let summary = json!({
+            "type": "user",
+            "session_id": "sess-summary",
+            "uuid": "user-uuid-3",
+            "isSynthetic": true,
+            "isReplay": false,
+            "message": {
+                "role": "user",
+                "content": "This session is being continued from a previous conversation that ran out of context."
+            }
+        });
+
+        let msg: Message = serde_json::from_value(summary).expect("parse");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            Some(&json!(true)),
+            "a summary frame is nobody's typed words either: {encoded}",
+        );
+    }
+
+    /// Only the CLI's own wire spelling stamps a frame. A companion row's
+    /// `turnCompanion` is a disk field: `VFe` folds `isMeta`,
+    /// `isVisibleInTranscriptOnly` and `isCompactSummary` into the wire's
+    /// `isSynthetic`, and no outbound constructor writes anything else, so a
+    /// frame stamped by `turnCompanion` alone is a disk-shaped capture rather
+    /// than the CLI's bytes.
+    #[test]
+    fn the_wire_stamps_only_with_its_own_spelling() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "turnCompanion": true,
+            "message": {"role": "user", "content": "companion text"}
+        });
+
+        let decoded: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&decoded).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            None,
+            "a disk field must not stamp a frame: {encoded}",
+        );
+    }
+
+    /// The stamp is present or absent, never `false`: every user frame
+    /// forge has ever relayed is unmarked, so emitting the key on all of
+    /// them would reshape the socket payload and the fixtures written
+    /// against it.
+    #[test]
+    fn unmarked_user_frames_carry_no_synthetic_key() {
+        let raw = json!({
+            "type": "user",
+            "session_id": "sess-usr",
+            "message": {"role": "user", "content": "typed by hand"}
+        });
+
+        let decoded: Message = serde_json::from_value(raw).expect("parse");
+        let encoded = serde_json::to_value(&decoded).expect("encode");
+
+        assert_eq!(
+            encoded.get("isSynthetic"),
+            None,
+            "a frame nobody stamped must not grow the key: {encoded}",
+        );
+    }
+
     #[test]
     fn unknown_wire_values_decode_to_the_catch_all_variant() {
         // serde(other) on these wire enums must absorb a value the CLI
@@ -2350,6 +2482,67 @@ mod tests_message_extras {
         assert_eq!(hook_infos[0].duration_ms, Some(980));
         assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
         assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn stop_hook_summary_errors_cross_the_crate() {
+        // The CLI sends `hookErrors` on every stop_hook_summary row, empty
+        // when nothing failed, and the client's hooks chip draws them - so the
+        // key has to survive decode and re-encode. This row is a real failing
+        // one, the ralph-wiggum plugin's directory gone.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hookCount": 1,
+            "hookInfos": [{"command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh", "durationMs": 0}],
+            "hookErrors": [
+                "Failed to run: Plugin directory does not exist: /Users/vedhavyas/.claude/plugins/cache/claude-code-plugins/ralph-wiggum/1.0.0 (ralph-wiggum@claude-code-plugins \u{2014} run /plugin to reinstall)"
+            ],
+            "hookAdditionalContext": [],
+            "preventedContinuation": false,
+            "stopReason": "",
+            "hasOutput": true,
+            "level": "suggestion",
+            "toolUseID": "8bdfbd8a-a578-441d-97ff-4d8a2923e1e7",
+            "session_id": "3dc2afa8-fdd1-40ff-bc7d-ffaace19246a",
+            "uuid": "225cae5c-f638-4b31-afb2-700b8303dc16",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { .. } = &msg else {
+            panic!("expected the typed variant, got {msg:?}");
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded["hookErrors"],
+            json!([
+                "Failed to run: Plugin directory does not exist: /Users/vedhavyas/.claude/plugins/cache/claude-code-plugins/ralph-wiggum/1.0.0 (ralph-wiggum@claude-code-plugins \u{2014} run /plugin to reinstall)"
+            ]),
+            "the key a client reads is on the wire, not only on the CLI's bytes"
+        );
+
+        // Empty is the shape most rows carry, and the key is present rather
+        // than omitted: the socket contract records the key set, and a skipped
+        // empty would leave it absent there.
+        let quiet = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hookCount": 2,
+            "hookInfos": [{"command": "bash hook.sh", "durationMs": 980}],
+            "hookErrors": [],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "stopReason": "",
+            "hasOutput": true,
+            "toolUseID": "5e586a7f",
+            "session_id": "session_0",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(quiet).expect("decode");
+        let Message::StopHookSummary { .. } = &msg else {
+            panic!("expected the typed variant, got {msg:?}");
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["hookErrors"], json!([]), "and empty crosses as empty");
     }
 
     #[test]

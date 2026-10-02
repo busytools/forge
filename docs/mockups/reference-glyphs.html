@@ -3,7 +3,7 @@
   .fg *, .fg *::before, .fg *::after { box-sizing:border-box; margin:0; }
   .fg { --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
     --text:#eaeef6; --muted:#8f98a8; --dim:#5d6675; --accent:#f47600; --ok:#82c76b; --bad:#e0683e;
-    --warn:#c9a13b; --user-msg-bg:#282c34; --code-bg:#171b23; --code-label:#555c68;
+    --warn:#c9a13b; --user-msg-bg:#282c34; --code-bg:#171b23; --code-label:#7c8598;
     --slash:#e0a0e8; --subagent:#8ab4f8; --addressed:#61a0e0; --experimental:#c9a13b;
     --gotify:#4ec9c9; --slack:#2eb67d;
     color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
@@ -49,7 +49,7 @@
       <div class="fg-card"><div class="fg-chipc" style="background:#0d111a;color:var(--dim);border-bottom:1px solid var(--line);">DIM</div><div class="info"><div class="nm">--dim</div><div class="vr">dark gray</div><div class="us">Labels, connectors, captions, anything the eye skips.</div></div></div>
       <div class="fg-card"><div class="fg-chipc" style="background:var(--user-msg-bg);color:#c8ccd4;">USER_MSG_BG</div><div class="info"><div class="nm">--user-msg-bg</div><div class="vr">Rgb(40, 44, 52)</div><div class="us">The user turn's own band in the scrollback.</div></div></div>
       <div class="fg-card"><div class="fg-chipc" style="background:var(--code-bg);color:var(--code-label);">CODE_PANEL_BG</div><div class="info"><div class="nm">--code-bg</div><div class="vr">Rgb(23, 27, 35)</div><div class="us">Fenced code blocks in a reply.</div></div></div>
-      <div class="fg-card"><div class="fg-chipc" style="background:var(--code-bg);color:var(--code-label);">CODE_PANEL_LABEL</div><div class="info"><div class="nm">--code-label</div><div class="vr">Rgb(85, 92, 104)</div><div class="us">The language label on a code block.</div></div></div>
+      <div class="fg-card"><div class="fg-chipc" style="background:var(--code-bg);color:var(--code-label);">CODE_PANEL_LABEL</div><div class="info"><div class="nm">--code-label</div><div class="vr">Rgb(124, 133, 152)</div><div class="us">The language label on a code block.</div></div></div>
       <div class="fg-card"><div class="fg-chipc" style="background:#2a1114;color:#e79b9b;">STATUS_ERROR</div><div class="info"><div class="nm">--status-error</div><div class="vr">red</div><div class="us">Deny, a failed tool call, a dead turn.</div></div></div>
       <div class="fg-card"><div class="fg-chipc" style="background:#2a2413;color:var(--warn);">STATUS_WARNING</div><div class="info"><div class="nm">--status-warn</div><div class="vr">yellow</div><div class="us">Degraded but not broken: a drift, a cap, a dropped flag.</div></div></div>
       <div class="fg-card"><div class="fg-chipc" style="background:#1c1020;color:var(--slash);">SLASH_COMMAND</div><div class="info"><div class="nm">--slash</div><div class="vr">light magenta</div><div class="us">A slash command in the composer.</div></div></div>

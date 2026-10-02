@@ -5,9 +5,13 @@ on:
   push:
     branches: [main]
 
+# A pull request's next push supersedes its run. A push to main keeps a group
+# of its own: cancelling one leaves that commit with no run of this workflow
+# to point at, and its verdict should not wait on the next merge. Keyed on the
+# commit, so consecutive merges each keep theirs.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always

@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
 
   import Brand from '../components/Brand.svelte';
+  import Field from '../composer/Field.svelte';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
@@ -67,16 +68,17 @@
     <form onsubmit={submit} novalidate>
       <label for="address">The address forge is serving on</label>
       <div class="field">
-        <input
+        <Field
+          editor="connect"
+          element="input"
           id="address"
           name="address"
-          type="text"
-          autocomplete="off"
           autocapitalize="off"
-          spellcheck="false"
+          aria={{
+            invalid: failure !== null,
+            describedBy: failure ? 'why' : undefined,
+          }}
           bind:value={address}
-          aria-invalid={failure !== null}
-          aria-describedby={failure ? 'why' : undefined}
         />
         <button type="submit" disabled={busy}>{busy ? 'Connecting' : 'Connect'}</button>
       </div>
@@ -148,7 +150,10 @@
     gap: 8px;
   }
 
-  input {
+  /* The box is the shared `Field`, whose element is not this component's own
+     markup, so a plain `input` selector no longer reaches it. Under `.field`
+     rather than bare, so the rule still stops at this screen. */
+  .field :global(input) {
     flex: 1 1 auto;
     min-width: 0;
     background: var(--s1);
@@ -160,12 +165,12 @@
     font-size: var(--fs-data);
   }
 
-  input:focus-visible {
+  .field :global(input:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: -1px;
   }
 
-  input[aria-invalid='true'] {
+  .field :global(input[aria-invalid='true']) {
     border-color: var(--bad);
   }
 
@@ -173,7 +178,7 @@
      page scrolled off-centre, which is the "opens in the wrong position"
      symptom. A desktop responsive mode does not reproduce it. */
   @media (max-width: 560px) {
-    input {
+    .field :global(input) {
       font-size: 16px;
     }
   }

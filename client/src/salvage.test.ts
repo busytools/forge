@@ -192,7 +192,7 @@ describe('the salvage copies', () => {
    * a stack, so the comparison drops it.
    */
   it('draws the font stacks the app ships, on every drawing', () => {
-    // The BUILT-IN pair, not the `system` one: a drawing draws what a client
+    // The BUILT-IN face, not the `system` one: a drawing draws what a client
     // with no `[web] font` set gets, and theme.ts carries both.
     const builtIn = /const BUILT_IN_FONT = \{([\s\S]*?)\};/.exec(read('./theme.ts'))?.[1] ?? '';
     const shipped = new Map(

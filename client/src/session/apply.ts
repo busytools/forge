@@ -16,6 +16,7 @@
 
 import { fold } from '../chat/units';
 import type { SessionUpdate } from '../protocol';
+import { METER_CELLS } from '../wire/limits';
 import type {
   ComposerState,
   Conversation,
@@ -505,9 +506,6 @@ function compactingOf(held: ComposerState, message: unknown): ComposerState {
   if (status === null) return held.compacting ? { ...held, compacting: false } : held;
   return held;
 }
-
-/** How many readings the meter keeps, as the server's own fold caps them. */
-const METER_CELLS = 120;
 
 /** The top of the meter's scale in dBFS, which a reading is measured against. */
 const METER_CEILING_DB = 0;

@@ -199,7 +199,7 @@ export type Unit =
    */
   | { kind: 'messages'; key: string; lanes: MessageLane[]; status: CallStatus }
   | { kind: 'notice'; key: string; notice: Notice }
-  | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[] }
+  | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[]; errors: string[] }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -244,6 +244,7 @@ interface Frame {
   parent_tool_use_id?: unknown;
   hookCount?: unknown;
   hookInfos?: unknown;
+  hookErrors?: unknown;
   task_id?: unknown;
   tool_use_id?: unknown;
   is_backgrounded?: unknown;
@@ -1055,6 +1056,11 @@ export function fold(
                 ? { durationMs: obj(info)['durationMs'] as number }
                 : {}),
             })),
+            // The errors name no hook, so they are carried beside the hook
+            // rows rather than against one of them.
+            errors: (Array.isArray(frame.hookErrors) ? frame.hookErrors : []).filter(
+              (error): error is string => typeof error === 'string',
+            ),
           });
         }
         continue;

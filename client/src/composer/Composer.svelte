@@ -6,6 +6,7 @@
   import Dictation from './Dictation.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
+  import Field from './Field.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import {
     boundCode,
@@ -17,6 +18,7 @@
     type Held,
   } from './dictate-key';
   import { devicePick } from './dictation';
+  import { focusOf, type Where } from './editors';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -62,9 +64,8 @@
   /**
    * The words a landed take has already put in the draft, so they land once.
    *
-   * Deliberately not `$state`: nothing draws from it, and the effect below is
-   * its only reader - a reactive copy would make that effect depend on what it
-   * writes, so it would tear its own green beat down on the next run.
+   * Deliberately not `$state`: nothing draws from it, and a reactive copy would
+   * make the effect below depend on what it writes.
    */
   let landed: string | null = null;
   /**
@@ -79,14 +80,23 @@
   let sawTake = false;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   let dismissed = $state<string | null>(null);
-  /** One green beat while a take's words settle into the draft. */
-  let beat = $state(false);
+  /**
+   * When a landed take's words settled into the box, and nothing else: the
+   * whole of the beat's state.
+   *
+   * The window below is read against it rather than remembered as a flag a
+   * timer clears, so the close cannot be lost with its timer. The terminal
+   * keeps its afterglow the same way, from a start instant.
+   */
+  let beatAt = $state<number | null>(null);
+  /** The clock the beat's window is read against, which the close below moves. */
+  let clock = $state(Date.now());
   /** The draft the reader closed the list at, which typing clears. */
   let closed = $state<string | null>(null);
   /** Which row a key would take, which is the first until one moves it. */
   let marked = $state(0);
   /** The field, so focus can go back to it when the box returns. */
-  let field = $state<HTMLTextAreaElement | null>(null);
+  let field = $state<HTMLElement | null>(null);
   /** Whether the dictation panel is showing, which the mic opens. */
   let panel = $state(false);
   /** The bound key's press in flight, from its press to its release. */
@@ -96,6 +106,60 @@
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
+  /** Whether the landed beat's window is still open. */
+  const beat = $derived(beatAt !== null && clock - beatAt < BEAT_MS);
+
+  /**
+   * What the ring is doing: one state rather than three that can overlap.
+   *
+   * A live take owns the ring, and the landed beat reaches it only when no take
+   * does.
+   */
+  const ring = $derived.by(() => {
+    if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
+    return beat ? 'done' : null;
+  });
+
+  /** What the reader wrote in the dock's box, which a landed take has to reach. */
+  let dockDraft = $state('');
+  /** Whether the dock has its own box open, which is what makes it a destination. */
+  let dockOpen = $state(false);
+  /** A take's words that landed in the dock, which is what brings its box the keyboard. */
+  let dockLanded = $state<string | null>(null);
+
+  /**
+   * The prompt the dock draws, which is the one the seat is parked on - unless
+   * this composer has answered a held draft.
+   *
+   * A question's answer clears the ask with an update of its own. A draft's does
+   * not: the core drops it from its registry and says nothing, and a poll's
+   * answer takes only the slices no update carries, which an ask is not. So the
+   * draft this composer answered would stand until the seat was read whole.
+   * Suppressing it is the move the terminal makes by popping its own prompt, and
+   * a refusal brings it back with the reason.
+   */
+  const dockAsk = $derived(
+    ask !== null && !(ask.kind === 'slack_draft' && answered === ask.request.id && refusal === null)
+      ? ask
+      : null,
+  );
+
+  /**
+   * What the table needs to say which box holds the keyboard.
+   *
+   * This is the session route's box, so the connect screen's is never up beside
+   * it - and this one is not drawn at all while a prompt has the slot, because
+   * the dock morphs it.
+   */
+  const where = $derived({
+    editor: 'composer',
+    remember: 'composer',
+    pending: dockAsk !== null,
+    composerPresent: dockAsk === null,
+    connectPresent: false,
+    dockPresent: dockOpen,
+  } satisfies Where);
+
   const blocker = $derived(blocked(seat, composer, sent));
   const filled = $derived(draft.trim() !== '');
   const notice = $derived(noticeLine(composer.notice, sawTake));
@@ -139,13 +203,30 @@
     if (composer.take !== null) sawTake = true;
   });
 
+  /** What the dock's own box belongs to, which is what its words go with. */
+  let ownKey: string | null = null;
+
+  // The dock's box belongs to the prompt, so what was written in it goes when
+  // the prompt does - which is what the dock's own mount used to do for it.
+  //
+  // Keyed on the prompt's identity rather than on its absence: the next prompt
+  // can arrive in the same frame as the last, and a release that only fires on
+  // `ask === null` never sees that, so the words would come back in the box
+  // that replaced them.
+  $effect(() => {
+    const key = ownKeyOf(ask);
+    if (key === ownKey) return;
+    ownKey = key;
+    dockDraft = '';
+    dockLanded = null;
+  });
+
   /**
    * A landed take puts its words where the reader was about to type, then the
    * box takes one green beat.
    *
-   * Tracked only on the notice: the draft is read through `untrack`, because an
-   * effect that re-ran on the draft it writes would tear down its own timer and
-   * leave the box green.
+   * Tracked on the notice alone: the draft is read through `untrack`, so what
+   * this effect writes cannot re-run it.
    */
   $effect(() => {
     const held = composer.notice;
@@ -156,14 +237,44 @@
     }
     if (held.kind !== 'landed' || !sawTake || landed === held.text) return;
     landed = held.text;
-    draft = joined(
-      untrack(() => draft),
-      held.text,
-    );
-    beat = true;
+    // Where the words go is the table's answer rather than this component's:
+    // while a prompt has the slot the reader's box is the dock's, and this one
+    // is not drawn at all.
+    if (untrack(() => focusOf(where)) === 'dock') {
+      dockDraft = joined(
+        untrack(() => dockDraft),
+        held.text,
+      );
+      dockLanded = held.text;
+    } else {
+      draft = joined(
+        untrack(() => draft),
+        held.text,
+      );
+    }
+    beatAt = Date.now();
+    // The words come with the keyboard, so an immediate Enter sends what just
+    // landed. The guards above already make this the landing rather than every
+    // frame. When the words went to the dock this handle still holds the element
+    // the prompt replaced - destroyed with the box, so detached, and taking no
+    // focus - and the dock brings its own box back from its `land`.
+    field?.focus();
+  });
+
+  /**
+   * Close the beat's window, which is the one repaint it owes.
+   *
+   * The window is a comparison and this only its schedule: every run arms from
+   * the landing's own instant, and the write is the deadline itself, so an
+   * early fire still closes the window.
+   */
+  $effect(() => {
+    const at = beatAt;
+    if (at === null) return;
+    const left = at + BEAT_MS - Date.now();
     const timer = setTimeout(() => {
-      beat = false;
-    }, BEAT_MS);
+      clock = at + BEAT_MS;
+    }, left);
     return () => clearTimeout(timer);
   });
 
@@ -374,17 +485,52 @@
     void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
   }
 
-  /** Remember which prompt this reader answered, while the core still lists it. */
+  /**
+   * Remember which prompt this reader answered, while the core still lists it.
+   *
+   * A new answer supersedes the refusal it followed: the reason belonged to the
+   * attempt that failed, and left standing it would read as a verdict on this
+   * one.
+   */
   function remember(toolId: string | null): void {
     answered = toolId;
+    refusal = null;
   }
 
-  /** The tool the prompt is waiting on, which is how an answer is told apart from the next one. */
+  /**
+   * What a prompt's own-words box belongs to: one prompt, not one tool call.
+   *
+   * A batch of questions rides one tool call - the core reuses its id and
+   * advances only the index - so the id alone would leave question one's words
+   * in the box question two opens. Not `askToolId`, which backs the comparison
+   * that tells an answered prompt from the next and names what the dock
+   * dispatches under.
+   *
+   * A held Slack post carries no tool id and rides its own instead, so two in a
+   * row are two prompts: the dock has rows and a mark, and a shared key would
+   * carry the one draft's mark onto the next.
+   */
+  function ownKeyOf(current: ReturnType<typeof pendingAsk>): string | null {
+    if (current === null) return null;
+    if (current.kind === 'permission') return `permission:${current.request.toolId}`;
+    if (current.kind === 'question') {
+      return `question:${current.request.toolId}:${String(current.request.index)}`;
+    }
+    return `slack:${current.request.id}`;
+  }
+
+  /**
+   * What the prompt is waiting on, which is how an answer is told apart from the
+   * next one.
+   *
+   * A tool id for a permission and a question, and the draft's own id for a held
+   * post: it is answered by that id rather than by a tool call, and it is what
+   * tells a refusal about this draft from one about the next.
+   */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
-    return current.kind === 'permission' || current.kind === 'question'
-      ? current.request.toolId
-      : null;
+    if (current.kind === 'slack_draft') return current.request.id;
+    return current.request.toolId;
   }
 </script>
 
@@ -400,18 +546,28 @@
       </div>
     </div>
   </div>
-{:else if ask !== null}
+{:else if dockAsk !== null}
   <div class="comp">
-    <Dock
-      {ask}
-      {slot}
-      {connection}
-      depth={seat.pendingDepth}
-      notice={refusal}
-      take={composer.take}
-      onanswer={remember}
-      onabandon={abandon}
-    />
+    <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
+         wire's option ids are positional, so a mark or a toggle left over from
+         the question before is a valid answer to the one after, and the core
+         accepts it. A repaint of the same prompt keeps its key, so a frame
+         arriving clears nothing the reader has turned on. -->
+    {#key ownKeyOf(dockAsk)}
+      <Dock
+        ask={dockAsk}
+        {slot}
+        {connection}
+        depth={seat.pendingDepth}
+        notice={refusal}
+        take={composer.take}
+        bind:notes={dockDraft}
+        bind:ownOpen={dockOpen}
+        land={dockLanded}
+        onanswer={remember}
+        onabandon={abandon}
+      />
+    {/key}
   </div>
 {:else}
   <div class="comp">
@@ -424,9 +580,9 @@
     {/if}
     <div
       class="box"
-      class:rec={composer.take?.phase === 'recording'}
-      class:tr={composer.take?.phase === 'transcribing'}
-      class:done={beat}
+      class:rec={ring === 'rec'}
+      class:tr={ring === 'tr'}
+      class:done={ring === 'done'}
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
@@ -444,19 +600,23 @@
              combobox role is not available here - ARIA allows it on an input,
              not on a textarea - so this is the textbox-and-controlled-listbox
              shape, which is what a multi-line composer can validly be. -->
-        <textarea
+        <Field
+          editor="composer"
           class="txt"
           name="draft"
-          aria-autocomplete="list"
-          aria-controls={list === null ? undefined : LIST_ID}
-          aria-activedescendant={list === null ? undefined : rowId(list, marked)}
-          autocomplete="off"
-          spellcheck="false"
           placeholder="Type a message..."
-          bind:this={field}
+          aria={{
+            autocomplete: 'list',
+            controls: list === null ? undefined : LIST_ID,
+            activeDescendant: list === null ? undefined : rowId(list, marked),
+          }}
           bind:value={draft}
           {oninput}
-          onkeydown={onkey}></textarea>
+          onkeydown={onkey}
+          field={(el: HTMLElement | null) => {
+            field = el;
+          }}
+        />
         {#if dictation}
           <button
             class="mic"

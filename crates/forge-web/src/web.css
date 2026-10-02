@@ -775,17 +775,9 @@ details.msg[open] > summary .arw { color: var(--teal); }
 
 /* ---------- the built-in typefaces ---------- */
 
-/* The faces [web] font's built-in set names, which are the mockups' own
-   weights. `font-weight` is the axis range rather than one value on Inter:
-   a single one makes 650 snap to a synthesized Bold. */
-
-@font-face {
-  font-family: "Inter";
-  src: url("/fonts/InterVariable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
+/* The built-in face, at the two weights the mockups ask of it. Fira Code
+   ships static cuts, so a rule wanting a third weight gets a synthesized
+   one. */
 
 @font-face {
   font-family: "Fira Code";

@@ -77,9 +77,13 @@ describe('the markdown a message carries, as the sheet draws it', () => {
     // A sheet edit that drops a level is silent: it keeps drawing, only as the
     // browser's default against a reset that zeroes margins, which is an h1 at
     // twice the prose size and an h4 at two thirds of it.
+    //
+    // 500 rather than 700 because the vendored face ships Regular and Medium
+    // only, so 700 was synthesized rather than drawn - see `density.test.ts`,
+    // which holds every prose mark to a weight the face can render.
     for (const level of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
       expect(declares(level, 'font-size: var(--fs-prose)'), `${level}: one size`).toBe(true);
-      expect(declares(level, 'font-weight: 700'), `${level}: bold`).toBe(true);
+      expect(declares(level, 'font-weight: 500'), `${level}: bold`).toBe(true);
     }
   });
 

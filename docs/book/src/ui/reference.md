@@ -61,7 +61,7 @@ Hardcoded in the theme module - no light mode, no custom themes. The table is pa
 | DIM | `--dim` | dark gray |
 | USER_MSG_BG | `--user-msg-bg` | `Rgb(40, 44, 52)` |
 | CODE_PANEL_BG | `--code-bg` | `Rgb(23, 27, 35)` |
-| CODE_PANEL_LABEL | `--code-label` | `Rgb(85, 92, 104)` |
+| CODE_PANEL_LABEL | `--code-label` | `Rgb(124, 133, 152)` |
 | STATUS_ERROR | `--status-error` | red |
 | STATUS_WARNING | `--status-warn` | yellow |
 | SLASH_COMMAND | `--slash` | light magenta |

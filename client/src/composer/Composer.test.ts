@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import Harness from './Harness.svelte';
 import type { ServerMessage } from '../protocol';
-import { permissionAsk, questionAsk, record, seatRead, take, wire, type Wire } from './testing';
+import {
+  permissionAsk,
+  questionAsk,
+  record,
+  seatRead,
+  slackDraftAsk,
+  take,
+  wire,
+  type Wire,
+} from './testing';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
@@ -103,6 +112,31 @@ function bothFields(): HTMLTextAreaElement[] {
     if (!(found instanceof HTMLTextAreaElement)) throw new Error('a box drew no field');
     return found;
   });
+}
+
+/**
+ * One question of a batch, with its options named for the question they belong
+ * to.
+ *
+ * Distinct ids per question because the wire's are positional: a stale one from
+ * question one is a valid id for question two's same row, which is what makes
+ * carrying it over silent rather than rejected.
+ */
+function oneOf(ids: string[], index: number): unknown {
+  return questionAsk(
+    'tu-q',
+    {
+      multi_select: true,
+      options: ids.map((optionId, at) => ({
+        option_id: optionId,
+        label: `Row ${String(at + 1)}`,
+        description: null,
+        preview: null,
+      })),
+    },
+    index,
+    2,
+  );
 }
 
 /** Every option row the page is drawing, in order. */
@@ -254,6 +288,46 @@ describe('the box', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The keyboard comes with the words.
+   *
+   * Ved's report: a take lands, he presses Enter straight away, and nothing
+   * sends - the key went to whatever still held the focus, so he had to click
+   * back into the box first.
+   */
+  it('moves the keyboard to the box a take landed in, so an immediate Enter sends', () => {
+    const harness = open({ dictation: true });
+    expect(document.activeElement, 'the field starts with the keyboard').toBe(field());
+
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic');
+    mic.focus();
+    flushSync();
+    expect(
+      document.activeElement,
+      'the mic took it, which is the state the take then lands into',
+    ).not.toBe(field());
+
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(
+      document.activeElement,
+      'and the take brings it back, so an immediate Enter submits',
+    ).toBe(field());
   });
 
   /**
@@ -1468,6 +1542,93 @@ describe('the dock', () => {
     expect(harness.sent, 'moving the mark answers nothing').toEqual([]);
   });
 
+  it('rejects a question on Escape, which is a way out the dock did not have', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    press('Escape');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'cancelled' },
+        },
+      },
+    ]);
+  });
+
+  it('rejects a question from its own-words box, rather than only from the options', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    press('ArrowUp');
+    expect(document.activeElement, 'the own-words row is where the question takes words').toBe(
+      document.querySelector('.dock textarea.notes'),
+    );
+
+    press('Escape');
+
+    expect(commands(harness), 'the same way out from both places').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'cancelled' },
+        },
+      },
+    ]);
+  });
+
+  it('names the reject key on a question, which the keys line used to leave out', () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    expect(drawn(), 'the keys line says what Escape does here').toContain('Esc reject');
+  });
+
+  it('leaves the counter off a lone question, where "Q1 of 1" says nothing', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 0, 1) }) });
+
+    expect(drawn(), 'the ordinary case carries no index').not.toContain('Q1 of 1');
+
+    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 1, 3) });
+    flushSync();
+
+    expect(drawn(), 'a batch still says which one this is').toContain('Q2 of 3');
+  });
+
+  it("draws an option's description under its name, where the terminal draws it", () => {
+    open({ record: record({ pending_ask: questionAsk() }) });
+
+    const row = options()[0];
+    if (!(row instanceof HTMLElement)) throw new Error('the dock drew no options');
+    const name = row.querySelector('.lbl');
+    const vs = row.querySelector('.why');
+
+    expect(vs?.textContent, 'the description is drawn').toBe('The pre-production cluster');
+    expect(
+      vs?.parentElement,
+      'and it shares the name column, so the two align rather than the name being pushed around',
+    ).toBe(name?.parentElement);
+  });
+
+  it("offers the reader's own words as the agent's, which is the wording rule", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    expect(options()[2]?.textContent, 'the row says agent, never the vendor').toContain(
+      'Tell the agent something else',
+    );
+
+    // A permission's row is the name the core sent rather than this client's
+    // own: the rule reaches that one where the name is written, not here, and a
+    // local rename would put the dock's row out of step with the wire.
+    harness.page.record = record({ pending_ask: permissionAsk() });
+    flushSync();
+
+    expect(options()[2]?.textContent, "so a permission draws the core's own name").toContain(
+      'Tell Claude something else',
+    );
+  });
+
   it("does not deny on the reader's behalf from a permission's own-words row", () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
 
@@ -1559,6 +1720,424 @@ describe('the dock', () => {
     expect(document.activeElement, 'the box takes the keyboard back').toBe(field());
   });
 
+  /**
+   * A take lands where the reader is looking. While a prompt has the slot that
+   * is the dock's own field - the composer draws no box of its own here - so
+   * words written to the draft land on nothing at all.
+   */
+  it("puts a take's words in the box that is actually showing", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    /** The dock's own box, which is the one the reader opened. */
+    const dockBox = (): HTMLTextAreaElement | null => {
+      const found = document.querySelector('.dock [data-editor="dock"]');
+      return found instanceof HTMLTextAreaElement ? found : null;
+    };
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+    expect(dockBox()?.value, 'the box the reader opened starts empty').toBe('');
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(dockBox()?.value, 'the words land in the dock, because that is the box on screen').toBe(
+      'the words',
+    );
+    expect(
+      document.querySelector('[data-editor="composer"]'),
+      'and the composer is not mounted at all while a prompt is up',
+    ).toBeNull();
+  });
+
+  /**
+   * The dock is a destination only while its box is on screen. A seat can fail
+   * with a prompt still waiting, which puts the blocker in the slot and takes
+   * the dock away with it - and a landing then has no box of the dock's to go
+   * to, so the words belong to the draft, which is held across the morph.
+   */
+  it("keeps a take's words when the blocker takes the dock away before they land", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+    expect(
+      document.querySelector('.dock [data-editor="dock"]'),
+      'the reader opened the box the words would go in',
+    ).not.toBeNull();
+
+    harness.page.seat = seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' });
+    flushSync();
+    expect(document.querySelector('.dock'), 'and then the dock is gone').toBeNull();
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    harness.page.seat = seatRead();
+    harness.page.record = record();
+    flushSync();
+
+    expect(
+      field().value,
+      'the words are still the reader to send, because no dock was there to take them',
+    ).toBe('the words');
+  });
+
+  /**
+   * What was written in a prompt's own-words box goes with that prompt.
+   *
+   * The box's draft is the composer's state now rather than the dock's, so the
+   * prompt unmounting no longer takes it - which makes this the one leg of that
+   * hoist with nothing under it.
+   */
+  it("opens the next prompt's own-words box empty, whatever was written in the last one", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    /** The own-words row of whatever dock is up, and the box it opens. */
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'leftover words';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    harness.page.record = record();
+    flushSync();
+    harness.page.record = record({ pending_ask: questionAsk('tu-q2') });
+    flushSync();
+
+    expect(ownWords().value, "the last prompt's words do not come back in this one").toBe('');
+  });
+
+  /**
+   * The same guarantee when the next prompt arrives in the same frame as the one
+   * before it, with no frame in between where nothing is asking.
+   *
+   * A page re-render is one assignment, so the harness reaches this shape even
+   * though driving the CLI into it is a different question - and a release keyed
+   * on the ask being absent cannot see it.
+   */
+  it("opens the next prompt's own-words box empty when the prompts change in one frame", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'leftover words';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // One frame, and the next prompt is already asking.
+    harness.page.record = record({ pending_ask: questionAsk('tu-q2') });
+    flushSync();
+
+    expect(ownWords().value, "the last prompt's words do not come back in this one").toBe('');
+  });
+
+  /**
+   * One tool call carries every question of a batch - the core reuses the tool
+   * id and advances only the index - so two questions of one call are two
+   * prompts, and the box question one was written in is not question two's.
+   */
+  it("opens the next question's own-words box empty when one call carries two", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q', {}, 0, 2) }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'words meant for question one';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // Answered, and the batch moves to its second question under the same call.
+    press('Enter');
+    harness.page.record = record({ pending_ask: questionAsk('tu-q', {}, 1, 2) });
+    flushSync();
+
+    expect(ownWords().value, "question one's words do not come back in question two's box").toBe(
+      '',
+    );
+  });
+
+  /**
+   * The other half of that release: it is keyed on the prompt's identity, so a
+   * frame carrying the same question must leave the box alone. A key that moved
+   * on every render would clear the box under the reader, which is worse than
+   * the leak it fixes.
+   */
+  it('keeps what the reader wrote when the same prompt arrives again', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk('tu-q') }) });
+
+    const ownWords = (): HTMLTextAreaElement => {
+      const row = options()[2];
+      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+      row.click();
+      flushSync();
+      const box = document.querySelector('.dock [data-editor="dock"]');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      return box;
+    };
+
+    const box = ownWords();
+    box.value = 'keep me';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // The same question as a fresh frame carries it: a new object, one id.
+    harness.page.record = record({ pending_ask: questionAsk('tu-q') });
+    flushSync();
+
+    expect(ownWords().value, 'a re-render does not clear the box under the reader').toBe('keep me');
+  });
+
+  /**
+   * The words come with the keyboard, and while a prompt has the slot the box
+   * they land in is the dock's own. Opening that box puts the keyboard in it,
+   * so this is the state left after the reader has clicked away from it.
+   */
+  it("brings the keyboard back to the dock's box when a take lands in it", () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = (): HTMLTextAreaElement | null => {
+      const found = document.querySelector('.dock [data-editor="dock"]');
+      return found instanceof HTMLTextAreaElement ? found : null;
+    };
+    expect(document.activeElement, 'opening the box puts the keyboard in it').toBe(box());
+
+    // The reader clicks somewhere else, which is the state the take finds them in.
+    box()?.blur();
+    flushSync();
+    expect(document.activeElement, 'and the keyboard is elsewhere now').not.toBe(box());
+
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_ask: questionAsk(),
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(box()?.value, 'the words land in the box that was open').toBe('the words');
+    expect(document.activeElement, 'and they bring the keyboard with them').toBe(box());
+  });
+
+  /**
+   * The keys a prompt's own box answers to are the box's own, and that routing
+   * is by the editor the box names rather than by its class - a restyle that
+   * renamed the class would otherwise reroute them in silence.
+   */
+  it('hands the keyboard back to the options when Escape lands in the own-words box', () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = document.querySelector('.dock [data-editor="dock"]');
+    expect(document.activeElement, 'the box the own-words row opened holds the keyboard').toBe(box);
+
+    press('Escape');
+
+    expect(document.querySelector('.dock [data-editor="dock"]'), 'the box closes').toBeNull();
+    expect(document.activeElement, 'and the keyboard goes back to the options').toBe(
+      document.querySelector('.dock [role="listbox"]'),
+    );
+    // The distinction the routing turns on: a key the dock reads as the field's
+    // own moves the mark, and the same key read as the dock's answers the
+    // prompt - which for a permission is a deny nobody asked for.
+    expect(harness.sent, 'a key in the field does not answer the prompt').toEqual([]);
+  });
+
+  /**
+   * Shift+Enter is the box's own, which is the one key the fall-through gets
+   * wrong in the other direction: the field's branch checks the shift and the
+   * dock's does not, so a newline reaches `submit` and the prompt is answered
+   * with words the reader was still writing.
+   */
+  it('keeps Shift+Enter the box own, so a newline does not answer the prompt', () => {
+    const harness = open({ record: record({ pending_ask: permissionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = document.querySelector('.dock [data-editor="dock"]');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+    // Words already in the box, because an empty one is refused rather than
+    // sent - the harm is a half-written answer going out.
+    box.value = 'not this branch';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    box.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+
+    expect(harness.sent, 'a newline in the box is not an answer').toEqual([]);
+    expect(
+      document.querySelector('.dock [data-editor="dock"]'),
+      'and the box is still there to write in',
+    ).not.toBeNull();
+  });
+
+  it('answers the next question with its own rows, not the ones the last one left', () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['q1-a', 'q1-b', 'q1-c', 'q1-d'], 0) }),
+    });
+
+    // A row turned on for question one, and the mark left four rows down it.
+    options()[3]?.click();
+    flushSync();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'question one has its fourth row on',
+    ).toEqual([false, false, false, true, false]);
+
+    harness.page.record = record({ pending_ask: oneOf(['q2-a', 'q2-b'], 1) });
+    flushSync();
+
+    press('Enter');
+
+    // This shape exercises the mark: it sat past the question's rows, so on a
+    // dock that carried it over nothing would draw as marked and Enter would
+    // answer with nothing until the reader arrowed. A fresh dock draws its own
+    // first row marked instead, which is where the answer below comes from - and
+    // the test beneath this one is the one that reaches the toggle.
+    expect(commands(harness), 'Enter answers with the row this question drew').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q2-a'], annotation: null },
+        },
+      },
+    ]);
+  });
+
+  /**
+   * The toggle-only path, which the test above cannot reach: there the mark sat
+   * past the question's rows, so nothing was dispatched for the toggle to show
+   * itself in. Here the row turned on for question one is the one whose id
+   * question two also draws, so a toggle that carried over would be drawn as on
+   * for a question the reader has not answered.
+   */
+  it("draws the next question with nothing turned on, when a row shares the last one's id", () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['question_0', 'question_1'], 0) }),
+    });
+
+    // The second row, whose id is the one question two draws first: turning on
+    // any other would leave the id shared with nothing and the check below
+    // holding whatever the toggle did.
+    options()[1]?.click();
+    flushSync();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'question one has its second row on',
+    ).toEqual([false, true, false]);
+
+    harness.page.record = record({ pending_ask: oneOf(['question_1', 'question_2'], 1) });
+    flushSync();
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'and the question the reader has not answered draws with nothing on',
+    ).toEqual([false, false, false]);
+  });
+
+  it('keeps what the reader turned on through a repaint of the same question', () => {
+    const harness = open({
+      record: record({ pending_ask: oneOf(['q1-a', 'q1-b'], 0) }),
+    });
+
+    options()[0]?.click();
+    flushSync();
+
+    // The same question as a fresh frame carries it: a new object, one key.
+    harness.page.record = record({ pending_ask: oneOf(['q1-a', 'q1-b'], 0) });
+    flushSync();
+
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'a repaint does not clear what the reader turned on',
+    ).toEqual([true, false, false]);
+  });
+
   it('moves the mark from the keyboard once the dock has the slot', () => {
     const harness = open({ record: record({ pending_ask: permissionAsk() }) });
     const list = document.querySelector('.dock [role="listbox"]');
@@ -1614,28 +2193,159 @@ describe('the dock', () => {
     expect(drawn()).toContain('the session is not running');
   });
 
-  it('names a held post for what is waiting rather than explaining an empty dock', () => {
-    open({
-      record: record({
-        pending_ask: {
-          kind: 'slack_draft',
-          request: {
-            workspace: 'Trust Machines',
-            conversation_label: 'granite-staging-alerts',
-            thread_ts: null,
-            text: 'Deploy finished on staging.',
-            tool: 'slack__post',
-          },
-        },
-      }),
-    });
+  it('draws a held post as the terminal draws it: where it goes, and the words in full', () => {
+    open({ record: record({ pending_ask: slackDraftAsk() }) });
 
     expect(drawn()).toContain('Post to Slack');
     expect(drawn()).toContain('Trust Machines · granite-staging-alerts');
-    expect(drawn()).toContain('slack__post');
+    expect(drawn(), 'the words being approved are shown in full').toContain(
+      'Deploy finished on staging.',
+    );
     expect(drawn(), 'and does not claim options this view never drew').not.toContain(
       'arrived before this view attached',
     );
+  });
+
+  it('names the thread a reply goes into, rather than the tool that composed it', () => {
+    open({ record: record({ pending_ask: slackDraftAsk({ thread_ts: '1758901234.482910' }) }) });
+
+    expect(drawn()).toContain('Reply in Slack');
+    expect(drawn()).toContain('thread 1758901234.482910');
+    expect(drawn(), 'the dock says where it goes, not which tool asked').not.toContain(
+      'slack__post',
+    );
+  });
+
+  it('posts the held draft from the row the reader picks, addressed by its own id', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: true,
+        },
+      },
+    ]);
+  });
+
+  it('says why when the core refuses the draft, rather than dropping it in silence', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock comes back with the refusal').not.toBeNull();
+    expect(drawn()).toContain('the connector is not configured');
+  });
+
+  it('clears the refusal it showed when the reader answers the draft again', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    // The retry is the only thing the reader can do about a refusal, and the
+    // reason belonged to the attempt that failed: left standing it reads as a
+    // verdict on this one.
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the answer went out again').toHaveLength(2);
+    expect(drawn(), "and the first failure's reason goes with it").not.toContain(
+      'the connector is not configured',
+    );
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('takes the dock away once the draft is answered, which no frame will do', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the approval went out').toHaveLength(1);
+    expect(document.querySelector('.dock'), 'and the dock goes with it').toBeNull();
+    expect(document.querySelector('textarea'), 'the box takes the slot back').not.toBeNull();
+  });
+
+  it('does not raise an answered draft again, while the next one still draws', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
+    // The same draft as a fresh frame carries it: the seat is still parked on
+    // it server-side, and no update will ever say it is gone.
+    harness.page.record = record({ pending_ask: slackDraftAsk() });
+    flushSync();
+    expect(document.querySelector('.dock'), 'a repaint does not raise it again').toBeNull();
+
+    harness.page.record = record({
+      pending_ask: slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' }),
+    });
+    flushSync();
+    expect(document.querySelector('.dock'), 'while the next draft is a new prompt').not.toBeNull();
+  });
+
+  it('draws the next held draft as a fresh dock, rather than carrying the mark over', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    press('ArrowDown');
+    expect(document.querySelector('.opt.sel')?.textContent).toContain("Don't send");
+
+    // The second draft, which is the next prompt the seat is parked on.
+    harness.page.record = record({
+      pending_ask: slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' }),
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.opt.sel')?.textContent,
+      'the mark belongs to the draft that was answered, not to the next one',
+    ).toContain('Send it');
+  });
+
+  it('refuses the held draft from its own no-row', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[1]?.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: false,
+        },
+      },
+    ]);
+  });
+
+  it('refuses the held draft on Escape, which is the same refusal', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    press('Escape');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: false,
+        },
+      },
+    ]);
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {

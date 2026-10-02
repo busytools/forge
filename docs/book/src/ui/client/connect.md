@@ -56,8 +56,9 @@ constraint worked around: a first screen is exactly where an identity is
 usually invented, and here the identity is already the mark and the
 palette every later page draws with.
 
-**Type.** Inter for prose and the button, Fira Code for the address. The
-address is data, and this house sets data in the mono face.
+**Type.** Fira Code throughout. The address is data, and this house sets
+data in the mono face; with one face shipped, prose and data read the
+same.
 
 **Layout.** One centred column, four rows, all left-aligned to the
 column's edge.
