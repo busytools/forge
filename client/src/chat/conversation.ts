@@ -99,6 +99,23 @@ function movedRunning(held: boolean, message: unknown): boolean {
   return held;
 }
 
+/**
+ * Whether a turn is still being written, which the fold cannot read off its
+ * frames: a page read from a turn that has not ended carries no result frame,
+ * because the transcript holds none either.
+ *
+ * Two carriers of the one fact. `live` is a turn the frames built, which stays
+ * true until a page settles it; `running` is the core's own answer, kept
+ * current so a turn that ends can take it back.
+ *
+ * **One copy, because two views fold from it**: the turn's row, and the strip
+ * pinned above the box while the turn is written. A view that read this
+ * differently would draw the running row of a turn the other has settled.
+ */
+export function beingWritten(turn: Turn): boolean {
+  return turn.live || turn.running === true;
+}
+
 /** What the chat draws from. */
 export interface Conversation {
   /** Whole turns, oldest first: the order the list draws them in. */

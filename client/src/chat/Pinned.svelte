@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
-  import type { Turn as HeldTurn } from './conversation';
+  import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Strip from './Strip.svelte';
   import { fold, type Self, type TurnInfo } from './units';
 
@@ -34,7 +34,7 @@
   } = $props();
 
   /** The same fact the turn's own row folds under, so the two cannot disagree about the turn. */
-  const writing = $derived(turn !== null && (turn.live || turn.running === true));
+  const writing = $derived(turn !== null && beingWritten(turn));
 
   /**
    * The turn's own row, folded the way the turn folds it.

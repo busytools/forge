@@ -2,7 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
   import Compacting from './Compacting.svelte';
-  import type { Turn as HeldTurn } from './conversation';
+  import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
   import Hooks from './Hooks.svelte';
   import Messages from './Messages.svelte';
@@ -47,11 +47,7 @@
     pinned?: boolean;
   } = $props();
 
-  // Whether the turn is still being written, which the fold cannot read off the
-  // frames: a page carries no result frame for a turn that has not ended.
-  // `live` is a turn the frames built and `running` is the seat's own answer,
-  // which the turn's end or a later page can take back.
-  const folded = $derived(fold(turn.messages, cwd, slot, turn.live || turn.running === true));
+  const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
 
   /**
    * The fold's units, less the running row where the pin is carrying it.
