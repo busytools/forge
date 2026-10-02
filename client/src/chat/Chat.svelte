@@ -489,6 +489,8 @@
 
   /** The ask already answered, so a repeat of the same token is not acted on twice. */
   let answeredAsk: number | null = null;
+  /** An ask still being worked: its row is not loaded yet, and pages are being pulled. */
+  let asking = false;
 
   /**
    * The header's ask: reveal the latest compaction.
@@ -497,13 +499,25 @@
    * not be drawn - and the scroll it performs fires the same scroll event a
    * reader's own wheel does, so the follow turns off exactly the way it does
    * when anyone scrolls away from the foot. Nothing else has to remember it.
+   *
+   * **The cut is often older than what is loaded**, so the ask walks the
+   * history: each page that lands re-runs this effect, and it stops asking
+   * when the history runs out rather than retrying forever.
    */
   $effect(() => {
     const ask = $scrollAsk;
-    if (ask === null || ask.token === answeredAsk) return;
-    answeredAsk = ask.token;
+    if (ask !== null && ask.token !== answeredAsk) {
+      answeredAsk = ask.token;
+      asking = true;
+    }
+    if (!asking || !held.loaded) return;
     const at = latestCompaction(held.turns);
-    if (at !== null) list?.scrollToIndex(at, { align: 'start' });
+    if (at !== null) {
+      asking = false;
+      list?.scrollToIndex(at, { align: 'start' });
+      return;
+    }
+    if (!loadOlder()) asking = false;
   });
 
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
@@ -564,7 +578,12 @@
     shaped = height;
     if (!shrank) {
       if (atFoot()) working?.following(true);
-      else if (placed !== null && offset < placed) working?.following(false);
+      // `placed` is where the last pin left the reader; before any pin has
+      // run it is unknown, and a reader above the foot is above it whatever
+      // that number is - so the comparison falls back to any upward move
+      // rather than never disarming, which left the way-back hidden on a
+      // column that had not pinned yet (Ved, 2026-10-03).
+      else if (offset < (placed ?? Infinity)) working?.following(false);
     }
     if (offset < REACH) loadOlder();
   }
@@ -583,9 +602,10 @@
    * appended below the reader then goes through the prepend path, which moves
    * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
-  function loadOlder(): void {
-    if (working?.older() !== true) return;
+  function loadOlder(): boolean {
+    if (working?.older() !== true) return false;
     outstanding += 1;
+    return true;
   }
 </script>
 
