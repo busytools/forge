@@ -74,10 +74,10 @@ pub enum PromptMode {
 
 impl PromptState {
     /// Construct from a wire `PermissionRequest`. Appends a
-    /// forge-synthesized "Tell Claude something else" escape hatch as
+    /// forge-synthesized "Tell the agent something else" escape hatch as
     /// the last option, but only when the wire didn't already include
-    /// a Notes-kind option - claude CLI's permission UI ships its own
-    /// "Tell Claude something else" entry for some tools.
+    /// a Notes-kind option, which the `claude` CLI's permission UI
+    /// supplies for some tools.
     pub fn from_permission(tool_id: String, request: PermissionRequest) -> Self {
         let mut options = request.options;
         let already_has_notes = options.iter().any(|o| {
@@ -86,7 +86,7 @@ impl PromptState {
         if !already_has_notes {
             options.push(PermissionOption {
                 option_id: "tell_claude".into(),
-                name: "Tell Claude something else".into(),
+                name: "Tell the agent something else".into(),
                 kind: forge_primitives::permission_interaction::PermissionOptionKind::Notes,
                 action: forge_primitives::permission_interaction::PermissionAction::Deny,
             });
@@ -116,7 +116,7 @@ impl PromptState {
     }
 
     /// Construct from a wire `QuestionRequest`. Always includes the
-    /// forge-synthesized "Tell Claude something else" escape hatch as
+    /// forge-synthesized "Tell the agent something else" escape hatch as
     /// the last option. The caret starts on the first option, which is
     /// where a `(Recommended)` option was hoisted.
     pub fn from_question(tool_id: String, request: QuestionRequest) -> Self {
@@ -138,7 +138,7 @@ impl PromptState {
             .collect();
         options.push(PermissionOption {
             option_id: "tell_claude".into(),
-            name: "Tell Claude something else".into(),
+            name: "Tell the agent something else".into(),
             kind: PermissionOptionKind::Notes,
             action: PermissionAction::Deny,
         });
@@ -639,7 +639,7 @@ pub(crate) mod tests {
     use forge_primitives::session_update::ToolCall;
 
     /// A session whose queue head is a permission prompt with its
-    /// Notes option focused - the "Tell Claude something else" field.
+    /// Notes option focused - the "Tell the agent something else" field.
     pub(crate) fn app_with_focused_notes() -> crate::app::App {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("active session");

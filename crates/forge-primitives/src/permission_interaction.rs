@@ -45,7 +45,7 @@ pub enum PermissionOptionKind {
     Deny,
     /// Allow-with-edits path (✎ blue icon).
     Edit,
-    /// Forge-synthesized "Tell Claude something else" escape hatch (… dim icon).
+    /// Forge-synthesized "Tell the agent something else" escape hatch (… dim icon).
     Notes,
 }
 
@@ -94,7 +94,7 @@ pub enum PermissionOutcome {
         /// response handler reads this directly - no option_id lookup
         /// or string-prefix matching needed.
         action: PermissionAction,
-        /// User's "tell Claude" feedback string (when the notes-option
+        /// User's "tell the agent" feedback string (when the notes-option
         /// was toggled or the focused option is a Deny). Empty when the
         /// user picked a plain Allow without notes.
         #[serde(default, skip_serializing_if = "Option::is_none")]

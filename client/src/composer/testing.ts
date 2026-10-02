@@ -94,7 +94,7 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
         { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
         {
           option_id: 'opt-notes',
-          name: 'Tell Claude something else',
+          name: 'Tell the agent something else',
           kind: 'notes',
           action: { kind: 'deny' },
         },

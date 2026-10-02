@@ -546,7 +546,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            out.contains("[x] … Tell Claude something else"),
+            out.contains("[x] … Tell the agent something else"),
             "the Notes/Other row must render as [x] when the user has typed text; got:\n{out}",
         );
     }
@@ -565,7 +565,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            out.contains("[ ] … Tell Claude something else"),
+            out.contains("[ ] … Tell the agent something else"),
             "Notes/Other row must stay [ ] when no text has been typed; got:\n{out}",
         );
     }
@@ -763,12 +763,12 @@ mod tests {
 
     #[test]
     fn notes_option_focused_shows_inline_notes_text() {
-        // When the "Tell Claude something else" option is focused, the
+        // When the "Tell the agent something else" option is focused, the
         // notes_text passed in by the caller renders inline under the
         // option label.
         let request = make_question_request(false);
         let mut prompt = PromptState::from_question("tc-q".into(), request);
-        // Move focus to the last option (the synthesized Tell-Claude one).
+        // Move focus to the last option (the synthesized escape hatch).
         prompt.focused_option_index = prompt.options.len() - 1;
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);

@@ -1487,7 +1487,7 @@ async fn run_ask_user_question(
                     .and_then(|a| a.notes.as_deref())
                     .is_some_and(|n| !n.trim().is_empty());
                 if selected.is_empty() {
-                    // "Tell Claude something else" path: no canonical
+                    // "Tell the agent something else" path: no canonical
                     // option matched, but if the user supplied notes the
                     // answer is "Other" with the free-text in
                     // annotations (matches Anthropic's schema where
@@ -1606,7 +1606,7 @@ pub(crate) fn deliver_permission_response(
 }
 
 /// Build the `PermissionDecision` for a submitted option's `action`.
-/// `notes_text` is the user's "tell Claude" feedback string (or
+/// `notes_text` is the user's "tell the agent" feedback string (or
 /// empty); consumed only when the action is `Deny`. `edited_input` is
 /// the user's modified tool args; consumed only when the action is
 /// `AllowWithInput`.
@@ -1694,7 +1694,7 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Ag
 /// Derives "Allow always for X" / "Allow always & add dirs" / "Allow
 /// always & switch mode" entries from `ctx.suggestions`; adds the
 /// synthesized "Allow with edits" for editable tools and the universal
-/// "Tell Claude something else" escape hatch.
+/// "Tell the agent something else" escape hatch.
 ///
 /// Wire reality (captured 2026-05-18; see baselines/sdk/2.1.117/):
 /// - `Read` outside workspace -> `addRules` with `{toolName, ruleContent}`.
@@ -1792,10 +1792,10 @@ fn build_permission_options(
         action: PermissionAction::Deny,
     });
 
-    // 5. Universal: Tell Claude something else.
+    // 5. Universal: Tell the agent something else.
     opts.push(PermissionOption {
         option_id: "tell_claude".to_owned(),
-        name: "Tell Claude something else".to_owned(),
+        name: "Tell the agent something else".to_owned(),
         kind: PermissionOptionKind::Notes,
         action: PermissionAction::Deny,
     });
@@ -3562,10 +3562,18 @@ mod tests_permission_options {
 
     #[test]
     fn empty_suggestions_yields_baseline_options() {
-        // Non-editable tool (Read), no suggestions: Allow once, Deny, Tell Claude.
+        // Non-editable tool (Read), no suggestions: Allow once, Deny, Tell the agent.
         let opts = build_permission_options(&mk_ctx("Read", vec![]));
         let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
         assert_eq!(ids, vec!["allow_once", "deny", "tell_claude"]);
+        let notes = opts
+            .iter()
+            .find(|o| o.option_id == "tell_claude")
+            .expect("the escape hatch is always present");
+        assert_eq!(
+            notes.name, "Tell the agent something else",
+            "the synthesized escape hatch says agent, not the vendor"
+        );
     }
 
     #[test]

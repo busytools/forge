@@ -184,7 +184,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Bash · git push *</span>                              <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell the agent something else</span>                                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -205,7 +205,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Read · paths matching //tmp/**</span>                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell the agent something else</span>                                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -213,7 +213,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 
 </div>
 
-**AskUserQuestion** - multi-select with the notes option toggled: a rust-orange `?` on the header, white body below, `[x]` / `[ ]` markers before the icons; toggling `... Tell Claude something else` expands an inline notes editor:
+**AskUserQuestion** - multi-select with the notes option toggled: a rust-orange `?` on the header, white body below, `[x]` / `[ ]` markers before the icons; toggling `... Tell the agent something else` expands an inline notes editor:
 
 <div class="term">
 
@@ -225,7 +225,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Staging</span>                                                     <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Production</span>                                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="dim">[ ]</span> <span class="success">✓</span> <span class="dim">Development</span>                                                 <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell Claude something else:</span>                               <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell the agent something else:</span>                            <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                           <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">space toggle  ↑↓ move  ⏎ submit  esc cancel</span>                         <span class="accent bold">┃</span>
@@ -255,7 +255,7 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Edit · src/**</span>                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell the agent something else</span>                                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -270,12 +270,12 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 | `✓` | Allow (any Allow variant) | green |
 | `✗` | Deny | red |
 | `✎` | Allow with edits - synthesized for editable tools (Bash, Edit, Write, MultiEdit, NotebookEdit) | blue |
-| `...` | "Tell Claude something else", the synthesized escape hatch, always last | dim |
+| `...` | "Tell the agent something else", the synthesized escape hatch, always last | dim |
 
 <details>
 <summary>Where options come from</summary>
 
-Options derive from the CLI's `permission_suggestions`: `addRules` (Read outside workspace) offers "Allow always for {tool} · paths matching {pattern}" - macOS `/tmp` + `/private/tmp` mirror entries are deduped for display, both rule entries kept on the wire; `addDirectories` (Write / Edit outside workspace) offers "Allow always & add {dirs} to allowed dirs"; `setMode` (typically the prompt that intercepts plan-mode) offers "Allow always & switch to {mode}" - ExitPlanMode itself sends `permission_suggestions: null`, so the mode switch lives on the earlier intercept prompt, not on ExitPlanMode. Two options are synthesized universally: `... Tell Claude something else` (always last) routes to deny with the notes text, and `✎ Allow with edits` (editable tools only) routes to allow-with-input. The Notes row's `[x]` is display-only - it tracks the live notes buffer, and the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`.
+Options derive from the CLI's `permission_suggestions`: `addRules` (Read outside workspace) offers "Allow always for {tool} · paths matching {pattern}" - macOS `/tmp` + `/private/tmp` mirror entries are deduped for display, both rule entries kept on the wire; `addDirectories` (Write / Edit outside workspace) offers "Allow always & add {dirs} to allowed dirs"; `setMode` (typically the prompt that intercepts plan-mode) offers "Allow always & switch to {mode}" - ExitPlanMode itself sends `permission_suggestions: null`, so the mode switch lives on the earlier intercept prompt, not on ExitPlanMode. Two options are synthesized universally: `... Tell the agent something else` (always last) routes to deny with the notes text, and `✎ Allow with edits` (editable tools only) routes to allow-with-input. The Notes row's `[x]` is display-only - it tracks the live notes buffer, and the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`.
 
 </details>
 
