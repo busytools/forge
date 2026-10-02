@@ -288,29 +288,19 @@ struct ListedWorktree {
     at: String,
     /// The ref this worktree holds, when it holds a branch.
     branch: Option<String>,
-    /// git reports the entry as one `prune` would remove, which it decides
-    /// from a directory or gitdir that is gone. The line is absent from
-    /// git before 2.36 entirely, and from a LOCKED entry on every version:
-    /// the locked shape is the one claude's own worktrees leave behind.
-    prunable: bool,
 }
 
 /// The entries of a porcelain listing: one block each, a `worktree <path>`
-/// header followed by the `branch` and `prunable` lines when the entry
-/// carries them.
+/// header followed by the `branch` line when the entry holds one.
 fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
     let mut entries: Vec<ListedWorktree> = Vec::new();
     for line in listing.lines() {
         if let Some(at) = line.strip_prefix("worktree ") {
-            entries.push(ListedWorktree { at: at.to_owned(), branch: None, prunable: false });
-        } else if let Some(found) = line.strip_prefix("branch ") {
-            if let Some(entry) = entries.last_mut() {
-                entry.branch = Some(found.to_owned());
-            }
-        } else if line.starts_with("prunable")
+            entries.push(ListedWorktree { at: at.to_owned(), branch: None });
+        } else if let Some(found) = line.strip_prefix("branch ")
             && let Some(entry) = entries.last_mut()
         {
-            entry.prunable = true;
+            entry.branch = Some(found.to_owned());
         }
     }
     entries
@@ -319,10 +309,11 @@ fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
 /// The obstacle the listing describes: the branch held at another path, or
 /// what git has registered at `path` and will not reuse.
 ///
-/// The second decision reads the STATE and not git's `prunable` line alone:
-/// an entry at `path` whose directory is gone is unreusable whether or not
-/// the git in use reports it as prunable, and requiring that line would let
-/// it through on a git older than 2.36, or on a locked one on any version.
+/// The second decision reads the worktree's own gitdir LINK, not git's
+/// `prunable` line: a LOCKED entry carries no such line on any git version
+/// (and claude locks every worktree it creates), while a git older than
+/// 2.36 carries none for anything - so the line cannot tell a reusable
+/// registration from a stranded one, and the link can.
 fn obstacle_from_listing(
     entries: &[ListedWorktree],
     repo: &Path,
@@ -342,7 +333,7 @@ fn obstacle_from_listing(
     match entries.iter().find(|e| same_path(&e.at, path)) {
         // There, and usable: the worktree is reused as it stands. A locked
         // one included - claude locks every worktree it creates.
-        Some(entry) if path.exists() && !entry.prunable => None,
+        Some(_) if worktree_gitdir_resolves(path) => None,
         Some(_) => Some(format!(
             "the worktree registration at {} cannot be used - its directory, or the gitdir it \
              points at, is gone - so this worker's worktree cannot be created there; unlock it \
@@ -360,6 +351,22 @@ fn obstacle_from_listing(
         )),
         None => None,
     }
+}
+
+/// Whether the worktree registered at `path` is one git can still use: its
+/// `.git` link file names a gitdir that exists. git reads that link itself
+/// when it decides to reuse or refuse a worktree, so a directory whose link
+/// is gone - or whose link points at a pruned gitdir - is unreusable however
+/// present the directory is.
+fn worktree_gitdir_resolves(path: &Path) -> bool {
+    let Ok(link) = std::fs::read_to_string(path.join(".git")) else {
+        return false;
+    };
+    let Some(gitdir) = link.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let gitdir = Path::new(gitdir.trim());
+    if gitdir.is_absolute() { gitdir.is_dir() } else { path.join(gitdir).is_dir() }
 }
 
 /// Whether something at `path` is in the way of `git worktree add`, which
@@ -1694,26 +1701,26 @@ mod tests {
         );
     }
 
-    /// The route a git older than 2.36 takes for every stranded entry: no
-    /// `prunable` line at all. Written against the listing rather than
-    /// against git, since no git on this machine will print that for an
-    /// unlocked entry - and the state that matters, an entry at the
-    /// worker's path it cannot reuse, would otherwise go unrefused, which
-    /// is #1303 returning on those machines.
+    /// A listing with nothing but paths and branches - no `prunable` line,
+    /// as a git older than 2.36 prints for every stranded entry, and as a
+    /// locked one prints on every version. Written against the listing
+    /// rather than against git, since no git on this machine will print
+    /// that shape for an unlocked entry: an entry at the worker's path it
+    /// cannot reuse would otherwise go unrefused, which is #1303 returning.
     #[test]
-    fn obstacle_refuses_a_stranded_registration_git_does_not_mark_prunable() {
+    fn obstacle_refuses_an_entry_whose_listing_says_nothing_about_it() {
         let repo = Path::new("/repo");
         let path = Path::new("/repo/.claude/worktrees/lbl");
         let listing = "worktree /repo\nbranch refs/heads/main\n\n\
                        worktree /repo/.claude/worktrees/lbl\nbranch refs/heads/worktree-lbl\n";
-        let entries = listed_worktrees(listing);
         assert!(
-            !entries.iter().any(|entry| entry.prunable),
-            "fixture precondition: the listing carries no prunable line, as older git leaves it",
+            !listing.contains("prunable") && !listing.contains("locked"),
+            "fixture precondition: the listing carries neither marker",
         );
+        let entries = listed_worktrees(listing);
 
         let obstacle = obstacle_from_listing(&entries, repo, "worktree-lbl", path)
-            .expect("a stranded registration is an obstacle");
+            .expect("a registration whose gitdir cannot resolve is an obstacle");
 
         assert!(
             obstacle.contains("registration at"),
@@ -1721,14 +1728,15 @@ mod tests {
         );
     }
 
-    /// A worktree whose `.git` link file is gone while its directory stands:
-    /// git lists it, marks it prunable, and refuses to add a worktree there
-    /// (`is a missing but already registered worktree`, exit 128 - measured).
-    /// Nothing else pins the prunable half of the state read, and the shape
-    /// is the bug this check exists for when it goes unrefused.
+    /// A worktree whose `.git` link file is gone while its directory stands,
+    /// LOCKED - which is claude's own shape, since it locks every worktree it
+    /// creates. git refuses to add a worktree there (exit 128), and a locked
+    /// entry carries no `prunable` line to say so, which is why the state is
+    /// read from the link itself rather than from that flag.
     #[test]
-    fn obstacle_refuses_a_worktree_whose_gitdir_link_is_broken() {
+    fn obstacle_refuses_a_locked_worktree_whose_gitdir_link_is_broken() {
         let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        run_git(dir.path(), &["worktree", "lock", wt.to_str().expect("utf8 path")]);
         fs::remove_file(wt.join(".git")).expect("delete the worktree's gitdir link");
         assert!(wt.is_dir(), "fixture precondition: the directory itself stands");
 
