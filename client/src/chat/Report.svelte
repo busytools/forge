@@ -22,6 +22,22 @@
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
 
+  /**
+   * The tick the body's clock moves on, which is the row's own tick.
+   *
+   * The body draws `elapsed` as a fact of its own, and it is the same figure
+   * the row leads with: a body left reading the clock once would freeze on the
+   * call that walks a turn past a minute.
+   */
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!held.running) return;
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   /** The turn's own clock, read from the instant it ended in the reader's zone. */
   const ended = $derived(clock(held.ended_at_utc));
 
@@ -51,7 +67,7 @@
       // the row does not claim one.
       { label: 'ended', value: held.running ? dash : (ended ?? dash) },
       { label: 'model', value: held.model ?? dash },
-      { label: 'elapsed', value: elapsed(held, Date.now()) },
+      { label: 'elapsed', value: elapsed(held, now) },
       { label: 'api', value: held.api_ms === null ? dash : duration(held.api_ms) },
       { label: 'local', value: local === null ? dash : `${duration(local)} tools + hooks` },
       {
