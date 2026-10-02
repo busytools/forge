@@ -19,7 +19,7 @@
 //!      |<------ event_tx --------+<-----------------------------------|
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -125,6 +125,33 @@ pub(crate) struct BridgeInner {
     /// Empty when `Agent::spawn` is called directly without a
     /// workspace (tests, smoke) or when no table declares anything.
     env: HashMap<String, String>,
+    /// Session ids whose context-usage probe is out, added when the ask goes
+    /// and removed when its answer, error or timeout lands.
+    ///
+    /// A probe is answered inline over the CLI's whole transcript, and the
+    /// askers repeat - the socket asks on every read of a seat that reports no
+    /// usage, the terminal on every switch - so without this one unanswered
+    /// seat parks a probe per ask. A probe that times out emits nothing, so a
+    /// caller that coalesced only on its own side would repeat forever.
+    context_probes_in_flight: Mutex<HashSet<String>>,
+}
+
+/// Holds a seat's probe mark while its probe is out, and releases it however
+/// the probe ends: an answer, an error, a timeout, or a dispatch that never
+/// reached a client at all.
+///
+/// A guard rather than a release at each exit, because the exits multiply - the
+/// timeout returns early, and the closure is dropped uncalled when no client is
+/// bound - and a mark left behind wedges the seat's probe for its whole life.
+struct ProbeInFlight {
+    inner: Arc<BridgeInner>,
+    session_id: String,
+}
+
+impl Drop for ProbeInFlight {
+    fn drop(&mut self) {
+        self.inner.context_probes_in_flight.lock().remove(&self.session_id);
+    }
 }
 
 impl ForgeSdkBridge {
@@ -156,6 +183,7 @@ impl ForgeSdkBridge {
                 display_name,
                 extra_mcp_servers,
                 env,
+                context_probes_in_flight: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -692,6 +720,16 @@ impl ForgeSdkBridge {
     }
 
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+        if !self.inner.context_probes_in_flight.lock().insert(session_id.clone()) {
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                "context usage probe already in flight; this ask is coalesced",
+            );
+            return Ok(());
+        }
+        let probe =
+            ProbeInFlight { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
             // Refreshes arrive at turn end, session switch, connect
@@ -711,6 +749,9 @@ impl ForgeSdkBridge {
                 Ok(Ok(usage)) => usage,
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => {
+                    // The mark goes with the timeout's early return: a seat
+                    // whose probe timed out is askable again, rather than
+                    // wedged for the life of its session.
                     tracing::warn!(
                         target: crate::logging::targets::BRIDGE_LIFECYCLE,
                         session_id = %session_id,
@@ -719,6 +760,9 @@ impl ForgeSdkBridge {
                     return Ok(());
                 }
             };
+            // Released before the event is emitted, so an asker woken by the
+            // answer finds the seat free rather than racing the drop.
+            drop(probe);
             let percentage = forge_sdk_worker::reported_percentage(usage.percentage);
             // `raw_max_tokens` is the model's nominal context-window
             // size; `max_tokens` is the effective cap after autocompact
@@ -1493,6 +1537,89 @@ mod tests {
         let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
         bridge.set_client(client);
         (bridge, events)
+    }
+
+    /// forge-sdk's control mock, whose `FORGED_MOCK_ECHO_SUBTYPE` hook records
+    /// every observed control subtype to `echo`.
+    fn control_mock_binary() -> String {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude_control.sh")
+            .to_owned()
+    }
+
+    async fn bridge_with_control_mock(
+        echo: &std::path::Path,
+    ) -> (ForgeSdkBridge, mpsc::UnboundedReceiver<AgentEvent>) {
+        let bridge = ForgeSdkBridge::default();
+        let events = bridge.take_events().expect("fresh bridge yields its events receiver");
+        let opts = forge_sdk::OptionsBuilder::new()
+            .binary(control_mock_binary())
+            .env("FORGED_MOCK_ECHO_SUBTYPE", echo.to_string_lossy().as_ref())
+            .build();
+        let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
+        bridge.set_client(client);
+        (bridge, events)
+    }
+
+    /// The control subtypes the mock observed, in order.
+    fn observed_subtypes(echo: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(echo)
+            .expect("the mock echoes observed subtypes to the file")
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A probe already out for a seat is not asked again.
+    ///
+    /// The socket re-asks on every read of a seat that reports no usage, and a
+    /// client reads its seat on a poll, so an unanswered seat would otherwise
+    /// park a probe over the CLI's whole transcript per poll - and a probe that
+    /// times out emits nothing, so the repeat would never stop. The mark is per
+    /// seat, and released when the answer, the error or the timeout lands.
+    #[tokio::test]
+    async fn a_context_probe_already_in_flight_is_not_asked_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let echo = dir.path().join("echo");
+        let (bridge, mut events) = bridge_with_control_mock(&echo).await;
+
+        bridge.get_context_usage("session-1".to_owned()).expect("the first ask goes");
+        bridge
+            .get_context_usage("session-1".to_owned())
+            .expect("an ask while one is out is answered, not refused");
+        bridge.get_context_usage("session-1".to_owned()).expect("and so is a third");
+        let subtypes = drain_answers(&mut events, &echo).await;
+        assert_eq!(
+            subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
+            1,
+            "three asks with one probe out reach the CLI once: {subtypes:?}",
+        );
+
+        // And the seat is free again once its answer lands.
+        bridge.get_context_usage("session-1".to_owned()).expect("a later ask goes");
+        let subtypes = drain_answers(&mut events, &echo).await;
+        assert_eq!(
+            subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
+            2,
+            "a further ask reaches the CLI: {subtypes:?}",
+        );
+    }
+
+    /// Every answer that arrives inside the window, with the subtypes the mock
+    /// observed beside them.
+    ///
+    /// Drained rather than read once: an answer lands a scheduling hop after
+    /// its request, and a test that counted sooner would read a probe still in
+    /// flight as one that was dropped - the very verdict this test exists to
+    /// give. The window is the wait, and it bounds a probe that never answers.
+    async fn drain_answers(
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        echo: &std::path::Path,
+    ) -> Vec<String> {
+        while tokio::time::timeout(std::time::Duration::from_millis(300), events.recv())
+            .await
+            .is_ok_and(|answer| answer.is_some())
+        {}
+        observed_subtypes(echo)
     }
 
     /// The identity contract at the surface the user sees: a session
