@@ -33,16 +33,24 @@
  * by a literal is read on `color` only, since the sheet tinting a border or a
  * ground by rgba is its idiom for alpha.
  *
- * The third is the mark's BASE rule, a few lines from the one this file exists
- * for: `.st` with no state class carries the mark's default tone, and swapping
- * `.kind > summary .st` to `var(--bad)` leaves the whole suite green. No
- * vocabulary entry reaches it - `st: '--ok'` would legalise `--ok` on `.st.err`
- * too, because a rule's allowed tones are the union over the classes its
- * selector carries, and the defect this file was written for would go green;
- * it would also red on `.row .what .st`, whose default is the `--dim` of a row
- * mark rather than a tone. The default is contextual, so there is no property
- * to state about it, and these three rules stand outside this shape rather
- * than being an oversight the file could close.
+ * The third is that a state class is what this reads, and most of the sheet's
+ * tones sit on rules no state class reaches: 71 selectors across the two
+ * sheets name a tone carrying no class the vocabulary knows, and exactly one
+ * of them - `.rfoot .vers .up`, by `rail.test.ts` - is pinned by anything
+ * else. The mark's BASE rules are among the 71, and the default tone lives
+ * there: swapping `.kind > summary .st` to `var(--bad)` leaves the whole suite
+ * green, and `.rfoot .led` sits beside `.rfoot .led.bad`, which this does
+ * cover, in the same relationship and with no cover of its own.
+ *
+ * A vocabulary entry cannot close that. `st: '--ok'` would legalise `--ok` on
+ * `.st.err` too, since a rule's allowed tones are the union over the classes
+ * its selector carries, and the defect this file exists for would go green; it
+ * would also red on `.row .what .st`, whose default is a row mark's `--dim`.
+ * What cannot be stated is a base rule's CORRECT tone, because the default is
+ * contextual - `--ok` for a summary's aggregate mark, `--dim` for a row's. A
+ * stricter check could say the mark reaching no state class must not name
+ * `--bad`, which would catch the swap named here but not every one; that is a
+ * different check, and it is not this one.
  *
  * A class NAME is the extension point, so a state written under one the
  * vocabulary does not list draws in whatever tone it likes until someone adds
