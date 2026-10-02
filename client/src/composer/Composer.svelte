@@ -56,10 +56,9 @@
    * **A pointer this component moves, rather than a value derived from
    * `slot`**, and both halves of that are load-bearing:
    *
-   * - A box resolved off `slot` would sit downstream of it, and a replaced
-   *   props object re-notifies that prop with the same seat - so every
-   *   derived behind the box would count as dirty on every frame a seat
-   *   sends, and the list would be rebuilt for a draft that opens none.
+   * - `Boxes` mints a seat's box on first use, and a derivation that resolved
+   *   one would mint from inside a derivation - a write Svelte refuses with
+   *   `state_unsafe_mutation` rather than drawing the box at all.
    * - `pre` rather than a plain effect, because the swap has to land before
    *   the effects that write to the box: the seat change and the record that
    *   belongs to it arrive in one flush, and a landing that record carries
