@@ -445,15 +445,20 @@
      wrapping retires that premise rather than working around it:
      `overflow-wrap: anywhere` holds the column at the container's own width, so
      nothing overflows and no tint can fall short of one. */
-  .dif { display: grid; grid-template-columns: 22px 1fr;
+  .dif { display: grid; grid-template-columns: 38px 38px 22px 1fr;
     border: 1px solid var(--line); border-radius: 9px;
     overflow: hidden;
     font-family: var(--mono); font-size: var(--fs-prose); }
   .dif .ln { display: contents; }
   /* The range a hunk covers, which is the one thing the two sides of an edit
-     cannot say: where in the file the change sits. */
-  .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2);
-    padding: 4px 12px; border-radius: 5px; overflow-wrap: anywhere; }
+     cannot say: where in the file the change sits.
+     A hairline rather than a filled bar: two hunks of one file are two parts of
+     one change, and a bar each made them read as two separate cards with nothing
+     between them. The range is the whole of what separates them. */
+  .dif .h { grid-column: 1 / -1; color: var(--dim); background: transparent;
+    border-top: 1px solid var(--line); padding: 3px 12px 2px; font-size: var(--fs-label);
+    overflow-wrap: anywhere; }
+  .dif > .h:first-child { border-top: 0; }
   /* A line the change did not touch, which is what puts it somewhere. */
   .dif .ln.ctx .l { color: var(--dim); }
   /* A mark whose default is nothing to say, so a row carries it only when it is
@@ -461,7 +466,20 @@
      class reaches every row that draws one, and this belongs to one kind of row. */
   .patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
+  /* The figures the marks follow, which are the line's own words rather than a
+     mark. Bare for the same reason `.patchmark` is. */
+  .patchsize { margin-right: 8px; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
+  /* The number each side holds the line at, which is what makes two hunks in one
+     file readable: the old file's on the left, the new file's beside it, and a
+     blank where that side does not have the line at all. */
+  .dif .ln .on, .dif .ln .nn { color: var(--dim); text-align: right; padding-right: 8px;
+    user-select: none; font-size: var(--fs-label); }
+  /* A file with no old side - a create - has nothing to put in the old column, so
+     it is not drawn: a fixed column of blanks is that width of dead space on
+     every line of a new file. */
+  .dif.added { grid-template-columns: 34px 22px 1fr; }
+  .dif.added .on { display: none; }
   .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
   .dif .ln.d .l { background: var(--del-bg); }
@@ -1197,44 +1215,65 @@ Consecutive tool calls between two user messages fold into one group.</div>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">@@ -30,7 +30,9 @@</div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">  display: flex;</span></div>
-                  <div class="ln d"><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">  }</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">  }</span></div>
+                  <div class="h">@@ -30,4 +30,5 @@</div>
+                  <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
+                  <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                  <div class="ln ctx"><span class="on">32</span><span class="nn">31</span><span class="n"></span><span class="l">  }</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">33</span><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+                  <div class="ln ctx"><span class="on">33</span><span class="nn">34</span><span class="n"></span><span class="l">  }</span></div>
+                  <div class="h">@@ -72,2 +73,3 @@</div>
+                  <div class="ln ctx"><span class="on">72</span><span class="nn">73</span><span class="n"></span><span class="l">  .row .what a:hover { color: var(--accent); }</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
+                  <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
                 </div>
-                <div class="term">1 hunk &#183; +3 &#8722;1 <span class="patchmark">every match</span></div>
+                <div class="term"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
               </div>
             </details>
             <details class="leaf" open>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">@@ -195,6 +197,8 @@</div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">             footer {</span></div>
-                  <div class="ln d"><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">                 div .versions {</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">                 }</span></div>
+                  <div class="h">@@ -195,3 +197,6 @@</div>
+                  <div class="ln ctx"><span class="on">195</span><span class="nn">197</span><span class="n"></span><span class="l">             footer {</span></div>
+                  <div class="ln d"><span class="on">196</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">198</span><span class="n">+</span><span class="l">                 div .versions {</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">199</span><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">200</span><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">201</span><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
+                  <div class="ln ctx"><span class="on">197</span><span class="nn">202</span><span class="n"></span><span class="l">                 }</span></div>
                 </div>
-                <div class="term">1 hunk &#183; +4 &#8722;1 <span class="patchmark">changed outside this edit</span></div>
+                <div class="term"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
               </div>
             </details>
             <details class="leaf" open>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
-                  <div class="h">@@ -74,3 +74,7 @@</div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">    }</span></div>
-                  <div class="ln ctx"><span class="n"></span><span class="l">    }</span></div>
+                  <div class="h">@@ -74,2 +74,5 @@</div>
+                  <div class="ln ctx"><span class="on">74</span><span class="nn">74</span><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">75</span><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">76</span><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
+                  <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
                 </div>
+                <div class="term"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+              </div>
+            </details>
+            <!-- A file the call created carries no patch on the wire at all, so
+                 the row draws the first hunk git writes for one, from line zero,
+                 with every line an addition - and no old-number column, because
+                 a fixed column of blanks is dead space on every line. -->
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme/tokens.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif added">
+                  <div class="h">@@ -0,0 +1,3 @@</div>
+                  <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">export const CHIP_BG = 'rgba(244,118,0,.1)';</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l">export const HAIRLINE = '1px solid var(--line)';</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
+                </div>
+                <div class="term"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
               </div>
             </details>
 
