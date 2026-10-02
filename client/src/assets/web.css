@@ -1394,9 +1394,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
 /* What choosing an option means: its own line, starting in the same column the
    option's own words start in - no indent of its own, so it reads as the
-   option's sentence continuing rather than as a caption hanging off it. */
+   option's sentence continuing rather than as a caption hanging off it. A
+   description can run to several lines, and every one of them starts there; a
+   token with nowhere to break is split rather than widening the dock. */
 .opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
-  padding: 0; margin: 0; }
+  padding: 0; margin: 0; overflow-wrap: anywhere; }
 /* The marked option is marked by its own words: brighter and heavier, and
    nothing painted behind them - a tint read as a state of the row rather than
    as the thing being chosen, and one carrying padding dragged the label out
@@ -1408,6 +1410,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* A question's row that is on, which the answer carries with it. The box is
    the only mark of it, so it is drawn rather than implied by the pointer. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
+/* The single-answer counterpart of the box, in the same slot: a circle that
+   fills on the row being taken, in the tone the box's check takes. */
+.opt .radio { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px;
+  border-radius: 50%; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
+.opt .radio.on { border-color: var(--ok); }
+.opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown

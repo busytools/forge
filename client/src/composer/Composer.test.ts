@@ -1571,6 +1571,12 @@ describe('the dock', () => {
       'and no mark stands in the slot the boxes hold',
     ).toHaveLength(0);
     expect(
+      [...document.querySelectorAll('.dock .opt .radio')].map((dot) =>
+        dot.classList.contains('on'),
+      ),
+      'the circle fills on the row being taken, and only there',
+    ).toEqual([true, false]);
+    expect(
       document.querySelectorAll('.dock .opt.sel'),
       'the marked row itself is what says which one is to be taken',
     ).toHaveLength(1);

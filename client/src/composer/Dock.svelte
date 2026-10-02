@@ -557,6 +557,12 @@
                 <Icon name="check" />
               {/if}
             </span>
+          {:else if !row.own}
+            <!-- A single-answer question marks its rows in the same slot the
+                 set draws its boxes in - a circle that fills on the row being
+                 taken - so its options are not bare against every other kind
+                 of row on the page. The escape row keeps the slot empty. -->
+            <span class="radio" class:on={at === marked}></span>
           {/if}
           <span class="tx">
             {#if row.own && notesOpen}

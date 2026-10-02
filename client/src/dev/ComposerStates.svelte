@@ -173,7 +173,13 @@
             description: 'the pre-production cluster',
             preview: '**staging** · deploys run the full migration set against the replica first.',
           },
-          { option_id: 'prod', label: 'Production', description: 'live traffic', preview: null },
+          {
+            option_id: 'prod',
+            label: 'Production',
+            description:
+              'live traffic, and the migration set runs against the replica first so a bad statement is caught before it reaches a customer',
+            preview: null,
+          },
           {
             option_id: 'dev',
             label: 'Development',
@@ -210,7 +216,13 @@
             description: 'the pre-production cluster',
             preview: '**staging** · deploys run the full migration set against the replica first.',
           },
-          { option_id: 'prod', label: 'Production', description: 'live traffic', preview: null },
+          {
+            option_id: 'prod',
+            label: 'Production',
+            description:
+              'live traffic, and the migration set runs against the replica first so a bad statement is caught before it reaches a customer',
+            preview: null,
+          },
           {
             option_id: 'dev',
             label: 'Development',
