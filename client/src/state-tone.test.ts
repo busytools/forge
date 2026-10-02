@@ -80,6 +80,32 @@ function tonesNamed(text: string): string[] {
 }
 
 /**
+ * A selector list's parts.
+ *
+ * One rule's declarations reach every part of its list, but the parts do not
+ * mean the same thing: `.tag.ok, .tag.warn { color: var(--ok) }` draws the warn
+ * half green. So the tone test below reads the parts separately, and a comma
+ * joins two selectors only when no function is open around it - the commas in
+ * `:not(.rec, .err)` belong to one selector rather than to a list.
+ */
+function selectorParts(selector: string): string[] {
+  const parts: string[] = [];
+  let open = 0;
+  let start = 0;
+  for (let at = 0; at < selector.length; at += 1) {
+    const char = selector.charAt(at);
+    if (char === '(') open += 1;
+    else if (char === ')') open -= 1;
+    else if (char === ',' && open === 0) {
+      parts.push(selector.slice(start, at));
+      start = at + 1;
+    }
+  }
+  parts.push(selector.slice(start));
+  return parts.map((part) => part.trim());
+}
+
+/**
  * Every `selector { declarations }` block in a sheet.
  *
  * Neither side of the pattern can cross a brace, so a rule nested inside an
@@ -159,27 +185,34 @@ describe('the sheet a state class draws in', () => {
       const wrong: string[] = [];
 
       for (const { selector, body } of rules(sheet)) {
-        const classes = stateClasses(selector);
-        if (classes.length === 0) continue;
+        // Per part, not per selector list: the declarations reach every part,
+        // so one rule can draw a part green in a tone only its neighbour names.
+        for (const part of selectorParts(selector)) {
+          const classes = stateClasses(part);
+          if (classes.length === 0) continue;
 
-        const allowed = new Set<string>(classes.map((name) => TONES[name]));
-        const names = classes.map((name) => `.${name}`).join(' and ');
+          const allowed: string[] = classes.map((name) => TONES[name]);
+          const names = classes.map((name) => `.${name}`).join(' and ');
 
-        for (const token of tonesNamed(body)) {
-          if (!allowed.has(token)) {
-            wrong.push(`${where}: "${selector}" draws in ${token}, which ${names} does not name`);
+          for (const token of tonesNamed(body)) {
+            if (!allowed.includes(token)) {
+              wrong.push(
+                `${where}: "${part}" draws in ${token}, and ${names} names ` +
+                  `${allowed.join(' or ')}`,
+              );
+            }
           }
-        }
 
-        // The sheet's own contract is that the palette is not here, so a state
-        // class drawing text in a literal has left the token set behind.
-        for (const [, value = ''] of body.matchAll(/(?:^|;)\s*color\s*:\s*([^;]+)/g)) {
-          const [token] = tonesNamed(value);
-          if (token === undefined || !allowed.has(token)) {
-            wrong.push(
-              `${where}: "${selector}" draws its text in ${value.trim()}, which ${names} does ` +
-                'not name',
-            );
+          // The sheet's own contract is that the palette is not here, so a
+          // state class drawing text in a literal has left the token set behind.
+          for (const [, value = ''] of body.matchAll(/(?:^|;)\s*color\s*:\s*([^;]+)/g)) {
+            const [token] = tonesNamed(value);
+            if (token === undefined || !allowed.includes(token)) {
+              wrong.push(
+                `${where}: "${part}" draws its text in ${value.trim()}, and ${names} names ` +
+                  `${allowed.join(' or ')}`,
+              );
+            }
           }
         }
       }
@@ -224,10 +257,6 @@ describe('the sheet a state class draws in', () => {
   it('names the state classes the sheet writes, and nothing wider', () => {
     expect(stateClasses('.st.err'), 'the mark this defect was found on').toEqual(['err']);
     expect(stateClasses('.kind > summary .st.err'), 'reached through an ancestor').toEqual(['err']);
-    expect(stateClasses('.band .dot.ok, .band .dot.warn'), 'a list keeps both').toEqual([
-      'ok',
-      'warn',
-    ]);
     expect(stateClasses('.st.err:hover'), 'a state that is also a target').toEqual(['err']);
     expect(stateClasses('.error'), 'a name that merely starts the same').toEqual([]);
     expect(
@@ -235,5 +264,28 @@ describe('the sheet a state class draws in', () => {
       'a state the selector is not',
     ).toEqual([]);
     expect(stateClasses('.row .what a'), 'a selector carrying no state at all').toEqual([]);
+  });
+
+  /**
+   * The list splitter's spellings, for the same reason: a list read as one
+   * selector hands every part its neighbour's tones, which is the defect the
+   * tone test now reads per part to avoid.
+   */
+  it('splits a selector list into its own selectors, and nothing wider', () => {
+    expect(selectorParts('.band .dot.ok, .band .dot.warn'), 'a list of two').toEqual([
+      '.band .dot.ok',
+      '.band .dot.warn',
+    ]);
+    expect(
+      selectorParts('.row.needs .dot, .row.auth .dot, .row.failed .dot'),
+      'a list the sheet already writes',
+    ).toEqual(['.row.needs .dot', '.row.auth .dot', '.row.failed .dot']);
+    expect(
+      selectorParts('.box:focus-within:not(.rec, .tr, .done, .err)'),
+      'a comma inside a function belongs to one selector',
+    ).toEqual(['.box:focus-within:not(.rec, .tr, .done, .err)']);
+    expect(selectorParts('.strip .ti .st.err'), 'a selector that is no list').toEqual([
+      '.strip .ti .st.err',
+    ]);
   });
 });
