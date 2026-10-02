@@ -1,12 +1,16 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
-  import Icon from '../components/Icon.svelte';
   import { clock, duration, money, tokens } from './numbers';
+  import { attributed, cached, elapsed } from './report';
+  import Strip from './Strip.svelte';
   import type { TurnInfo } from './units';
 
   /**
    * What a settled turn did, under the work it did it with: its wall clock, its
    * API time, and the tokens and cost the CLI reported.
+   *
+   * **The row itself is `Strip`'s**, which the box above the composer draws as
+   * well: the two are one row in two places, and its rules are one copy.
    *
    * **A field the record does not carry is held with a dash in the body and
    * dropped from the row.** Neither ever writes a zero for an absent value:
@@ -19,11 +23,11 @@
   const held = $derived(attributed(info));
 
   /**
-   * The tick a running row's clock moves on.
+   * The tick the body's clock moves on, which is the row's own tick.
    *
-   * The fold's span only grows when a frame lands, and a live turn can wait
-   * minutes on one call, so the row would otherwise freeze mid-turn - which is
-   * the very stretch a reader is watching the clock through.
+   * The body draws `elapsed` as a fact of its own, and it is the same figure
+   * the row leads with: a body left reading the clock once would freeze on the
+   * call that walks a turn past a minute.
    */
   let now = $state(Date.now());
   $effect(() => {
@@ -32,17 +36,6 @@
       now = Date.now();
     }, 1000);
     return () => clearInterval(id);
-  });
-
-  /**
-   * The elapsed the row leads with: the span its frames measure, plus the wait
-   * since the last one. Settled, it is the record's own clock.
-   */
-  const elapsed = $derived.by(() => {
-    if (!held.running) return duration(held.duration_ms);
-    const since = held.ended_at_utc === null ? 0 : now - Date.parse(held.ended_at_utc);
-    const waited = Number.isFinite(since) && since > 0 ? since : 0;
-    return duration((held.duration_ms ?? 0) + waited);
   });
 
   /** The turn's own clock, read from the instant it ended in the reader's zone. */
@@ -63,19 +56,8 @@
       : null,
   );
 
-  /**
-   * The share of this turn's input served from the cache, over every
-   * input-side counter.
-   *
-   * `null` when the record carries no cache read at all, which is a turn that
-   * never touched the cache rather than one that missed it entirely.
-   */
-  const cached = $derived.by(() => {
-    const read = held.cache_read_tokens;
-    if (read === null) return null;
-    const total = read + (held.input_tokens ?? 0) + (held.cache_written_tokens ?? 0);
-    return total === 0 ? null : Math.floor((read * 100) / total);
-  });
+  /** The share of this turn's input the cache served, by `report.ts`'s rule. */
+  const share = $derived(cached(held));
 
   /** What the body draws: a label and its figure, one fact per pair. */
   const facts = $derived.by(() => {
@@ -85,7 +67,7 @@
       // the row does not claim one.
       { label: 'ended', value: held.running ? dash : (ended ?? dash) },
       { label: 'model', value: held.model ?? dash },
-      { label: 'elapsed', value: elapsed },
+      { label: 'elapsed', value: elapsed(held, now) },
       { label: 'api', value: held.api_ms === null ? dash : duration(held.api_ms) },
       { label: 'local', value: local === null ? dash : `${duration(local)} tools + hooks` },
       {
@@ -107,75 +89,14 @@
         value: held.session_cost_usd === null ? dash : `${money(held.session_cost_usd)} cumulative`,
       },
     ];
-    if (cached !== null) pairs.push({ label: 'cached', value: `${cached}% of input` });
+    if (share !== null) pairs.push({ label: 'cached', value: `${share}% of input` });
     return pairs;
   });
-
-  /**
-   * The record with an unattributed usage block dropped.
-   *
-   * A frame whose counters are all zero is the CLI saying it has nothing to
-   * attribute, and a compaction result is that shape; a real zero inside a
-   * block that does carry counters is a measurement, and prints as one.
-   */
-  function attributed(info: TurnInfo): TurnInfo {
-    const nothing =
-      (info.input_tokens ?? 0) === 0 &&
-      (info.output_tokens ?? 0) === 0 &&
-      (info.cache_read_tokens ?? 0) === 0 &&
-      (info.cache_written_tokens ?? 0) === 0;
-    return nothing
-      ? {
-          ...info,
-          input_tokens: null,
-          output_tokens: null,
-          cache_read_tokens: null,
-          cache_written_tokens: null,
-        }
-      : info;
-  }
 </script>
 
 <details class="turninfo">
   <summary>
-    <!-- The mark follows the turn: a turn that did not finish leads with the
-         failure mark, and the line under this row carries its words. A check
-         above "Turn failed" is two signals disagreeing on one row. -->
-    {#if held.running}
-      <span class="st"><span class="ring"></span></span>
-    {:else if held.failed}
-      <Icon name="x" class="st err" />
-    {:else}
-      <Icon name="check" class="st" />
-    {/if}
-    <span>{elapsed}</span>
-    {#if held.running && held.thinking_tokens !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span>thinking {tokens(held.thinking_tokens)}</span>
-    {/if}
-    {#if held.input_tokens !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span
-        >{tokens(held.input_tokens)}{'\u{2191}'}{#if held.output_tokens !== null}
-          {tokens(held.output_tokens)}{'\u{2193}'}{/if}</span
-      >
-    {/if}
-    {#if cached !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span>{cached}% cached</span>
-    {/if}
-    {#if held.cache_written_tokens !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span>{tokens(held.cache_written_tokens)} written</span>
-    {/if}
-    <!-- The cumulative cost is the one figure only the Result carries, so a
-         running row has none: the segment is dropped rather than drawn with a
-         placeholder in it, which would read as a figure rather than as one it
-         has not been given. -->
-    {#if held.session_cost_usd !== null}
-      <span class="sep">{'\u{b7}'}</span>
-      <span>{money(held.session_cost_usd)} cumulative</span>
-    {/if}
+    <Strip info={held} />
     <Chevron />
   </summary>
   <!-- Each fact is a pair of its own, placed where it is: the design kept a

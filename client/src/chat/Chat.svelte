@@ -1,12 +1,21 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { VList } from 'virtua/svelte';
 
   import { subjectKey } from '../protocol';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Compacting from './Compacting.svelte';
-  import { Chat, NOTHING, type Conversation, type Turn as HeldTurn } from './conversation';
+  import {
+    Chat,
+    NOTHING,
+    beingWritten,
+    type Conversation,
+    type Turn as HeldTurn,
+  } from './conversation';
+  import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
+  import { fold, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -69,8 +78,12 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /** The newest turn, which is the one a running row is folded for. */
+  const newestTurn = $derived(
+    held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
+  );
   /** The newest turn's key: the row a compaction in flight belongs under. */
-  const newest = $derived(held.turns[held.turns.length - 1]?.key ?? null);
+  const newest = $derived(newestTurn?.key ?? null);
   let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
   /**
    * Pages of older turns asked for and not yet answered.
@@ -211,6 +224,101 @@
    * here so the follow re-sticks when the line appears.
    */
   const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+
+  /**
+   * The newest turn's own report row - the unit, and the figures in it -
+   * folded the way the turn folds itself.
+   *
+   * **One fold and one pick, because the row has two readers**: the pin draws
+   * it, and the turn's own copy of it stands aside. Which row that is is
+   * answered here rather than worked out again at each of them.
+   */
+  const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
+    const turn = newestTurn;
+    if (turn === null) return null;
+    const units = fold(turn.messages, cwd, slot, beingWritten(turn));
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
+    }
+    return null;
+  });
+
+  /**
+   * How long the finished row holds before it detaches into the turn.
+   *
+   * **A twin of the composer's beat rather than one shared value**: that one
+   * holds a landed take's border green (`Composer.svelte`), this one holds a
+   * finished turn's row, and the two are the same idiom at the same length.
+   */
+  const BEAT_MS = 450;
+
+  /** The turn whose row the pin is holding, which is what the beat is about. */
+  let carried: string | null = $state(null);
+  /** Whether the row being held is the finished one, on its beat before it detaches. */
+  let beating = $state(false);
+  /** The beat's own timer, held rather than returned as a cleanup: a frame arriving mid-beat re-runs this effect. */
+  let beatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function stopBeat(): void {
+    if (beatTimer !== null) {
+      clearTimeout(beatTimer);
+      beatTimer = null;
+    }
+  }
+
+  // The pin follows the newest turn: a turn being written takes the row, and a
+  // turn that finished under the pin keeps it for one beat before it detaches
+  // into the turn.
+  //
+  // **The effect re-runs on every frame**, so what it reads of its own state it
+  // reads untracked - a tracked read of `carried` would make its own write a
+  // reason to run again, and the beat a reason to re-arm itself forever.
+  $effect(() => {
+    const which = newest;
+    const holding = newestRow !== null && newestRow.info.running;
+    if (which === null || newestRow === null) return;
+    if (holding) {
+      // A turn being written takes the row back, whichever turn was beating
+      // under it - the next turn can start inside the last one's beat.
+      if (untrack(() => carried) !== which || untrack(() => beating)) {
+        carried = which;
+        beating = false;
+        stopBeat();
+      }
+      return;
+    }
+    // A row that arrived finished is the turn's own, not the pin's: only the
+    // turn this column watched run is carried over, and only once.
+    if (untrack(() => carried) !== which || untrack(() => beating)) return;
+    carried = which;
+    beating = true;
+    stopBeat();
+    beatTimer = setTimeout(() => {
+      beating = false;
+      carried = null;
+      beatTimer = null;
+    }, BEAT_MS);
+  });
+
+  // The timer goes with the column, which is the one thing the effect above
+  // cannot do for itself.
+  $effect(() => () => stopBeat());
+
+  /**
+   * The row the pin is holding right now, if any: the whole of the turn being
+   * written, and the beat after it ends.
+   *
+   * **One fact with two readers**, and it is the ROW rather than a yes: the
+   * pin draws it, and the turn's own copy of that same row stands aside. The
+   * key is checked rather than trusted, so a beat that outlived its turn - an
+   * occupant swapped under the page - holds nothing.
+   */
+  const pinned = $derived(
+    newestRow !== null && (newestRow.info.running || (beating && carried === newest))
+      ? newestRow
+      : null,
+  );
 
   /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.
@@ -359,8 +467,20 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {cwd} {slot} compacting={compacting && turn.key === newest} />
+        <Turn
+          {turn}
+          {cwd}
+          {slot}
+          compacting={compacting && turn.key === newest}
+          carried={turn.key === newest ? (pinned?.key ?? null) : null}
+        />
       </div>
     {/snippet}
   </VList>
+  <!-- Outside the list rather than in it, which is what makes the row pinned:
+       the turns scroll under it, and the answer to whether the turn is still
+       being written stops depending on where the reader is looking. It is a
+       sibling of the scroller rather than a row of the grid, so the composer
+       and the dock - both drawn under this column - never have to know it. -->
+  <Pinned info={pinned?.info ?? null} />
 {/if}

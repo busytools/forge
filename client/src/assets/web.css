@@ -980,6 +980,26 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   font-display: swap;
 }
 
+/* ---------- the strip pinned above the box ---------- */
+
+/* The running turn's metadata row, pinned above the composer for exactly as
+   long as the turn is incomplete. It shares the box's edges and sits outside
+   its ring, so the row's height is the only thing it ever costs the column.
+   Its fields are the settled row's own, under `.turninfo`, and its element is
+   the flex row the fields wrap in - the strip renders no box of its own.
+   No margin of its own: it lands in the space the grid already leaves between
+   the column and the composer's slot, which is what puts it nearer the box
+   than the turn above it. */
+.strip { flex: none; padding: 8px 13px 9px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
+.strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
+  font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+/* Wrap between fields, never inside one: a broken token pair reads as two
+   numbers rather than as in and out. */
+.strip .ti > span { white-space: nowrap; }
+.strip .ti .sep { opacity: .5; }
+.strip .ti .st.err { color: var(--bad); }
+
 /* ---------- the composer ----------
    Taken from the mock at docs/book/src/ui/client/web-composer.html: the box, the list
    that opens over it, the dictation row inside it, the states that replace
