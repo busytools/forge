@@ -121,10 +121,10 @@ bench:
 # `client/stryker.conf.json`; a run reports a score per file and lists every
 # mutant that survived, which is a list of assertions that look like they test
 # something and do not. Mutating the Svelte components is out on purpose: a
-# full render per mutant finds much less than it costs, and `src/wire/limits.ts`
-# is out for the same reason a file earns its place: it is one numeric literal,
-# Stryker has no mutator for one, and a run against it prints an n/a row with
-# "Ran NaN tests per mutant" that reads as a clean module.
+# full render per mutant finds much less than it costs. `src/wire/limits.ts` is
+# out because it cannot earn a place in a run that scores files: it is one
+# numeric literal, Stryker has no mutator for one, and a run against it prints
+# an n/a row with "Ran NaN tests per mutant" that reads as a clean module.
 #
 # This drives Stryker's `command` runner rather than the vitest runner, and
 # the reason is worth keeping: the vitest runner filters a mutant's tests by a
