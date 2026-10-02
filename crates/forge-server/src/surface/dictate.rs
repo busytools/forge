@@ -26,9 +26,10 @@ pub struct DictateView {
     pub models_dir: Option<PathBuf>,
     /// The input a pick has moved this process to, over the configured pin.
     ///
-    /// `SetDictateDevice` crossed the wire and nothing read it back, so a
-    /// client could move the device and had no way to see where it had moved
-    /// it to. `None` means the pin stands.
+    /// The read path for it, as `SessionState::dictate_overrides` is for the
+    /// session's axes: a client that did not watch the pick being made (a cold
+    /// load, a reconnect) gets where it moved to here. `None` means the pin
+    /// stands.
     pub device: Option<forge_workspace::DictateDeviceChoice>,
 }
 

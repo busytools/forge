@@ -1364,12 +1364,23 @@ mod tests {
         assert_eq!(binding.lock().dictate_overrides, DictateOverrides::default());
 
         let mut echoes = 0;
+        let mut last = None;
         while let Ok(update) = updates.try_recv() {
             if matches!(update, SessionUpdate::DictateOverrides { .. }) {
                 echoes += 1;
+                last = Some(update);
             }
         }
         assert_eq!(echoes, 3, "each set echoes, and the reset does too");
+
+        // **The cleared set is a PRESENT object of nulls, not silence**: a skip
+        // on an empty set would leave a client's stale set standing on every
+        // reset, with both stacks green.
+        let frame = serde_json::to_value(last.expect("the reset's own echo")).expect("serialise");
+        assert!(
+            frame["dictate_overrides"].get("overrides").is_some(),
+            "the reset echo must carry its overrides key, got: {frame}"
+        );
     }
 
     #[test]

@@ -17,16 +17,17 @@
 import { fold } from '../chat/units';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
-import type {
-  ComposerState,
-  Conversation,
-  Effort,
-  McpConnection,
-  McpServers,
-  ModelFacts,
-  PermissionMode,
-  SessionHeader,
-  SessionRecord,
+import {
+  overridesFrom,
+  type ComposerState,
+  type Conversation,
+  type Effort,
+  type McpConnection,
+  type McpServers,
+  type ModelFacts,
+  type PermissionMode,
+  type SessionHeader,
+  type SessionRecord,
 } from './wire';
 
 /** `EffortLevel`, as the core's own enum serialises. */
@@ -173,6 +174,23 @@ export const HANDLERS: Record<string, Apply> = {
     return withTake(held, { ...take, progress: [done, total] }, null);
   },
 
+  /**
+   * The whole set a `/dictate` edit left behind, which the core echoes after
+   * every set and reset.
+   *
+   * **A handler rather than a `UNFED` entry**: the core emits this update, and
+   * a poll's merge read is for the slices no frame carries. A payload naming
+   * no set therefore leaves the held one standing, rather than reading the
+   * axes off a name nothing sent and reporting the crate defaults as the
+   * session's own.
+   */
+  dictate_overrides: (held, payload) => {
+    const overrides = payload['overrides'];
+    return overrides === undefined
+      ? held
+      : { ...held, dictate_overrides: overridesFrom(overrides) };
+  },
+
   dictate_ended: (held, payload) => {
     const take = heldTake(held.composer);
     const outcome = outcomeOf(payload['outcome']);
@@ -217,9 +235,7 @@ export const REPLACES: readonly string[] = [
  * They are the rest of the stream: the fleet's own news, the composer's
  * queued-send bridge, the connector echoes, the plugin and account catalogue.
  * A page hears them because a connection carries every subject's frames, and
- * the record has no field for most of them. `dictate_overrides` is the
- * exception - the field exists and nothing fills it: no variant writes it
- * (#1467), and the read does not reach it (#1582).
+ * the record has no field for most of them.
  */
 export const IGNORED: readonly string[] = [
   'accounts_changed',
@@ -229,7 +245,6 @@ export const IGNORED: readonly string[] = [
   'cron_prompt_appended',
   'dictate_availability',
   'dictate_device_pin',
-  'dictate_overrides',
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',

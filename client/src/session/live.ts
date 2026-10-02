@@ -35,7 +35,7 @@ import { sessionFrom, type SessionRecord } from './wire';
 /**
  * How often the slices no update carries are read.
  *
- * A read is a whole encode, and the nine slices it is asked for are the
+ * A read is a whole encode, and the slices a poll takes from it are the
  * slowest-moving part of the record - a git scan and a process walk do not
  * change between one frame and the next - so this is the coarsest read that
  * keeps a page honest rather than the cheapest that keeps it moving.

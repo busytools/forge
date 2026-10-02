@@ -830,17 +830,32 @@ describe('the account chip', () => {
 
 /**
  * The dictation axes a session has overridden, which the composer's panel
- * reads to know what is in force. The record carries them; before this nothing
- * in the client read them at all, so a panel would have drawn the crate's
- * defaults as though they were the reader's.
+ * reads to know what is in force.
+ *
+ * **They are nested under `state`, which is where the server assembles them and
+ * where its own committed fixture carries them** - this file's `session` is
+ * that fixture's byte-pinned copy (`salvage.test.ts`), so the path here is the
+ * wire's rather than one this test invented.
  */
 describe('the dictation overrides', () => {
+  /**
+   * The fixture's record, with the axes a session set where the wire holds them.
+   * The parameter is the wire's shape, not the narrowed one: a case below feeds
+   * a value this client is older than.
+   */
+  const withOverrides = (overrides: Record<string, unknown>): Record<string, unknown> => ({
+    ...session,
+    state: { ...session.state, dictate_overrides: overrides },
+  });
+
   it('reads the axes in force, unset ones included', () => {
-    const held = sessionFrom({
-      ...session,
-      dictate_overrides: { styling: 'casual', structure: null, context: 'email' },
-    });
-    expect(held.dictate_overrides).toEqual({
+    const held = sessionFrom(
+      withOverrides({ styling: 'casual', structure: null, context: 'email' }),
+    );
+    expect(
+      held.dictate_overrides,
+      'the axes the wire nests under state never reached the record',
+    ).toEqual({
       styling: 'casual',
       structure: null,
       context: 'email',
@@ -848,10 +863,9 @@ describe('the dictation overrides', () => {
   });
 
   it('reads an axis this client is older than as unset, not as the session choice', () => {
-    const held = sessionFrom({
-      ...session,
-      dictate_overrides: { styling: 'operatic', structure: 'lists', context: null },
-    });
+    const held = sessionFrom(
+      withOverrides({ styling: 'operatic', structure: 'lists', context: null }),
+    );
     expect(held.dictate_overrides.styling, 'a value nothing here knows').toBeNull();
     expect(held.dictate_overrides.structure, 'and the ones it does').toBe('lists');
   });

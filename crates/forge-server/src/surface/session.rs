@@ -14,10 +14,11 @@ pub struct SessionState {
     pub scan_cwd: PathBuf,
     /// What this session dictates with, where it has overridden the defaults.
     ///
-    /// Carried because three commands set it and nothing read it back: a
-    /// client could change a session's dictation and had no way to see what
-    /// it had set. The app-level device pick rides the dictate read instead,
-    /// because it is one answer for the process rather than the session.
+    /// The read path for it: a client that did not watch the change being made
+    /// (a cold load, a reconnect) gets the whole set here, where the update
+    /// stream speaks only after a change. The app-level device pick rides the
+    /// dictate read instead, because it is one answer for the process rather
+    /// than the session.
     pub dictate_overrides: forge_workspace::DictateOverrides,
 }
 

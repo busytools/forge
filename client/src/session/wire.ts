@@ -215,7 +215,8 @@ function axis<T extends string>(value: unknown, known: T[]): T | null {
   return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : null;
 }
 
-function overridesFrom(value: unknown): DictateOverrides {
+/** The three axes a read or an update carries, narrowed once as they enter. */
+export function overridesFrom(value: unknown): DictateOverrides {
   const held = record(value);
   return {
     styling: axis(held['styling'], STYLINGS),
@@ -298,14 +299,15 @@ export function sessionFrom(data: unknown): SessionRecord {
   const held = record(data);
   const header = record(held['header']);
   const raw = record(header['model']);
+  const state = record(held['state']);
 
   return {
     // The record's own address, read as the triple it is: every command this
     // page dispatches and every update it routes carries one, and the server
     // is the only thing that decides what a valid one looks like.
     slot: held['slot'] as SessionSlot,
-    state: { scan_cwd: text(record(held['state'])['scan_cwd']) ?? '' },
-    dictate_overrides: overridesFrom(held['dictate_overrides']),
+    state: { scan_cwd: text(state['scan_cwd']) ?? '' },
+    dictate_overrides: overridesFrom(state['dictate_overrides']),
     header: {
       session_id: text(header['session_id']),
       model:

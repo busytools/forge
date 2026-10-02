@@ -570,6 +570,60 @@ describe('applyUpdate', () => {
     });
   });
 
+  /**
+   * The override set a `/dictate` edit leaves behind. The core echoes the whole
+   * set on an update of its own after every set and reset - so it is folded,
+   * the way the terminal's own arm folds it, rather than left to a read.
+   */
+  describe('the dictation overrides', () => {
+    it('takes the whole set a dictate_overrides carries', () => {
+      const next = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: 'lists', context: null },
+        },
+      });
+
+      expect(next.dictate_overrides, 'the set the update carried never reached the record').toEqual(
+        { styling: 'formal', structure: 'lists', context: null },
+      );
+    });
+
+    it('leaves a held set standing for a payload that carries none', () => {
+      const held = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: null, context: null },
+        },
+      });
+
+      const next = applyUpdate(held, { dictate_overrides: { key: SLOT } });
+
+      expect(next, 'a payload naming no set wrote the crate defaults over the held one').toBe(held);
+    });
+
+    it('clears the axes for the reset echo, which carries the set as nulls', () => {
+      const held = applyUpdate(empty(), {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: 'formal', structure: 'lists', context: 'email' },
+        },
+      });
+
+      const next = applyUpdate(held, {
+        dictate_overrides: {
+          key: SLOT,
+          overrides: { styling: null, structure: null, context: null },
+        },
+      });
+
+      expect(
+        next.dictate_overrides,
+        'the reset echo did not clear the axes the session had set',
+      ).toEqual({ styling: null, structure: null, context: null });
+    });
+  });
+
   describe('what it does not handle', () => {
     it('leaves the record alone for a variant it does not handle', () => {
       const held = empty();
@@ -589,7 +643,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 56 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 57 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
