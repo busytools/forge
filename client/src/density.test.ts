@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest';
  * The conversation's density, pinned to numbers.
  *
  * **Read off the sheet, not off the DOM.** Every property here is spacing -
- * leading, a margin, a padding, a measure - and a markup assertion cannot see
- * any of them; a rule that is present but never matches an element is
- * invisible to a layout assertion too. So these read the declarations, the way
+ * leading, a margin, a padding - and a markup assertion cannot see any of
+ * them; a rule that is present but never matches an element is invisible to a
+ * layout assertion too. So these read the declarations, the way
  * `contrast.test.ts` reads the tokens and `Session.test.ts` reads a rule body.
  *
  * **The numbers are the terminal's.** `scripts/density/measure.mjs` measures
@@ -103,19 +103,6 @@ describe("the conversation draws at the terminal's density", () => {
   it('leads the conversation at 1.35', () => {
     expect(declared('.conv', 'line-height')).toBe('1.35');
     expect(declared('.code pre', 'line-height')).toBe('1.35');
-  });
-
-  /**
-   * **The measure, capped.** Nothing in the sheet bounded it, so prose ran the
-   * full width of a wide window - 147 characters at 1600px - and the eye lost
-   * the return sweep. 80ch is just above the 65-75 a proportional face wants,
-   * which is where a monospace column reads: the fixed advance is what lets it
-   * run wider than a book, and 80 columns is the habit this interface is
-   * shaped after. It binds only once the column would pass 80 characters, so
-   * an ordinary window and a collapsed rail both leave it alone.
-   */
-  it('caps the conversation measure at 80 characters', () => {
-    expect(declared('.conv .turn', 'max-width')).toBe('80ch');
   });
 
   /**

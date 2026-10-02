@@ -254,11 +254,6 @@
      fit a descender under a line of monospace. */
   .conv { overflow-y: auto; flex: 1; padding: 2px 8px 12px 0; scrollbar-gutter: stable;
     line-height: 1.35; }
-  /* The measure, capped, so prose cannot run the full width of a wide window and
-     lose the eye on the return sweep. The app caps `.turn`, which wraps both
-     blocks of a turn; this drawing has no `.turn`, so the cap takes the two
-     blocks it does have. */
-  .conv > .mine, .conv > .work { max-width: 80ch; }
   .conv::-webkit-scrollbar { width: 8px; }
   .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
   .conv::-webkit-scrollbar-track { background: transparent; }
