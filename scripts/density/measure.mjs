@@ -40,11 +40,10 @@ const WORK = path.join('/tmp', 'forge-density');
 /**
  * The terminal renders at this many columns; the client is fitted to match.
  *
- * 80 is the measure the sheet itself caps the conversation at, so the fitted
- * column and the cap coincide and the comparison is taken at what ships. It is
- * also a fixed point across a before/after pair: measured at a wider column
- * the cap would bind in the after run and not in the before, and the two would
- * not be the same comparison.
+ * 80 is the instrument's own fixed point rather than a value the sheet
+ * carries: the two views are compared at the same line length, and a target
+ * that moved with the sheet would let a bound in one revision bind in that run
+ * alone, so a before/after pair would be two different comparisons.
  */
 const COLUMNS = Number(process.env.DENSITY_COLUMNS ?? 80);
 
@@ -57,7 +56,7 @@ const COLUMNS = Number(process.env.DENSITY_COLUMNS ?? 80);
  */
 const SHEET = process.env.DENSITY_CSS ?? path.join(CLIENT, 'src', 'assets', 'web.css');
 
-/** A wide window, for the reading that shows whether the measure is capped. */
+/** A wide window, for the reading of the measure the window alone gives. */
 const WIDE = Number(process.env.DENSITY_WIDE ?? 1600);
 
 /**
