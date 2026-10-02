@@ -217,7 +217,8 @@ export const REPLACES: readonly string[] = [
  * They are the rest of the stream: the fleet's own news, the composer's
  * queued-send bridge, the connector echoes, the plugin and account catalogue.
  * A page hears them because a connection carries every subject's frames, and
- * the record has no field for any of them.
+ * the record has no field for most of them. `dictate_overrides` is the
+ * exception - the field exists and no variant writes it (#1467).
  */
 export const IGNORED: readonly string[] = [
   'accounts_changed',

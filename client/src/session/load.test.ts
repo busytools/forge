@@ -448,12 +448,16 @@ describe('what one arriving frame costs the inspector', () => {
    * avoid. The case above is this one's control: it shows a poll that ran.
    */
   it("takes the record's own dispatch answer from what the poll answered with", () => {
-    const fields: Record<string, unknown> = { has_dispatches: false };
+    const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };
     const server = open([], fields);
     expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
 
-    // The seat dispatches; the server's own fold records it on append.
+    // The seat dispatches; the server's own fold records it on append. The
+    // answer also carries a field a frame feeds, which is the other half of
+    // the claim: a merge keeps this page's value for it, a replacement does
+    // not.
     fields['has_dispatches'] = true;
+    fields['mcp'] = { servers: [{ name: 'forge', status: 'connected', tools: [] }], error: null };
     vi.advanceTimersByTime(POLL_MS + 1);
     flushSync();
 
@@ -461,6 +465,9 @@ describe('what one arriving frame costs the inspector', () => {
     expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
     expect(keys, `a poll's answer did not reach the section: ${JSON.stringify(keys)}`).toContain(
       'sec-subagents',
+    );
+    expect(keys, 'the answer replaced the record rather than merging into it').not.toContain(
+      'sec-mcp servers',
     );
   });
 });
