@@ -83,6 +83,14 @@ impl Live {
         self.attached.contains_key(slot)
     }
 
+    /// Whether the seat is mid-compaction, which the status frames are the
+    /// only place either way is said. Read rather than re-derived: what makes
+    /// a held reading wrong rather than merely old is the transcript having
+    /// shrunk under it, and this is the state that says so.
+    pub fn is_compacting(&self, slot: &SessionSlot) -> bool {
+        self.composer.compacting(slot)
+    }
+
     /// Fold one update in, answering what it asks of each page.
     ///
     /// The filter is what keeps a busy turn from re-sending the fleet for
