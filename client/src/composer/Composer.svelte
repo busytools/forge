@@ -64,9 +64,8 @@
   /**
    * The words a landed take has already put in the draft, so they land once.
    *
-   * Deliberately not `$state`: nothing draws from it, and the effect below is
-   * its only reader - a reactive copy would make that effect depend on what it
-   * writes, so it would tear its own green beat down on the next run.
+   * Deliberately not `$state`: nothing draws from it, and a reactive copy would
+   * make the effect below depend on what it writes.
    */
   let landed: string | null = null;
   /**
@@ -81,8 +80,17 @@
   let sawTake = false;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   let dismissed = $state<string | null>(null);
-  /** One green beat while a take's words settle into the draft. */
-  let beat = $state(false);
+  /**
+   * When a landed take's words settled into the box, and nothing else: the
+   * whole of the beat's state.
+   *
+   * The window below is read against it rather than remembered as a flag a
+   * timer clears, so the close cannot be lost with its timer. The terminal
+   * keeps its afterglow the same way, from a start instant.
+   */
+  let beatAt = $state<number | null>(null);
+  /** The clock the beat's window is read against, which the close below moves. */
+  let clock = $state(Date.now());
   /** The draft the reader closed the list at, which typing clears. */
   let closed = $state<string | null>(null);
   /** Which row a key would take, which is the first until one moves it. */
@@ -98,6 +106,19 @@
 
   const composer = $derived(composerState(record));
   const ask = $derived(pendingAsk(record));
+  /** Whether the landed beat's window is still open. */
+  const beat = $derived(beatAt !== null && clock - beatAt < BEAT_MS);
+
+  /**
+   * What the ring is doing: one state rather than three that can overlap.
+   *
+   * A live take owns the ring, and the landed beat reaches it only when no take
+   * does.
+   */
+  const ring = $derived.by(() => {
+    if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
+    return beat ? 'done' : null;
+  });
 
   /** What the reader wrote in the dock's box, which a landed take has to reach. */
   let dockDraft = $state('');
@@ -187,9 +208,8 @@
    * A landed take puts its words where the reader was about to type, then the
    * box takes one green beat.
    *
-   * Tracked only on the notice: the draft is read through `untrack`, because an
-   * effect that re-ran on the draft it writes would tear down its own timer and
-   * leave the box green.
+   * Tracked on the notice alone: the draft is read through `untrack`, so what
+   * this effect writes cannot re-run it.
    */
   $effect(() => {
     const held = composer.notice;
@@ -215,16 +235,29 @@
         held.text,
       );
     }
-    beat = true;
+    beatAt = Date.now();
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
     // frame. When the words went to the dock this handle still holds the element
     // the prompt replaced - destroyed with the box, so detached, and taking no
     // focus - and the dock brings its own box back from its `land`.
     field?.focus();
+  });
+
+  /**
+   * Close the beat's window, which is the one repaint it owes.
+   *
+   * The window is a comparison and this only its schedule: every run arms from
+   * the landing's own instant, and the write is the deadline itself, so an
+   * early fire still closes the window.
+   */
+  $effect(() => {
+    const at = beatAt;
+    if (at === null) return;
+    const left = at + BEAT_MS - Date.now();
     const timer = setTimeout(() => {
-      beat = false;
-    }, BEAT_MS);
+      clock = at + BEAT_MS;
+    }, left);
     return () => clearTimeout(timer);
   });
 
@@ -519,9 +552,9 @@
     {/if}
     <div
       class="box"
-      class:rec={composer.take?.phase === 'recording'}
-      class:tr={composer.take?.phase === 'transcribing'}
-      class:done={beat}
+      class:rec={ring === 'rec'}
+      class:tr={ring === 'tr'}
+      class:done={ring === 'done'}
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
