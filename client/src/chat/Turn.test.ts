@@ -208,7 +208,9 @@ describe('one turn, as the page draws it', () => {
       },
     );
 
-    expect(body, 'the run is a row of the turn rather than a drop').toContain('class="hookrun"');
+    expect(body, 'the run is a row of the turn rather than a drop').toContain(
+      'class="leaf hookrow"',
+    );
     // The summary alone, because the output is in the body too: an assertion on
     // the whole render passes whether or not the state reached the closed row.
     const at = body.indexOf('<summary');
@@ -466,11 +468,11 @@ describe('one turn, as the page draws it', () => {
     expect(at('Compacting context'), 'and above the report row').toBeLessThan(at('turninfo'));
   });
 
-  it('puts the compaction line above a hook run that landed after the result', () => {
+  it('draws a hook run that landed after the result in the group, line and all', () => {
     // A Stop hook's frames arrive at the turn's end, after the result that
-    // settled it, so that row is trailing furniture of the same family as the
-    // chip - the chip IS a hook summary. Left out of the footer set, where the
-    // line draws would depend on whether a hook happened to fire.
+    // settled it. The run is work the turn did, so it rides the group like
+    // any other lane - and the compaction line, which marks where the cut
+    // will land, draws at the turn's end after that work.
     const body = compacting(
       said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
       {
@@ -492,9 +494,13 @@ describe('one turn, as the page draws it', () => {
     );
 
     const at = (marker: string): number => body.indexOf(marker);
+    expect(
+      at('class="leaf hookrow"'),
+      'the run drew, in the group it belongs to',
+    ).toBeGreaterThanOrEqual(0);
     expect(at('Compacting context'), 'the line is drawn').toBeGreaterThanOrEqual(0);
-    expect(at('Compacting context'), 'and above the hook run that landed last').toBeLessThan(
-      at('hookrun'),
+    expect(at('Compacting context'), "and at the turn's end, after the work").toBeGreaterThan(
+      at('class="leaf hookrow"'),
     );
   });
 

@@ -5,7 +5,6 @@
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
-  import Hook from './Hook.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
@@ -117,16 +116,16 @@
   });
 
   /**
-   * The index the turn's trailing furniture starts at: the hooks chip, the
-   * report row, and a hook's own run.
+   * The index the turn's trailing furniture starts at: the hooks chip and the
+   * report row.
    *
-   * **A hook run belongs here because it is the chip's own family, and the
-   * state where that decides anything is captured.** In `compact.jsonl` a
-   * `SessionStart:compact` run's frames land between the `status: compacting`
-   * frame and the one that clears it, so a run arriving while a compaction is
-   * in flight is a shape the corpus holds - and that is the state where this
-   * set decides where the line draws. Left out, the line's place would depend
-   * on whether a hook happened to fire.
+   * **The chip belongs here, and the state where that decides anything is
+   * captured.** In `compact.jsonl` a `SessionStart:compact` run's frames land
+   * between the `status: compacting` frame and the one that clears it, so
+   * frames arriving while a compaction is in flight is a shape the corpus
+   * holds - and that is the state where this set decides where the line
+   * draws. Left out, the line's place would depend on whether a hook happened
+   * to fire.
    *
    * **Whether a Stop hook's frames also arrive after the result that settled
    * the turn is open**, and none of the above rests on it: no capture holds
@@ -136,7 +135,7 @@
     let at = units.length;
     while (at > 0) {
       const kind = units[at - 1]?.kind;
-      if (kind !== 'hooks' && kind !== 'report' && kind !== 'hook') break;
+      if (kind !== 'hooks' && kind !== 'report') break;
       at -= 1;
     }
     return at;
@@ -189,8 +188,6 @@
             postTokens={unit.postTokens}
             summary={unit.summary}
           />
-        {:else if unit.kind === 'hook'}
-          <Hook run={unit.run} />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

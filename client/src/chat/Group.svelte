@@ -4,11 +4,12 @@
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { iconOf } from './families';
+  import Hook from './Hook.svelte';
   import { opensByDefault, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine, paragraphs } from './text';
-  import type { Lane, MessageKind, PeerCard } from './units';
+  import type { HookLeaf, Lane, MessageKind, PeerCard } from './units';
 
   /** A thought as its lane draws it: the words, and the row's line rendered. */
   type DrawnThought = { key: string; text: string; lead: string };
@@ -60,6 +61,7 @@
             calls: lane.calls,
             cards: [] as PeerCard[],
             thoughts: [] as DrawnThought[],
+            hooks: [] as HookLeaf[],
           }
         : lane.tag === 'message'
           ? {
@@ -69,21 +71,33 @@
               calls: [] as ToolLeaf[],
               cards: lane.cards,
               thoughts: [] as DrawnThought[],
+              hooks: [] as HookLeaf[],
             }
-          : {
-              key: 't:think',
-              glyph: 'brain',
-              label: 'thinking',
-              calls: [] as ToolLeaf[],
-              cards: [] as PeerCard[],
-              // The row's line is the text joined and unblocked, its inline
-              // marks rendered: a preview cannot draw a heading, and it can
-              // draw emphasis and code.
-              thoughts: lane.thoughts.map((thought) => ({
-                ...thought,
-                lead: renderInlineProse(joinedLine(thought.text)),
-              })),
-            },
+          : lane.tag === 'thought'
+            ? {
+                key: 't:think',
+                glyph: 'brain',
+                label: 'thinking',
+                calls: [] as ToolLeaf[],
+                cards: [] as PeerCard[],
+                // The row's line is the text joined and unblocked, its inline
+                // marks rendered: a preview cannot draw a heading, and it can
+                // draw emphasis and code.
+                thoughts: lane.thoughts.map((thought) => ({
+                  ...thought,
+                  lead: renderInlineProse(joinedLine(thought.text)),
+                })),
+                hooks: [] as HookLeaf[],
+              }
+            : {
+                key: 'h:hook',
+                glyph: 'cmd',
+                label: 'hook',
+                calls: [] as ToolLeaf[],
+                cards: [] as PeerCard[],
+                thoughts: [] as DrawnThought[],
+                hooks: lane.runs,
+              },
     ),
   );
 
@@ -124,6 +138,9 @@
             </div>
           </div>
         </details>
+      {/each}
+      {#each lane.hooks as held (held.key)}
+        <Hook run={held.run} />
       {/each}
       {#each lane.thoughts as thought (thought.key)}
         <!-- The body is markdown: the model writes its reasoning in headings,

@@ -150,8 +150,28 @@ export interface ThoughtLane {
   thoughts: ThoughtLeaf[];
 }
 
-/** One lane of a group: a family's calls, peer traffic, or the thinking. */
-export type Lane = FamilyLeaves | MessageLane | ThoughtLane;
+/** One hook run, as a lane's row. */
+export interface HookLeaf {
+  /** The run's own id, or the frame it arrived on where the wire gave none. */
+  key: string;
+  run: HookRun;
+}
+
+/**
+ * One lane of hooks: the runs that fired across a stretch of work.
+ *
+ * A run is one row - its start, its progress and its ending are the same hook
+ * arriving three times - and the lane rides the group the way the thinking
+ * does, so a hook that fires between two calls sits among them in the recency
+ * order rather than as a row of its own kind.
+ */
+export interface HookLane {
+  tag: 'hook';
+  runs: HookLeaf[];
+}
+
+/** One lane of a group: a family's calls, peer traffic, the thinking, hooks. */
+export type Lane = FamilyLeaves | MessageLane | ThoughtLane | HookLane;
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -291,8 +311,6 @@ export type Unit =
       postTokens: number | null;
       summary: string | null;
     }
-  /** One hook's own run, drawn collapsed on the hook and the state it reached. */
-  | { kind: 'hook'; key: string; run: HookRun }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -1216,7 +1234,8 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   type Item =
     | { tag: 'call'; row: KindRow; label: string; leaf: ToolLeaf; key: string }
     | { tag: 'card'; card: PeerCard }
-    | { tag: 'thought'; key: string; text: string };
+    | { tag: 'thought'; key: string; text: string }
+    | { tag: 'hook'; key: string; run: HookRun };
   let pending: Item[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
@@ -1247,11 +1266,6 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     { input: number; output: number; read: number; written: number }
   >();
   /**
-   * The row each hook run opened, by the id the CLI ties its frames together
-   * with: a run's later frames rewrite that row rather than drawing beside it.
-   */
-  const hookRows = new Map<string, number>();
-  /**
    * The row the last boundary opened, by index, so the continuation prompt
    * that follows it lands on that row rather than drawing as the reader's.
    */
@@ -1268,6 +1282,33 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     for (const held of skillCalls) {
       if (held.leaf.skill !== null || !namesSkill(held.want, name)) continue;
       held.leaf.skill = body;
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Rewrite the row a hook run opened, wherever it currently sits.
+   *
+   * A later frame of one run replaces that run's row rather than drawing
+   * beside it - and the replacement counts as the stretch's latest, which is
+   * what the lane order reads, so a run still working sits at the group's end.
+   */
+  const rewriteHook = (key: string, run: HookRun): boolean => {
+    for (const [index, item] of pending.entries()) {
+      if (item.tag !== 'hook' || item.key !== key) continue;
+      pending.splice(index, 1);
+      pending.push({ tag: 'hook', key, run });
+      return true;
+    }
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit?.kind !== 'group') continue;
+      const lane = unit.lanes.find(
+        (held): held is HookLane => held.tag === 'hook' && held.runs.some((one) => one.key === key),
+      );
+      if (lane === undefined) continue;
+      lane.runs = lane.runs.map((held) => (held.key === key ? { key, run } : held));
       return true;
     }
     return false;
@@ -1338,6 +1379,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     const families: Array<{ lane: FamilyLeaves; at: number }> = [];
     const traffic: Array<{ lane: MessageLane; at: number }> = [];
     const thought: Array<{ lane: ThoughtLane; at: number }> = [];
+    const hooks: Array<{ lane: HookLane; at: number }> = [];
     /** What each row came back as, which is what the group's roll-up reads. */
     const statuses: CallStatus[] = [];
     for (const [index, item] of items.entries()) {
@@ -1370,6 +1412,19 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         }
         continue;
       }
+      if (item.tag === 'hook') {
+        const held = hooks[0];
+        if (held === undefined) {
+          hooks.push({
+            lane: { tag: 'hook', runs: [{ key: item.key, run: item.run }] },
+            at: index,
+          });
+        } else {
+          held.lane.runs.push({ key: item.key, run: item.run });
+          held.at = index;
+        }
+        continue;
+      }
       statuses.push(item.card.status);
       // One lane per kind, not one per run: a lane's word is what a view opens
       // its leaves by, and two lanes of the same kind would give two lanes the
@@ -1388,7 +1443,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     // The lane that took the latest row draws last: the one still working sits
     // where the eye already is, and the order derives from the item sequence,
     // so a page reopened from the transcript draws what the live one drew.
-    const lanes = [...families, ...traffic, ...thought]
+    const lanes = [...families, ...traffic, ...thought, ...hooks]
       .sort((a, b) => a.at - b.at)
       .map((entry) => entry.lane);
     units.push({
@@ -1487,9 +1542,10 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         continue;
       }
       // A hook's own lifecycle: one row per RUN, because the frames are one
-      // hook's start, its interim output and its ending. It closes the run
-      // above it, the way the summary does, so a hook that fired between two
-      // calls draws between them rather than above the pair.
+      // hook's start, its interim output and its ending - the later frames
+      // rewrite the run's own row rather than drawing beside it. The run rides
+      // the group as a lane of its own, so a hook that fired between two calls
+      // sits among them in the recency order.
       if (
         frame.subtype === 'hook_started' ||
         frame.subtype === 'hook_progress' ||
@@ -1498,18 +1554,9 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         const run = str(frame, 'hook_id');
         // A frame with no id can be paired with no other, so it draws as itself
         // rather than being folded onto a run it may not belong to.
-        const opened = run === null ? undefined : hookRows.get(run);
-        const row: Unit = {
-          kind: 'hook',
-          key: run === null ? keyOf(at, frame, 'hook') : `hook-${run}`,
-          run: hookRun(frame),
-        };
-        if (opened === undefined) {
-          push(row);
-          if (run !== null) hookRows.set(run, units.length - 1);
-        } else {
-          units[opened] = row;
-        }
+        const key = run === null ? keyOf(at, frame, 'hook') : `hook-${run}`;
+        if (run !== null && rewriteHook(key, hookRun(frame))) continue;
+        pending.push({ tag: 'hook', key, run: hookRun(frame) });
         continue;
       }
       continue;

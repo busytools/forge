@@ -9,10 +9,10 @@
    *
    * **The terminal draws nothing for this**, which is why the shape is the
    * client's to choose rather than a parity port: its arm for the three frames
-   * is a no-op. So the row takes the vocabulary the column already has for a
-   * block nothing else shows - collapsed on what it is, with the whole of it
-   * behind the row's own open - which is the shape `Thinking.svelte` uses for
-   * the same reason.
+   * is a no-op. The row is a tool row like any other - the lane says the kind,
+   * the mark says whether the run exited clean, and the name and the state
+   * read as the call's own title does - because a hook IS work the session
+   * ran, and anything else makes it a second system inside the group.
    *
    * It is never clipped: a hook's output is long and secondary, so it is
    * collapsed rather than shortened, and a summary standing in for it would be
@@ -21,12 +21,17 @@
   let { run }: { run: HookRun } = $props();
 </script>
 
-<details class="hookrun">
+<details class="leaf hookrow">
   <summary>
-    {#if run.failed}<Icon name="x" class="st err" />{/if}
-    <span class="hk">hook</span>
-    <span class="nm">{run.name}</span>
-    {#if run.event !== null}<span class="ev">({run.event})</span>{/if}
+    {#if run.failed}
+      <Icon name="x" class="st err" />
+    {:else}
+      <Icon name="check" class="st" />
+    {/if}
+    <span class="tn"
+      >{run.name}{#if run.event !== null}
+        ({run.event}){/if}</span
+    >
     <span class="ev">{run.state}</span>
     <Chevron />
   </summary>
