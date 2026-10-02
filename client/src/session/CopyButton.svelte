@@ -29,9 +29,26 @@
   $effect(() => {
     if (drawn !== id) {
       drawn = id;
+      clearSettle();
       outcome = 'ready';
     }
   });
+
+  /** How long a landed write vouches for itself before the mark goes back. */
+  const SETTLE_MS = 2_500;
+  let settle: ReturnType<typeof setTimeout> | null = null;
+
+  function clearSettle(): void {
+    if (settle !== null) {
+      clearTimeout(settle);
+      settle = null;
+    }
+  }
+
+  // A check that never clears reads as a state of the row rather than as the
+  // answer to a click, so it goes back to what the control is - the same seat
+  // or a new one - once the reader has had a beat to see it.
+  $effect(() => () => clearSettle());
 
   function copy(): void {
     // The id the write was issued for. A write can settle after an occupant
@@ -45,7 +62,13 @@
     }
     navigator.clipboard.writeText(issued).then(
       () => {
-        if (issued === id) outcome = 'copied';
+        if (issued !== id) return;
+        outcome = 'copied';
+        clearSettle();
+        settle = setTimeout(() => {
+          settle = null;
+          outcome = 'ready';
+        }, SETTLE_MS);
       },
       () => {
         if (issued === id) outcome = 'failed';

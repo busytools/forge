@@ -928,8 +928,10 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   font-size: var(--fs-base); color: var(--muted); }
 .card .q .qm { color: var(--accent); flex: none; }
 .card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 27px;
-  font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
+  font-family: var(--mono); font-size: var(--fs-base); color: var(--muted); }
 .card .a .am { color: var(--dim); }
+/* The typed row's empty slot, holding the column a picked row's mark takes. */
+.card .a .gap { width: 15px; flex: 0 0 15px; }
 .card .a .picked { color: var(--ok); }
 .card .a .typed { color: var(--text); font-weight: 700; }
 

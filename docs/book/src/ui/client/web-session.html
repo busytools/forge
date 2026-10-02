@@ -777,27 +777,30 @@
   .mai .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
   .mai.sel { background: rgba(244,118,0,.09); }
 
-  /* The box morphed into a prompt: same slot, so your eye is already here. */
-  .mdock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
-    background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
-    box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
-    display: flex; flex-direction: column; gap: 11px; }
+  /* The box morphed into a prompt: same slot, so your eye is already here.
+     A neutral panel, as the client draws it: the accent is left to the marked
+     row and the question's own mark, never painted behind the dock. */
+  .mdock { border: 1px solid var(--line); border-radius: 14px;
+    background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
+    box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
+    display: flex; flex-direction: column; gap: 10px; }
   .mdhead { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .mdhead .t { font-weight: 500; color: var(--text); font-family: var(--mono); }
   .mdhead .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
   .mopts { display: flex; flex-direction: column; gap: 1px; }
-  .mopt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+  .mopt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
-  .mopt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
   .mopt .ic { color: var(--dim); }
   .mopt .ic.ok { color: var(--ok); }
   .mopt .ic.no { color: var(--bad); }
   .mopt .ic.ed { color: var(--blue); }
   .mopt .lbl { color: var(--dim); }
-  .mopt.sel { background: var(--sel); }
+  /* The marked option is marked by its own words: no arrow, no band behind
+     them - the client's rule, since a marker in front read as a cell of the
+     terminal's grid. */
   .mopt.sel .lbl { color: var(--text); font-weight: 600; }
-  .mkeys { display: flex; gap: 14px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
+  .mkeys { display: flex; justify-content: center; gap: 16px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
   /* ---------- inspector ---------- */
   .sec { border-bottom: 1px solid rgba(34,42,60,.55); }
   .sec:last-child { border-bottom: 0; }
@@ -1955,11 +1958,11 @@ branch main, nothing to commit</div>
             <div class="mdhead"><span class="t">Bash</span>
               <span class="q">git push origin polish/rate-limit-chip-softer-34</span></div>
             <div class="mopts">
-              <div class="mopt sel"><span class="cur">&#9656;</span><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-              <div class="mopt"><span class="cur"></span><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
-              <div class="mopt"><span class="cur"></span><svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
-              <div class="mopt"><span class="cur"></span><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-              <div class="mopt"><span class="cur"></span><svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell Claude something else</span></div>
+              <div class="mopt sel"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
+              <div class="mopt"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
+              <div class="mopt"><svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
+              <div class="mopt"><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
+              <div class="mopt"><svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell the agent something else</span></div>
             </div>
             <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
               <span><span class="mk">&#9166;</span> confirm</span>
