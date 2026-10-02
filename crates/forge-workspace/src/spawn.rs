@@ -1410,7 +1410,21 @@ pub(crate) fn handle_spawn_worker(
             "a worktree cannot be created for this worker where it would have to run, so the \
              spawn is refused rather than started with nowhere to work",
         );
-        let _ = workspace.remove_latest_worker(&project_key, label);
+        // A boot re-spawn's reply is dropped, so rolling the entry back
+        // would leave the row listed and nothing running with the reason
+        // nowhere on screen. It keeps the entry as the visible failure the
+        // async spawn failures leave instead; every caller that DOES hear
+        // the reply gets the rollback, so nothing half-live is left behind.
+        if from_boot_respawn {
+            crate::workspace::transition_worker_to_failed(
+                workspace,
+                &project_key,
+                &slot,
+                Some(obstacle.clone()),
+            );
+        } else {
+            let _ = workspace.remove_latest_worker(&project_key, label);
+        }
         // The obstacle text reads as one sentence, so the MCP tool's
         // "worktree creation failed:" label lands on top of it as one
         // statement rather than two.
@@ -3582,6 +3596,7 @@ provider = "anthropic"
         workspace: &Arc<Workspace>,
         key: &ProjectKey,
         label: &str,
+        from_boot_respawn: bool,
     ) -> tokio::sync::oneshot::Receiver<Result<WorkerSpawnReply, String>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_spawn_worker(
@@ -3596,7 +3611,7 @@ provider = "anthropic"
             },
             SessionSlot::from_str_for_test("lead"),
             None,
-            false,
+            from_boot_respawn,
             tx,
         );
         rx
@@ -3624,7 +3639,7 @@ provider = "anthropic"
             ],
         );
 
-        let err = spawn_reply(&workspace, &key, "reviewer")
+        let err = spawn_reply(&workspace, &key, "reviewer", false)
             .await
             .expect("reply channel")
             .expect_err("a spawn whose worktree cannot be created is refused");
@@ -3639,6 +3654,49 @@ provider = "anthropic"
             workspace.worker_rows_for_project(&key).is_empty(),
             "and nothing durable survives to re-spawn it on the next boot"
         );
+    }
+
+    /// A boot re-spawn's reply is dropped, so rolling the entry back would
+    /// leave the row listed, nothing running, and the reason only in the
+    /// log. The entry stays as the visible failure the async spawn
+    /// failures already leave, carrying the reason.
+    #[tokio::test]
+    async fn a_refused_boot_respawn_leaves_a_failed_row_carrying_the_reason() {
+        let (workspace, key, _derived, repo, _config) = git_spawn_fixture("reviewer");
+        let elsewhere = tempdir().expect("elsewhere tempdir");
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-reviewer",
+                elsewhere.path().to_str().expect("utf8 path"),
+            ],
+        );
+
+        let err = spawn_reply(&workspace, &key, "reviewer", true)
+            .await
+            .expect("reply channel")
+            .expect_err("the boot re-spawn is refused");
+
+        let entry = workspace
+            .list_live_workers(&key)
+            .into_iter()
+            .next()
+            .expect("the entry stays, so the row reads as failed rather than vanishing");
+        assert_eq!(
+            entry.status,
+            forge_primitives::WorkerLiveness::Failed,
+            "the refused boot re-spawn is not live"
+        );
+        assert!(
+            entry.diagnostic.as_deref().is_some_and(|reason| reason.contains("worktree")),
+            "and the reason is on the row for a reader: {:?}",
+            entry.diagnostic
+        );
+        assert!(err.contains("already checked out"), "the dropped reply still carries it: {err}");
     }
 
     /// A `--new` re-spawn lands on the worktree the worker already has:
@@ -3661,7 +3719,7 @@ provider = "anthropic"
             ],
         );
 
-        let err = spawn_reply(&workspace, &key, "reviewer")
+        let err = spawn_reply(&workspace, &key, "reviewer", false)
             .await
             .expect("reply channel")
             .expect_err("the spawn still fails, at the account walk");
