@@ -8,7 +8,7 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Six places it deliberately differs from the terminal, and each is a
+ * Seven places it deliberately differs from the terminal, and each is a
  * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
@@ -25,6 +25,9 @@
  * - a compaction boundary is a row at the cut, where the terminal draws none:
  *   the count is the terminal's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it.
+ * - a hook's own lifecycle draws as one row per run, where the terminal's arm
+ *   for those three frames is a no-op. Its summary chip is matched, not
+ *   dropped: the chip is a different frame about a different hook batch.
  *
  * **And a dispatched agent's frames are not the conversation either.** A
  * sub-agent's prose and calls belong to the SUBAGENTS surface, and drawn here
@@ -260,6 +263,15 @@ interface Frame {
   hookCount?: unknown;
   hookInfos?: unknown;
   hookErrors?: unknown;
+  /** The run three frames report on: a start, its progress, and its response. */
+  hook_id?: unknown;
+  hook_name?: unknown;
+  hook_event?: unknown;
+  outcome?: unknown;
+  exit_code?: unknown;
+  output?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
   task_id?: unknown;
   tool_use_id?: unknown;
   is_backgrounded?: unknown;
@@ -782,6 +794,56 @@ function taskLine(summary: string | null, wire: string | null): BackgroundTask['
   return { text: said, tone };
 }
 
+/** What the hook a frame reports has printed, as the frame spells it. */
+function hookOutput(frame: Frame): string | null {
+  // The combined output is the one the session saw, and the two raw streams are
+  // read only when it is empty: a hook that wrote to one of them and not the
+  // other would otherwise draw as a hook that said nothing.
+  for (const key of ['output', 'stdout', 'stderr']) {
+    const held = str(frame, key);
+    if (held !== null && held !== '') return held;
+  }
+  return null;
+}
+
+/** Whether the hook failed, which is the code the response reports it exited on. */
+function hookFailed(frame: Frame): boolean {
+  const exit = frame.exit_code;
+  return typeof exit === 'number' && exit !== 0;
+}
+
+/**
+ * The line a hook's own lifecycle draws.
+ *
+ * **The three subtypes are one run rather than three events**: a start names
+ * the hook, a progress carries what it has printed so far, and a response
+ * settles it with the outcome and the code it exited on. All three fields are
+ * the same run's, which is why they read as one line.
+ *
+ * The event rides beside the name only where the name does not already carry
+ * it, the rule the frames' own sentences are read by (`beside`).
+ */
+function hookLine(frame: Frame): string {
+  const name = str(frame, 'hook_name') ?? '';
+  const event = str(frame, 'hook_event') ?? '';
+  const eventBeside = event !== '' && !name.includes(event) ? ` (${event})` : '';
+  const named = name === '' ? event : `'${name}'${eventBeside}`;
+  const outcome = str(frame, 'outcome');
+  const exit = typeof frame.exit_code === 'number' ? frame.exit_code : null;
+  // A run that has not answered yet has neither an outcome nor a code: it says
+  // the state it is in rather than leaving the half of the line it would fill
+  // looking like a hole.
+  const state =
+    outcome === null && exit === null
+      ? 'running'
+      : [outcome, exit === null ? null : `exit ${exit}`]
+          .filter((part): part is string => part !== null && part !== '')
+          .join(' \u{b7} ');
+  const head = `hook ${named} \u{b7} ${state}`;
+  const body = hookOutput(frame);
+  return body === null ? head : `${head}\n${body}`;
+}
+
 /**
  * What a transcript's own completion notice says, which is the same fields the
  * `task_notification` frame carries.
@@ -974,6 +1036,11 @@ export function fold(
     string,
     { input: number; output: number; read: number; written: number }
   >();
+  /**
+   * The row each hook run opened, by the id the CLI ties its frames together
+   * with: a run's later frames rewrite that row rather than drawing beside it.
+   */
+  const hookRows = new Map<string, number>();
 
   /** The running totals across the distinct messages seen so far, or null before any. */
   const liveUsage = (): { input: number; output: number; read: number; written: number } | null => {
@@ -1111,6 +1178,32 @@ export function fold(
           // rename would stop matching in silence.
           preTokens: typeof before === 'number' ? before : null,
         });
+        continue;
+      }
+      // A hook's own lifecycle: one row per RUN, because the frames are one
+      // hook's start, its interim output and its ending. It closes the run
+      // above it, the way the summary does, so a hook that fired between two
+      // calls draws between them rather than above the pair.
+      if (
+        frame.subtype === 'hook_started' ||
+        frame.subtype === 'hook_progress' ||
+        frame.subtype === 'hook_response'
+      ) {
+        const run = str(frame, 'hook_id');
+        // A frame with no id can be paired with no other, so it draws as itself
+        // rather than being folded onto a run it may not belong to.
+        const opened = run === null ? undefined : hookRows.get(run);
+        const row: Unit = {
+          kind: 'notice',
+          key: run === null ? keyOf(at, frame, 'hook') : `hook-${run}`,
+          notice: { severity: hookFailed(frame) ? 'error' : 'info', text: hookLine(frame) },
+        };
+        if (opened === undefined) {
+          push(row);
+          if (run !== null) hookRows.set(run, units.length - 1);
+        } else {
+          units[opened] = row;
+        }
         continue;
       }
       continue;

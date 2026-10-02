@@ -47,6 +47,70 @@ const call = (family: string, n = 0): unknown =>
 /** The kinds a fold produced, in order. */
 const kinds = (units: Unit[]): string[] => units.map((unit) => unit.kind);
 
+/** What the one notice a fold drew said, or an empty line when it drew none. */
+const noticeText = (units: Unit[]): string =>
+  units[0]?.kind === 'notice' ? units[0].notice.text : '';
+
+/**
+ * One hook's run, as the CLI's own capture sends it
+ * (`crates/forge-test-harness/baselines/sdk/2.1.280/compact.jsonl`): a start,
+ * two progress frames whose output is cumulative, and the response that
+ * settles it.
+ *
+ * **Every name here is the wire's own**, taken off that row rather than off
+ * `Message`'s Rust fields - the fold reads JSON with no type link to the
+ * crate, so a serde rename stops matching with nothing to compile against.
+ */
+const hookRun = (): unknown[] => [
+  {
+    type: 'system',
+    subtype: 'hook_started',
+    hook_id: '976fd1c5-cc6a-4c3b-9e80-91d52aeb00c7',
+    hook_name: 'SessionStart:startup',
+    hook_event: 'SessionStart',
+    uuid: '47e5b877-93aa-4b3f-a44b-a993cefeb201',
+    session_id: '41e36bf9-8391-44c4-95fe-6167881d7f73',
+  },
+  {
+    type: 'system',
+    subtype: 'hook_progress',
+    hook_id: '976fd1c5-cc6a-4c3b-9e80-91d52aeb00c7',
+    hook_name: 'SessionStart:startup',
+    hook_event: 'SessionStart',
+    stdout: 'capture-line-1\n',
+    stderr: '',
+    output: 'capture-line-1\n',
+    uuid: 'f33f2f94-cf92-4f3d-a322-997470671dd5',
+    session_id: '41e36bf9-8391-44c4-95fe-6167881d7f73',
+  },
+  {
+    type: 'system',
+    subtype: 'hook_progress',
+    hook_id: '976fd1c5-cc6a-4c3b-9e80-91d52aeb00c7',
+    hook_name: 'SessionStart:startup',
+    hook_event: 'SessionStart',
+    stdout: 'capture-line-1\ncapture-line-2\n',
+    stderr: '',
+    output: 'capture-line-1\ncapture-line-2\n',
+    uuid: '45d4e988-4458-470d-a4d8-30d11dee6fd7',
+    session_id: '41e36bf9-8391-44c4-95fe-6167881d7f73',
+  },
+  {
+    type: 'system',
+    subtype: 'hook_response',
+    hook_id: '976fd1c5-cc6a-4c3b-9e80-91d52aeb00c7',
+    hook_name: 'SessionStart:startup',
+    hook_event: 'SessionStart',
+    output: '<redacted-hook-body>',
+    stdout: '<redacted-hook-body>',
+    stderr: '',
+    exit_code: 0,
+    outcome: 'success',
+    uuid: '1814e038-fc4b-449e-a5ff-b35952baa418',
+    session_id: '41e36bf9-8391-44c4-95fe-6167881d7f73',
+  },
+];
+
 describe('one turn folded into the units a view draws', () => {
   it('folds consecutive calls into one group', () => {
     // The rule the mockup was built on and the one a reader gets wrong first:
@@ -754,6 +818,68 @@ describe('one turn folded into the units a view draws', () => {
       clean[0]?.kind === 'hooks' ? clean[0].errors : null,
       'and a summary that carries none reads as none',
     ).toEqual([]);
+  });
+
+  it("draws a hook's own row, carrying what the frames that reported it sent", () => {
+    const units = fold(hookRun());
+
+    expect(kinds(units), 'one row for the run, rather than one for each frame').toEqual(['notice']);
+    const said = noticeText(units);
+    expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
+    expect(said, 'what the response reported of the outcome').toContain('success');
+    expect(said, 'and the code it exited on').toContain('exit 0');
+    expect(said, 'with the output it settled on').toContain('<redacted-hook-body>');
+    expect(said, 'and the event said once, not twice').not.toContain('(SessionStart)');
+  });
+
+  it('draws a hook that has not settled as running, and settles that same row', () => {
+    const run = hookRun();
+    const running = fold(run.slice(0, 3));
+
+    expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['notice']);
+    const said = noticeText(running);
+    expect(said, 'the state it is in').toContain('running');
+    expect(said, 'with the output it has printed so far').toContain('capture-line-2');
+    expect(said, 'and no outcome it has not reported').not.toContain('success');
+
+    expect(fold(run), 'the response settles that row rather than opening a second').toHaveLength(1);
+  });
+
+  it('marks a hook that exited non-zero', () => {
+    const [started, , , response] = hookRun();
+    const failed = fold([
+      started,
+      { ...(response as Record<string, unknown>), exit_code: 2, outcome: 'error' },
+    ]);
+
+    const [row] = failed;
+    expect(
+      row?.kind === 'notice' ? row.notice.severity : null,
+      'the tone a failure the CLI reported draws in',
+    ).toBe('error');
+    expect(noticeText(failed), "the code, which is the frame's own word for it").toContain(
+      'exit 2',
+    );
+    // The control the mark needs: the same frames without the failure draw a
+    // line, so a fold that marked every hook would not read as one that marks
+    // the failed ones.
+    const clean = fold(hookRun());
+    expect(
+      clean[0]?.kind === 'notice' ? clean[0].notice.severity : null,
+      'and a hook that exited clean stays a line rather than a failure',
+    ).toBe('info');
+  });
+
+  it('says which event a hook ran for when its name does not already say it', () => {
+    // Every captured run names its hook `<Event>:<matcher>`, so the event rides
+    // the line inside the name. This is the guard for a name that carries none:
+    // a row that could not say what kind of hook ran would be drawing less than
+    // the frame sent.
+    const [started] = hookRun();
+    const renamed = fold([{ ...(started as Record<string, unknown>), hook_name: 'notify.sh' }]);
+
+    expect(noticeText(renamed), 'the name the frame sent').toContain("hook 'notify.sh'");
+    expect(noticeText(renamed), 'and the event beside it').toContain('(SessionStart)');
   });
 
   it('settles each call with the result that answers it, and rolls the run up', () => {
