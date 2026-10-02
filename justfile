@@ -134,29 +134,32 @@ bench:
 #
 # A full-suite command cannot run in the sandbox: nine test files read outside
 # the client tree (crates/, docs/) and fail there. The command therefore runs
-# `./node_modules/.bin/vitest related` over the same twelve files the `mutate`
-# list names - keep the two lists in step, or a file runs against tests that
-# never import it and its survivors are false.
+# `./node_modules/.bin/vitest related` and reads its file list from the
+# `mutate` array at run time, so a module added there is scored against its own
+# tests with no second list to keep in step. A target that is not in the set is
+# refused rather than scored against tests that never import it.
 #
-# Cost is about 2 seconds a mutant at the default concurrency, so
-# `just mutate src/composer/meter.ts` is roughly a minute and the whole
-# 4,081-mutant set is hours. Run it per module, not per handover.
+# Cost is about 2 seconds a mutant, so `just mutate src/composer/meter.ts` is
+# roughly a minute and the whole 4,081-mutant set is hours. Run it per module,
+# not per handover. The run is bounded by `concurrency` in `stryker.conf.json`
+# (four workers, well below this machine's core count) because a campaign at
+# the default starves a box that is being used while it runs.
 #
-# The sandbox is `client/.stryker-tmp/sandbox-*/`, and a run in flight is a
-# second copy of every test file inside the tree - so do not run `just check`
-# or `vitest` beside one (vitest collects both, 68 files becoming 136). A
-# successful run deletes it; a crashed one leaves it, and `.gitignore`,
-# `.prettierignore` and `eslint.config.js` all ignore it.
+# The sandbox is `client/.stryker-tmp/sandbox-*/`; a successful run deletes it
+# and a crashed one leaves it. `.gitignore`, `.prettierignore` and
+# `eslint.config.js` ignore it, and `vite.config.ts` excludes it from test
+# collection, so a leftover cannot redden `just check`.
 #
 # Usage: `just mutate` for the configured set, or `just mutate src/chat/units.ts`
-# for one file or glob.
+# for one module from the set.
 mutate target="":
     #!/usr/bin/env bash
     set -euo pipefail
     if [ -z "{{target}}" ]; then
         npm --prefix client run mutate
     else
-        npm --prefix client run mutate -- --mutate "{{target}}"
+        node -e "const { mutate } = require('./client/stryker.conf.json'); if (!mutate.includes(process.argv[1])) { console.error('just mutate: ' + process.argv[1] + ' is not in stryker.conf.json, so its own tests would not run; add it to the mutate set first'); process.exit(1); }" {{quote(target)}}
+        npm --prefix client run mutate -- --mutate {{quote(target)}}
     fi
 
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
