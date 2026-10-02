@@ -18,7 +18,22 @@ import { headline, stripEscapes, toolName } from './text';
 export type CallBody =
   | { kind: 'text'; text: string }
   | { kind: 'diff'; old: string; new: string }
+  | { kind: 'hunk'; header: string; lines: HunkLine[] }
   | { kind: 'image'; mime: string | null; uri: string | null };
+
+/** One line of a hunk: context, removed, or added. */
+export interface HunkLine {
+  kind: 'ctx' | 'del' | 'add';
+  text: string;
+}
+
+/** What a mutation's result says about itself, where a reader acts on it only when it is not the default. */
+export interface MutationMarks {
+  /** Whether the edit replaced every match rather than the first. */
+  all: boolean;
+  /** Whether the file changed outside this edit, which the CLI reports on the result. */
+  outside: boolean;
+}
 
 /**
  * What the wire reports about a call it runs as a TASK, backgrounded or not.
@@ -77,6 +92,14 @@ export interface ToolLeaf {
   note: { text: string; tone: 'sum' | 'fail' | null } | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
+  /**
+   * What the result said about a mutation, or `null` for every other call.
+   *
+   * Drawn as one line under the diff, and only where a mark is true: a reader
+   * acts on "every match" and on "changed outside this edit", and the default
+   * of both is nothing to say.
+   */
+  mutation: MutationMarks | null;
 }
 
 /** Whether a call's body is drawn without being asked for. */
@@ -184,6 +207,81 @@ export function diffsOf(name: string, input: unknown): CallBody[] {
 }
 
 /**
+ * The CLI's own hunks for a mutation, which is where the change's position and
+ * its context are.
+ *
+ * **The result carries them and this page used to ignore them**: one
+ * `structuredPatch` entry per hunk, each with the range it covers before and
+ * after and the lines themselves, a space for context, `-` for removed and `+`
+ * for added. Without them a diff is two sides with nothing saying where in the
+ * file they sit - which is what the row drew until now.
+ *
+ * A result that carries no patch (a tool the CLI does not describe this way, a
+ * transcript row written before it did) leaves the input's own two sides to
+ * draw, which is what `diffsOf` is for.
+ */
+export function hunksOf(record: unknown): CallBody[] {
+  const patch = (record as { structuredPatch?: unknown } | null)?.structuredPatch;
+  if (!Array.isArray(patch)) return [];
+  const out: CallBody[] = [];
+  for (const entry of patch) {
+    const hunk = entry as {
+      oldStart?: unknown;
+      oldLines?: unknown;
+      newStart?: unknown;
+      newLines?: unknown;
+      lines?: unknown;
+    };
+    const lines = hunkLines(hunk.lines);
+    if (lines.length === 0) continue;
+    out.push({ kind: 'hunk', header: headerOf(hunk), lines });
+  }
+  return out;
+}
+
+/** The lines of one hunk, each read by the character the wire prefixes it with. */
+function hunkLines(raw: unknown): HunkLine[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HunkLine[] = [];
+  for (const line of raw) {
+    if (typeof line !== 'string' || line === '') continue;
+    const [mark = ' ', ...rest] = line;
+    const kind = mark === '-' ? 'del' : mark === '+' ? 'add' : 'ctx';
+    out.push({ kind, text: kind === 'ctx' ? line : rest.join('') });
+  }
+  return out;
+}
+
+/** Where a hunk sits: `@@ -30,7 +30,9 @@`, which is the shape the terminal prints too. */
+function headerOf(hunk: {
+  oldStart?: unknown;
+  oldLines?: unknown;
+  newStart?: unknown;
+  newLines?: unknown;
+}): string {
+  const num = (value: unknown): string => (typeof value === 'number' ? String(value) : '?');
+  return `@@ -${num(hunk.oldStart)},${num(hunk.oldLines)} +${num(hunk.newStart)},${num(hunk.newLines)} @@`;
+}
+
+/**
+ * What a mutation's body draws: the CLI's hunks where the result carries them,
+ * and the call's own two sides where it does not.
+ */
+function mutationBody(name: string, input: unknown, record: unknown): CallBody[] {
+  if (!isEdit(name)) return [];
+  const hunks = hunksOf(record);
+  return hunks.length > 0 ? hunks : diffsOf(name, input);
+}
+
+/** The marks a mutation's result carries, or `null` for a call that is not a mutation. */
+function marksOf(name: string, input: unknown, record: unknown): MutationMarks | null {
+  if (!isEdit(name)) return null;
+  const all = (input as { replace_all?: unknown } | null)?.replace_all === true;
+  const outside = (record as { userModified?: unknown } | null)?.userModified === true;
+  return { all, outside };
+}
+
+/**
  * One hunk, or none when it says nothing: an empty old side and an empty new
  * one is no change.
  *
@@ -236,10 +334,11 @@ export function leafOf(
   name: string,
   input: unknown,
   result: Block | undefined,
+  record: unknown = undefined,
   task: BackgroundTask | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
-  const body = diffsOf(name, input);
+  const body = mutationBody(name, input, record);
   const settled =
     task !== undefined && (task.backgrounded || task.status !== 'in_progress')
       ? task.status
@@ -253,6 +352,7 @@ export function leafOf(
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
     body: drawnBody(name, body, result),
+    mutation: marksOf(name, input, record),
   };
 }
 
@@ -268,7 +368,7 @@ export function leafOf(
 function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
   if (result === undefined) return body;
   const answered = bodyOf(result.content);
-  if (isEdit(name) && body.some((part) => part.kind === 'diff')) return body;
+  if (isEdit(name) && body.some((part) => part.kind !== 'text')) return body;
   return [...body, ...answered];
 }
 

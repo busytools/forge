@@ -819,6 +819,17 @@ details.leaf.running > summary { color: var(--text); }
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-prose); }
 .dif .ln { display: contents; }
+/* The range a hunk covers, which is the one thing the two sides of an edit
+   cannot say: where in the file the change sits. */
+.dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2);
+  padding: 4px 12px; border-radius: 5px; overflow-wrap: anywhere; }
+/* A line the change did not touch, which is what puts it somewhere. */
+.dif .ln.ctx .l { color: var(--dim); }
+/* A mark whose default is nothing to say, so a row carries it only when it is
+   the exception. Bare rather than under `.term`: a rule that names a body's own
+   class reaches every row that draws one, and this belongs to one kind of row. */
+.patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }

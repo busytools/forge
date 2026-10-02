@@ -14,6 +14,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   status: 'completed',
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
+  mutation: null,
 });
 
 /** The body's term boxes, as the reader sees them. */

@@ -222,7 +222,6 @@ describe('axe over the rendered pages', () => {
             },
           ],
         },
-        cwd: null,
       },
     }).body;
     // The peer mark is the one glyph no other row on this turn draws, so it is

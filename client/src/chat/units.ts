@@ -925,8 +925,8 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
-  /** What each question was answered with, by the call that asked it. */
-  const answers = new Map<string, unknown>();
+  /** The result's own record, by the call it answers: a question's answer, and a mutation's hunks and marks. */
+  const records = new Map<string, unknown>();
   /**
    * The LAST frame the turn failed on, which is what bounds the sweep.
    *
@@ -1025,11 +1025,12 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         results.set(block.tool_use_id, block);
-        // The record of what was answered rides beside the result, keyed the
-        // same way, and a question is drawn from it rather than from the
-        // result's own text - which is the CLI saying it was answered.
+        // The result's own record rides beside the block, keyed the same way:
+        // a question is drawn from it rather than from the result's text -
+        // which is the CLI saying it was answered - and a mutation's hunks and
+        // its marks are in it too.
         if (frame.tool_use_result !== undefined) {
-          answers.set(block.tool_use_id, frame.tool_use_result);
+          records.set(block.tool_use_id, frame.tool_use_result);
         }
       }
     }
@@ -1437,7 +1438,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           push(
             questionCard(
               block.input,
-              answers.get(id),
+              records.get(id),
               id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
             ),
           );
@@ -1448,7 +1449,15 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           row: rowOf(name),
           label: labelOf(name),
           key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
-          leaf: leafOf(id, name, block.input, results.get(id), tasks.get(id), abandoned),
+          leaf: leafOf(
+            id,
+            name,
+            block.input,
+            results.get(id),
+            records.get(id),
+            tasks.get(id),
+            abandoned,
+          ),
         });
         continue;
       }

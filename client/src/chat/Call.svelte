@@ -108,6 +108,26 @@
                 {/if}
               {/each}
             </div>
+          {:else if piece.kind === 'hunk'}
+            <!-- The CLI's own hunk, which is where the change sits and what is
+                 around it. The header is the range it covers, and each line is
+                 read by the mark the wire prefixes it with. -->
+            <div class="dif">
+              <div class="h">{piece.header}</div>
+              {#each piece.lines as line, n (`h-${n}`)}
+                <div
+                  class="ln"
+                  class:d={line.kind === 'del'}
+                  class:a={line.kind === 'add'}
+                  class:ctx={line.kind === 'ctx'}
+                >
+                  <span class="n"
+                    >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
+                  >
+                  <span class="l">{line.text}</span>
+                </div>
+              {/each}
+            </div>
           {:else if piece.kind === 'image'}
             <div class="term">
               image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
@@ -129,6 +149,14 @@
         {/each}
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
+        {/if}
+        {#if call.mutation !== null && (call.mutation.all || call.mutation.outside)}
+          <!-- Only what is true: a mark whose default is nothing to say is drawn
+               when it is not the default, so an ordinary edit carries no line. -->
+          <div class="term">
+            {#if call.mutation.all}<span class="patchmark">every match</span>{/if}
+            {#if call.mutation.outside}<span class="patchmark">changed outside this edit</span>{/if}
+          </div>
         {/if}
       {/if}
     </div>

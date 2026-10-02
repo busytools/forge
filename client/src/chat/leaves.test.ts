@@ -13,6 +13,52 @@ const NOTE =
   'File created successfully at a.rs (file state is current in your context \u{2014} no need to Read it back)';
 
 describe('what a call body draws', () => {
+  it("draws the CLI's own hunk where the result carries one, marks included", () => {
+    // What the wire says about the change: the range it covers, and the lines
+    // with a space for context, `-` for removed, `+` for added. Without it the
+    // row is two sides with nothing saying where in the file they sit.
+    const leaf = leafOf(
+      't1',
+      'Edit',
+      {
+        file_path: '/x/a.rs',
+        old_string: 'flex: none;',
+        new_string: 'flex: 0 1 auto;',
+        replace_all: true,
+      },
+      answered(NOTE),
+      {
+        userModified: true,
+        structuredPatch: [
+          {
+            oldStart: 30,
+            oldLines: 7,
+            newStart: 30,
+            newLines: 9,
+            lines: [' display: flex;', '-  flex: none;', '+  flex: 0 1 auto;', ' }'],
+          },
+        ],
+      },
+    );
+
+    const [hunk] = leaf.body;
+    expect(hunk?.kind, 'the hunk is what the row draws, not the two sides').toBe('hunk');
+    if (hunk?.kind !== 'hunk') throw new Error('the row drew no hunk');
+    expect(hunk.header, 'the range the hunk covers, before and after').toBe('@@ -30,7 +30,9 @@');
+    expect(
+      hunk.lines.map((line) => line.kind),
+      'each line read by its mark',
+    ).toEqual(['ctx', 'del', 'add', 'ctx']);
+    expect(hunk.lines[0]?.text, 'context keeps its own indentation').toBe(' display: flex;');
+    expect(hunk.lines[1]?.text, 'and a change loses its mark, which the row draws itself').toBe(
+      '  flex: none;',
+    );
+    expect(leaf.mutation, 'and the two marks the result carries').toEqual({
+      all: true,
+      outside: true,
+    });
+  });
+
   it('draws a mutation as its diff, without the note the CLI writes to the model', () => {
     const path = '/Users/x/project/a.rs';
     const leaf = leafOf(

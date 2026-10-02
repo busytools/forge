@@ -450,6 +450,17 @@
     overflow: hidden;
     font-family: var(--mono); font-size: var(--fs-prose); }
   .dif .ln { display: contents; }
+  /* The range a hunk covers, which is the one thing the two sides of an edit
+     cannot say: where in the file the change sits. */
+  .dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2);
+    padding: 4px 12px; border-radius: 5px; overflow-wrap: anywhere; }
+  /* A line the change did not touch, which is what puts it somewhere. */
+  .dif .ln.ctx .l { color: var(--dim); }
+  /* A mark whose default is nothing to say, so a row carries it only when it is
+     the exception. Bare rather than under `.term`: a rule that names a body's own
+     class reaches every row that draws one, and this belongs to one kind of row. */
+  .patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
@@ -1186,31 +1197,43 @@ Consecutive tool calls between two user messages fold into one group.</div>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
+                  <div class="h">@@ -30,7 +30,9 @@</div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">  display: flex;</span></div>
                   <div class="ln d"><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">  }</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">  }</span></div>
                 </div>
+                <div class="term"><span class="patchmark">every match</span></div>
               </div>
             </details>
             <details class="leaf" open>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
+                  <div class="h">@@ -195,6 +197,8 @@</div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">             footer {</span></div>
                   <div class="ln d"><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                 div .versions {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">                 }</span></div>
                 </div>
+                <div class="term"><span class="patchmark">changed outside this edit</span></div>
               </div>
             </details>
             <details class="leaf" open>
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
                 <div class="dif">
+                  <div class="h">@@ -74,3 +74,7 @@</div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
                   <div class="ln a"><span class="n">+</span><span class="l">    }</span></div>
+                  <div class="ln ctx"><span class="n"></span><span class="l">    }</span></div>
                 </div>
               </div>
             </details>
