@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
+  import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
+  import CopyButton from './CopyButton.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
   import SessionId from './SessionId.svelte';
@@ -62,6 +64,8 @@
   const record: SessionRecord | null = $derived(read.wire);
   const seat = $derived(seatState(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
+  /** The count the folded panel names, where the row's unit draws the figure. */
+  const compactionCount = $derived(record?.conversation.compaction_count ?? 0);
   // Beside the context figure, which is the row the terminal draws it on: the
   // count belongs to the conversation and not to the header, and the row is
   // where a reader looks for it.
@@ -181,39 +185,75 @@
       </button>
       <span class="dot {seat.mark}"></span>
       <span class="nm">{seat.name}</span>
-      <span class="mono dim">{slot.org}</span>
+      <span class="mono dim f-org">{slot.org}</span>
       <span class="facts">
         {#if facts !== null}
           {#if facts.sessionId !== null}
-            <SessionId id={facts.sessionId} />
-            <span class="sep">{'\u{b7}'}</span>
+            <span class="fact f-session"><SessionId id={facts.sessionId} /></span>
           {/if}
-          <span><span class="fk">model</span> <span class="v">{facts.model}</span></span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span><span class="fk">effort</span> <span class="v">{facts.effort}</span></span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span>
+          <!-- Effort rides the model it belongs to: a property of that choice,
+               so it reads as the choice's suffix rather than a fact of its own,
+               with the whole reading on the control's title. -->
+          <span
+            class="fact f-model"
+            title={`model ${facts.model} ${'\u{b7}'} effort ${facts.effort}`}
+            ><span class="fk">model</span> <span class="v">{facts.model}</span>
+            <span class="eff">{facts.effort}</span></span
+          >
+          <span class="fact f-mode">
             <span class="fk">mode</span>
             {#if facts.mode !== null}<span class="perm {facts.mode.klass}">{facts.mode.wire}</span
               >{:else}<span class="perm">{'\u{2014}'}</span>{/if}
           </span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span class="cm">
+          <!-- The conversation's context is one unit: how full it is, and how
+               many times it has been cut. The track is drawn only for a usage
+               that was reported - an empty track stands for an unknown value as
+               readily as for a real zero, and nothing in the record says which
+               of the two this is. -->
+          <span class="cm fact f-ctx">
             <span class="fk">ctx</span>
-            <!-- The track is drawn only for a usage that was reported. An empty
-                 track stands for an unknown value as readily as for a real zero,
-                 and nothing in the record says which of the two this is. -->
             {#if facts.percent !== null}
               <span class="tk"><span class="fl" style={`width:${facts.percent}%`}></span></span>
             {/if}
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
+            {#if compactions !== null}
+              <span class="f-comp">{'\u{b7}'} {compactions}</span>
+            {/if}
           </span>
-          {#if compactions !== null}
-            <span class="sep">{'\u{b7}'}</span>
-            <span>{compactions}</span>
-          {/if}
         {/if}
       </span>
+      {#if facts !== null}
+        <!-- Everything the row folds, one tap away: the facts stay reachable at
+             every width, which is what keeps the collapse honest. -->
+        <details class="more">
+          <summary title="every fact"><Icon name="dots" /></summary>
+          <div class="mfacts">
+            {#if facts.sessionId !== null}
+              <div class="kv">
+                <span class="k">session</span>
+                <span class="v">{facts.sessionId}<CopyButton id={facts.sessionId} /></span>
+              </div>
+            {/if}
+            <div class="kv"><span class="k">model</span><span class="v">{facts.model}</span></div>
+            <div class="kv"><span class="k">effort</span><span class="v">{facts.effort}</span></div>
+            <div class="kv">
+              <span class="k">mode</span>
+              <span class="v"
+                >{#if facts.mode !== null}<span class="perm {facts.mode.klass}"
+                    >{facts.mode.wire}</span
+                  >{:else}<span class="perm">{'\u{2014}'}</span>{/if}</span
+              >
+            </div>
+            <div class="kv">
+              <span class="k">ctx</span>
+              <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
+            </div>
+            <div class="kv">
+              <span class="k">compactions</span><span class="v">{compactionCount}</span>
+            </div>
+          </div>
+        </details>
+      {/if}
     </div>
 
     <!-- The column's element is the chat's own where a chat is mounted: it
