@@ -65,12 +65,13 @@ pub struct Usage {
     pub cost: Option<f64>,
 }
 
-/// A resolved decision: what answered, the answer, and what it cost.
+/// A resolved decision: what answered, the answer, and what it cost, if
+/// the provider reported a usage block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AskOutcome {
     pub model: String,
     pub answer: Answer,
-    pub usage: Usage,
+    pub usage: Option<Usage>,
 }
 
 /// The answer must be internally consistent with the question it answers:

@@ -79,6 +79,6 @@ fn default_outcome() -> Result<AskOutcome, SystemOneError> {
     Ok(AskOutcome {
         model: "test-model".to_owned(),
         answer: forge_system_one::Answer::Noul { noul: 0.5 },
-        usage: forge_system_one::Usage { input_tokens: 1, output_tokens: 1, cost: None },
+        usage: Some(forge_system_one::Usage { input_tokens: 1, output_tokens: 1, cost: None }),
     })
 }

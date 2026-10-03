@@ -38,14 +38,17 @@ fn tool_error(text: String) -> ToolOutput {
     ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
 }
 
-/// The tool-output shape: what answered, the typed answer, what it cost.
+/// The tool-output shape: what answered, the typed answer, and what it
+/// cost when the provider reported it.
 fn outcome_to_text(outcome: &AskOutcome) -> String {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "model": outcome.model,
         "answer": outcome.answer,
-        "usage": outcome.usage,
-    })
-    .to_string()
+    });
+    if let Some(usage) = &outcome.usage {
+        value["usage"] = serde_json::json!(usage);
+    }
+    value.to_string()
 }
 
 fn format_ask_error(err: &SystemOneError) -> String {
@@ -309,8 +312,21 @@ mod tests {
         AskOutcome {
             model: "test-model".to_owned(),
             answer,
-            usage: Usage { input_tokens: 10, output_tokens: 3, cost: None },
+            usage: Some(Usage { input_tokens: 10, output_tokens: 3, cost: None }),
         }
+    }
+
+    #[tokio::test]
+    async fn ask_noul_omits_absent_usage_from_the_output() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        *mock.result.lock() = Some(Ok(AskOutcome { model: "m".to_owned(), answer: Answer::Noul { noul: 0.5 }, usage: None }));
+        let tool = AskNoul { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
+
+        assert!(!out.is_error, "a usage-less answer is still a delivered decision: {}", out.blocks[0].text);
+        assert!(!out.blocks[0].text.contains("usage"), "no invented usage block: {}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("\"noul\":0.5"), "{}", out.blocks[0].text);
     }
 
     #[tokio::test]

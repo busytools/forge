@@ -89,9 +89,6 @@ impl SystemOneClient {
                 "response answers {keys:?} do not match the requested question `{QUESTION_KEY}`"
             )));
         };
-        let usage = usage.ok_or_else(|| {
-            SystemOneError::InvalidResponse("response is missing `usage`".to_owned())
-        })?;
         validate_answer(question, &answer).map_err(SystemOneError::InvalidResponse)?;
         Ok(AskOutcome { model, answer, usage })
     }
@@ -224,7 +221,7 @@ mod tests {
             AskOutcome {
                 model: "test-model".to_owned(),
                 answer: Answer::Noul { noul: 0.83 },
-                usage: Usage { input_tokens: 10, output_tokens: 3, cost: None },
+                usage: Some(Usage { input_tokens: 10, output_tokens: 3, cost: None }),
             }
         );
         let seen = requests.lock().await;
@@ -350,21 +347,22 @@ mod tests {
             .await
             .expect("extra fields do not break parsing");
 
-        assert_eq!(outcome.usage.cost, Some(0.0001));
+        assert_eq!(outcome.usage.expect("usage present").cost, Some(0.0001));
     }
 
     #[tokio::test]
-    async fn missing_usage_is_an_invalid_response() {
+    async fn missing_usage_leaves_the_answer_standing() {
         let body = r#"{"model":"m","answers":{"q":{"type":"noul","noul":0.5}}}"#;
         let (base, _) = spawn_server(200, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client
+        let outcome = client
             .ask(&serde_json::json!("x"), &noul_question())
             .await
-            .expect_err("missing usage is an error");
+            .expect("a delivered decision stands without usage");
 
-        assert!(invalid_response(err).contains("usage"));
+        assert_eq!(outcome.usage, None, "an absent usage is None, never invented zeros");
+        assert_eq!(outcome.answer, Answer::Noul { noul: 0.5 });
     }
 
     #[tokio::test]
