@@ -10,15 +10,28 @@
    * **The terminal draws nothing for this**, which is why the shape is the
    * client's to choose rather than a parity port: its arm for the three frames
    * is a no-op. The row is a tool row like any other - the lane says the kind,
-   * the mark says whether the run exited clean, and the name and the state
-   * read as the call's own title does - because a hook IS work the session
-   * ran, and anything else makes it a second system inside the group.
+   * the mark says whether the run exited clean, and the name and the first line
+   * of what it printed read as the call's own title does - because a hook IS
+   * work the session ran, and anything else makes it a second system inside
+   * the group.
    *
-   * It is never clipped: a hook's output is long and secondary, so it is
-   * collapsed rather than shortened, and a summary standing in for it would be
-   * the drop rule 25 forbids.
+   * It is never clipped: a hook's output is long and secondary, so the row
+   * collapses the whole of it rather than shortening it - the closed row's tail
+   * is the output's own first line - and a summary standing in for the rest
+   * would be the drop rule 25 forbids.
    */
   let { run }: { run: HookRun } = $props();
+
+  /** The output's first non-blank line, which is the closed row's tail. */
+  const headline = $derived(firstLine(run.body));
+
+  function firstLine(body: string | null): string | null {
+    if (body === null) return null;
+    for (const line of body.split('\n')) {
+      if (line.trim() !== '') return line.trim();
+    }
+    return null;
+  }
 </script>
 
 <details class="leaf hookrow">
@@ -32,7 +45,9 @@
       >{run.name}{#if run.event !== null}
         ({run.event}){/if}</span
     >
-    <span class="ev">{run.state}</span>
+    {#if headline !== null}
+      <span class="ev">{headline}</span>
+    {/if}
     <Chevron />
   </summary>
   {#if run.body !== null}

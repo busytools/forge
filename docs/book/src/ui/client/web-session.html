@@ -957,6 +957,7 @@
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
   <symbol id="i-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4v9a3 3 0 0 0 3 3h12"/><path d="m15 12 3 4-3 4"/></symbol>
   <symbol id="i-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v9a3 3 0 0 1-3 3H6"/><path d="m9 12-3 4 3 4"/></symbol>
+  <symbol id="i-hook" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 12v2a4 4 0 0 1-8 0v-1"/><circle cx="16" cy="8" r="3"/><path d="M8 17h.01"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
   <symbol id="i-away" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M12 12h9"/><path d="m18 9 3 3-3 3"/></symbol>
   <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></symbol>
@@ -1693,31 +1694,30 @@ docs: Render the message body into rows.</div>
 
       <div class="mine">
         <div class="prose">
-          <p>And a hook's own run, closed on the hook and the state it reached. A failed one's mark rides the closed row the way the failed chip's does, a run that has not answered says so, and a name that carries no event draws its event beside it.</p>
+          <p>And a hook's own run, closed on the hook and the first line of what it printed. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
         </div>
       </div>
 
       <div class="work">
         <div class="leaves">
           <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-cmd"/></svg><span class="nm">hook</span></div>
+            <div class="knd"><svg class="ic gl"><use href="#i-hook"/></svg><span class="nm">hook</span></div>
             <details class="leaf hookrow">
               <summary><svg class="ic st"><use href="#i-check"/></svg>
                 <span class="tn">SessionStart:startup</span>
-                <span class="ev">success &#183; exit 0</span>
+                <span class="ev">repository is clean</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             </details>
             <details class="leaf hookrow">
               <summary><svg class="ic st err"><use href="#i-x"/></svg>
                 <span class="tn">PostToolUse:Edit</span>
-                <span class="ev">error &#183; exit 2</span>
+                <span class="ev">format check failed: 2 files</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             </details>
             <details class="leaf hookrow">
               <summary><svg class="ic st"><use href="#i-check"/></svg>
                 <span class="tn">notify.sh</span>
                 <span class="ev">(SessionStart)</span>
-                <span class="ev">running</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             </details>
           </div>
@@ -1735,7 +1735,7 @@ docs: Render the message body into rows.</div>
           <summary>
             <svg class="ic st"><use href="#i-check"/></svg>
             <span class="tn">SessionStart:startup</span>
-            <span class="ev">success &#183; exit 0</span>
+            <span class="ev">repository is clean</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="body">
             <div class="term">repository is clean

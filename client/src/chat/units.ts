@@ -195,8 +195,6 @@ export interface HookRun {
   name: string;
   /** The event that fired it, and only where the name does not already say it. */
   event: string | null;
-  /** Where the run got to: `running`, or its outcome and the code it exited on. */
-  state: string;
   /** Whether it failed, which is the code the response reports it exited on. */
   failed: boolean;
   /**
@@ -1036,23 +1034,9 @@ function hookFailed(frame: Frame): boolean {
 function hookRun(frame: Frame): HookRun {
   const name = str(frame, 'hook_name') ?? '';
   const fired = str(frame, 'hook_event') ?? '';
-  // An empty word is no word, the way the frames' own sentences are read: a
-  // frame answering `''` has said nothing about how it ended, and joining it
-  // would draw a row whose state trails off.
-  const outcome = str(frame, 'outcome') || null;
-  const exit = typeof frame.exit_code === 'number' ? frame.exit_code : null;
   return {
     name,
     event: fired !== '' && !name.includes(fired) ? fired : null,
-    // A run that has not answered yet has neither an outcome nor a code, so it
-    // says the state it is in rather than leaving the half of a line it would
-    // fill looking like a hole.
-    state:
-      outcome === null && exit === null
-        ? 'running'
-        : [outcome, exit === null ? null : `exit ${exit}`]
-            .filter((part): part is string => part !== null && part !== '')
-            .join(' \u{b7} '),
     failed: hookFailed(frame),
     body: hookOutput(frame),
   };

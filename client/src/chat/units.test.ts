@@ -1133,9 +1133,6 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual(['group']);
     const run = runOf(units);
     expect(run?.name, 'the hook the CLI matched, under its own name').toBe('SessionStart:startup');
-    expect(run?.state, 'the outcome and the code the response reported').toBe(
-      'success \u{b7} exit 0',
-    );
     expect(run?.body, 'with the output it settled on').toBe('<redacted-hook-body>');
     // The response SUPERSEDES what the progress frames had printed rather than
     // being appended to it: the frames' output is cumulative, so a fold that
@@ -1151,21 +1148,9 @@ describe('one turn folded into the units a view draws', () => {
     const running = fold(frames.slice(0, 3));
 
     expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['group']);
-    expect(runOf(running)?.state, 'the state it is in').toBe('running');
     expect(runOf(running)?.body, 'with the output it has printed so far').toContain(
       'capture-line-2',
     );
-
-    // An empty word is no word, so a frame answering `''` reports the state it
-    // is in rather than a state that trails off. No capture can carry this: the
-    // wire type makes `outcome` required, and every hook response the tree
-    // carries - 91 under baselines/sdk/ and 56 in the claude-cli-upgrade
-    // reference captures - sends `success`. So this is the read the comment
-    // promises rather than a shape anyone observed.
-    const blank = fold([
-      { ...(frames[0] as Record<string, unknown>), outcome: '', exit_code: undefined },
-    ]);
-    expect(runOf(blank)?.state, 'and an empty word draws no state at all').toBe('running');
 
     expect(fold(frames), 'the response settles that row rather than opening a second').toHaveLength(
       1,
@@ -1180,9 +1165,6 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     expect(runOf(failed)?.failed, 'the mark a failure the CLI reported draws').toBe(true);
-    expect(runOf(failed)?.state, "the code, which is the frame's own word for it").toContain(
-      'exit 2',
-    );
     // The control the mark needs: the same frames without the failure draw a
     // line, so a fold that marked every hook would not read as one that marks
     // the failed ones.

@@ -180,7 +180,7 @@ describe('one turn, as the page draws it', () => {
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
   });
 
-  it("draws a hook's own run as the row the fold made, closed on its state", () => {
+  it("draws a hook's own run as the row the fold made, closed on its first line", () => {
     // The wiring is one line in this component's arm list, and nothing else
     // here covers it: the row's own tests render it directly, and axe sees it
     // through the page rather than through this turn.
@@ -212,13 +212,13 @@ describe('one turn, as the page draws it', () => {
       'class="leaf hookrow"',
     );
     // The summary alone, because the output is in the body too: an assertion on
-    // the whole render passes whether or not the state reached the closed row.
+    // the whole render passes whether or not the first line reached the row.
     const at = body.indexOf('<summary');
     const summary = body.slice(at, body.indexOf('</summary>', at));
-    expect(summary, 'the hook it matched and how it ended, without opening it').toContain(
-      'SessionStart:startup',
+    expect(summary, 'the hook it matched, without opening it').toContain('SessionStart:startup');
+    expect(summary, "with the output's first line on the closed row").toContain(
+      'repository is clean',
     );
-    expect(summary, 'with the state on the closed row').toContain('success');
     expect(body, 'and the whole of what it printed behind the row').toContain(
       'repository is clean',
     );

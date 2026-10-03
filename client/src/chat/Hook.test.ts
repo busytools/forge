@@ -34,7 +34,6 @@ const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
 const run = (extra: Partial<HookRun> = {}): HookRun => ({
   name: 'SessionStart:startup',
   event: null,
-  state: 'success \u{b7} exit 0',
   failed: false,
   body: 'capture-line-1\ncapture-line-2\n',
   ...extra,
@@ -56,7 +55,7 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the hook run row', () => {
-  it('names the hook and the state it reached on the closed row', () => {
+  it("names the hook and the output's first line on the closed row", () => {
     const body = draw();
     const said = summaryWords(body);
 
@@ -64,7 +63,16 @@ describe('the hook run row', () => {
     // repeating "hook" would be the second telling the lane exists to end.
     expect(said, 'the name, and nothing ahead of it').toMatch(/^SessionStart:startup/);
     expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
-    expect(said, 'and how the run ended, without opening it').toContain('success \u{b7} exit 0');
+    expect(said, 'and the first line of what it printed, without opening it').toContain(
+      'capture-line-1',
+    );
+    expect(said, 'with only that line, the rest of the output staying in the body').not.toContain(
+      'capture-line-2',
+    );
+    expect(
+      summaryOf(draw({ body: null })),
+      'a run that printed nothing carries no tail',
+    ).not.toContain('class="ev"');
     // Once, not twice: every captured name already carries its event, so a row
     // repeating it would say `SessionStart:startup (SessionStart)`.
     expect(said, 'and the event only where the name does not say it').not.toContain(
@@ -410,7 +418,7 @@ describe('the hook run row', () => {
     expect(rows.length, 'the drawing carries the row').toBeGreaterThan(0);
     expect(
       rows.filter((row) => !row.includes('class="body"')),
-      'with a closed one, carrying its state and no body',
+      'with a closed one, carrying its first line and no body',
     ).not.toEqual([]);
     expect(
       rows.filter((row) => row.includes('open')),
