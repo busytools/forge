@@ -42,10 +42,11 @@
   /**
    * What a hook's output says.
    *
-   * An envelope the CLI reads carries its text in `additionalContext` (the
-   * context it injects) or `systemMessage` (the line it shows the reader), at
-   * the top level or inside `hookSpecificOutput`; anything that parses as no
-   * object is its own words.
+   * **The two places the CLI's own envelopes carry text, and only those**: the
+   * context a session-start hook injects (`hookSpecificOutput.additionalContext`)
+   * and the line a hook shows the reader (`systemMessage`, top level). A key in
+   * the other half is read by nobody - the CLI would not have shown it either -
+   * so it draws no tail rather than words the session never saw.
    */
   function hookWords(body: string): string {
     const text = body.trim();
@@ -59,17 +60,12 @@
     if (held === null || typeof held !== 'object' || Array.isArray(held)) return body;
     const fields = held as Record<string, unknown>;
     const inner = fields['hookSpecificOutput'];
-    const levels: Array<Record<string, unknown>> = [
-      ...(inner !== null && typeof inner === 'object' && !Array.isArray(inner)
-        ? [inner as Record<string, unknown>]
-        : []),
-      fields,
-    ];
-    for (const key of ['additionalContext', 'systemMessage']) {
-      for (const level of levels) {
-        const said = level[key];
-        if (typeof said === 'string' && said.trim() !== '') return said;
-      }
+    const context =
+      inner !== null && typeof inner === 'object' && !Array.isArray(inner)
+        ? (inner as Record<string, unknown>)['additionalContext']
+        : null;
+    for (const said of [context, fields['systemMessage']]) {
+      if (typeof said === 'string' && said.trim() !== '') return said;
     }
     return '';
   }

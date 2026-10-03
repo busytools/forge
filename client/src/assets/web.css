@@ -989,6 +989,12 @@ details.hooks > summary .st.err { color: var(--bad); }
    output staying behind the open. */
 details.hookrow > summary .ev { color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name keeps its width: two clamped spans would otherwise share the flex
+   shrink, and a long tail would take the name's own letters with it. */
+details.hookrow > summary .tn { flex: none; }
+/* The tail's own inline marks - a `**bold**` in the context a hook injected -
+   take the prose tone the name's marks do, rather than the tail's muting. */
+details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated. */
 details.inboundrow > summary .ev { color: var(--muted); }

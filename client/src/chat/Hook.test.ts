@@ -128,12 +128,32 @@ describe('the hook run row', () => {
       'an envelope that carried nothing carries no tail',
     ).not.toContain('class="ev"');
 
+    // **And only the CLI's own shapes are read.** A key in the half the CLI
+    // does not read it from is a hook the session never saw anything from, so
+    // it draws no tail rather than words the reader was never shown.
+    const misShaped = JSON.stringify({ additionalContext: 'never read by the CLI' });
+    expect(
+      summaryOf(draw({ body: misShaped })),
+      'a key the CLI does not read from the top level draws no tail',
+    ).not.toContain('class="ev"');
+
     // **And the tail is one line whatever the output weighs.** The thought
     // row's own line is the precedent: the words joined, the layout's
     // ellipsis where they run out, the whole of it behind the open.
     for (const [what, sheet] of sheets()) {
       expect(sheet, `${what} holds the row's tail to one line`).toMatch(
         /details\.hookrow > summary \.ev \{[^}]*overflow: hidden[^}]*text-overflow: ellipsis[^}]*white-space: nowrap/,
+      );
+      // **And the cut never takes the name's letters.** Two clamped spans
+      // share the flex shrink, and a long tail shrank `SessionStart:startup`
+      // to `Se...` until the name was held at its own width (Ved, 2026-10-03).
+      expect(sheet, `${what} keeps the row's name at its own width`).toMatch(
+        /details\.hookrow > summary \.tn \{[^}]*flex: none/,
+      );
+      // A mark in the tail reads as a mark in the prose tone, the way the
+      // name's own marks do - the tail's muting is for the words around it.
+      expect(sheet, `${what} draws the tail's marks in the prose tone`).toMatch(
+        /details\.hookrow > summary \.ev (?:strong|code)[^{]*\{[^}]*color: var\(--text\)/,
       );
     }
   });
@@ -468,7 +488,7 @@ describe('the hook run row', () => {
     expect(rows.length, 'the drawing carries the row').toBeGreaterThan(0);
     expect(
       rows.filter((row) => !row.includes('class="body"')),
-      'with a closed one, carrying its first line and no body',
+      'with a closed one, carrying its words and no body',
     ).not.toEqual([]);
     expect(
       rows.filter((row) => row.includes('open')),
@@ -520,7 +540,7 @@ const BODY_PROPERTIES = [
   'white-space',
 ];
 
-const ROW_PROPERTIES = ['color', 'overflow', 'text-overflow', 'white-space'];
+const ROW_PROPERTIES = ['color', 'flex', 'overflow', 'text-overflow', 'white-space'];
 
 /**
  * Every class token a selector names, wherever inside the selector it sits.
