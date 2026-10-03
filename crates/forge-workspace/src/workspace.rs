@@ -199,6 +199,23 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 pub(crate) type ParkedSlackDraft =
     (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
 
+/// What the last spawn handed `Agent::spawn` as its listing.
+///
+/// Three cases, because a lead's listing and a spawn that never ran are
+/// different answers and one option would merge them. Test-only: a
+/// stand-in replaces the spawn call outright, so this is the only way a
+/// test sees what the real spawn was given.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone)]
+pub enum RecordedListing {
+    /// No spawn has run since the workspace was built.
+    None,
+    /// A spawn ran and handed no listing: a lead's own case.
+    NoListing,
+    /// A spawn ran and handed this worker's listing.
+    Listed(forge_agent::WorkerListing),
+}
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -241,6 +258,12 @@ pub struct Workspace {
     /// spawn runs always.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
+    /// The worker listing the last spawn handed `Agent::spawn`, written by
+    /// the spawn and read by a test that cannot see the call: a stand-in
+    /// replaces `Agent::spawn` entirely, so its argument is otherwise
+    /// unobservable.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_listing: Mutex<RecordedListing>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -793,7 +816,7 @@ async fn run_background_catalog_scan(
         None, // every project in the catalog
         None, // no limit
         0,
-        false, // hide worker-tagged sessions from default catalog
+        forge_agent::userdata::catalog::scan::Workers::Hidden,
         Some(&tag_cache),
     )
     .await;
@@ -1441,6 +1464,8 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_listing: Mutex::new(RecordedListing::None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -2010,12 +2035,23 @@ impl Workspace {
             )
         };
 
+        // Derived once, so what a test records is the very value the spawn is
+        // handed rather than a second reading of the slot.
+        let worker_listing = self.worker_listing_for(&session_slot);
+        #[cfg(any(test, feature = "testing"))]
+        {
+            *self.test_spawn_listing.lock() = match &worker_listing {
+                Some(listing) => RecordedListing::Listed(listing.clone()),
+                None => RecordedListing::NoListing,
+            };
+        }
         let spawn_agent = || {
             forge_agent::Agent::spawn(
                 account_dir.clone(),
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
+                worker_listing,
             )
         };
         // A test that installed a stand-in reads the settings this spawn
@@ -5736,6 +5772,23 @@ impl Workspace {
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+
+    /// Where a worker seat lists its own sessions from, or `None` for a
+    /// lead.
+    ///
+    /// The directory is [`Self::cwd_for_session`]'s: a worker's worktree,
+    /// composed from the live registry. The launching cwd is the wrong
+    /// answer for a fresh git worker - it launches in the project root
+    /// with `--worktree <label>`, so its transcripts land in the
+    /// worktree's project dir and a listing read from the root finds none
+    /// of them.
+    fn worker_listing_for(&self, slot: &SessionSlot) -> Option<forge_agent::WorkerListing> {
+        if slot.is_lead() {
+            return None;
+        }
+        let dir = self.cwd_for_session(slot)?;
+        Some(forge_agent::WorkerListing { label: slot.label().to_owned(), dir: dir.into() })
     }
 
     /// The cwd to pass `claude --resume` for the session at
@@ -14727,6 +14780,80 @@ mod git_scan_cwd_tests {
     // process cwd and derives the JSONL location against the wrong
     // git root (the bug documented in #245).
     // ---------------------------------------------------------------
+
+    /// A worker's listing is read from its worktree, and a lead has none of
+    /// its own. A fresh git worker launches in the project root while its
+    /// transcripts land in the worktree's project dir, so a listing read
+    /// from the launching cwd finds none of the worker's own sessions.
+    ///
+    /// **The project is loaded from a forge.toml fixture, not the test
+    /// overlay**, which is what makes the lead half bite: the overlay is
+    /// consulted by `project_for_key` and not by the cwd lookup, so a lead
+    /// seeded there resolves to nothing and the `is_lead` guard could be
+    /// deleted with the assertion still passing. Loaded, the lead resolves
+    /// to its project root and only the guard answers `None`.
+    #[test]
+    fn worker_listing_is_the_workers_worktree_and_a_lead_has_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("listing-proj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "listing-proj"
+path = "{}"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let view = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "listing-proj")
+            .expect("fixture project");
+        let lead = SessionSlot::lead(&view.org, &view.name);
+        assert_eq!(
+            ws.cwd_for_session(&lead).as_deref(),
+            view.path.to_str(),
+            "the fixture's lead must resolve, or its half of this test proves nothing",
+        );
+        assert!(
+            ws.worker_listing_for(&lead).is_none(),
+            "a lead lists from the cwd it launches in, so it has no listing to carry",
+        );
+
+        // The slot's label is the worker's label, which is what its tag
+        // carries: the two are one string in production.
+        let worker = SessionSlot::worker(&view.org, &view.name, "reviewer");
+        ws.insert_live_worker(&view.key, worker_entry("reviewer", &worker, true));
+
+        let listing = ws.worker_listing_for(&worker).expect("a worker has a listing of its own");
+        assert_eq!(
+            listing.label, "reviewer",
+            "the listing carries the label the worker's transcripts do",
+        );
+        assert_eq!(
+            listing.dir,
+            view.path.join(".claude/worktrees/reviewer"),
+            "the listing must be read from the worker's worktree, not the cwd it launches in",
+        );
+    }
 
     #[test]
     fn resume_cwd_for_slot_returns_worktree_for_git_worker_with_no_catalog_cwd() {

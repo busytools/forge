@@ -198,12 +198,12 @@ pub struct UiSession {
     /// envelopes so an in-flight fetch that lands after the user has
     /// switched sessions still writes to the bucket that requested it.
     pub usage: UsageState,
-    /// Catalog of resumable sessions for this bucket's project,
-    /// produced by `forge_sdk_worker::list_recent_sessions` against
-    /// the bucket's `cwd`. Drives the startup `/resume` picker and
-    /// `/resume <id>` autocomplete. Per-session so the autocomplete
-    /// always lists the active project's sessions even when the user
-    /// has switched mid-session.
+    /// Catalog of resumable sessions for this bucket's seat, produced
+    /// by `forge_sdk_worker::list_recent_sessions` against the seat's
+    /// own listing - its cwd for a lead, its worktree for a worker.
+    /// Drives the startup `/resume` picker and `/resume <id>`
+    /// autocomplete. Per-session so the autocomplete always lists the
+    /// seat's own sessions even when the user has switched mid-session.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// File index for `@`-mention autocomplete. Scans the bucket's
     /// `cwd` and updates incrementally via the workspace-wide
