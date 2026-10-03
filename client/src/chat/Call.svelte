@@ -18,7 +18,8 @@
    * open in it.
    *
    * `open` is what the row's own kind decides - a mutation's diff is drawn
-   * without being asked - and the reader's own toggling takes it from there.
+   * without being asked, while it is small enough to draw - and the reader's
+   * own toggling takes it from there.
    */
   let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
 
@@ -26,9 +27,10 @@
    * Whether the row is open, held HERE rather than drawn from the prop.
    *
    * The prop says where the row starts - a mutation's diff is open without
-   * being asked - and the element owns the state from then on: a row is
-   * re-rendered whenever the turn is, and an `open` attribute written from a
-   * prop on every update closes a row the reader has just opened.
+   * being asked, while it is small enough to draw - and the element owns the
+   * state from then on: a row is re-rendered whenever the turn is, and an
+   * `open` attribute written from a prop on every update closes a row the
+   * reader has just opened.
    */
   let opened = $state(untrack(() => open));
 

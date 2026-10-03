@@ -106,9 +106,9 @@
     return kind === 'ask' ? 'question' : 'in';
   }
 
-  /** Whether a call's body is drawn without being asked for: a mutation's diff. */
+  /** Whether a call's body is drawn without being asked for: a mutation's diff, while it is small enough to draw. */
   function opens(call: ToolLeaf): boolean {
-    return opensByDefault(call.name);
+    return opensByDefault(call.name, call.body);
   }
 </script>
 

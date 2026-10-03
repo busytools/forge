@@ -138,9 +138,35 @@ export interface ToolLeaf {
   imageNote: string | null;
 }
 
-/** Whether a call's body is drawn without being asked for. */
-export function opensByDefault(name: string): boolean {
-  return isEdit(name);
+/**
+ * Whether a call's body is drawn without being asked for: a mutation's diff,
+ * while it is small enough to draw.
+ *
+ * **A very large diff is not drawn open.** Laying one out costs WebKit a full
+ * pass over it on every dirty, which pins the renderer on the seat holding it
+ * - a real diff of ~245,000px froze the page that drew it, its loading line
+ * included. A row over the bound starts closed; one click still opens it, and
+ * nothing is dropped.
+ */
+export function opensByDefault(name: string, body: CallBody[]): boolean {
+  return isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES;
+}
+
+/** The most diff lines a mutation's row draws without being asked. */
+const OPEN_DIFF_LINES = 2000;
+
+/** The lines a body's diff pieces would draw, counted as the row draws them. */
+function drawnDiffLines(body: CallBody[]): number {
+  let lines = 0;
+  for (const piece of body) {
+    if (piece.kind === 'diff') {
+      lines += piece.old === '' ? 0 : piece.old.split('\n').length;
+      lines += piece.new === '' ? 0 : piece.new.split('\n').length;
+    } else if (piece.kind === 'hunk') {
+      lines += piece.lines.length;
+    }
+  }
+  return lines;
 }
 
 /** Whether a call's body is a source file the page colours. */

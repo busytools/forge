@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { leafOf } from './leaves';
+import { leafOf, opensByDefault } from './leaves';
 
 /** A result block as the wire shapes one, which is where a tool's answer arrives. */
 const answered = (content: string): { type: string; content: string } => ({
@@ -115,5 +115,41 @@ describe('what a call body draws', () => {
       bash.body.map((part) => part.kind),
       'a call with no diff still says what it said',
     ).toEqual(['text']);
+  });
+});
+
+describe('what opens without being asked', () => {
+  /** A mutation whose two sides carry `lines` lines each. */
+  const edit = (lines: number) => {
+    const side = Array.from({ length: lines }, (_, n) => `line ${n}`).join('\n');
+    return leafOf(
+      't1',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: side, new_string: side },
+      answered('The file /x/a.rs has been updated.'),
+    );
+  };
+
+  it('opens a mutation while its diff is small enough to draw, and not past the bound', () => {
+    // The bound is why this exists: an open diff of ~245,000px pinned the
+    // renderer on the seat that held it (WebKit re-lays every mounted giant on
+    // each pass), so a very large one must start closed rather than be drawn
+    // unbounded. Dropping the size term re-opens every giant diff silently.
+    const small = edit(10);
+    expect(
+      opensByDefault(small.name, small.body),
+      'an ordinary mutation draws its diff without being asked',
+    ).toBe(true);
+
+    const huge = edit(1500);
+    expect(
+      opensByDefault(huge.name, huge.body),
+      'a mutation over the bound starts closed, and one click still opens it',
+    ).toBe(false);
+
+    const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
+    expect(opensByDefault(bash.name, bash.body), 'a call with no diff never opens itself').toBe(
+      false,
+    );
   });
 });
