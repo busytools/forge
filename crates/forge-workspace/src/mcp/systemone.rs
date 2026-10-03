@@ -432,6 +432,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ask_score_returns_the_rubric_answer() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        let answer = Answer::Score {
+            score: 1.79,
+            probabilities: Some([("0".to_owned(), 0.1), ("1".to_owned(), 0.3), ("2".to_owned(), 0.6)].into_iter().collect()),
+            confidence: Some(0.5),
+            legend: Some(
+                [("0".to_owned(), "Routine".to_owned()), ("1".to_owned(), "Soon".to_owned()), ("2".to_owned(), "Urgent".to_owned())]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+        *mock.result.lock() = Some(Ok(outcome(answer)));
+        let tool = AskScore { facade: mock.clone() };
+
+        let out = tool
+            .call(input(serde_json::json!({"state": "x", "instructions": "How urgent?", "criteria": ["Routine", "Soon", "Urgent"]})))
+            .await;
+
+        assert!(!out.is_error, "score succeeds: {}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("\"score\":1.79"), "{}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("\"legend\""), "{}", out.blocks[0].text);
+        assert!(out.blocks[0].text.contains("\"probabilities\""), "{}", out.blocks[0].text);
+        let calls = mock.calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1,
+            Question::Score {
+                instructions: "How urgent?".to_owned(),
+                criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn boundary_criteria_are_accepted_and_reach_the_facade() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        let choice = AskChoice { facade: mock.clone() };
+
+        let out = choice.call(input(serde_json::json!({"state": "x", "instructions": "Which?", "criteria": {"only": null}}))).await;
+        assert!(!out.is_error, "one option is accepted: {}", out.blocks[0].text);
+
+        let wide: serde_json::Map<String, serde_json::Value> =
+            (0..255).map(|index| (format!("o{index}"), serde_json::Value::Null)).collect();
+        let out = choice.call(input(serde_json::json!({"state": "x", "instructions": "Which?", "criteria": wide}))).await;
+        assert!(!out.is_error, "255 options are accepted: {}", out.blocks[0].text);
+
+        let score = AskScore { facade: mock.clone() };
+        let out = score.call(input(serde_json::json!({"state": "x", "instructions": "How bad?", "criteria": ["low", "high"]}))).await;
+        assert!(!out.is_error, "two levels are accepted: {}", out.blocks[0].text);
+
+        assert_eq!(mock.calls.lock().len(), 3, "every boundary case reached the facade");
+    }
+
+    #[tokio::test]
     async fn ask_score_rejects_one_level() {
         let mock = Arc::new(MockSystemOneFacade::new());
         let tool = AskScore { facade: mock.clone() };
