@@ -84,6 +84,7 @@ mod single_instance;
 mod slack;
 mod spawn;
 pub mod store;
+mod systemone;
 mod target;
 mod tasks;
 mod update_fanout;

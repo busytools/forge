@@ -1369,6 +1369,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-system-one"
+version = "1.0.109"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "forge-test-harness"
 version = "1.0.109"
 dependencies = [
@@ -1462,6 +1475,7 @@ dependencies = [
  "forge-gateway",
  "forge-primitives",
  "forge-sdk",
+ "forge-system-one",
  "forge-workspace",
  "parking_lot",
  "redb",

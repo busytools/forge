@@ -350,6 +350,28 @@ Optional. Absent means the Gotify integration stays dormant.
 
 Both are mandatory once the section is present; neither has a default.
 
+## `[systemone]`
+
+Optional. Absent or `enabled = false` means the decision tools
+(`systemone__ask_noul`, `systemone__ask_choice`, `systemone__ask_score`)
+are not injected into any session.
+
+| Key | Type | Required | Notes |
+|---|---|---|---|
+| `enabled` | boolean | no | Defaults to `true`. `false` keeps the section (and the key) without injecting the tools. |
+| `base_url` | string | yes | The endpoint's base. forge appends `/v1/systemone`, or `/systemone` when the base already ends in `/v1`. |
+| `api_key` | string | no | Sent as a bearer token when set; omit it for keyless local hosts such as Ollama. |
+| `model` | string | yes | The model every call asks, e.g. `jev-latest`. |
+| `timeout_ms` | integer | no | Per-request timeout in milliseconds; defaults to 30000. |
+
+`base_url` and `model` are mandatory once the section is enabled; a
+missing one refuses the load naming the key - the message reads
+``[systemone] `base_url` is required when `[systemone]` is enabled``
+(or the same sentence for `model`) - and `timeout_ms = 0` refuses with
+``[systemone] `timeout_ms` must be greater than zero``. A key the
+endpoint itself rejects surfaces as a tool error naming `api_key`;
+forge never substitutes another credential.
+
 ## `[[slack]]`
 
 Optional, and repeatable: one entry per Slack workspace. Absent or empty
@@ -448,7 +470,7 @@ Every table rejects unknown fields, so a mistyped key fails the load
 and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
-`[[accounts]]`, `[[slack]]`, `[gotify]`, `[gateway]`,
+`[[accounts]]`, `[[slack]]`, `[gotify]`, `[systemone]`, `[gateway]`,
 `[dictate]`, `[plugins]` and `[web]`.
 
 A key forge itself retired is a declared ghost rather than an unknown

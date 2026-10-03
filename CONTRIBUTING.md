@@ -126,12 +126,13 @@ is smaller and slightly incomplete.
 
 ## Where code goes
 
-The workspace is eleven crates with a strictly acyclic dependency graph,
+The workspace is twelve crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
 has the placement guide; the short version is that audio and speech go
-in `forge-dictate`, cross-crate types go in `forge-primitives`,
+in `forge-dictate`, decision-model I/O goes in `forge-system-one`,
+cross-crate types go in `forge-primitives`,
 provider credentials, probes, billing, account selection and account
 health go in `forge-gateway`,
 inbound connector clients and matching go in `forge-connectors`,

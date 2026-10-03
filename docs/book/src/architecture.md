@@ -1,10 +1,11 @@
 # Architecture
 
-Eleven crates, layered so the dependency graph stays acyclic.
+Twelve crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
+forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
@@ -20,6 +21,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | `forge-primitives` | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async. |
 | `forge-dictate` | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization. Depends on no forge-* crate and knows nothing about the program embedding it. |
+| `forge-system-one` | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import. |
 | `forge-gateway` | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements. |
 | `forge-connectors` | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements. |
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
@@ -44,45 +46,50 @@ Work top-down; the first match wins.
    `forge-dictate`. It is a leaf: it may not depend on any forge-*
    crate, and its own types stay there even once another crate reads
    them.
-2. **A type that crosses a crate boundary** (an envelope, a snapshot
+2. **System One decision-model I/O** (the `[systemone]` config shape,
+   the wire question and answer types with their validation, the HTTP
+   call) goes in `forge-system-one`. A leaf: it may not depend on any
+   forge-* crate, and its own types stay there even once another crate
+   reads them.
+3. **A type that crosses a crate boundary** (an envelope, a snapshot
    struct, a hook payload, anything sent over a channel or touched by
    more than one crate) goes in `forge-primitives`. Data shapes only.
-3. **Provider credential resolution, the usage probe, payload-to-snapshot
+4. **Provider credential resolution, the usage probe, payload-to-snapshot
    mapping, billing shape or repair policy** goes in `forge-gateway`,
    as one backend per provider token. **Account selection, account
    health, probe scheduling or backoff** goes there as well: the gateway
    owns the account pool, and the workspace drives it.
-4. **Inbound connector work for an external integration** (its stream
+5. **Inbound connector work for an external integration** (its stream
    client, REST lookups, subscription matching) goes in
    `forge-connectors`, one module per connector. The connector holds no
    workspace state; Gotify reaches the workspace through the
    `GotifyHost` port that forge-workspace implements, and Slack holds
    only its Web API client.
-5. **Anything that speaks stream-json to the subprocess** (a decoder, a
+6. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
    scenario.
-6. **Live state about the user's environment** (git watching, cwd
+7. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    plugin catalog scans) goes in `forge-agent`.
-7. **Orchestration across projects, sessions, accounts, `forge.toml`
+8. **Orchestration across projects, sessions, accounts, `forge.toml`
    or the command bus** goes in `forge-workspace`. A read a VIEW needs
    is a verb on the view surface below, not a bare method.
-8. **A session record as a view sees it, or a decision any view would
+9. **A session record as a view sees it, or a decision any view would
    make over one** (the render-ready record, the reducer that derives
    it, the policy that decides how a run of blocks folds, the peer
    envelope parsing in both directions) goes in `forge-server`. The
    test is "does this render?" - if it does, it is the view's.
-9. **A widget, screen, key binding, mouse handler or per-session
-   presentation state** goes in `forge-tui`.
-10. **A view that is not the TUI** - its pages, its markup, its own
+10. **A widget, screen, key binding, mouse handler or per-session
+    presentation state** goes in `forge-tui`.
+11. **A view that is not the TUI** - its pages, its markup, its own
     per-view state - goes in a crate of its own, built against the socket
     in `forge-server` rather than against the core. `forge-web` is the one
     that exists, parked until it is rebuilt that way. Either way it sits
     beside `forge-tui` on the same core, and a read of the core goes
     through the view surface in `forge-server`, never through
     `forge-workspace`.
-11. **A wire-conformance scenario** goes in `forge-test-harness`.
+12. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
@@ -248,11 +255,13 @@ read "the TUI cannot touch the agent" into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with six groups today:
-`agents`, `review`, `cron`, `tasks`, `gotify` and `slack`.
+to the model as `mcp__forge__<group>__<tool>`, with seven groups today:
+`agents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
+`systemone`.
 
 `review`, `cron`, `tasks`, `gotify` and `slack` are registered for every
-session. The split that varies by session kind is inside `agents`: any session may
+session; `systemone` joins them when `[systemone]` is configured and
+enabled. The split that varies by session kind is inside `agents`: any session may
 `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only. Reach is the same for both: a target is a

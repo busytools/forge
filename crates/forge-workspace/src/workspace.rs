@@ -212,6 +212,11 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::gotify`] can read the
     /// `[gotify]` section.
     pub(crate) config: LoadedConfig,
+    /// The `[systemone]` decision client, built at boot when the section
+    /// is present and enabled; the session MCP servers are handed a
+    /// facade over it. `None` keeps the systemone tools out of every
+    /// session.
+    pub(crate) systemone: Option<Arc<forge_system_one::SystemOneClient>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -1333,6 +1338,11 @@ impl Workspace {
                 },
             )?,
         );
+        let systemone = crate::systemone::client_for(
+            config.systemone.as_ref(),
+            &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+        )?
+        .map(Arc::new);
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -1423,6 +1433,7 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config,
+            systemone,
             catalog,
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -1968,6 +1979,10 @@ impl Workspace {
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
+            let systemone_facade = self.systemone.as_ref().map(|client| {
+                crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
+                    .into_arc()
+            });
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
@@ -1976,6 +1991,7 @@ impl Workspace {
                 gotify_facade,
                 slack_facade,
                 tasks_facade,
+                systemone_facade,
                 session_slot.clone(),
                 session_kind,
             )
@@ -12175,6 +12191,12 @@ mod worker_respawn_tests {
             crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
             crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
             crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
+            workspace.systemone.as_ref().map(|client| {
+                crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
+                    client,
+                ))
+                .into_arc()
+            }),
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
