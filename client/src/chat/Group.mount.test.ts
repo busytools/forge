@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { describe, expect, it } from 'vitest';
 
 import Group from './Group.svelte';
-import { fold } from './units';
+import { fold, type Lane } from './units';
 
 /**
  * The lane's rows as MOUNTED DOM, which the server-rendered file cannot pin.
@@ -35,6 +35,56 @@ describe('a family of calls, mounted', () => {
     try {
       flushSync();
       expect(document.querySelectorAll('.lane .leaf').length, 'both calls drew').toBe(2);
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('draws a list whose seat rows share the word lead, which is one row each and no duplicate key', () => {
+    // **Every project's own agent is labelled `lead`**, so the ordinary
+    // unfiltered `agents__list` - the documented health check - carries two
+    // rows with that word. Keyed by the label they are one key, and Svelte
+    // refuses a duplicate key at mount: the whole turn stops drawing.
+    const lanes: Lane[] = [
+      {
+        tag: 'message',
+        cards: [
+          {
+            id: 'm-1',
+            row: 'list',
+            peer: 'list',
+            body: '',
+            org: null,
+            status: 'completed',
+            ack: null,
+            seat: null,
+            seats: [
+              {
+                org: 'Busytools',
+                label: 'lead',
+                project: 'forge',
+                what: 'this session',
+                liveness: '',
+              },
+              {
+                org: 'Gateway',
+                label: 'lead',
+                project: 'gateway-backend',
+                what: 'another project',
+                liveness: '',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const app = mount(Group, { target: document.body, props: { lanes } });
+    try {
+      flushSync();
+      expect(document.querySelectorAll('details.leaf .kv').length, 'both seat rows drew').toBe(2);
+      expect(document.body.textContent, 'under their own projects').toContain('gateway-backend');
     } finally {
       void unmount(app);
       document.body.innerHTML = '';

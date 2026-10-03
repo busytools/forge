@@ -1037,6 +1037,59 @@ describe('one turn folded into the units a view draws', () => {
     expect(units[1]?.kind === 'notice' ? units[1].notice.text : '').toContain('ENOENT');
   });
 
+  it('shows the refusal a failed send came back with, not the message that was sent', () => {
+    // The row's words read `failed to deliver: <reason>`, so the reason has to
+    // be the refusal: a send that never reached anybody drawn with the sender's
+    // own text under it says the message arrived.
+    const call = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_x',
+        name: 'mcp__forge__agents__send_message',
+        input: { org: 'Gateway', project: 'companies', message: 'picking it up' },
+      },
+    ]);
+    const refused = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_x',
+        content: "no project 'companies' is configured under org 'Gateway'",
+        is_error: true,
+      },
+    ]);
+
+    const [group] = fold([call, refused]);
+    const card = traffic(group)[0]?.cards[0];
+
+    expect(card?.row, 'the send draws its failure row').toBe('failed');
+    expect(card?.body, 'with the refusal under it').toContain(
+      "no project 'companies' is configured",
+    );
+    expect(card?.body, 'and not the words that were sent').not.toContain('picking it up');
+  });
+
+  it('keys two failures from one seat apart, which the fold does by frame and block', () => {
+    // **Two notices from one seat in a turn are ordinary**: a bucket of parked
+    // messages is acked one notice per message, and a resumed transcript
+    // replays them. A card that named itself by its sender would give both one
+    // key, and Svelte refuses a duplicate key at mount - so the failure card
+    // carries no id of its own and the fold names it by where it arrived.
+    const failed = (uuid: string, line: string): unknown => heard([text(line)], { uuid });
+    const header = "[Message to agent 'companies' (org 'Busytools') failed to deliver: ";
+
+    const [group] = fold([
+      failed('u1', `${header}channel closed]`),
+      failed('u2', `${header}target session connection lost]`),
+    ]);
+    const cards = traffic(group)[0]?.cards ?? [];
+
+    expect(cards.length, 'both notices drew').toBe(2);
+    expect(
+      cards.map((card) => card.id),
+      'each named by the frame it arrived in, not by the seat that sent it',
+    ).toEqual(['u1#0', 'u2#0']);
+  });
+
   it('reads a recorded failure header as the same failed row', () => {
     // A transcript recorded before the verbs were folded holds the `Ask …`
     // header; reopening it draws the failure it always drew.

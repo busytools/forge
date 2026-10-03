@@ -27,9 +27,9 @@
   type DrawnTitle = { lead: string; name: string; tail: string };
 
   /**
-   * A stretch of the turn's work: a lane per tool family, per kind of peer
-   * traffic and for the thinking, with every call, message or thought on its
-   * own row behind a rail.
+   * A stretch of the turn's work: a lane per tool family, one peer lane, and
+   * the thinking, with every call, message or thought on its own row behind a
+   * rail.
    *
    * **No disclosure around the group.** The count and the roll-up are not
    * drawn: a stretch of work is not a thing to hide, the lane rows say what
@@ -40,8 +40,8 @@
    * border and no colour of their own - the same lanes and marks a run of calls
    * draws - which is what makes traffic and reasoning read as the same system
    * rather than as a second one. The lane says what kind of thing it is; a
-   * message lane's mark says who is talking, and a thought lane is the model
-   * talking to itself.
+   * peer row's mark says which way the message went, and a thought lane is the
+   * model talking to itself.
    *
    * **A lane that takes a row moves to the bottom of the group**, and the move
    * is animated: it is what tells the reader which lane just changed. The fold
@@ -228,7 +228,10 @@
                   <span class="k">status</span><span class="v">{card.seat.status}</span>
                 </div>
               {/if}
-              {#each card.seats as seat (seat.label)}
+              <!-- Keyed by the slot, not the label: every project's own agent
+                   is labelled `lead`, so an unfiltered list would key two rows
+                   to one name and stop the whole turn drawing at mount. -->
+              {#each card.seats as seat (`${seat.org}/${seat.project}/${seat.label}`)}
                 <div class="kv">
                   <span class="k">{seat.label}</span>
                   <span class="v">{seat.project} &#183; {seat.what} &#183; {seat.liveness}</span>

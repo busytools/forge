@@ -132,12 +132,26 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
           peer: 'list',
           seats: [
             {
+              org: 'Busytools',
               label: 'lead',
               project: 'forge',
-              what: "the project's own agent",
-              liveness: 'running',
+              what: 'this session',
+              liveness: '',
             },
-            { label: 'w1', project: 'forge', what: 'review the diff', liveness: 'running' },
+            {
+              org: 'Busytools',
+              label: 'w1',
+              project: 'forge',
+              what: 'review the diff',
+              liveness: 'idle',
+            },
+            {
+              org: 'Gateway',
+              label: 'lead',
+              project: 'gateway-backend',
+              what: 'another project',
+              liveness: '',
+            },
           ],
         }),
       ]),
@@ -148,6 +162,47 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     expect(drawn, 'its path').toContain('/tmp/forge');
     expect(drawn, 'the list row names each seat').toContain('>w1<');
     expect(drawn, 'with what it is for').toContain('review the diff');
+    expect(drawn, "its activity beside it, in the wire's own lower case").toContain('idle');
+    expect(drawn, "the reader's own seat says so").toContain('this session');
+    expect(drawn, "and a project that is not the reader's says that").toContain('another project');
+  });
+
+  /**
+   * **Every project's own agent is labelled `lead`**, so the ordinary
+   * unfiltered `list` - the documented health check - carries two rows with
+   * that word. Their key is asserted where the refusal lives: a duplicate key
+   * is the client runtime's, so `Group.mount.test.ts` is the file that throws
+   * for it. This one pins what the rows draw.
+   */
+  it('draws a list whose rows share the word lead', () => {
+    const drawn = draw([
+      lane([
+        card({
+          id: 'm-1',
+          row: 'list',
+          peer: 'list',
+          seats: [
+            {
+              org: 'Busytools',
+              label: 'lead',
+              project: 'forge',
+              what: 'this session',
+              liveness: '',
+            },
+            {
+              org: 'Gateway',
+              label: 'lead',
+              project: 'gateway-backend',
+              what: 'another project',
+              liveness: '',
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    expect(drawn.match(/>lead</g)?.length, 'both rows drew').toBe(2);
+    expect(drawn, 'under their own projects').toContain('gateway-backend');
   });
 });
 

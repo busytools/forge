@@ -87,9 +87,6 @@ export interface AgentRow {
   pending_depth: number;
   last_activity: WireTime | null;
   reason: string | null;
-  /** The seat's peer-coordination counters, which its activity badge draws. */
-  peer: { outgoing: number; incoming: number; delivery_failed: number };
-  peer_failure_at: WireTime | null;
   /**
    * The seat's OWN working tree, which is not the project's.
    *

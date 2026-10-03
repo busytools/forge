@@ -136,9 +136,13 @@ export interface SeatFacts {
 
 /** One seat a `list` row opens onto. */
 export interface SeatRow {
+  /** The org the seat's project belongs to, which is part of its address. */
+  org: string;
   label: string;
   project: string;
+  /** The one clause that says what the seat is for. */
   what: string;
+  /** The worker's own activity; empty for a project's own agent, which has none. */
   liveness: string;
 }
 
@@ -830,11 +834,15 @@ function inbound(text: string, self: Self | null): Envelope | null {
   if (failed !== null && header.includes('failed to deliver:')) {
     const who = sender(failed);
     if (who === null) return null;
-    const reason = (after(failed, 'failed to deliver:') ?? '').trimEnd();
+    const reason = (after(failed, 'failed to deliver:') ?? '').trim();
     return {
       kind: 'peer',
       card: peerCard({
-        id: `f-${who.from}`,
+        // No id of its own. Two failures from one seat in a turn are ordinary -
+        // a bucket of parked messages is acked one notice per message, and a
+        // resumed transcript replays them - so the fold keys this card by the
+        // frame and block it arrived in rather than by a name two cards share.
+        id: '',
         row: 'failed',
         peer: who.from,
         body: reason,
@@ -931,11 +939,17 @@ interface MessageTool {
  */
 const MESSAGE_TOOLS: Readonly<Record<string, MessageTool>> = {
   mcp__forge__agents__send_message: { body: 'message', target: 'address' },
+  // replay-only: agents__ask
   mcp__forge__agents__ask: { body: 'prompt', target: 'address' },
+  // replay-only: agents__tell
   mcp__forge__agents__tell: { body: 'message', target: 'address' },
+  // replay-only: peers__ask_agent
   mcp__forge__peers__ask_agent: { body: 'prompt', target: 'name' },
+  // replay-only: peers__tell_agent
   mcp__forge__peers__tell_agent: { body: 'message', target: 'name' },
+  // replay-only: workers__ask
   mcp__forge__workers__ask: { body: 'question', target: 'label' },
+  // replay-only: workers__tell
   mcp__forge__workers__tell: { body: 'message', target: 'label' },
 };
 
@@ -949,6 +963,23 @@ function resultJson(result: Block | undefined): unknown {
     } catch {
       return null;
     }
+  }
+  return null;
+}
+
+/**
+ * What a result said in prose, which is where a refusal puts its reason.
+ *
+ * A tool that answers with JSON has nothing here to read; one that refuses
+ * answers with the CLI's own sentence, and that sentence is what a failure row
+ * has to show rather than the input it was called with.
+ */
+function resultText(result: Block | undefined): string | null {
+  if (result === undefined) return null;
+  for (const part of bodyOf(result.content)) {
+    if (part.kind !== 'text') continue;
+    const text = part.text.trim();
+    if (text !== '') return text;
   }
   return null;
 }
@@ -988,10 +1019,16 @@ function seatFacts(result: Block | undefined): SeatFacts | null {
  * **Two row shapes arrive in one array** - a project's own agent and a worker,
  * each with its own snapshot fields - and nothing in the answer labels which
  * is which, so the slot's own label does: `lead` is the project's agent, and
- * anything else is a worker and carries the charter it was spawned with. A
- * row whose slot will not read is dropped rather than drawn as a nameless row.
+ * anything else is a worker and carries the charter it was spawned with. A row
+ * whose slot will not read is dropped rather than drawn as a nameless row.
+ *
+ * **Three of the four facts a row carries depend on the shape.** A project's
+ * agent has no activity to report, so its liveness is empty; a worker's comes
+ * from `activity`, which is the axis that keeps moving, not from the spawn
+ * outcome `status` freezes at `Running`. And the seat the reader is holding
+ * says so, as does a project that is not the reader's.
  */
-function seatRows(result: Block | undefined): SeatRow[] {
+function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
   const answer = resultJson(result);
   if (!Array.isArray(answer)) return [];
   const rows: SeatRow[] = [];
@@ -1001,15 +1038,39 @@ function seatRows(result: Block | undefined): SeatRow[] {
     const label = str(slot, 'label');
     const project = str(slot, 'project');
     if (label === null || project === null) continue;
-    const charter = str(one, 'charter');
+    const own = self !== null && slot['org'] === self.org && project === self.project;
+    const agent = label === 'lead';
     rows.push({
+      org: str(slot, 'org') ?? '',
       label,
       project,
-      what: label === 'lead' ? "the project's own agent" : firstLine(charter ?? ''),
-      liveness: str(one, 'status') ?? '',
+      what: own ? 'this session' : agent ? 'another project' : phrase(str(one, 'charter') ?? ''),
+      liveness: agent ? '' : lower(str(one, 'activity') ?? str(one, 'status') ?? ''),
     });
   }
   return rows;
+}
+
+/**
+ * A phrase-sized cut of `text`, for the one clause a seat row says it is for.
+ *
+ * The budget is the terminal's own collapsed-row one: a charter's first line
+ * is a sentence, and a row that shows the whole of it stops reading as a row.
+ */
+function phrase(text: string): string {
+  const line = firstLine(text);
+  return line.length > 60 ? `${line.slice(0, 60).trimEnd()}\u{2026}` : line;
+}
+
+/**
+ * The wire's own word for a state, as a row prints it.
+ *
+ * `SessionLifecycleState` and `WorkerLiveness` serialize their variants as
+ * they are spelled in Rust - `Running`, `Idle` - where `PeerLiveness` is
+ * snake_case, so one row's liveness read `Running` beside another's `running`.
+ */
+function lower(word: string): string {
+  return word.charAt(0).toLowerCase() + word.slice(1);
 }
 
 /**
@@ -1043,13 +1104,18 @@ function outbound(
           ? str(fields, 'target')
           : str(fields, 'label');
     if (peer === null) return null;
+    const failed = status === 'failed';
     return peerCard({
       id,
       // A send whose own result came back in error never reached anybody, so
       // its row is the failure row rather than a second row beside it.
-      row: status === 'failed' ? 'failed' : 'sent',
+      row: failed ? 'failed' : 'sent',
       peer,
-      body: str(fields, send.body) ?? '',
+      // **A failure says what went wrong, not what was sent.** The row's own
+      // words read `failed to deliver: <reason>`, and the reason is the
+      // refusal the call came back with; the message the reader typed is in
+      // the input either way.
+      body: (failed ? resultText(result) : null) ?? str(fields, send.body) ?? '',
       org: null,
       self,
       status,
@@ -1078,7 +1144,7 @@ function outbound(
       org: null,
       self,
       status,
-      seats: seatRows(result),
+      seats: seatRows(result, self),
     });
   }
   return null;
