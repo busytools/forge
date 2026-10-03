@@ -1234,6 +1234,21 @@ pub(crate) struct WorkerSpawnArgs {
     pub mcp_families: Option<Vec<String>>,
 }
 
+/// The charter a spawned worker's prompt carries: the stored text plus
+/// the withheld-family lines for the EFFECTIVE set - the same config
+/// gate the tool build applies, so the prompt and the tools cannot
+/// disagree about a family.
+fn spawn_prompt_charter(
+    charter: &str,
+    families: Option<&[String]>,
+    systemone_available: bool,
+) -> String {
+    charter_with_withheld_families(
+        charter,
+        &crate::mcp::effective_mcp_families(families, systemone_available),
+    )
+}
+
 /// The worker's prompt charter: the stored text plus one line per
 /// withheld MCP family. The row keeps the RAW charter - these lines are
 /// composed per spawn from the current selection, so they can neither
@@ -1551,9 +1566,10 @@ pub(crate) fn handle_spawn_worker(
         None
     };
     let settings = SessionLaunchSettings {
-        charter: Some(charter_with_withheld_families(
+        charter: Some(spawn_prompt_charter(
             &charter,
-            &crate::mcp::effective_mcp_families(families.as_deref(), workspace.systemone.is_some()),
+            families.as_deref(),
+            workspace.systemone.is_some(),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
@@ -3292,6 +3308,18 @@ provider = "anthropic"
              so composed lines here would compound on every re-spawn",
         );
         assert_eq!(stored.mcp_families, Some(vec!["slack".to_owned()]));
+    }
+
+    /// The wiring the round-2 axis probed: an argument-less spawn on a
+    /// systemone-less workspace composes the systemone withheld line,
+    /// and the same spawn with the section on does not.
+    #[test]
+    fn the_spawn_prompt_charter_follows_the_config_gate() {
+        let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
+        let without = spawn_prompt_charter("charter", None, false);
+        assert!(without.contains(line), "[systemone] off composes the line: {without}");
+        let with = spawn_prompt_charter("charter", None, true);
+        assert!(!with.contains(line), "the section on composes none: {with}");
     }
 
     /// The composer's contract: nothing withheld means the charter is
