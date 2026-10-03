@@ -399,6 +399,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_long_error_body_is_bounded_and_marked() {
+        let body = format!("START {} END", "x".repeat(10_000));
+        let (base, _) = spawn_server(500, &body, None).await;
+        let client = client_for(&base, Some("k"));
+
+        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("500 is an error");
+
+        let (_, text) = http_error(err);
+        assert!(text.starts_with("START "), "{text}");
+        assert!(text.ends_with("..."), "a bounded snippet says it was cut: {text}");
+        assert!(text.len() <= 503, "the snippet stays bounded: {}", text.len());
+    }
+
+    /// The cut walks back to a char boundary; a boundary-unaware slice
+    /// would panic right here on the multi-byte run the limit lands in,
+    /// which is the property this test rests on.
+    #[tokio::test]
+    async fn a_multibyte_error_body_cuts_on_a_char_boundary() {
+        let body = format!("A{}Z", "é".repeat(1000));
+        let (base, _) = spawn_server(500, &body, None).await;
+        let client = client_for(&base, Some("k"));
+
+        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("500 is an error");
+
+        let (_, text) = http_error(err);
+        assert!(text.starts_with('A'), "{text}");
+        assert!(text.ends_with("..."), "{text}");
+    }
+
+    #[tokio::test]
     async fn answer_key_mismatch_is_an_invalid_response() {
         let body = r#"{"model":"m","answers":{"x":{"type":"noul","noul":0.5}},"usage":{"input_tokens":1,"output_tokens":1}}"#;
         let (base, _) = spawn_server(200, body, None).await;
