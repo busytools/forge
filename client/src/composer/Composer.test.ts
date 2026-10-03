@@ -605,6 +605,76 @@ describe('the box', () => {
     });
   });
 
+  /**
+   * A send into a turn that was already running did not start it.
+   *
+   * `turn_in_flight` says the core has a turn, not that it has THIS send. On a
+   * seat already running, the take effect fired the moment the echo was posted
+   * and flipped it straight to `taken` - and `refuse` rewrites only a send
+   * still on its way, so the server's refusal landed nowhere: the words stayed
+   * drawn with no mark, no reason and no way to send them again.
+   */
+  it('keeps a mid-turn send on its way, so a refusal can land on it', () => {
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) });
+    type('run the gate again');
+    sendBox();
+
+    expect(echoAt(SLOT)?.state, 'the turn was already running, so this send did not start it').toBe(
+      'sending',
+    );
+
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the session is not running' });
+    flushSync();
+
+    expect(echoAt(SLOT), 'and the refusal has somewhere to land').toMatchObject({
+      state: 'failed',
+      words: 'run the gate again',
+      why: 'the session is not running',
+    });
+  });
+
+  /**
+   * The record in hand can be another seat's - the page keeps this composer
+   * mounted across a switch - and its turn says nothing about this seat.
+   */
+  it("does not take this seat's send with another seat's record in hand", () => {
+    const harness = open();
+    type('for the seat I am on');
+    sendBox();
+    expect(echoAt(SLOT)?.state, 'on its way').toBe('sending');
+
+    harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
+    flushSync();
+
+    expect(echoAt(SLOT)?.state, "another seat's turn is not this send being taken").toBe('sending');
+  });
+
+  /**
+   * A send the reader walked away from is still theirs.
+   *
+   * Leaving a seat used to drop every other seat's send still on its way, so a
+   * refusal that arrived after the switch was heard by nobody: the row, the
+   * reason and the way to send it again all went with the echo.
+   */
+  it('keeps a send the reader left, so a refusal still finds it', () => {
+    const harness = open();
+    type('send it before I move on');
+    sendBox();
+
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the session is not running' });
+    flushSync();
+
+    expect(echoAt(SLOT), 'the send the reader left behind still hears the refusal').toMatchObject({
+      state: 'failed',
+      words: 'send it before I move on',
+      why: 'the session is not running',
+    });
+  });
+
   it('names the slash command a turn is still working on', () => {
     const harness = open();
     type('/compact');
@@ -1104,19 +1174,29 @@ describe('the seat the box belongs to', () => {
       why: 'the seat is busy',
     });
 
-    // Sent again, and the reader moves on before the core answers.
+    // Sent again, and the reader moves on before the core answers. The send
+    // stays with the seat it belongs to rather than going with the reader: a
+    // refusal that arrives now still has to reach the row that is waiting on
+    // it, and a page that dropped the send here would lose it in silence.
     type('and the gate too');
     sendBox();
     expect(harness.sent, 'the second send went out too').toHaveLength(2);
     harness.page.slot = ELSEWHERE;
     flushSync();
-    expect(echoAt(SLOT), 'leaving a seat gives up the send it was waiting on').toBeUndefined();
+    expect(
+      echoAt(SLOT),
+      'leaving a seat does not give up the send it was waiting on',
+    ).toMatchObject({ state: 'sending', words: 'and the gate too' });
 
     // The core refuses that one, and the connection says so to every page on it
     // - the error names the operation, never the seat.
     shared.say({ kind: 'error', what: 'dispatch', why: 'that seat is gone' });
     flushSync();
 
+    expect(echoAt(SLOT), 'the refusal lands on the seat that sent it').toMatchObject({
+      state: 'failed',
+      why: 'that seat is gone',
+    });
     expect(
       echoAt(ELSEWHERE),
       'a seat that sent nothing is not where a refusal lands',
@@ -2239,6 +2319,38 @@ describe('the dock', () => {
     flushSync();
 
     expect(ownWords().value, 'a re-render does not clear the box under the reader').toBe('keep me');
+  });
+
+  /**
+   * And it does not take the caret either.
+   *
+   * The record is replaced on every frame and on the session poll, so `ask` is
+   * a fresh object while the prompt is the same one. The dock took the keyboard
+   * again on each of those, keyed on the object rather than on the prompt: a
+   * reader typing in the notes row lost the caret to the option list
+   * mid-sentence, and the rest of their typing went to the listbox.
+   */
+  it('keeps the caret in the own-words box when the same prompt re-renders', () => {
+    const harness = open({ record: record({ pending_ask: questionAsk() }) });
+
+    const own = options()[2];
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
+    own.click();
+    flushSync();
+
+    const box = document.querySelector('.dock [data-editor="dock"]');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+    expect(document.activeElement, 'the box the row opened holds the keyboard').toBe(box);
+    box.value = 'half a sentence';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    // The same question as a fresh frame carries it: a new object, one id.
+    harness.page.record = record({ pending_ask: questionAsk() });
+    flushSync();
+
+    expect(document.activeElement, 'the same prompt re-drawn does not take the caret').toBe(box);
+    expect(box.value, 'and the half-typed sentence is still there').toBe('half a sentence');
   });
 
   /**

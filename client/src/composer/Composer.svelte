@@ -76,9 +76,6 @@
     const key = boxKey(slot);
     const next = boxes.of(key);
     if (untrack(() => box) !== next) box = next;
-    // Leaving a seat gives up a send still on its way, which is the one piece
-    // of this box's state the conversation draws rather than the box.
-    echoes.leave(key);
   });
 
   /**
@@ -302,7 +299,14 @@
   // A turn going in flight is the core taking the send: the mark that says it
   // has not come off, and the words stay on screen until the conversation
   // carries its own copy of them (the column clears the echo on those).
+  //
+  // Gated on `owns`, like the landing above it: between a switch and the new
+  // seat's first record the record in hand is the seat being left's, and its
+  // turn says nothing about a send on the seat being shown. `take` itself
+  // refuses a send posted into a turn already running, so this fires only for
+  // a send the turn it names actually started.
   $effect(() => {
+    if (!owns) return;
     if (record.header.turn_in_flight) echoes.take(boxKey(slot));
   });
 
@@ -383,7 +387,10 @@
     }
     const [first = ''] = text.split(/\s+/);
     if (first.startsWith('/')) box.sent = first;
-    echoes.post(boxKey(slot), text);
+    // What the seat was doing when the words left: a send that starts a turn is
+    // taken by it, one sent into a turn already running is not (it is settled by
+    // the conversation carrying the words, or by a refusal).
+    echoes.post(boxKey(slot), text, running);
     box.draft = '';
   }
 
@@ -589,6 +596,7 @@
     {#key ownKeyOf(dockAsk)}
       <Dock
         ask={dockAsk}
+        ownKey={ownKeyOf(dockAsk)}
         {slot}
         {connection}
         depth={seat.pendingDepth}
