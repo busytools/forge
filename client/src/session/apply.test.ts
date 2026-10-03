@@ -640,10 +640,67 @@ describe('applyUpdate', () => {
       expect([...UNFED].every((field) => field in held)).toBe(true);
     });
   });
+
+  describe('the queue', () => {
+    const queued = { key: SLOT, uuid: 'u7', source: 'cron', text: 'nightly sweep' };
+
+    it('adds a row from the update that carries its words and sender', () => {
+      const next = applyUpdate(empty(), { prompt_queued: queued });
+
+      expect(next.queue).toEqual([{ uuid: 'u7', source: 'cron', text: 'nightly sweep' }]);
+    });
+
+    it('keeps one row when the same id arrives twice', () => {
+      const once = applyUpdate(empty(), { prompt_queued: queued });
+      const twice = applyUpdate(once, { prompt_queued: queued });
+
+      expect(twice.queue).toHaveLength(1);
+      expect(twice, 'a duplicate leaves the record as it was').toBe(once);
+    });
+
+    it('drops the row on a state the CLI settled, and keeps it while queued', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const still = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'queued' },
+      });
+      expect(still.queue, 'a second queued frame is not a delivery').toHaveLength(1);
+
+      const delivered = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+      });
+      expect(delivered.queue, 'started is the CLI taking the prompt').toEqual([]);
+    });
+
+    it('keeps the row on a state this build cannot name', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const next = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'preempted' },
+      });
+
+      expect(next.queue, 'a word the CLI adds later must not empty the pile').toHaveLength(1);
+      expect(next).toBe(held);
+    });
+
+    it('drops the row when a cancel is confirmed, and keeps it when it was too late', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const late = applyUpdate(held, {
+        prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: false },
+      });
+      expect(late.queue, 'already taken is not dropped').toHaveLength(1);
+
+      const dropped = applyUpdate(held, {
+        prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: true },
+      });
+      expect(dropped.queue).toEqual([]);
+    });
+  });
 });
 
 /**
- * Every variant `SessionUpdate` carries - 60 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 63 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -709,6 +766,7 @@ const EVERY_VARIANT = [
   'slack_post_pending',
   'slack_draft_resolved',
   'prompt_queued_while_busy',
+  'prompt_queued',
   'prompt_lifecycle',
   'prompt_cancel_resolved',
   'review_activity_notice',
@@ -750,9 +808,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (62 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (63 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(62);
+    ).toBe(63);
   });
 
   it('classifies every variant the core can send', () => {

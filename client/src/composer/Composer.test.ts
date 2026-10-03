@@ -265,17 +265,20 @@ describe('the box', () => {
     );
     flushSync();
 
-    expect(harness.sent, 'the command is the text as typed, addressed to this seat').toEqual([
-      {
-        command: {
-          prompt: {
-            key: { org: 'Busytools', project: 'forge', label: 'lead' },
-            text: 'push it once CI is green',
-            attachments: [],
-          },
-        },
-      },
-    ]);
+    const [sent] = harness.sent;
+    const under = sent?.command['prompt_under'] ?? {};
+    expect(under['key'], 'the command is the text as typed, addressed to this seat').toEqual({
+      org: 'Busytools',
+      project: 'forge',
+      label: 'lead',
+    });
+    expect(under['text']).toBe('push it once CI is green');
+    expect(under['attachments']).toEqual([]);
+    expect(under['source']).toBe('you');
+    expect(
+      typeof under['uuid'],
+      "the id is the send's own, minted here so the CLI's lifecycle frames and the queued row carry it back",
+    ).toBe('string');
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 

@@ -11,6 +11,7 @@
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
   import SessionId from './SessionId.svelte';
+  import Queue from '../chat/Queue.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
@@ -338,6 +339,11 @@
   <Inspector {wire} {record} {slot} {now} onclose={() => (rightChosen = false)} />
 
   {#if composer !== null && record !== null}
-    <div class="composer">{@render composer({ record, slot, seat, connection })}</div>
+    <div class="composer">
+      <!-- The queue sits between the pinned turn row (drawn by the chat
+           column above) and the box: what is waiting, then what you type. -->
+      <Queue rows={record.queue} {slot} {connection} />
+      {@render composer({ record, slot, seat, connection })}
+    </div>
   {/if}
 </div>

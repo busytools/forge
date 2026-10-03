@@ -431,10 +431,17 @@
     // out as `/compact ` is one nothing asked for.
     const text = box.draft.trim();
     if (text === '') return;
+    // The prompt's own id is minted here and rides the frame: the CLI emits
+    // that prompt's lifecycle frames only under a client-supplied uuid, and
+    // the queued row the core echoes back carries the same id - so this send,
+    // its row and its frames are one thing by id, never by order or text.
+    const uuid = crypto.randomUUID();
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
-      void connection.dispatch({ prompt: { key: slot, text, attachments: [] } });
+      void connection.dispatch({
+        prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+      });
     } catch {
       // A closed socket throws rather than answering, and it is the one
       // channel left: the words stay in the box rather than going with a

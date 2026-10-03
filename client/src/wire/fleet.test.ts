@@ -217,6 +217,11 @@ const NOT_NEWS: readonly string[] = [
   'slack_post_pending',
   'slack_draft_resolved',
   'prompt_queued_while_busy',
+  // The pile's own three: a seat's queued prompts, which the session page
+  // draws above its composer and no home row does.
+  'prompt_queued',
+  'prompt_lifecycle',
+  'prompt_cancel_resolved',
   'review_activity_notice',
   'dictate_started',
   'dictate_level',
@@ -429,11 +434,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 60 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 63 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(60);
+    ).toBe(63);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

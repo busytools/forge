@@ -33,6 +33,9 @@ import {
 /** `EffortLevel`, as the core's own enum serialises. */
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+/** The lifecycle states this build reads as settled - the row leaves the pile. */
+const SETTLED_STATES = new Set(['started', 'completed', 'cancelled', 'discarded', 'refused']);
+
 /** `PermissionMode`, as its own serde writes it: camelCase, not snake. */
 const MODES: PermissionMode[] = [
   'default',
@@ -103,6 +106,51 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
+
+  /**
+   * A prompt entered the CLI's queue: the row's words and sender arrive here,
+   * where the lifecycle frames carry only the id and the state. The row is
+   * keyed by the uuid its sender minted, so a view's own optimistic row and
+   * this one are the same row rather than two.
+   */
+  prompt_queued: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    const words = text(payload['text']);
+    if (uuid === null || words === null) return held;
+    if (held.queue.some((row) => row.uuid === uuid)) return held;
+    return {
+      ...held,
+      queue: [...held.queue, { uuid, source: text(payload['source']) ?? 'forge', text: words }],
+    };
+  },
+
+  /**
+   * The CLI moved a prompt.
+   *
+   * The pile holds only prompts still waiting, so a settled state drops the
+   * row. **Only a state this build knows settles it**: a word the CLI adds
+   * later leaves the row standing, because dropping on a parse miss is the
+   * one failure a reader cannot see.
+   */
+  prompt_lifecycle: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    const state = text(payload['state']);
+    if (uuid === null || state === null || !SETTLED_STATES.has(state)) return held;
+    const queue = held.queue.filter((row) => row.uuid !== uuid);
+    return queue.length === held.queue.length ? held : { ...held, queue };
+  },
+
+  /**
+   * A cancel the CLI confirmed; `cancelled: false` means it had already taken
+   * the prompt, and its own `started` frame is what settles the row then.
+   */
+  prompt_cancel_resolved: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    if (uuid === null || payload['cancelled'] !== true) return held;
+    const queue = held.queue.filter((row) => row.uuid !== uuid);
+    return queue.length === held.queue.length ? held : { ...held, queue };
+  },
+
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
   pending_interaction_resolved: (held, payload) => {
@@ -263,8 +311,6 @@ export const IGNORED: readonly string[] = [
   'plugins_update_run_finished',
   'plugins_update_run_progress',
   'prompt_queued_while_busy',
-  'prompt_lifecycle',
-  'prompt_cancel_resolved',
   'review_activity_notice',
   'runtime_reload_completed',
   'runtime_reload_failed',

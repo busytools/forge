@@ -28,6 +28,21 @@ export interface ContextUsage {
 }
 
 /**
+ * One prompt waiting in the CLI's queue - the pile's row.
+ *
+ * The core holds the set, so two clients agree about it, and the seat read
+ * carries it for a client that attached mid-queue. `source` is the wire's own
+ * label (`you`, `cron`, `gotify`, `slack`, `peer`, `forge`); an unknown one is
+ * kept as it arrived rather than dropped, because a sender this build cannot
+ * name still queued a prompt.
+ */
+export interface QueuedPromptRow {
+  uuid: string;
+  source: string;
+  text: string;
+}
+
+/**
  * The header's facts.
  *
  * `available_models` and `turn_in_flight` are the two a client cannot reach
@@ -163,6 +178,8 @@ export interface SessionRecord {
   composer: ComposerState;
   /** What this session has overridden on the dictation axes. */
   dictate_overrides: DictateOverrides;
+  /** The prompts still waiting in the CLI's queue, oldest first: the pile. */
+  queue: QueuedPromptRow[];
   /** The prompt this seat is waiting on, which the composer's dock draws. */
   pending_ask: unknown;
   conversation: Conversation;
@@ -308,6 +325,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     slot: held['slot'] as SessionSlot,
     state: { scan_cwd: text(state['scan_cwd']) ?? '' },
     dictate_overrides: overridesFrom(state['dictate_overrides']),
+    queue: queuedFrom(state['queue']),
     header: {
       session_id: text(header['session_id']),
       model:
@@ -349,6 +367,17 @@ export function sessionFrom(data: unknown): SessionRecord {
       .map(prFrom)
       .filter((issue): issue is { number: number; url: string } => issue !== null),
   };
+}
+
+/** The pile as the seat read writes it; an entry missing its id or words is not a row. */
+function queuedFrom(value: unknown): QueuedPromptRow[] {
+  return list(value).flatMap((entry) => {
+    const held = record(entry);
+    const uuid = text(held['uuid']);
+    const words = text(held['text']);
+    if (uuid === null || words === null) return [];
+    return [{ uuid, source: text(held['source']) ?? 'forge', text: words }];
+  });
 }
 
 function mcpFrom(value: unknown): McpServers | null {
