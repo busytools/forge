@@ -91,7 +91,7 @@
     /**
      * Whether this row is where the reader says something in their own words.
      *
-     * It reveals the field rather than answering: a row labelled "tell Claude
+     * It reveals the field rather than answering: a row labelled "tell the agent
      * something else" that answers with nothing said is a key that cannot do
      * what it says, one level down.
      */

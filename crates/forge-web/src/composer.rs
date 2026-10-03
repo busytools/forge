@@ -889,7 +889,7 @@ fn question_dock(request: &QuestionRequest, endpoint: &str) -> Markup {
                 button .lbl .own type="submit" hx-post=(format!("{endpoint}/answer"))
                     hx-include="closest .dock" hx-vals=(format!(r#"{{"tool_id":"{tool_id}"}}"#))
                     hx-target="#comp" hx-swap="outerHTML" {
-                    "Tell Claude something else:"
+                    "Tell the agent something else:"
                 }
             }
         }

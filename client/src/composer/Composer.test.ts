@@ -1922,7 +1922,7 @@ describe('the dock', () => {
     flushSync();
 
     expect(options()[2]?.textContent, "so a permission draws the core's own name").toContain(
-      'Tell Claude something else',
+      'Tell the agent something else',
     );
   });
 

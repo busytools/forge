@@ -122,7 +122,7 @@
         { option_id: 'deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
         {
           option_id: 'notes',
-          name: 'Tell Claude something else',
+          name: 'Tell the agent something else',
           kind: 'notes',
           action: { kind: 'deny' },
         },
