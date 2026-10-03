@@ -106,6 +106,8 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
     else {
         return false;
     };
+    // The occupant needs no comparing beside the seat: a change of session
+    // rides `SessionReplaced`, which is not a counter and breaks the run.
     if held_key != key || held_origin != origin {
         return false;
     }
