@@ -374,12 +374,13 @@ fn bench_corpus() {
 ///
 /// COLD MEANS THE PAGE CACHE HOLDS NONE OF THE WEIGHTS, and two things take
 /// that away: a machine that has just read them, and a running forge, which
-/// holds the normalizer mapped so `purge` cannot evict it. Run this after a
-/// purge, and point `FORGE_DICTATE_BENCH_MODELS` at a copy of the weights
-/// when something live has the originals mapped - the copy is the same
-/// bytes with no mapping, so the purge reaches it, and `model_identity`
-/// checks it against the spec. A run without either is warm throughout and
-/// is the control.
+/// holds the normalizer mapped so the purge cannot evict it. Run this after
+/// `sudo purge` - bare `purge` refuses without root - and point
+/// `FORGE_DICTATE_BENCH_MODELS` at a copy of the weights when something live
+/// has the originals mapped: the copy is the same bytes with no mapping, so
+/// the purge reaches it, and `model_identity` checks it against the spec.
+/// The override is this test's alone; `bench_corpus` always reads the cache
+/// directory. A run without either is warm throughout and is the control.
 ///
 /// Run it as `just bench` never does, in a process of its own:
 ///
