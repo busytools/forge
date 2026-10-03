@@ -38,6 +38,7 @@ import type { Store, StoreState, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { POLL_MS, watchSession, type SessionRead } from './live';
+import type { SessionRecord } from './wire';
 import Session from './Session.svelte';
 
 // This is the one page mounted over a REAL connection, so it drives the
@@ -1056,15 +1057,16 @@ describe('the seat the client holds between visits', () => {
 });
 
 /**
- * The slices no update carries - the process walk, the working tree, the pull
- * request, the monitors, the CLI's background tasks and the composer's three
- * lists - are the reason a page cannot simply follow the stream: nothing in it
- * mentions them. A slow read is what keeps them honest.
+ * The fields the merge still takes from a poll - the process walk, the
+ * composer's three lists and the record's own dispatch answer - are the reason
+ * a page cannot simply follow the stream for every field: no frame this build
+ * handles carries them. A slow read is what keeps them honest, and a field
+ * leaves the list when a handler for its frame lands.
  *
  * The clock is faked here and nowhere else in this file, and the socket cases
  * above need the real one, so each case below starts and ends its own.
  */
-describe('the slow read for what no update carries', () => {
+describe('the slow read for the fields still unfed', () => {
   beforeEach(() => {
     // The frame queue above is the test's own, so the clock leaves the two
     // callbacks alone: faked, a paint would land on the fake clock's schedule
@@ -1126,54 +1128,192 @@ describe('the slow read for what no update carries', () => {
     back.stop();
   });
 
-  it('takes the slices no update feeds from what the poll answered with', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    const walked = (secs: number) => ({
-      processes: { processes: [], scanned_at: { secs_since_epoch: secs, nanos_since_epoch: 0 } },
-    });
-    page.land(snapshotOf(LEAD, walked(1)));
+  /**
+   * **Every field still on the merge's list moves on a poll, and there are
+   * five.** One pinned would leave four silent if an edit dropped them from
+   * the list believing them fed.
+   */
+  it('takes every field still unfed from what the poll answered with', () => {
+    const cases: {
+      what: string;
+      stale: Record<string, unknown>;
+      fresh: Record<string, unknown>;
+      moved: (wire: SessionRecord) => unknown;
+      expect: unknown;
+    }[] = [
+      {
+        what: 'process walk',
+        stale: {
+          processes: { processes: [], scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 } },
+        },
+        fresh: {
+          processes: { processes: [], scanned_at: { secs_since_epoch: 2, nanos_since_epoch: 0 } },
+        },
+        moved: (wire) => wire.processes?.scanned_at.secs_since_epoch,
+        expect: 2,
+      },
+      {
+        what: 'dispatch answer',
+        stale: { has_dispatches: false },
+        fresh: { has_dispatches: true },
+        moved: (wire) => wire.has_dispatches,
+        expect: true,
+      },
+      {
+        what: 'command catalogue',
+        stale: { slash_commands: [] },
+        fresh: { slash_commands: [{ name: 'compact' }] },
+        moved: (wire) => wire.slash_commands.length,
+        expect: 1,
+      },
+      {
+        what: 'agent catalogue',
+        stale: { subagents: [] },
+        fresh: { subagents: [{ name: 'reviewer' }] },
+        moved: (wire) => wire.subagents.length,
+        expect: 1,
+      },
+      {
+        what: 'file list',
+        stale: { file_index: { entries: {} } },
+        fresh: { file_index: { entries: { 'a.ts': {} } } },
+        // The record's own type for the walk is `unknown`, so the test says
+        // what it is reading rather than passing an untyped value on.
+        moved: (wire) =>
+          Object.keys((wire.file_index as { entries: Record<string, unknown> }).entries).length,
+        expect: 1,
+      },
+    ];
 
-    page.land(snapshotOf(LEAD, walked(2)));
+    for (const one of cases) {
+      const connection = drivable();
+      const page = watch(connection);
+      const read = (): SessionRecord => {
+        const wire = page.read().wire;
+        expect(wire, `the ${one.what} case has a record`).not.toBeNull();
+        return wire as SessionRecord;
+      };
+      page.land(snapshotOf(LEAD, one.stale));
 
-    expect(
-      page.read().wire?.processes?.scanned_at.secs_since_epoch,
-      'the process walk never moved',
-    ).toBe(2);
-    page.stop();
+      page.land(snapshotOf(LEAD, one.fresh));
+
+      expect(one.moved(read()), `the ${one.what} never moved on a poll`).toEqual(one.expect);
+      page.stop();
+    }
   });
 
   /**
-   * **A pushed row is not a row a poll can revert.** A poll's answer is
-   * encoded before a frame lands and applied after it, so a field the merge
-   * still takes from that answer is a pushed row the next read undoes - which
-   * is the whole reason the push exists.
+   * **A pushed row is not a row a poll can revert, and that is true of EVERY
+   * field that left the merge's list.** A poll's answer is encoded before a
+   * frame lands and applied after it, so a field the merge still took from
+   * that answer is a pushed row the next read puts back. One field pinned
+   * would leave the other four unguarded, which is how a restore of one of
+   * them to the list could ship green.
    */
   it('does not let a poll answer put a pushed row back', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    const stale = { work: { branch: 'stale', changed: 9, gate: 'in_repo' } };
-    page.land(snapshotOf(LEAD, stale));
-
-    // The frame moves the tree...
-    page.land(
-      updateOf({
-        work_changed: {
-          key: LEAD,
-          work: { branch: 'fresh', changed: 1, gate: 'in_repo' },
-          pr: null,
-          closes: [],
+    const monitor = {
+      tool_use_id: 'm1',
+      task_id: null,
+      description: 'ci-watch',
+      command: 'gh run watch',
+      persistent: false,
+      timeout_ms: 0,
+      status: 'running',
+      output_file: null,
+      ended_at: null,
+    };
+    const task = {
+      task_id: 't1',
+      task_type: 'local_bash',
+      description: 'gh run watch',
+      command: 'gh run watch 1',
+    };
+    const cases: {
+      what: string;
+      stale: Record<string, unknown>;
+      frame: SessionUpdate;
+      moved: (wire: SessionRecord) => unknown;
+      fresh: unknown;
+    }[] = [
+      {
+        what: 'working tree',
+        stale: { work: { branch: 'stale', changed: 9, gate: 'in_repo' } },
+        frame: {
+          work_changed: {
+            key: LEAD,
+            work: { branch: 'fresh', changed: 1, gate: 'in_repo' },
+            pr: null,
+            closes: [],
+          },
         },
-      }),
-    );
-    paint();
-    expect(page.read().wire?.work.branch, 'precondition: the frame landed').toBe('fresh');
+        moved: (wire) => wire.work.branch,
+        fresh: 'fresh',
+      },
+      {
+        what: 'pull request',
+        stale: { pr: { number: 1, url: 'https://example.test/pull/1' } },
+        frame: {
+          work_changed: {
+            key: LEAD,
+            work: { branch: 'main', changed: 0, gate: 'in_repo' },
+            pr: { number: 2, url: 'https://example.test/pull/2' },
+            closes: [],
+          },
+        },
+        moved: (wire) => wire.pr?.number,
+        fresh: 2,
+      },
+      {
+        what: 'closing issues',
+        stale: { closes: [{ number: 1, url: 'https://example.test/issue/1' }] },
+        frame: {
+          work_changed: {
+            key: LEAD,
+            work: { branch: 'main', changed: 0, gate: 'in_repo' },
+            pr: null,
+            closes: [{ number: 2, url: 'https://example.test/issue/2' }],
+          },
+        },
+        moved: (wire) => wire.closes[0]?.number,
+        fresh: 2,
+      },
+      {
+        what: 'monitor set',
+        stale: { monitors: [] },
+        frame: { monitors_changed: { key: LEAD, monitors: [monitor] } },
+        moved: (wire) => wire.monitors.length,
+        fresh: 1,
+      },
+      {
+        what: 'background registry',
+        stale: { background_tasks: [] },
+        frame: { background_tasks_changed: { key: LEAD, tasks: [task] } },
+        moved: (wire) => wire.background_tasks.length,
+        fresh: 1,
+      },
+    ];
 
-    // ...and a poll's answer from before it lands after it.
-    page.land(snapshotOf(LEAD, stale));
+    for (const one of cases) {
+      const connection = drivable();
+      const page = watch(connection);
+      const read = (): SessionRecord => {
+        const wire = page.read().wire;
+        expect(wire, `the ${one.what} case has a record`).not.toBeNull();
+        return wire as SessionRecord;
+      };
+      page.land(snapshotOf(LEAD, one.stale));
 
-    expect(page.read().wire?.work.branch, 'a poll answer put the pushed row back').toBe('fresh');
-    page.stop();
+      // The frame moves it...
+      page.land(updateOf(one.frame));
+      paint();
+      expect(one.moved(read()), `precondition: the ${one.what} frame landed`).toEqual(one.fresh);
+
+      // ...and a poll's answer from before it lands after it.
+      page.land(snapshotOf(LEAD, one.stale));
+
+      expect(one.moved(read()), `a poll answer put the pushed ${one.what} back`).toEqual(one.fresh);
+      page.stop();
+    }
   });
 
   it('does not let an answer older than a seat swap stand in for the swap', () => {
