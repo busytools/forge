@@ -20,7 +20,9 @@
  *   characters;
  * - a question the assistant asked is a card rather than a call;
  * - an envelope that is not agent traffic is a notice rather than the reader's
- *   own turn;
+ *   own turn, and the three external kinds that carry something to read - a
+ *   cron fire, a Slack message, a Gotify push - join the group as lanes of
+ *   their own kind, the same shape every other lane draws;
  * - the harness's own reminder that a skill was already loaded draws as a
  *   notice rather than the reader's turn, where the terminal drops every wire
  *   user text live as an input echo and draws this one as a user turn on
@@ -49,7 +51,7 @@ import {
   type KindRow,
 } from './families';
 import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
-import { stripEscapes } from './text';
+import { firstLine, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
 export interface AnsweredQuestion {
@@ -192,8 +194,8 @@ export interface HookLane {
   runs: HookLeaf[];
 }
 
-/** One lane of a group: a family's calls, peer traffic, the thinking, hooks. */
-export type Lane = FamilyLeaves | MessageLane | ThoughtLane | HookLane;
+/** One lane of a group: a family's calls, peer traffic, thinking, hooks, deliveries. */
+export type Lane = FamilyLeaves | MessageLane | ThoughtLane | HookLane | InboundLane;
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -687,8 +689,36 @@ function messageStatus(result: Block | undefined): CallStatus {
   return result.is_error === true ? 'failed' : 'completed';
 }
 
-/** What an envelope's prose turned into: a peer message, or a line nobody typed. */
-type Envelope = { kind: 'peer'; card: PeerCard } | { kind: 'notice'; notice: Notice };
+/** The external kinds an inbound line draws as a lane of its own. */
+export type InboundKind = 'cron' | 'slack' | 'gotify';
+
+/** One inbound delivery, as its lane's row draws it. */
+export interface InboundLeaf {
+  /** The frame and block it arrived in, which is what the row is keyed by. */
+  key: string;
+  /** The row's title: the schedule, the channel, or the app. */
+  title: string;
+  /** The whole of what arrived, which the row opens onto. */
+  body: string;
+  /** Whether the row reads at the warning tone: an elevated delivery. */
+  elevated: boolean;
+}
+
+/** One lane of inbound deliveries: a kind's own lines, in arrival order. */
+export interface InboundLane {
+  tag: 'inbound';
+  kind: InboundKind;
+  rows: InboundLeaf[];
+}
+
+/**
+ * What an envelope's prose turned into: a peer message, an inbound lane's
+ * row, or a line nobody typed.
+ */
+type Envelope =
+  | { kind: 'peer'; card: PeerCard }
+  | { kind: 'inbound'; inbound: InboundKind; title: string; body: string; elevated: boolean }
+  | { kind: 'notice'; notice: Notice };
 
 /**
  * A Slack id is not a name to print.
@@ -798,12 +828,11 @@ function inbound(text: string, self: Self | null): Envelope | null {
     const title = cut === -1 ? raw : raw.slice(0, cut);
     const message = cut === -1 ? '' : raw.slice(cut + 1);
     return {
-      kind: 'notice',
-      notice: {
-        severity: priority >= 5 ? 'warning' : 'info',
-
-        text: `app '${parts[0]}' \u{b7} priority ${priority}: ${title}\n${message}`.trimEnd(),
-      },
+      kind: 'inbound',
+      inbound: 'gotify',
+      title: `${parts[0]} \u{b7} priority ${priority}`,
+      body: `${title}\n${message}`.trimEnd(),
+      elevated: priority >= 5,
     };
   }
 
@@ -826,13 +855,16 @@ function inbound(text: string, self: Self | null): Envelope | null {
         ? `${parts[0]} \u{b7} ${parts[1]}`
         : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`;
     return {
-      kind: 'notice',
-      notice: { severity: 'info', text: `${head}: ${said}`.trimEnd() },
+      kind: 'inbound',
+      inbound: 'slack',
+      title: head,
+      body: said.trimEnd(),
+      elevated: false,
     };
   }
 
   if (header === 'Cron') {
-    return { kind: 'notice', notice: { severity: 'info', text: body } };
+    return { kind: 'inbound', inbound: 'cron', title: firstLine(body), body, elevated: false };
   }
 
   return null;
@@ -1271,7 +1303,15 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     | { tag: 'call'; row: KindRow; label: string; leaf: ToolLeaf; key: string }
     | { tag: 'card'; card: PeerCard }
     | { tag: 'thought'; key: string; text: string }
-    | { tag: 'hook'; key: string; run: HookRun };
+    | { tag: 'hook'; key: string; run: HookRun }
+    | {
+        tag: 'inbound';
+        kind: InboundKind;
+        key: string;
+        title: string;
+        body: string;
+        elevated: boolean;
+      };
   let pending: Item[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
@@ -1433,6 +1473,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     const traffic: Array<{ lane: MessageLane; at: number }> = [];
     const thought: Array<{ lane: ThoughtLane; at: number }> = [];
     const hooks: Array<{ lane: HookLane; at: number }> = [];
+    const inbounds: Array<{ lane: InboundLane; at: number }> = [];
     /** What each row came back as, which is what the group's roll-up reads. */
     const statuses: CallStatus[] = [];
     for (const [index, item] of items.entries()) {
@@ -1483,6 +1524,25 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         }
         continue;
       }
+      if (item.tag === 'inbound') {
+        // One lane per kind, like the traffic: a lane's word is what a view
+        // opens it by, and two lanes of one kind would give two lanes the
+        // same word, which a keyed list refuses at mount.
+        const row = {
+          key: item.key,
+          title: item.title,
+          body: item.body,
+          elevated: item.elevated,
+        };
+        const held = inbounds.find((entry) => entry.lane.kind === item.kind);
+        if (held === undefined) {
+          inbounds.push({ lane: { tag: 'inbound', kind: item.kind, rows: [row] }, at: index });
+        } else {
+          held.lane.rows.push(row);
+          held.at = index;
+        }
+        continue;
+      }
       statuses.push(item.card.status);
       // One lane per kind, not one per run: a lane's word is what a view opens
       // its leaves by, and two lanes of the same kind would give two lanes the
@@ -1501,7 +1561,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     // The lane that took the latest row draws last: the one still working sits
     // where the eye already is, and the order derives from the item sequence,
     // so a page reopened from the transcript draws what the live one drew.
-    const lanes = [...families, ...traffic, ...thought, ...hooks]
+    const lanes = [...families, ...traffic, ...thought, ...hooks, ...inbounds]
       .sort((a, b) => a.at - b.at)
       .map((entry) => entry.lane);
     units.push({
@@ -1730,6 +1790,18 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
                   id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
                 },
               });
+            } else if (envelope.kind === 'inbound') {
+              // A delivery by cron, Slack or Gotify joins the work as a lane
+              // of its own kind, the way a family's calls do - one shape for
+              // every lane, so a new external kind is a lane and a glyph.
+              pending.push({
+                tag: 'inbound',
+                kind: envelope.inbound,
+                key: keyOf(at, frame, blockAt),
+                title: envelope.title,
+                body: envelope.body,
+                elevated: envelope.elevated,
+              });
             } else {
               push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
             }
@@ -1832,6 +1904,15 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
                 ...envelope.card,
                 id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
               },
+            });
+          } else if (envelope.kind === 'inbound') {
+            pending.push({
+              tag: 'inbound',
+              kind: envelope.inbound,
+              key: keyOf(at, frame, blockAt),
+              title: envelope.title,
+              body: envelope.body,
+              elevated: envelope.elevated,
             });
           } else {
             push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });

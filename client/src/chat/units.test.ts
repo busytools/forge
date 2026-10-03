@@ -5,6 +5,7 @@ import {
   type FamilyLeaves,
   type HookLeaf,
   type HookRun,
+  type InboundLane,
   type MessageLane,
   type ThoughtLane,
   type ThoughtLeaf,
@@ -76,7 +77,12 @@ const thoughts = (unit: Unit | undefined): ThoughtLeaf[] =>
         .flatMap((lane) => lane.thoughts)
     : [];
 
-/** The hook run a fold drew, or null when it drew none. */
+/** The inbound lanes of a group, in the order the fold drew them. */
+const deliveries = (unit: Unit | undefined): InboundLane[] =>
+  unit?.kind === 'group'
+    ? unit.lanes.filter((lane): lane is InboundLane => lane.tag === 'inbound')
+    : [];
+
 /** The hook runs a fold drew, in the lane order. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
   units
@@ -935,23 +941,31 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual([null, null, 'Gateway']);
   });
 
-  it('draws an external delivery as a notice rather than as a turn of the reader', () => {
+  it('draws an external delivery as a lane of its own kind, not as a turn of the reader', () => {
     // A Gotify body sits ONE newline after the bracket: a title line, then the
-    // message. A cron wrapper lands its prompt after `]\n\n`.
+    // message. A cron wrapper lands its prompt after `]\n\n`. Each delivery
+    // joins the work as a lane, the way a family's calls do.
     const gotify = heard([text("[Gotify - app 'ci', priority 9]\nbuild failed\nrun 412")]);
     const cron = heard([text('[Cron]\n\nthe morning sweep')]);
 
     const units = fold([gotify, cron]);
-    expect(kinds(units)).toEqual(['notice', 'notice']);
-    const [first] = units;
-    expect(first?.kind === 'notice' ? first.notice.severity : null).toBe('warning');
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('ci');
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('priority 9');
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('build failed');
-    const second = units[1];
-    expect(second?.kind === 'notice' ? second.notice.text : null, 'no leading blank line').toBe(
+    expect(kinds(units), 'both deliveries join one group').toEqual(['group']);
+    const lanes = deliveries(units[0]);
+    expect(
+      lanes.map((lane) => lane.kind),
+      'one lane per kind, in arrival order',
+    ).toEqual(['gotify', 'cron']);
+    const [pushed] = lanes[0]?.rows ?? [];
+    expect(pushed?.elevated, 'priority 9 is elevated').toBe(true);
+    expect(pushed?.title, 'the app and its priority').toBe('ci \u{b7} priority 9');
+    expect(pushed?.body, 'the whole of what arrived, title line first').toBe(
+      'build failed\nrun 412',
+    );
+    const [fired] = lanes[1]?.rows ?? [];
+    expect(fired?.title, "a cron fire leads with its prompt's first line").toBe(
       'the morning sweep',
     );
+    expect(fired?.body, 'no leading blank line').toBe('the morning sweep');
   });
 
   it('reads a Slack id the way the server reads one', () => {
@@ -964,21 +978,16 @@ describe('one turn folded into the units a view draws', () => {
         text(`[Slack - workspace 'Busytools', general] id C1 ts 1.2\n${author}: the gate is green`),
       ]);
 
-    const named = fold([line('steward')])[0];
-    expect(named?.kind === 'notice' ? named.notice.text : '', 'a name is printed').toContain(
-      'steward',
-    );
+    const named = deliveries(fold([line('steward')])[0])[0]?.rows[0];
+    expect(named?.title, 'a name is printed in the row title').toContain('steward');
 
     for (const id of ['U9', 'B09ABC123', 'C0C0T5E6RM1', 'DEPLOYS']) {
-      const held = fold([line(id)])[0];
-      expect(
-        held?.kind === 'notice' ? held.notice.text : '',
-        `${id} is an id, not a name`,
-      ).not.toContain(id);
+      const held = deliveries(fold([line(id)])[0])[0]?.rows[0];
+      expect(held?.title, `${id} is an id, not a name`).not.toContain(id);
     }
   });
 
-  it('draws a Slack bundle as a notice, bare channel and all', () => {
+  it('draws a Slack bundle as rows of one lane, bare channel and all', () => {
     // The producer writes the conversation LABEL, not a `#`-prefixed channel -
     // `granite-staging-alerts`, `general` - so a matcher requiring `#` puts
     // every Slack message in the chat as the person's own words.
@@ -994,11 +1003,19 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([one, bundle]);
-    expect(kinds(units)).toEqual(['notice', 'notice']);
-    const [first] = units;
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('granite-staging-alerts');
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('steward');
-    expect(first?.kind === 'notice' ? first.notice.text : '').toContain('the gate is green');
+    expect(kinds(units)).toEqual(['group']);
+    const lanes = deliveries(units[0]);
+    expect(
+      lanes.map((lane) => lane.kind),
+      'one lane, two rows',
+    ).toEqual(['slack']);
+    const rows = lanes[0]?.rows ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.title, 'the bare channel label rides the title').toContain(
+      'granite-staging-alerts',
+    );
+    expect(rows[0]?.title).toContain('steward');
+    expect(rows[0]?.body).toBe('the gate is green');
   });
 
   it('draws a failed delivery and a failed spawn as warnings', () => {

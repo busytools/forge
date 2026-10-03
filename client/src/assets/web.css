@@ -986,6 +986,10 @@ details.hooks > summary .st.err { color: var(--bad); }
    session-start hook prints the boilerplate it injects into the session, so a
    run drawn whole beneath its turn would bury it. */
 details.hookrow > summary .ev { color: var(--muted); }
+/* An inbound row's tail line: the delivery's first line, at the warning tone
+   where the wire said the delivery is elevated. */
+details.inboundrow > summary .ev { color: var(--muted); }
+details.inboundrow > summary .ev.warn { color: var(--warn); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.

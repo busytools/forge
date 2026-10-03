@@ -5,11 +5,20 @@
   import Icon from '../components/Icon.svelte';
   import { iconOf } from './families';
   import Hook from './Hook.svelte';
+  import Inbound from './Inbound.svelte';
   import { opensByDefault, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine, paragraphs } from './text';
-  import type { CallLeaf, HookLeaf, Lane, MessageKind, PeerCard } from './units';
+  import type {
+    CallLeaf,
+    HookLeaf,
+    InboundKind,
+    InboundLeaf,
+    Lane,
+    MessageKind,
+    PeerCard,
+  } from './units';
 
   /** A thought as its lane draws it: the words, and the row's line rendered. */
   type DrawnThought = { key: string; text: string; lead: string };
@@ -62,6 +71,7 @@
             cards: [] as PeerCard[],
             thoughts: [] as DrawnThought[],
             hooks: [] as HookLeaf[],
+            inbounds: [] as InboundLeaf[],
           }
         : lane.tag === 'message'
           ? {
@@ -72,6 +82,7 @@
               cards: lane.cards,
               thoughts: [] as DrawnThought[],
               hooks: [] as HookLeaf[],
+              inbounds: [] as InboundLeaf[],
             }
           : lane.tag === 'thought'
             ? {
@@ -88,18 +99,36 @@
                   lead: renderInlineProse(joinedLine(thought.text)),
                 })),
                 hooks: [] as HookLeaf[],
+                inbounds: [] as InboundLeaf[],
               }
-            : {
-                key: 'h:hook',
-                glyph: 'hook',
-                label: 'hook',
-                calls: [] as CallLeaf[],
-                cards: [] as PeerCard[],
-                thoughts: [] as DrawnThought[],
-                hooks: lane.runs,
-              },
+            : lane.tag === 'hook'
+              ? {
+                  key: 'h:hook',
+                  glyph: 'hook',
+                  label: 'hook',
+                  calls: [] as CallLeaf[],
+                  cards: [] as PeerCard[],
+                  thoughts: [] as DrawnThought[],
+                  hooks: lane.runs,
+                  inbounds: [] as InboundLeaf[],
+                }
+              : {
+                  key: `d:${lane.kind}`,
+                  glyph: inboundGlyph(lane.kind),
+                  label: lane.kind,
+                  calls: [] as CallLeaf[],
+                  cards: [] as PeerCard[],
+                  thoughts: [] as DrawnThought[],
+                  hooks: [] as HookLeaf[],
+                  inbounds: lane.rows,
+                },
     ),
   );
+
+  /** The glyph an inbound lane leads with. */
+  function inboundGlyph(kind: InboundKind): string {
+    return kind === 'cron' ? 'schedules' : kind;
+  }
 
   /** The glyph a message lane leads with: two lanes share the inbound arrow. */
   function glyphOf(kind: MessageKind): string {
@@ -141,6 +170,9 @@
       {/each}
       {#each lane.hooks as held (held.key)}
         <Hook run={held.run} />
+      {/each}
+      {#each lane.inbounds as inbound (inbound.key)}
+        <Inbound row={inbound} />
       {/each}
       {#each lane.thoughts as thought (thought.key)}
         <!-- The body is markdown: the model writes its reasoning in headings,
