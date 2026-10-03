@@ -100,7 +100,7 @@ rustix = { version = "1", features = ["fs"] }
 # 5-field cron-expression parsing + next-fire computation. chrono is
 # croner's datetime dep; forge keeps it walled off inside the cron
 # schedule module's next-fire fn (SystemTime everywhere else).
-croner = "2"
+croner = "4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Gotify inbound integration: redb is the machine-local embedded store
