@@ -253,9 +253,9 @@ A fresh fetch carries the note saying what it is about to move and where it keep
 <details>
 <summary>Dictation config, costs, and cancel mechanics</summary>
 
-- 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. A later run re-hashes a file (about 2.7 s for the pair, concurrent) only when its size or mtime has moved since forge recorded its digest; otherwise the check is a stat. Then the weights load: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is held for the run.
+- 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. A later run re-hashes a file only when its size or mtime has moved since its digest was recorded (about 0.8 s for the pair, concurrent); otherwise the check is a stat. Then the weights load: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is held for the run.
 - `[dictate]` in `forge.toml`, off unless asked for: `enabled`, `models_dir`, `device`, `language`, `normalizer` (a bool - off halves the download and skips a pass per utterance), `max_capture_minutes`. An unknown key fails the load rather than being ignored. The model specs and the normalizer's prompt axes stay internal.
 - Cancel: whatever reached `ready` stays installed and every in-flight `.part` is left where it is, so the next run resumes. Both models run at once, so a cancel can leave TWO partials while the screen's byte counts name only the transfer they are reported against; the other model's own row still carries its bar.
-- Cancel is not instant: verifying hashes with no progress callback, so a cancel is not seen until the hash it interrupted finishes - up to about 2.6 s on the shipped pair, during which the rows keep their last state and the footer still reads `esc  cancel and quit` ([#799](https://github.com/busytools/forge/issues/799)).
+- Cancel is not instant: verifying hashes with no progress callback, so a cancel is not seen until the hash it interrupted finishes - up to about 0.8 s on the shipped pair, during which the rows keep their last state and the footer still reads `esc  cancel and quit` ([#799](https://github.com/busytools/forge/issues/799)).
 
 </details>

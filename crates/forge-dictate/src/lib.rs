@@ -5,7 +5,9 @@
 //!
 //! [`prepare`] fetches whatever models a [`Config`] names and checks
 //! each one against its recorded size and SHA-256 before anything opens
-//! it. A truncated model does not fail at download time; it fails much
+//! it. A file whose size and modification time still match a digest
+//! already verified against that same spec is not read again. A
+//! truncated model does not fail at download time; it fails much
 //! later, inside a model runtime, as an offset error that reads like a
 //! bad build. Verifying first is what turns that into a sentence naming
 //! the file.

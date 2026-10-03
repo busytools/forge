@@ -67,9 +67,11 @@ pub enum Progress {
 /// Hashing is skipped for a file that has not changed since it was last
 /// verified, when [`Config::digest_cache_dir`] names a place to keep
 /// that record: the check becomes the stat it already needs. Without that
-/// directory every call re-hashes each file end to end, measured at
-/// 1.8 s/GiB in release. An unoptimised build measures 34 s/GiB, which
-/// reads as a hang rather than as the profile.
+/// directory every call re-hashes each file end to end, measured here at
+/// 0.55 s/GiB in release and 4.2 s/GiB unoptimised - the second reads as
+/// a hang rather than as the profile. sha2 0.11, which this tree has
+/// pinned since the sweep that moved it, is about four times faster than
+/// the 0.10 before it.
 pub fn prepare(
     cfg: &Config,
     mut on_progress: impl FnMut(Progress) -> ControlFlow<()>,
@@ -219,6 +221,7 @@ impl DigestCache {
                 Ok(parsed) if parsed.version == DIGEST_CACHE_VERSION => parsed.records,
                 Ok(parsed) => {
                     tracing::warn!(
+                        event_name = "dictate_digest_record_layout_unknown",
                         path = %file.display(),
                         version = parsed.version,
                         "digest record is a layout this build does not read; every model is hashed this run"
@@ -227,6 +230,7 @@ impl DigestCache {
                 }
                 Err(error) => {
                     tracing::warn!(
+                        event_name = "dictate_digest_record_unreadable",
                         path = %file.display(),
                         %error,
                         "digest record is unreadable; every model is hashed this run"
@@ -238,6 +242,7 @@ impl DigestCache {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
             Err(error) => {
                 tracing::warn!(
+                    event_name = "dictate_digest_record_read_failed",
                     path = %file.display(),
                     %error,
                     "digest record could not be read; every model is hashed this run"
@@ -262,12 +267,16 @@ impl DigestCache {
         })
     }
 
-    /// Record a digest that was just computed over `file`.
-    fn record(&self, file: &Path, digest: &str) {
+    /// Record a digest computed over `file` while it was in `state`.
+    ///
+    /// `state` is the caller's, taken before the hash: a stat here could
+    /// see a write that landed after the read and store the new state
+    /// against the old bytes, which the next boot would then skip.
+    fn record(&self, file: &Path, state: Option<(u64, u64)>, digest: &str) {
         if self.file.is_none() {
             return;
         }
-        let Some((size, mtime_ns)) = state_of(file) else { return };
+        let Some((size, mtime_ns)) = state else { return };
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner
             .records
@@ -291,7 +300,11 @@ impl DigestCache {
         }) {
             Ok(body) => body,
             Err(error) => {
-                tracing::warn!(%error, "digest record could not be serialised; not written");
+                tracing::warn!(
+                    event_name = "dictate_digest_record_serialize_failed",
+                    %error,
+                    "digest record could not be serialised; not written"
+                );
                 return;
             }
         };
@@ -299,6 +312,7 @@ impl DigestCache {
             path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(path, body));
         if let Err(error) = written {
             tracing::warn!(
+                event_name = "dictate_digest_record_write_failed",
                 path = %path.display(),
                 %error,
                 "digest record could not be written; the next run hashes what this one did"
@@ -332,8 +346,9 @@ fn ensure(
             return Ok(());
         }
         announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
+        let state = state_of(&target);
         let digest = verify(&target, spec, on_progress)?;
-        cache.record(&target, &digest);
+        cache.record(&target, state, &digest);
         announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
         return Ok(());
     }
@@ -345,14 +360,15 @@ fn ensure(
     // read takes seconds, and a caller left on "100%" reads it as a hang.
     announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
 
+    let state = state_of(&partial);
     let digest = match verify(&partial, spec, on_progress) {
         Ok(digest) => digest,
         Err(failure) => return Err(discard_unusable_partial(&partial, failure)),
     };
     fs::rename(&partial, &target).map_err(|source| Error::Io { path: target.clone(), source })?;
     // One inode moved, so the bytes just hashed are the bytes now at
-    // `target`: the record covers the rename and the next run is a stat.
-    cache.record(&target, &digest);
+    // `target`, still in the state that was read before them.
+    cache.record(&target, state, &digest);
     announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
     Ok(())
 }
@@ -1315,13 +1331,17 @@ mod tests_digest_cache {
         }
     }
 
-    fn config(models: &Path, digests: &Path) -> Config {
+    fn config_with(models: &Path, digests: &Path, asr: ModelSpec) -> Config {
         ConfigBuilder::new()
             .models_dir(models)
             .digest_cache_dir(digests)
-            .asr_model(offline_spec("asr.gguf", BODY))
+            .asr_model(asr)
             .normalizer(None)
             .build()
+    }
+
+    fn config(models: &Path, digests: &Path) -> Config {
+        config_with(models, digests, offline_spec("asr.gguf", BODY))
     }
 
     fn tag(progress: &Progress) -> &'static str {
@@ -1439,6 +1459,37 @@ mod tests_digest_cache {
         assert!(
             matches!(err, Error::SizeMismatch { .. }),
             "the size, not the digest, is what rejects it, got: {err:?}"
+        );
+    }
+
+    /// A build that pins a new digest for a re-released model, over a
+    /// file already on disk: the record covers the file's state, not the
+    /// spec, so a moved spec must re-hash rather than report the old file
+    /// ready under a digest this build no longer blesses.
+    #[test]
+    fn a_moved_spec_digest_is_not_a_hit() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        prepare_ok(&config(models.path(), digests.path()));
+
+        let mut moved = offline_spec("asr.gguf", BODY);
+        moved.sha256 = hex::encode(Sha256::digest(b"what the re-release weights are"));
+        assert_eq!(
+            moved.size,
+            BODY.len() as u64,
+            "only the digest may differ, or this test is about the size instead"
+        );
+
+        let err = prepare(&config_with(models.path(), digests.path(), moved), |_| {
+            ControlFlow::Continue(())
+        })
+        .expect_err("a file whose record covers another digest must not be reported ready");
+
+        assert!(
+            matches!(err, Error::HashMismatch { .. }),
+            "the moved spec must be what rejects it, and by the digest it pins, got: {err:?}"
         );
     }
 

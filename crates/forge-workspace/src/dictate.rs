@@ -2,7 +2,7 @@
 //! preflight pass that makes the models usable before forge starts.
 //!
 //! The costs are what shape this. A first run fetches 3.07 GB; every
-//! later one re-hashes what is on disk, about 2.7 s for the pair now the
+//! later one re-hashes what is on disk, about 0.8 s for the pair now the
 //! two models are prepared concurrently, then loads the weights, another
 //! second warm. The hash is skipped for a model whose size and
 //! modification time still match the digest recorded for it, which is
@@ -457,8 +457,9 @@ impl DictateState {
 }
 
 /// The config preflight builds the engine from: the `[dictate]`
-/// settings plus the always-on diagnostics store under forge's
-/// app-support dir, machine-local and never synced.
+/// settings plus the always-on stores under forge's app-support dir -
+/// per-take diagnostics and the verified-digest record - machine-local
+/// and never synced.
 ///
 /// A directory that cannot be resolved turns the capture off with a
 /// warning rather than failing preflight - diagnostics never break
@@ -472,6 +473,7 @@ fn preflight_config(settings: &DictateSettings) -> forge_dictate::Config {
             cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
         }
         Err(error) => tracing::warn!(
+            event_name = "dictate_state_dir_unresolved",
             %error,
             "no app-support dir: dictate per-take diagnostics and the model-digest record are off"
         ),
