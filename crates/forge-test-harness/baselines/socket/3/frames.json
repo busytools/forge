@@ -11,6 +11,7 @@
   "session_update": {
     "AccountsChanged": "accounts_changed",
     "AuthRequired": "auth_required",
+    "BackgroundTasksChanged": "background_tasks_changed",
     "CatalogLoaded": "catalog_loaded",
     "ChatAppended": "chat_appended",
     "CliVersionChanged": "cli_version_changed",
@@ -33,6 +34,7 @@
     "HookObservation": "hook_observation",
     "McpOperationError": "mcp_operation_error",
     "McpSnapshot": "mcp_snapshot",
+    "MonitorsChanged": "monitors_changed",
     "Notice": "notice",
     "OauthCredentialsSnapshot": "oauth_credentials_snapshot",
     "PeerEnvelopeAppended": "peer_envelope_appended",

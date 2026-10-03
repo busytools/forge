@@ -1109,6 +1109,25 @@ pub enum SessionUpdate {
         servers: Vec<McpServerStatus>,
         error: Option<String>,
     },
+    /// The seat's monitors moved, as the whole set the core holds.
+    ///
+    /// **Pushed rather than read.** The set changes on discrete task frames -
+    /// a `Monitor` call entering, a task stamping its id, a frame settling
+    /// one, the drain that empties it - and never per output chunk, so the
+    /// frame that moved it announces it and a frame that moved nothing says
+    /// nothing.
+    MonitorsChanged {
+        key: SessionSlot,
+        monitors: Vec<forge_primitives::MonitorRecord>,
+    },
+    /// The CLI's background-task registry moved, as the whole set.
+    ///
+    /// The CLI announces the whole registry on each change, so this mirrors
+    /// it: a task entering, leaving or being cleared by a dead connection.
+    BackgroundTasksChanged {
+        key: SessionSlot,
+        tasks: Vec<crate::BackgroundTask>,
+    },
     /// The seat's working tree moved, as the row a view draws it.
     ///
     /// **Pushed rather than read.** The three fields are the record's own -
@@ -1394,6 +1413,8 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::MonitorsChanged { key, .. }
+            | Self::BackgroundTasksChanged { key, .. }
             | Self::PeerEnvelopeAppended { key, .. }
             | Self::GotifyNotificationAppended { key, .. }
             | Self::CronPromptAppended { key, .. }
@@ -1518,6 +1539,16 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::MonitorsChanged { key, monitors } => f
+                .debug_struct("MonitorsChanged")
+                .field("key", key)
+                .field("count", &monitors.len())
+                .finish(),
+            Self::BackgroundTasksChanged { key, tasks } => f
+                .debug_struct("BackgroundTasksChanged")
+                .field("key", key)
+                .field("count", &tasks.len())
+                .finish(),
             Self::SessionsListed { key, sessions } => f
                 .debug_struct("SessionsListed")
                 .field("key", key)
