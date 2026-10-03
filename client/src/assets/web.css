@@ -935,12 +935,13 @@ details.leaf > summary .tn.warn { color: var(--warn); }
 details.leaf > summary .tn.warn .k { color: var(--warn); }
 details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+/* A peer row's body: the message as prose, then the facts its own result
+   carried. The lane rule is what a reader's own turn is drawn against. */
 .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
   border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
 .pbody p + p { margin-top: 9px; }
 .pbody code { font-family: var(--mono); font-size: .88em; color: var(--text);
   background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
-
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
 .card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 12px;

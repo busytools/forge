@@ -268,6 +268,18 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     expect(drawn.match(/>lead</g)?.length, 'both rows drew').toBe(2);
     expect(drawn, 'under their own projects').toContain('gateway-backend');
   });
+
+  /**
+   * **A peer message is prose from another session**, so its body reads the way
+   * every other message's does: the marks render rather than sitting on the
+   * page as themselves, and the row's own preview renders them too (Ved,
+   * 2026-10-03).
+   */
+  it('draws a peer body as prose, not as the raw text it arrived as', () => {
+    const drawn = draw([lane([card({ body: 'the **fold** joins, `cargo check` runs' })])]);
+    expect(drawn, 'the marks render').toContain('<strong>fold</strong>');
+    expect(drawn, 'rather than sitting on the page').not.toContain('**fold**');
+  });
 });
 
 describe('the thinking lane', () => {
