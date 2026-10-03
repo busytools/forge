@@ -195,15 +195,17 @@ describe('what opens without being asked', () => {
 });
 
 /**
- * How many times anything walked a string one character at a time while `fn`
- * ran.
+ * How many times anything walked a string through its character iterator while
+ * `fn` ran.
  *
  * The reader below reads each hunk line by its mark, and one way of writing it
- * walks the whole line: `const [mark, ...rest] = line` spreads the string into
+ * walks the whole line: `const [mark, ...rest] = line` iterates the string into
  * one array entry and one string per character, which on the line this was
  * measured against - 439,612 characters - is some 440,000 allocations for that
  * one line. The fold re-reads every hunk of a turn on every frame the seat
- * emits, so the count is the assertion rather than an elapsed time.
+ * emits, so the count is the assertion rather than an elapsed time. It sees the
+ * iterator only: a `line.split('')` rewrite is the same allocation class and
+ * would pass at 0.
  */
 function stringSteps(fn: () => void): number {
   const native = String.prototype[Symbol.iterator];
@@ -229,11 +231,11 @@ function stringSteps(fn: () => void): number {
 }
 
 describe('what one hunk line costs to read', () => {
-  it('reads a line by its mark, without walking it character by character', () => {
-    // Not hypothetical: the inbox-triage seat's turn 16 carries lines this size
-    // in the `structuredPatch` of two Edit results, and reading them that way
-    // was 23% of the client's busy time while the seat streams (seat mirror,
-    // 2026-10-03).
+  it('reads a line by its mark, with no character-iterator walk', () => {
+    // Not hypothetical: two Edit results in the inbox-triage transcript carry
+    // lines this size in their `structuredPatch` (439,612 characters), and
+    // reading them that way was 23% of the client's busy time while the seat
+    // streams (seat mirror, 2026-10-03).
     const long = 'x'.repeat(200_000);
     let body: CallBody[] = [];
     const steps = stringSteps(() => {
@@ -257,7 +259,7 @@ describe('what one hunk line costs to read', () => {
       body = leaf.body;
     });
 
-    expect(steps, 'reading a line never needs its characters').toBe(0);
+    expect(steps, 'a line is read with no character-iterator walk').toBe(0);
     const [hunk] = body;
     if (hunk?.kind !== 'hunk') throw new Error('the row drew no hunk');
     expect(
