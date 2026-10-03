@@ -47,6 +47,9 @@
     return piece.kind === 'text' ? languageFor(call) : null;
   }
 
+  /** A piece the patch box does not draw: a run of text, or a picture. */
+  type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
+
   /**
    * Which box a backgrounded call's notice goes at the end of: the last one
    * the call's result drew, which is where the drawing puts it.
@@ -88,6 +91,26 @@
   );
 
   /**
+   * Whether the change is the call's own two sides, which have no position.
+   *
+   * A hunk the CLI wrote carries line numbers, and the columns for them; the
+   * two sides an input carries have none, and two empty columns are the width
+   * of a gap on every line of it - so the columns go with the numbers.
+   */
+  const bare = $derived(patches.length > 0 && patches.every((piece) => piece.kind === 'diff'));
+
+  /**
+   * What an image result draws under its picture: every piece the picture is
+   * not.
+   *
+   * The `<img>` above IS the drawing of the result's own image block, so that
+   * piece does not draw again; the rest - the path a screenshot was saved to,
+   * the code that produced it - reached the page nowhere while the picture drew
+   * from a branch of its own.
+   */
+  const aside = $derived(rest.filter((piece) => piece.kind !== 'image'));
+
+  /**
    * The size of a mutation's change, as the one line under its diff, or `null`
    * for a call whose row draws no diff at all.
    *
@@ -122,7 +145,9 @@
   {#if call.image !== null}
     <!-- The picture the call read, drawn only while the row is open: decoding
          a screenshot is real work, and a column of closed rows must not pay
-         it. The harness's own line about it rides under as the caption. -->
+         it. The harness's own line about it rides under as the caption, and
+         the result's text rides under that: the picture is one block of the
+         result, not the whole of it. -->
     <div class="body">
       {#if opened}
         <div class="shot">
@@ -132,6 +157,7 @@
           {/if}
         </div>
       {/if}
+      {@render pieces(aside)}
     </div>
   {:else if call.skill !== null}
     <!-- A `Skill` call's own result is the CLI's launching line; the row opens
@@ -155,27 +181,24 @@
         {/each}
       {:else}
         {#if patches.length > 0}
-          <div class="dif" class:added>
+          <div class="dif" class:added class:bare>
             {#each patches as piece, at (at)}
               {#if piece.kind === 'diff'}
                 <!-- No header naming the file: the row's own title is the path,
                      and it is the same path, so a line here would print it
-                     twice. -->
+                     twice. No number columns either: this is the call's own two
+                     sides, which have no position to number (`bare`). -->
                 {#each piece.old.split('\n') as line, n (`old-${n}`)}
                   {#if piece.old !== ''}
                     <div class="ln d">
-                      <span class="on"></span><span class="nn"></span><span class="n"
-                        >{'\u{2212}'}</span
-                      ><span class="l">{line}</span>
+                      <span class="n">{'\u{2212}'}</span><span class="l">{line}</span>
                     </div>
                   {/if}
                 {/each}
                 {#each piece.new.split('\n') as line, n (`new-${n}`)}
                   {#if piece.new !== ''}
                     <div class="ln a">
-                      <span class="on"></span><span class="nn"></span><span class="n">+</span><span
-                        class="l">{line}</span
-                      >
+                      <span class="n">+</span><span class="l">{line}</span>
                     </div>
                   {/if}
                 {/each}
@@ -203,26 +226,7 @@
             {/each}
           </div>
         {/if}
-        {#each rest as piece, at (at)}
-          {#if piece.kind === 'image'}
-            <div class="term">
-              image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
-            </div>
-          {:else if asCode(piece) !== null}
-            <Code path={call.title} text={piece.text} />
-          {:else}
-            <!-- The command a call ran leads its own output: a call given a
-                 description shows that as its title, and the command would
-                 otherwise appear nowhere. The break is an element rather than
-                 a character in the text, so it is a break whatever the box's
-                 whitespace rule turns out to be. -->
-            <div class="term">
-              {#if call.command !== null}<span class="pfx">$</span>
-                {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br
-                /><span class={call.note.tone ?? undefined}>{call.note.text}</span>{/if}
-            </div>
-          {/if}
-        {/each}
+        {@render pieces(rest)}
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
         {/if}
@@ -239,3 +243,29 @@
     </div>
   {/if}
 </details>
+
+<!-- One statement of how a result's pieces draw, so the picture's branch and
+     the body's branch cannot drift apart. -->
+{#snippet pieces(parts: RunPiece[])}
+  {#each parts as piece, at (at)}
+    {#if piece.kind === 'image'}
+      <div class="term">
+        image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
+      </div>
+    {:else if asCode(piece) !== null}
+      <Code path={call.title} text={piece.text} />
+    {:else}
+      <!-- The command a call ran leads its own output: a call given a
+           description shows that as its title, and the command would
+           otherwise appear nowhere. The break is an element rather than
+           a character in the text, so it is a break whatever the box's
+           whitespace rule turns out to be. -->
+      <div class="term">
+        {#if call.command !== null}<span class="pfx">$</span>
+          {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br /><span
+            class={call.note.tone ?? undefined}>{call.note.text}</span
+          >{/if}
+      </div>
+    {/if}
+  {/each}
+{/snippet}

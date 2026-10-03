@@ -30,6 +30,16 @@ const edited = (): ToolLeaf => ({
   imageNote: null,
 });
 
+/** A failed edit: the two sides its own input carries, and the CLI's reason under them. */
+const refused = (): ToolLeaf => ({
+  ...edited(),
+  status: 'failed',
+  body: [
+    { kind: 'diff', old: 'a = 1;', new: 'a = 2;' },
+    { kind: 'text', text: 'String to replace not found in file.' },
+  ],
+});
+
 let app: Record<string, unknown> | null = null;
 
 afterEach(() => {
@@ -51,5 +61,28 @@ describe("the lines a call's row draws", () => {
     expect(line?.textContent ?? '', 'the figures and both marks read as one run').toContain(
       '1 hunk \u{b7} +1 \u{2212}1',
     );
+  });
+
+  it('draws a position-less diff without the number columns, and the reason under it', () => {
+    app = mount(Call, { target: document.body, props: { call: refused() } });
+    flushSync();
+
+    const dif = document.querySelector('.dif');
+    expect(dif?.classList.contains('bare'), 'a diff with no position says so').toBe(true);
+    expect(dif?.querySelectorAll('.on, .nn').length, 'and draws no number columns').toBe(0);
+    expect(document.body.textContent, "the CLI's reason draws on the row").toContain(
+      'String to replace not found in file.',
+    );
+  });
+
+  it('keeps the number columns on a diff that has a position', () => {
+    app = mount(Call, { target: document.body, props: { call: edited() } });
+    flushSync();
+
+    expect(
+      document.querySelector('.dif')?.classList.contains('bare'),
+      'a hunk has numbers to draw',
+    ).toBe(false);
+    expect(document.querySelectorAll('.dif .on').length, 'and the columns are drawn').toBe(2);
   });
 });

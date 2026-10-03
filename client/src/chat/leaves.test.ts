@@ -116,4 +116,30 @@ describe('what a call body draws', () => {
       'a call with no diff still says what it said',
     ).toEqual(['text']);
   });
+
+  it("keeps a failed mutation's own reason, which is the one thing the result has to say", () => {
+    // A successful mutation's result text repeats the path and the CLI's note
+    // to the model, which the row drops in favour of the diff. A FAILED one's
+    // text is the reason nothing changed, and the terminal draws it (`if
+    // !is_error` in `build_tool_result_fields`) - dropped here it is a row
+    // that says the edit failed and never says why.
+    const failed = leafOf(
+      't4',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: 'one', new_string: 'two' },
+      { type: 'tool_result', content: 'String to replace not found in file.', is_error: true },
+    );
+
+    expect(
+      failed.body.map((part) => part.kind),
+      "the diff it meant to make, and the CLI's reason after it",
+    ).toEqual(['diff', 'text']);
+    expect(
+      failed.body.some(
+        (part) => part.kind === 'text' && part.text.includes('String to replace not found'),
+      ),
+      'the reason itself reaches the row',
+    ).toBe(true);
+    expect(failed.status, 'and the row still settles on the failure').toBe('failed');
+  });
 });
