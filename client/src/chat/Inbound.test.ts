@@ -113,3 +113,19 @@ function sheets(): Array<[string, string]> {
     ['the book drawing', BOOK],
   ];
 }
+
+/**
+ * **And the drawing shows the rule rather than only the sheet spelling it.**
+ * The cron row on the session page carried the doubled title for as long as the
+ * app did; a re-added tail there is what this fails on, since nothing else
+ * reads that markup.
+ */
+describe("the drawing's own inbound rows", () => {
+  it('draws no tail on the cron row, whose title is its first line', () => {
+    const rows = PAGE.match(/<details class="leaf inboundrow"[\s\S]*?<\/details>/g) ?? [];
+    expect(rows.length, 'the drawing carries inbound rows').toBeGreaterThan(0);
+    const cron = rows.find((one) => one.includes('morning sweep'));
+    expect(cron, 'the cron row is drawn').toBeDefined();
+    expect(cron ?? '', 'no tail repeating the title').not.toContain('class="ev"');
+  });
+});

@@ -224,6 +224,8 @@
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
   let accounted = 0;
+  /** The dropped-ask count this component has already drained against. */
+  let drained = 0;
   /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
   let shaped = 0;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
@@ -401,6 +403,12 @@
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
+      // **And so were the asks this column is holding.** They belong to the
+      // conversation that is going, and their pages are not coming here: left
+      // standing they hold `shift` on, which is the guard that keeps the
+      // restore out of a prepend's way and would keep it out for good.
+      outstanding = 0;
+      settling = false;
     }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
@@ -431,6 +439,7 @@
     accounted = now;
     outstanding = Math.max(0, outstanding - 1);
     settling = true;
+
     // Held in a variable rather than returned as this effect's cleanup: the
     // effect re-runs on EVERY update - `held` is a store read, so each one
     // hands over a new object - and a returned cleanup is run before each
@@ -440,6 +449,26 @@
       settling = false;
       timer = null;
     }, 0);
+  });
+
+  // **A forgotten ask drains the same count**, and no page is coming to do it:
+  // a dropped socket takes the page in flight with it and a refusal answers
+  // with none. Without this the count outlives the ask it was armed for, and
+  // `shift` - the guard that keeps the restore out of a prepend's way - stays
+  // on for the life of the seat, which is the parked reader's hold quietly
+  // turning itself off (measured: the offset left at 50 where the row above the
+  // reader had moved it to 250, still 50 after the reconnect's own page).
+  $effect(() => {
+    const now = held.dropped;
+    if (now === drained) return;
+    drained = now;
+    outstanding = 0;
+    accounted = held.prepends;
+    settling = false;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
   });
 
   // The timer goes with the column, which is the one thing the effect above

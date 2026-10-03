@@ -177,6 +177,18 @@ export interface Conversation {
    * row's height, which is the one thing this page must not do.
    */
   prepends: number;
+  /**
+   * How many asks this conversation was told to forget - a dropped socket or a
+   * refusal - and no page will ever answer.
+   *
+   * **The column keeps a count of the asks it is holding, and this is what
+   * drains it.** A page landing drains one; a forgotten ask drains nothing,
+   * because the page that would have is never coming - so without this the
+   * column's own count outlives the ask, and everything gated on it (the
+   * prepend compensation, and the anchor's restore standing out of its way)
+   * stays on for the life of the seat.
+   */
+  dropped: number;
 }
 
 /** A conversation nothing has answered yet. */
@@ -187,6 +199,7 @@ export const NOTHING: Conversation = {
   refused: null,
   following: true,
   prepends: 0,
+  dropped: 0,
 };
 
 /**
@@ -488,6 +501,10 @@ export class Chat {
    * `session_id` on the page is the real fix and is a wire change.
    */
   private abandoned = 0;
+  /** Record that an ask which was in flight is now answered by nothing. */
+  private forgot(): void {
+    this.inner.update((held) => ({ ...held, dropped: held.dropped + 1 }));
+  }
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
   /**
@@ -590,8 +607,14 @@ export class Chat {
       // answers with an ask of its own - so an ask this conversation was told
       // to forget is answered by nothing, and its count must not outlive it.
       if (status !== 'open') {
+        const held = this.inFlight !== null;
         this.inFlight = null;
         this.abandoned = 0;
+        // And the column is TOLD, not left counting: its own twin of this ask
+        // is what holds the prepend compensation on, and nothing else drains
+        // it. Only an ask actually in flight counts - a closed socket that was
+        // already idle has nothing to forget.
+        if (held) this.forgot();
       } else {
         this.clearRetry();
         this.ask(null);
@@ -703,7 +726,12 @@ export class Chat {
         // spent on pages that are never coming.
         this.inFlight = null;
         this.abandoned = 0;
-        this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
+        this.inner.update((held) => ({
+          ...held,
+          refused: message.why,
+          loaded: true,
+          dropped: held.dropped + 1,
+        }));
         this.retryAsk();
         return;
       case 'snapshot':
