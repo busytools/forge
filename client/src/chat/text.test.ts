@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { firstLine, headline, searchHits, shortPath, stripEscapes } from './text';
+import { firstLine, headline, joinedLine, searchHits, shortPath, stripEscapes } from './text';
 
 describe('the text a command produced, as a page draws it', () => {
   it('strips the colour a command wrote', () => {
@@ -85,6 +85,19 @@ describe('the text a command produced, as a page draws it', () => {
   it('takes the first line that says anything', () => {
     expect(firstLine('\n\n  the real line  \nsecond')).toBe('the real line');
     expect(firstLine('   ')).toBe('');
+  });
+
+  it('joins a thought into one line, block marks off and inline marks kept', () => {
+    // The row cannot draw a heading, a list or a fence - it is one line - so
+    // those marks go; emphasis and code stay, because the row renders them the
+    // way the body does.
+    expect(joinedLine('## what I found\n\n- one\n- two\n\n`cargo check`')).toBe(
+      'what I found one two `cargo check`',
+    );
+    expect(joinedLine('let me look at the **fold** again, see [handoff.md](x.md)')).toBe(
+      'let me look at the **fold** again, see handoff.md',
+    );
+    expect(joinedLine('   ')).toBe('');
   });
 
   it('names a call the way its row draws it', () => {

@@ -22,13 +22,16 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 1, "settings": {"mark": null, "theme": null, "font": null}}
+{"kind": "greeting", "version": 2, "settings": {"mark": null, "theme": null, "font": null}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
 negotiated, because the server changes far more slowly than a client's
 visuals do: either a client speaks this version or it does not, and a
-mismatch fails plainly.
+mismatch fails plainly. **The check is the client's**: the greeting carries
+the server's version, and a client that does not speak it says so and
+closes - the server cannot refuse a client that is behind, because nothing
+a client sends carries the version it speaks.
 
 `settings` is three of `forge.toml`'s `[web]` keys - `mark`, `theme` and
 `font` - which are a client's settings rather than this server's. They
@@ -63,7 +66,7 @@ variant's own name rather than on `kind`:
 A command's variant is its name around its field bag - `Command` has 34
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 52 of `SessionUpdate`'s 57 variants are struct variants too. The other
+and 53 of `SessionUpdate`'s 58 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,

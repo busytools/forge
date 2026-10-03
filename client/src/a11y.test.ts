@@ -222,7 +222,6 @@ describe('axe over the rendered pages', () => {
             },
           ],
         },
-        cwd: null,
       },
     }).body;
     // The peer mark is the one glyph no other row on this turn draws, so it is
@@ -233,7 +232,7 @@ describe('axe over the rendered pages', () => {
     // drawn in until a reader opens it and so the state worth checking - the
     // body is a `<div class="term">` of text today, and an element axe cares
     // about put in there would be checked by nothing until it is opened.
-    expect(html, 'and the hook run drew, so axe saw that too').toContain('class="hookrun"');
+    expect(html, 'and the hook run drew, so axe saw that too').toContain('class="leaf hookrow"');
     // Inside the landmark the session page puts it in: the column is a region
     // of that page rather than a page, and axe reports content outside one.
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);

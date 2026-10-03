@@ -1,12 +1,15 @@
 <script lang="ts">
+  import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
-  import type { Connection } from '../socket';
+  import type { Command } from '../protocol';
+  import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
 
   let {
     ask,
+    ownKey = null,
     slot,
     connection,
     depth = 1,
@@ -17,8 +20,18 @@
     land = null,
     onanswer = () => {},
     onabandon = () => {},
+    answered = false,
   }: {
     ask: Ask;
+    /**
+     * The prompt's own identity, which the composer computes (`ownKeyOf`).
+     *
+     * The record is replaced on every frame and on the session poll, so `ask`
+     * is a fresh object while the prompt is the same one - the dock keys its
+     * keyboard-taking on this rather than on that object, so a re-render is
+     * not a new prompt.
+     */
+    ownKey?: string | null;
     slot: SessionSlot;
     connection: Pick<Connection, 'dispatch'>;
     /** How many prompts wait behind this one, which the queue line states. */
@@ -40,6 +53,16 @@
     land?: string | null;
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
+    /**
+     * Whether this is the prompt the reader has answered and the core has not
+     * taken yet.
+     *
+     * **The dock stands where the terminal pops it**, and the mark says so:
+     * the pick is drawn at once and everything else on the dock stands down,
+     * so a second Enter is not read as a second answer to a prompt the reader
+     * has already answered. A refusal brings it back live, with the reason.
+     */
+    answered?: boolean;
   } = $props();
 
   /** Which sprite carries an option's meaning, and the colour the sheet gives it. */
@@ -79,7 +102,7 @@
     /**
      * Whether this row is where the reader says something in their own words.
      *
-     * It reveals the field rather than answering: a row labelled "tell Claude
+     * It reveals the field rather than answering: a row labelled "tell the agent
      * something else" that answers with nothing said is a key that cannot do
      * what it says, one level down.
      */
@@ -171,6 +194,25 @@
   const markedRow = $derived(rows[marked]);
   const notesOpen = $derived(markedRow !== undefined && markedRow.own);
 
+  // The dock takes the keyboard the moment it arrives, and again for every
+  // question of a batch: its rows are the only thing to answer, a prompt nobody
+  // has clicked answers no keys at all, and the listbox element survives the
+  // swap from one question to the next - so an effect keyed on the element
+  // alone never re-ran and the keys were dead at the start of every question
+  // after the first.
+  //
+  // **Keyed on the prompt's own identity, not on the object a record mints for
+  // it.** The record is replaced on every frame and on the session poll, and a
+  // re-render of the SAME prompt used to hand the dock the keyboard again: a
+  // reader typing in the notes row lost the caret to the option list
+  // mid-sentence, and the rest of their typing went to the listbox. While that
+  // box is open the caret is the reader's, so this leaves it where they put it.
+  $effect(() => {
+    void ownKey;
+    if (notesOpen) return;
+    if (listbox !== null) listbox.focus({ preventScroll: true });
+  });
+
   // The composer decides where a take's words land, and this dock is only a
   // destination while its box is open - so it has to say whether it is.
   //
@@ -211,6 +253,7 @@
 
   /** Clicking a row: an option answers, the own-words row opens the field. */
   function choose(at: number): void {
+    if (answered) return;
     const row = rows[at];
     if (row === undefined) return;
     marked = at;
@@ -227,6 +270,22 @@
       return;
     }
     submit();
+  }
+
+  /**
+   * Send one answer, and do not let a closed socket take the click with it.
+   *
+   * `dispatch` throws synchronously when the socket is not open, which lands
+   * in the click handler rather than in anything that draws: the loss is
+   * reported, and the dock the reader has already answered keeps its
+   * stand-down.
+   */
+  function answer(command: Command): void {
+    try {
+      void connection.dispatch(command);
+    } catch (error) {
+      report('the answer was not sent', error);
+    }
   }
 
   /**
@@ -249,7 +308,7 @@
       const id = ask.request.id;
       const approved = row.key === 'send';
       onanswer(id);
-      void connection.dispatch({ respond_slack_post: { key: slot, id, approved } });
+      answer({ respond_slack_post: { key: slot, id, approved } });
       return;
     }
 
@@ -264,7 +323,7 @@
       // AND denies on the reader's behalf, so it waits for them to write.
       if (option.kind === 'notes' && words === null) return;
       onanswer(toolId);
-      void connection.dispatch({
+      answer({
         respond_permission: {
           key: slot,
           tool_id: toolId,
@@ -297,7 +356,7 @@
     const ids = multi && toggled.length > 0 ? toggled : row.optionId === null ? [] : [row.optionId];
     const annotation = words === null ? null : { preview: null, notes: words };
     onanswer(toolId);
-    void connection.dispatch({
+    answer({
       respond_question: {
         key: slot,
         tool_id: toolId,
@@ -321,7 +380,7 @@
   function reject(): void {
     if (ask.kind === 'question') {
       onanswer(ask.request.toolId);
-      void connection.dispatch({
+      answer({
         respond_question: {
           key: slot,
           tool_id: ask.request.toolId,
@@ -446,10 +505,9 @@
 
 <div class="dock">
   {#if depth > 1}
-    <div class="queue">
-      <Icon name="chev" class="more" />
-      {depth - 1} more pending after this
-    </div>
+    <!-- The words say it; a marker in front of them was one more thing to
+         decode on a row that is already a count. -->
+    <div class="queue">{depth - 1} more pending after this</div>
   {/if}
   {#if notice !== null}
     <div class="notice bad">{notice}</div>
@@ -489,7 +547,11 @@
     </div>
     <!-- The body verbatim: this is what would go out, so the reader approves
          the text itself rather than a summary of it. -->
-    <div class="sent">{ask.request.text}</div>
+    <!-- The draft reads as an option's preview does, through the same
+         markdown renderer and the same panel: Slack text IS markdown, the
+         question kinds are already in hand, and one kind of block for both
+         keeps the dock one system rather than two. -->
+    <div class="preview"><Prose text={ask.request.text} /></div>
   {/if}
 
   {#if rows.length > 0}
@@ -532,17 +594,59 @@
         >
           {#if row.icon !== null}
             <Icon name={row.icon} class={row.tone} />
-          {:else}
-            <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
-              {#if row.optionId !== null && toggled.includes(row.optionId)}
+          {:else if multi}
+            <!-- The escape row's box reads checked once there are words in it:
+                 display only, because the typed words ride the answer's
+                 annotation rather than the selection set - the terminal's own
+                 rule, where the box confirms the typed content will go with
+                 the answer. -->
+            <span
+              class="box2"
+              class:on={row.own
+                ? notes.trim() !== ''
+                : row.optionId !== null && toggled.includes(row.optionId)}
+            >
+              {#if row.own ? notes.trim() !== '' : row.optionId !== null && toggled.includes(row.optionId)}
                 <Icon name="check" />
               {/if}
             </span>
+          {:else if row.own}
+            <!-- The escape row keeps the slot its options mark in - an empty
+                 one - so its words start in the same column theirs do. -->
+            <span class="slot"></span>
+          {:else}
+            <!-- A single-answer question marks its rows in the same slot the
+                 set draws its boxes in - a circle that fills on the row being
+                 taken - so its options are not bare against every other kind
+                 of row on the page. -->
+            <span class="radio" class:on={at === marked}></span>
           {/if}
           <span class="tx">
-            <span class="lbl">{row.label}</span>
-            {#if row.detail !== null}
-              <span class="why">{row.detail}</span>
+            {#if row.own && notesOpen}
+              <!-- **The escape hatch IS the box.** Moving onto the row puts the
+                   caret in it, so the answer is typed or dictated where the row
+                   already says it will be, rather than into a second box
+                   opening under the list. The keys below the listbox are the
+                   row's own while the caret is in it. -->
+              <Field
+                editor="dock"
+                class="notes"
+                bind:value={notes}
+                rows={1}
+                placeholder={row.label}
+                onkeydown={(event: KeyboardEvent) => {
+                  event.stopPropagation();
+                  onkey(event);
+                }}
+                field={(el: HTMLElement | null) => {
+                  field = el;
+                }}
+              />
+            {:else}
+              <span class="lbl">{row.label}</span>
+              {#if row.detail !== null}
+                <span class="why">{row.detail}</span>
+              {/if}
             {/if}
           </span>
         </div>
@@ -550,37 +654,36 @@
     </div>
 
     {#if markedRow?.preview != null}
-      <div class="preview">{markedRow.preview}</div>
+      <!-- The marked option's own prose, carried as markdown on the wire and
+           rendered as markdown rather than shown as its source - the same
+           renderer the conversation's prose uses, which escapes what it is
+           handed. -->
+      <div class="preview"><Prose text={markedRow.preview} /></div>
     {/if}
 
-    {#if notesOpen}
-      <!-- The reader's own words, which the answer carries as its annotation
-           rather than as an option id. -->
-      <Field
-        editor="dock"
-        class="notes"
-        bind:value={notes}
-        rows={1}
-        placeholder="answer with your own words"
-        onkeydown={onkey}
-        field={(el: HTMLElement | null) => {
-          field = el;
-        }}
-      />
+    {#if answered}
+      <!-- The same mark the reader's own words carry while they are on their
+           way, because it is the same wait: a pick that has left the reader and
+           has not been taken yet. -->
+      <div class="keys">
+        <span class="answering"
+          ><span class="ring"></span>sending · it holds until the core takes it</span
+        >
+      </div>
+    {:else}
+      <div class="keys">
+        <span><kbd>↑</kbd><kbd>↓</kbd> {question ? 'move' : 'select'}</span>
+        {#if multi}
+          <span><kbd>space</kbd> toggle</span>
+        {/if}
+        <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
+        {#if take !== null}
+          <span><kbd>Esc</kbd> cancel the take</span>
+        {:else}
+          <span><kbd>Esc</kbd> reject</span>
+        {/if}
+      </div>
     {/if}
-
-    <div class="keys">
-      <span><kbd>↑</kbd><kbd>↓</kbd> {question ? 'move' : 'select'}</span>
-      {#if multi}
-        <span><kbd>space</kbd> toggle</span>
-      {/if}
-      <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
-      {#if take !== null}
-        <span><kbd>Esc</kbd> cancel the take</span>
-      {:else}
-        <span><kbd>Esc</kbd> reject</span>
-      {/if}
-    </div>
 
     {#if take !== null}
       <div class="blip">

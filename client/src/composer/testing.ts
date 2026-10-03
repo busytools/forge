@@ -20,6 +20,7 @@ export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'l
 /** A record with nothing in it, which is the seat the tests start from. */
 export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
+    slot: SLOT,
     composer: { take: null, notice: null, compacting: false, sign_in: null },
     dictate_overrides: { styling: null, structure: null, context: null },
     pending_ask: null,
@@ -68,7 +69,7 @@ export function take(over: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
-/** A permission request as the core offers one, which is what the dock draws. */
+/** A permission request for the dock, hand-written: the option ids are this test's, not the core's. */
 export function permissionAsk(toolId = 'tu-1'): unknown {
   return {
     kind: 'permission',
@@ -93,7 +94,7 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
         { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
         {
           option_id: 'opt-notes',
-          name: 'Tell Claude something else',
+          name: 'Tell the agent something else',
           kind: 'notes',
           action: { kind: 'deny' },
         },
@@ -103,8 +104,8 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
 }
 
 /**
- * A question as the core offers one, with whatever the test overrides in its
- * prompt.
+ * A question for the dock, hand-written, with whatever the test overrides in
+ * its prompt: the default option ids are this test's own.
  *
  * The index is a parameter because one tool call carries every question in a
  * batch: the core reuses the tool id and advances this, so a test that needs two

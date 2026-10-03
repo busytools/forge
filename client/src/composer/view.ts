@@ -55,6 +55,16 @@ export interface SeatRead {
  */
 export interface ComposerRecord {
   /**
+   * The seat this record is for.
+   *
+   * The page keeps this composer mounted while it hands it one seat's record
+   * after another, and between a switch and the new seat's first record the
+   * record in hand is the PREVIOUS seat's. Everything a record writes is gated
+   * on this matching the seat being shown, so a landing that belongs to the
+   * seat being left cannot land in the box being moved to.
+   */
+  slot: SessionSlot;
+  /**
    * What this seat's composer is doing, as the wire sends it.
    *
    * Left as it came rather than narrowed by the page: the take, the notice and
@@ -241,6 +251,44 @@ export function noticeLine(
   if (notice.kind === 'line') return { tone: notice.tone, text: notice.text };
   if (!sawTake) return null;
   return notice.truncated ? { tone: 'warn', text: TRUNCATED } : null;
+}
+
+/**
+ * What one draft ending says, drawn where the dock stood.
+ *
+ * The dock is the reader's answer being asked for; when the draft leaves the
+ * core without their answer, this is the only thing that says what became of
+ * it. A draft is answered by its own id in whichever view, so "another view"
+ * is the honest subject: this one did not answer it, or its dock would be
+ * gone by its own doing.
+ */
+export function draftEndingLine(ending: unknown): { tone: string; text: string } {
+  if (ending === 'expired') {
+    return { tone: 'q', text: 'The Slack draft expired unanswered.' };
+  }
+  if (ending === 'abandoned') {
+    return { tone: 'q', text: "The Slack draft's asking session went away." };
+  }
+  const answered = enumField(ending, 'answered');
+  if (answered !== undefined) {
+    return {
+      tone: 'q',
+      text:
+        enumField(answered, 'approved') === true
+          ? 'The Slack draft was posted from another view.'
+          : 'The Slack draft was declined in another view.',
+    };
+  }
+  // An ending this client is older than still means the draft is gone, and
+  // saying less than that would leave the dock's disappearance unexplained.
+  return { tone: 'q', text: 'The Slack draft is no longer waiting.' };
+}
+
+/** One field of an externally tagged enum's variant, or `undefined` for a unit variant. */
+function enumField(value: unknown, name: string): unknown {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)[name]
+    : undefined;
 }
 
 /**

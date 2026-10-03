@@ -16,13 +16,22 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 use croner::Cron;
+use croner::errors::CronError;
+use croner::parser::CronParser;
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+/// Parses with `sloppy_ranges`, which takes the shorthand step syntax
+/// (`5/5 * * * *`) a registered schedule may already carry; the strict
+/// default rejects it, and a schedule that stops parsing is dropped.
+fn parse_cron(expr: &str) -> Result<Cron, CronError> {
+    CronParser::builder().sloppy_ranges(true).build().parse(expr)
+}
 
 /// Validate a 5-field cron expression, returning a human-readable error
 /// on failure. `cron__create` calls this to reject a malformed schedule
 /// at registration time with a clear message.
 pub(crate) fn validate_cron_expr(expr: &str) -> Result<(), String> {
-    Cron::new(expr).parse().map(|_| ()).map_err(|e| e.to_string())
+    parse_cron(expr).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// The next fire for a cron `kind` strictly after `after`, evaluated in
@@ -55,7 +64,7 @@ fn next_recurring_fire_in_tz<Tz: TimeZone>(
     after: SystemTime,
     tz: &Tz,
 ) -> Option<SystemTime> {
-    let cron = Cron::new(expr).parse().ok()?;
+    let cron = parse_cron(expr).ok()?;
     let after_dt: DateTime<Tz> = DateTime::<Utc>::from(after).with_timezone(tz);
     let next = cron.find_next_occurrence(&after_dt, false).ok()?;
     Some(SystemTime::from(next))
@@ -122,6 +131,18 @@ mod tests {
         assert!(validate_cron_expr("*/15 * * * *").is_ok());
         assert!(validate_cron_expr("not a cron").is_err());
         assert!(validate_cron_expr("99 99 * * *").is_err());
+    }
+
+    /// Both halves matter: `cron__create` refuses what fails validation,
+    /// and a stored expression that stops parsing is dropped on advance.
+    #[test]
+    fn shorthand_step_syntax_still_validates_and_fires() {
+        assert!(validate_cron_expr("5/5 * * * *").is_ok());
+        let kind = CronKind::Recurring("5/5 * * * *".to_owned());
+        assert!(
+            next_fire_after_in_tz(&kind, at_utc(2024, 1, 1, 0, 0), &Utc).is_some(),
+            "a shorthand step schedule must still have a next fire"
+        );
     }
 
     #[test]

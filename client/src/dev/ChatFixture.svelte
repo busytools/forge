@@ -149,11 +149,7 @@
 {#if canned.page !== null && canned.held !== null}
   <!-- The column's own height, which in the session page is the grid's. -->
   <div class="devchat">
-    <Chat
-      slot={canned.page.slot}
-      connection={canned.held.connection}
-      cwd="/Users/vedhavyas/Projects/forge"
-    />
+    <Chat slot={canned.page.slot} connection={canned.held.connection} />
   </div>
   <div class="devbar">
     <button onclick={canned.held.append}>append a turn</button>

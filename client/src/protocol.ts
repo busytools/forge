@@ -23,7 +23,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * than a client's visuals do: either a client speaks this version or it does
  * not, and a mismatch fails plainly instead of silently.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';
@@ -63,12 +63,11 @@ export type Command = Record<string, Record<string, unknown>>;
 /**
  * One `SessionUpdate`, for a subscription that covers it.
  *
- * Three shapes, because the enum has three kinds of variant and 56 variants
- * in all: a unit variant is its name alone, a struct variant is its name
- * around a field bag, and the one newtype variant is its name around the
- * value inside it.
+ * Three shapes, one per kind of variant the enum carries: a unit variant is
+ * its name alone, a struct variant is its name around a field bag, and the one
+ * newtype variant is its name around the value inside it.
  *
- * Open for the same reason as `Command`, and one more: 56 variants cross
+ * Open for the same reason as `Command`, and one more: every variant crosses
  * here, and the page that draws a subject is the only place that knows which
  * of them it acts on.
  */
@@ -78,9 +77,9 @@ export type SessionUpdate = string | { [variant: string]: unknown };
  * The seat an update is addressed to, or `null` for one addressed to no seat.
  *
  * This is the core's own `SessionUpdate::slot`, which is `Some(key)` for the
- * 41 variants that carry a `key: SessionSlot` and `None` for everything else -
- * so reading `key` IS reading that method, and the field is never anything but
- * a slot.
+ * variants that carry a `key: SessionSlot` and `None` for everything else - so
+ * reading `key` IS reading that method, and the field is never anything but a
+ * slot.
  *
  * It is what a client routes by: a subscription is a seat, and an update's
  * seat is the seat it belongs to.

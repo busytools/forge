@@ -25,7 +25,7 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, PromptOrigin, SessionUpdate};
+use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -988,6 +988,23 @@ fn catalog_scan_root(config_dir: &std::path::Path) -> Option<PathBuf> {
     } else {
         Some(std::fs::canonicalize(config_dir).unwrap_or_else(|_| config_dir.to_path_buf()))
     }
+}
+
+/// A forge command's answer: what the reader is told, and how loudly.
+///
+/// **Returned rather than emitted where the command is handled**, because the
+/// answer has to land AFTER the words that asked for it: the dispatcher echoes
+/// those once the command has landed, and a notice sent from the handler
+/// arrived first, which every client that draws the stream in order put above
+/// the prompt it answers.
+type ForgeAnswer = (NoticeSeverity, String);
+
+/// The line a forge name invoked wrongly is answered with.
+///
+/// Answered rather than acted on, and never left to fall through as a prompt:
+/// a mistyped command reaching the model reads as a question.
+fn forge_misuse(usage: &str) -> ForgeAnswer {
+    (NoticeSeverity::Error, usage.to_owned())
 }
 
 impl Workspace {
@@ -3606,21 +3623,251 @@ impl Workspace {
             Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
             _ => None,
         };
-        let outcome = self.route(cmd);
+        // A composer's text that names a forge command is FORGE'S, not the
+        // CLI's. Decided here rather than in a view, because this is where
+        // both of them dispatch: the terminal and a client reach the same
+        // commands only by taking the same path, and some of these names the
+        // CLI answers differently or not at all - `/new` is its own `/clear`,
+        // which rotates a conversation forge never records.
+        //
+        // A forge command's answer comes back with the outcome rather than
+        // being emitted where it is decided: it has to land after the echo
+        // below, because a client draws this stream in arrival order and one
+        // sent first drew the answer above the prompt it answers.
+        let (outcome, answer) = match &cmd {
+            Command::Prompt { key, text, .. } => match crate::prompt::forge_invocation(text) {
+                Some(crate::prompt::Invocation::Command(prompt)) => {
+                    self.run_forge_prompt(key, &prompt)
+                }
+                Some(crate::prompt::Invocation::Misuse(usage)) => {
+                    (Ok(()), Some(forge_misuse(usage)))
+                }
+                None => match self.unrunnable_slash_name(key, text) {
+                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
+                    None => (self.route(cmd), None),
+                },
+            },
+            _ => (self.route(cmd), None),
+        };
         if outcome.is_ok()
             && let Some((key, text)) = prompt
         {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
-                key,
+                key: key.clone(),
                 msg: Message::display_only_user(text),
                 origin: Some(origin),
             });
+            if let Some((severity, answer)) = answer {
+                self.notice(&key, severity, &answer);
+            }
         }
         outcome
     }
 
+    /// Run one of forge's own commands against `key`'s seat.
+    ///
+    /// The launch settings are built here rather than taken from the caller:
+    /// a view that supplied its own would spawn a session with what its own
+    /// snapshot happened to hold, and a client has no snapshot to supply.
+    ///
+    /// The answer is returned rather than emitted, so the dispatcher can land
+    /// it after the echo of the reader's own words.
+    fn run_forge_prompt(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        prompt: &crate::prompt::ForgePrompt,
+    ) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        use crate::prompt::ForgePrompt;
+        // A mode the CLI has no name for is answered rather than sent: the
+        // command carries the enum, so an unparsed one cannot be dispatched
+        // at all.
+        let command = match prompt {
+            ForgePrompt::NewSession => {
+                let (cwd, launch_settings) = self.spawn_inputs(key);
+                Command::NewSession { key: key.clone(), cwd, launch_settings }
+            }
+            ForgePrompt::ResumeSession { session_id } => {
+                let (cwd, launch_settings) = self.spawn_inputs(key);
+                Command::ResumeSession {
+                    key: key.clone(),
+                    session_id: session_id.clone(),
+                    cwd,
+                    launch_settings,
+                }
+            }
+            ForgePrompt::SetMode { mode } => {
+                let Some(mode) = forge_primitives::permission::PermissionMode::from_wire(mode)
+                else {
+                    return (Ok(()), Some(forge_misuse(&format!("Unknown mode: {mode}"))));
+                };
+                Command::SetMode { key: key.clone(), mode }
+            }
+            ForgePrompt::SetModel { model } => {
+                Command::SetModel { key: key.clone(), model: model.clone() }
+            }
+            ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
+        };
+        (self.route(command), None)
+    }
+
+    /// The cwd and settings a re-spawn on `key` carries.
+    fn spawn_inputs(&self, key: &SessionSlot) -> (String, SessionLaunchSettings) {
+        let cwd = self.cwd_for_session(key).unwrap_or_default();
+        let launch_settings = self.launch_settings_for(key, &cwd);
+        (cwd, launch_settings)
+    }
+
+    /// Fill in the launch settings a caller did not build.
+    ///
+    /// The terminal builds them from its own snapshot of the documents and
+    /// hands them over; a client has no config to read, so a spawn it asks
+    /// for arrives with none, and a spawn that ran on those alone would carry
+    /// no language, no model and the CLI's own defaults for permissions,
+    /// effort and output style - a session launched differently from the one
+    /// the same click starts in the terminal.
+    ///
+    /// Read from the workspace's own config dir, which is what a session with
+    /// no account-scoped dir of its own runs under. The terminal builds its
+    /// own from the account it is bound to, so the two can differ where an
+    /// account names a dir of its own - and where they do, the caller that
+    /// supplied settings keeps them.
+    fn fill_launch_settings(&self, launch_settings: &mut SessionLaunchSettings, cwd: Option<&str>) {
+        if launch_settings.settings.is_some() {
+            return;
+        }
+        let empty = || serde_json::Value::Object(serde_json::Map::new());
+        let documents_cwd = cwd.filter(|cwd| !cwd.is_empty()).map(std::path::Path::new);
+        let documents =
+            forge_agent::userdata::settings::settings_documents(self.config_dir(), documents_cwd);
+        let user = documents.user.unwrap_or_else(empty);
+        let local = documents.project_local.unwrap_or_else(empty);
+        let preferences = self.user_preferences().unwrap_or_else(empty);
+        let built = crate::launch_settings::session_launch_settings(
+            &crate::launch_settings::LaunchSettingsDocuments {
+                user: &user,
+                local: &local,
+                preferences: &preferences,
+            },
+        );
+        launch_settings.language = built.language;
+        launch_settings.settings = built.settings;
+        launch_settings.agent_progress_summaries = built.agent_progress_summaries;
+    }
+
+    /// `/effort <level>`: write the level the next launch reads.
+    ///
+    /// A settings write rather than a session command - the CLI carries no
+    /// control request for effort - so it lands in the same document the
+    /// launch builder reads and takes effect when the session next starts.
+    fn set_effort(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        level: &str,
+    ) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        let Some(level) = forge_primitives::EffortLevel::from_stored(level) else {
+            return (Ok(()), Some(forge_misuse(&format!("Unknown effort level: {level}"))));
+        };
+        // The seat's own config dir where there is one, and the one forge runs
+        // under otherwise: effort is a user-level setting, so it does not
+        // depend on a session being live.
+        let config_dir =
+            self.config_dir_for(key).unwrap_or_else(|| self.config_dir().to_path_buf());
+        let path = config_dir.join("settings.json");
+        let held = forge_agent::userdata::settings::settings_documents(&config_dir, None)
+            .user
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        // A settings file holding something other than an object is one this
+        // cannot add a key to. Writing the key alone is better than reporting
+        // a success over a document nothing was added to.
+        let mut document =
+            if held.is_object() { held } else { serde_json::Value::Object(serde_json::Map::new()) };
+        document["effortLevel"] = serde_json::Value::String(level.as_stored().to_owned());
+        match forge_agent::userdata::settings::save_document(&path, &document) {
+            Ok(()) => (
+                Ok(()),
+                Some((
+                    NoticeSeverity::Info,
+                    format!("Effort: {} (takes effect next session)", level.label()),
+                )),
+            ),
+            Err(err) => (Ok(()), Some(forge_misuse(&format!("Failed to save effort: {err}")))),
+        }
+    }
+
+    /// The line to answer a slash name this session cannot run, or `None`
+    /// when the text is the CLI's to read.
+    ///
+    /// What a session can run is what its CLI advertised, or one of the names
+    /// the CLI resolves without advertising ([`crate::prompt::FORWARDED`]).
+    /// A session that has advertised nothing refuses nothing: an empty
+    /// catalogue is not knowing, and refusing on ignorance would drop names
+    /// the CLI has.
+    fn unrunnable_slash_name(&self, key: &SessionSlot, text: &str) -> Option<String> {
+        let name = text.split_whitespace().next()?;
+        if !name.starts_with('/') {
+            return None;
+        }
+        let advertised = self.available_commands_for(key);
+        if advertised.is_empty()
+            || advertised
+                .iter()
+                .any(|command| forge_agent::translate::commands::slash_name(&command.name) == name)
+            || crate::prompt::is_forwarded_name(name)
+        {
+            return None;
+        }
+        Some(format!("{name} is not yet supported"))
+    }
+
+    /// Emit one line the core has for a view about `key`.
+    fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
+        let _ = self.update_sender().send(SessionUpdate::Notice {
+            key: key.clone(),
+            severity,
+            text: text.to_owned(),
+        });
+    }
+
+    /// The settings a launch on `key` carries, read from the same documents
+    /// the CLI reads.
+    fn launch_settings_for(&self, key: &SessionSlot, cwd: &str) -> SessionLaunchSettings {
+        let empty = || serde_json::Value::Object(serde_json::Map::new());
+        // An empty cwd is no cwd: joining `.claude/settings.local.json` onto
+        // one would read it against the process working directory.
+        let documents_cwd = (!cwd.is_empty()).then(|| std::path::Path::new(cwd));
+        let documents = self.settings_documents(key, documents_cwd);
+        let user =
+            documents.as_ref().and_then(|documents| documents.user.clone()).unwrap_or_else(empty);
+        let local = documents
+            .as_ref()
+            .and_then(|documents| documents.project_local.clone())
+            .unwrap_or_else(empty);
+        let preferences = self.user_preferences().unwrap_or_else(empty);
+        crate::launch_settings::session_launch_settings(
+            &crate::launch_settings::LaunchSettingsDocuments {
+                user: &user,
+                local: &local,
+                preferences: &preferences,
+            },
+        )
+    }
+
     /// Route a command that carries no frame of its own.
     fn route(self: &Arc<Self>, mut cmd: Command) -> Result<(), DispatchError> {
+        // A spawn a caller could not complete is completed here, ahead of
+        // routing: a client has no config to read, so what it sends carries no
+        // settings, and a spawn that ran on those alone would carry no
+        // language and the CLI's own defaults for permissions, effort and
+        // output style. Ahead of the intercept below because a command is
+        // finished before it is dispatched, and what a test reads there is
+        // what the handler will receive.
+        if let Command::SpawnProject { project_name, launch_settings } = &mut cmd {
+            let cwd = self
+                .find_project_view_by_name(project_name)
+                .map(|project| project.path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.fill_launch_settings(launch_settings, Some(&cwd));
+        }
         // Test intercept (when armed): capture EVERY Command - both
         // app-level and per-session - before any routing. Tests use
         // this to assert what would have been dispatched without
@@ -3660,6 +3907,12 @@ impl Workspace {
                         key: key.clone(),
                         tool_id: tool_id.clone(),
                     });
+                }
+            }
+            Command::RespondSlackPost { key, id, .. } => {
+                let waiting = self.slack_draft_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoDraftWaiting { key: key.clone(), id: *id });
                 }
             }
             _ => {}
@@ -3932,7 +4185,17 @@ impl Workspace {
                     );
                 }
                 Command::RespondSlackPost { key, id, approved } => {
-                    self.resolve_slack_draft(id, &key, approved);
+                    // The guard above already refused a draft this one is not
+                    // waiting for, so a `false` here is a resolve that landed
+                    // between the two: the same refusal, not a silent drop.
+                    let answered = self.resolve_slack_draft(
+                        id,
+                        &key,
+                        forge_primitives::slack::SlackDraftEnding::Answered { approved },
+                    );
+                    if !answered {
+                        return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
+                    }
                 }
                 Command::OpenUrl { url } => {
                     let span = tracing::info_span!("open_url", url = %url);
@@ -16457,6 +16720,505 @@ mod prompt_frame_origin_tests {
                     if key == seat
             ),
             "the words the terminal drew at submit are marked as its own, or it draws them twice",
+        );
+    }
+
+    /// `/new` from any composer is forge's own command, never the CLI's. The
+    /// CLI answers that name as its own `/clear`, which rotates a
+    /// conversation forge never records - no id minted, no `SessionReplaced` -
+    /// so the seat is restarted here instead, and the words never reach it.
+    #[test]
+    fn a_new_prompt_restarts_the_seat_rather_than_reaching_the_cli() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/new".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes a /new prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            commands.iter().any(|c| matches!(c, Command::NewSession { key, .. } if key == &seat)),
+            "the seat is restarted: {commands:?}",
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            "and the words are never forwarded to the CLI: {commands:?}",
+        );
+    }
+
+    /// `/resume <id>` is forge's too, and for a harder reason than `/new`:
+    /// the CLI classifies its own `/resume` as local-jsx, so it cannot run
+    /// away from a terminal at all. The seat is re-spawned onto the named
+    /// session, from the same settings a `/new` would carry.
+    #[test]
+    fn a_resume_prompt_resumes_the_seat_rather_than_reaching_the_cli() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/resume 7f3a92e0".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes a /resume prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                Command::ResumeSession { key, session_id, .. }
+                    if key == &seat && session_id == "7f3a92e0"
+            )),
+            "the named session is resumed: {commands:?}",
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            "and the words are never forwarded to the CLI: {commands:?}",
+        );
+    }
+
+    /// `/mode <id>` and `/model <id>` are the same commands the terminal
+    /// dispatched, so a view neither of them can run still changes both.
+    #[test]
+    fn mode_and_model_prompts_dispatch_their_own_commands() {
+        let (ws, _rx, seat) = a_fleet();
+
+        for (text, expected) in [
+            (
+                "/mode plan",
+                Box::new(|command: &Command| {
+                    matches!(
+                        command,
+                        Command::SetMode { mode, .. }
+                            if *mode == forge_primitives::permission::PermissionMode::Plan
+                    )
+                }) as Box<dyn Fn(&Command) -> bool>,
+            ),
+            (
+                "/model sonnet",
+                Box::new(
+                    |command: &Command| matches!(command, Command::SetModel { model, .. } if model == "sonnet"),
+                ),
+            ),
+        ] {
+            let dispatched = ws.dispatch_from_view(Command::Prompt {
+                key: seat.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+            });
+            assert!(dispatched.is_ok(), "{text}: {dispatched:?}");
+            let commands = ws.drain_test_dispatch_buffer();
+            assert!(
+                matches!(commands.as_slice(), [command] if expected(command)),
+                "{text} dispatches its own command: {commands:?}",
+            );
+        }
+    }
+
+    /// A mode the CLI has no name for is answered rather than sent: the
+    /// command carries the enum, so an unparsed one cannot be dispatched.
+    #[test]
+    fn a_mode_the_cli_does_not_have_is_answered() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/mode sideways".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "{dispatched:?}");
+        // The echo of the reader's own words is one of these; the answer is
+        // what this case is about (its ORDER is the case above, which does not
+        // need the words' text).
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [(NoticeSeverity::Error, text)] if text == "Unknown mode: sideways"
+            ),
+            "the reader is told the mode is not one the CLI has: {notices:?}",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "and nothing is dispatched");
+    }
+
+    /// A forge command's answer draws under the words that asked for it.
+    ///
+    /// The echo and the answer are two updates on one stream, and a client
+    /// draws them in arrival order: an answer emitted where the command was
+    /// handled arrived before the reader's own words, so every socket client
+    /// drew "Unknown mode: sideways" ABOVE the prompt it answers.
+    #[test]
+    fn a_forge_commands_answer_follows_the_words_it_answers() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/mode sideways".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("the core takes it");
+
+        let first = rx.try_recv().expect("the echo is the first update on the stream");
+        assert!(
+            matches!(&first, SessionUpdate::ChatAppended { key, .. } if key == &seat),
+            "the reader's own words are echoed before the answer: {first:?}",
+        );
+        let second = rx.try_recv().expect("the answer follows the echo");
+        assert!(
+            matches!(
+                &second,
+                SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
+                    if text == "Unknown mode: sideways"
+            ),
+            "and the answer lands under them, where a client draws it: {second:?}",
+        );
+    }
+
+    /// `/effort <level>` writes the document the next launch reads, rather
+    /// than dispatching: the CLI carries no control request for effort.
+    #[test]
+    fn effort_writes_the_launch_document_and_answers() {
+        let (ws, mut rx, seat) = a_fleet();
+        // The pool's stub handle is bound to a scratch config dir, so this
+        // write is a real one against a path no user reads.
+        ws.seed_test_bound_session(&seat, "acct-a");
+        let config_dir = ws.config_dir_for(&seat).expect("the pooled stub names a config dir");
+        let path = config_dir.join("settings.json");
+        let before = std::fs::read_to_string(&path).ok();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/effort high".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "{dispatched:?}");
+        let written: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("the effort level lands in the document"),
+        )
+        .expect("the document parses");
+        assert_eq!(written["effortLevel"], serde_json::json!("high"));
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [(NoticeSeverity::Info, text)] if text.contains("Effort: High")
+            ),
+            "and the reader is told it took: {notices:?}",
+        );
+        assert!(ws.drain_test_dispatch_buffer().is_empty(), "nothing is dispatched");
+
+        match before {
+            Some(contents) => {
+                std::fs::write(&path, contents).expect("restore the stub's document");
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// A forge name invoked wrongly is answered with the command's own usage
+    /// line, and dispatched nowhere: a mistyped command that reached the model
+    /// would read as a question.
+    #[test]
+    fn a_wrong_forge_invocation_is_answered_rather_than_dispatched() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/resume".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let notices: Vec<(SessionSlot, NoticeSeverity, String)> =
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|update| match update {
+                    SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
+                    _ => None,
+                })
+                .collect();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [(key, NoticeSeverity::Error, text)]
+                    if key == &seat && text == "Usage: /resume <session_id>"
+            ),
+            "the reader is told what the command wanted: {notices:?}",
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
+    }
+
+    /// Slash text this session cannot run is answered where it is typed,
+    /// rather than handed to the model as a question. What the session can
+    /// run is what the CLI advertised, so the guard reads that and nothing
+    /// else.
+    #[test]
+    fn a_slash_name_the_session_does_not_have_is_refused() {
+        let (ws, mut rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/spinner now".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        // The refusal is answered after the echo of the words, so the two are
+        // read off the stream together (the order is the case above).
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [(NoticeSeverity::Error, text)] if text == "/spinner is not yet supported"
+            ),
+            "the reader is told the name is not one this session has: {notices:?}",
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and nothing reaches the model: {commands:?}");
+    }
+
+    /// The guard's clauses, one row each: prose with no slash is the model's,
+    /// a name the CLI resolves is the CLI's, an advertised name is the CLI's,
+    /// and only a name nothing has is refused.
+    ///
+    /// **A slash-led first word is refused whether or not words follow it**,
+    /// which is the terminal's own rule. The two readings cannot be told
+    /// apart at the first token, and the permissive one reopens the hole the
+    /// guard exists for: `/spinner now`, a typo with an argument, would reach
+    /// the model as a question.
+    #[test]
+    fn the_guard_refuses_only_a_name_nothing_has() {
+        let (ws, mut rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        for (text, refusal) in [
+            ("hello", None),
+            ("/tmp is full, why?", Some("/tmp is not yet supported")),
+            ("/help", None),
+            ("/compact 3", None),
+            ("/compact3", Some("/compact3 is not yet supported")),
+        ] {
+            // The rows share one fleet, so each starts from an empty stream:
+            // the frame the row above drew would otherwise answer for this one.
+            while rx.try_recv().is_ok() {}
+            let dispatched = ws.dispatch_from_view(Command::Prompt {
+                key: seat.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+            });
+            assert!(dispatched.is_ok(), "{text}: {dispatched:?}");
+            if let Some(expected) = refusal {
+                // The echo of the words is on the stream too, after the fix
+                // that put the answer under them; the refusal is what this row
+                // is about.
+                let notices: Vec<(NoticeSeverity, String)> =
+                    std::iter::from_fn(|| rx.try_recv().ok())
+                        .filter_map(|update| match update {
+                            SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                            _ => None,
+                        })
+                        .collect();
+                assert!(
+                    matches!(
+                        notices.as_slice(),
+                        [(NoticeSeverity::Error, text)] if text == expected
+                    ),
+                    "{text} is refused with {expected:?}, got {notices:?}",
+                );
+                assert!(ws.drain_test_dispatch_buffer().is_empty(), "{text} reaches nothing");
+            } else {
+                let commands = ws.drain_test_dispatch_buffer();
+                assert!(
+                    matches!(commands.as_slice(), [Command::Prompt { .. }]),
+                    "{text} is the CLI's: {commands:?}",
+                );
+            }
+        }
+    }
+
+    /// Effort is user-level, so it lands even when the seat has no session
+    /// behind it: what it writes is the document a launch reads, not anything
+    /// about a run.
+    #[test]
+    fn effort_lands_for_a_seat_with_no_live_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/prompt-frame-origin");
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_from_view(Command::Prompt {
+            key: SessionSlot::lead("TestOrg", "proj"),
+            text: "/effort low".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("the core takes it");
+
+        let written = std::fs::read_to_string(dir.path().join("settings.json"))
+            .expect("the document is written");
+        let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
+        assert_eq!(document["effortLevel"], serde_json::json!("low"));
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(notices.as_slice(), [(NoticeSeverity::Info, _)]),
+            "and the reader is told it took: {notices:?}",
+        );
+    }
+
+    /// A spawn a view could not complete is completed by the core: a client
+    /// has no config to read, so what it sends carries none, and the settings
+    /// the launch reads are built from the same documents the terminal reads.
+    #[test]
+    fn a_spawn_without_settings_gets_them_from_the_documents() {
+        // A config dir of its own, so the line the spawn carries is read from
+        // a document this test wrote rather than from the machine's.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("settings.json"), br#"{ "effortLevel": "low" }"#)
+            .expect("seed the document");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch_from_view(Command::SpawnProject {
+            project_name: "proj".to_owned(),
+            launch_settings: SessionLaunchSettings::default(),
+        })
+        .expect("the core takes it");
+
+        let commands = ws.drain_test_dispatch_buffer();
+        let [Command::SpawnProject { launch_settings, .. }] = commands.as_slice() else {
+            panic!("the spawn was not the command routed: {commands:?}");
+        };
+        let settings = launch_settings.settings.as_ref().expect("the documents filled it in");
+        assert_eq!(
+            settings["effortLevel"],
+            serde_json::json!("low"),
+            "the value the document holds, which a bare spawn would not have carried",
+        );
+    }
+
+    /// The mirror: a spawn that built its own settings keeps them, so the
+    /// terminal's snapshot is not silently replaced by the core's read.
+    #[test]
+    fn a_spawn_that_supplied_settings_keeps_them() {
+        let (ws, _rx, _seat) = a_fleet();
+        let supplied = SessionLaunchSettings {
+            settings: Some(serde_json::json!({ "model": "haiku" })),
+            ..SessionLaunchSettings::default()
+        };
+
+        ws.dispatch_from_view(Command::SpawnProject {
+            project_name: "proj".to_owned(),
+            launch_settings: supplied,
+        })
+        .expect("the core takes it");
+
+        let commands = ws.drain_test_dispatch_buffer();
+        let [Command::SpawnProject { launch_settings, .. }] = commands.as_slice() else {
+            panic!("the spawn was not the command routed: {commands:?}");
+        };
+        assert_eq!(
+            launch_settings.settings,
+            Some(serde_json::json!({ "model": "haiku" })),
+            "the caller's own settings are left alone",
+        );
+    }
+
+    /// A name the CLI advertised is the CLI's, and goes to it.
+    #[test]
+    fn a_slash_name_the_cli_advertised_is_forwarded() {
+        let (ws, _rx, seat) = a_fleet();
+        ws.seed_test_advertised_catalogues(
+            &seat,
+            vec![forge_primitives::AvailableCommand::new("compact", "Compact")],
+            Vec::new(),
+        );
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/compact".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/compact"),
+            "an advertised name is the CLI's: {commands:?}",
+        );
+    }
+
+    /// A session that has advertised nothing refuses nothing: an empty
+    /// catalogue is not knowing what the CLI offers, and refusing on
+    /// ignorance would drop names it does have.
+    #[test]
+    fn a_session_that_advertised_nothing_refuses_nothing() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/compact".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { .. }]),
+            "nothing is refused before the CLI has said what it has: {commands:?}",
+        );
+    }
+
+    /// A name that only LOOKS like a forge command is the reader's prose, and
+    /// reaches the model as they typed it.
+    #[test]
+    fn a_prompt_that_only_starts_like_a_forge_command_is_still_a_prompt() {
+        let (ws, _rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/newer please".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(
+            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/newer please"),
+            "a near miss is prose: {commands:?}",
         );
     }
 

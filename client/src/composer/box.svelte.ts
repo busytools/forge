@@ -26,14 +26,32 @@ export function boxKey(slot: SessionSlot): string {
 }
 
 export class Box {
-  /** The reader's own words, and what the box owes them for a send. */
+  /** The reader's own words, and the command a send named. A send still on its way is not here: it is the conversation's own row (`chat/echoes.svelte`). */
   draft = $state('');
   sent = $state<string | null>(null);
-  sending = $state<string | null>(null);
-  bounced = $state<string | null>(null);
   /** The prompt this box answered, while the core still lists it as waiting. */
   answered = $state<string | null>(null);
+  /**
+   * That prompt's own key, which is the id AND the question's index.
+   *
+   * A batch of questions rides one tool call, so the id alone would have the
+   * dock stand down on the question AFTER the one the reader answered.
+   */
+  answeredKey = $state<string | null>(null);
   refusal = $state<string | null>(null);
+  /**
+   * Why the draft this box was drawing left the core without this reader
+   * answering, drawn where the dock stood.
+   *
+   * The record loses `pending_ask` on the same update that carries this, so
+   * the why has to be held here rather than read off the draft that is gone.
+   */
+  ended = $state<{ tone: string; text: string } | null>(null);
+  /**
+   * The held draft this box drew last, which is what tells a stand-down for
+   * THIS draft from one for the next. Not `$state`: nothing draws from it.
+   */
+  shownDraft: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**
@@ -78,5 +96,14 @@ export class Boxes {
     const made = new Box();
     this.#held.set(key, made);
     return made;
+  }
+
+  /**
+   * The box a seat already holds, or `undefined` for one nothing has drawn -
+   * an update for such a seat has no dock behind it to explain, and minting a
+   * box would keep its line for a page that never showed it.
+   */
+  held(key: string): Box | undefined {
+    return this.#held.get(key);
   }
 }

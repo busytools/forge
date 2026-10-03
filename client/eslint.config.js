@@ -55,6 +55,14 @@ export default tseslint.config(
       'svelte/no-at-html-tags': 'error',
     },
   },
+  {
+    // One call on the bound `VList` handle: virtua's component handle type
+    // does not resolve through this config's type service, so the call reads
+    // as untyped here while `svelte-check` - which resolves it and gates this
+    // file - sees `VListHandle.scrollToIndex` with its real signature.
+    files: ['src/chat/Chat.svelte'],
+    rules: { '@typescript-eslint/no-unsafe-call': 'off' },
+  },
   // LAST, because it has to override the blocks above rather than be
   // overridden by them: the client's own config files are Node scripts
   // outside the TypeScript project, so the project service refuses them and

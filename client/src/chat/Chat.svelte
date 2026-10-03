@@ -1,11 +1,15 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { VList } from 'virtua/svelte';
+  import { SvelteMap } from 'svelte/reactivity';
+  import { VList, type VListHandle } from 'virtua/svelte';
 
+  import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
+  import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Compacting from './Compacting.svelte';
+  import { latestCompaction } from './compaction-jump';
   import {
     Chat,
     NOTHING,
@@ -13,6 +17,8 @@
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
+  import Echo from './Echo.svelte';
+  import { echoes, ownWords } from './echoes.svelte';
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { fold, type TurnInfo } from './units';
@@ -35,15 +41,12 @@
   let {
     slot,
     connection,
-    cwd,
     waking = false,
     reason = null,
     compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
-    /** The session's working tree, which a call's target is named against. */
-    cwd: string | null;
     /** The roster holds no session for this seat, which is its own state. */
     waking?: boolean;
     /** Why, when it does. */
@@ -69,6 +72,12 @@
    * this update, and the element's own `scrollHeight` does not.
    */
   let viewport: HTMLElement | null = $state(null);
+  /**
+   * The list's own handle, for the one move the element cannot make: a jump
+   * to a row that may not be drawn. `land` deliberately goes through the
+   * element; finding an arbitrary past row needs the list's index math.
+   */
+  let list: VListHandle | null = $state(null);
   /** Where the column last left the reader, which its own pin's echo cannot disarm. */
   let placed: number | null = null;
   let working: Chat | null = null;
@@ -83,13 +92,111 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
+  /**
+   * The reader's words, from submit until the core's own copy of them lands.
+   *
+   * Held per seat by the client rather than by either column, because the
+   * composer writes it and this one draws it: it is one mechanism over both
+   * sending surfaces, and a seat the reader has left keeps its pending send.
+   */
+  const echo = $derived(echoes.of(seat));
+
   /** The newest turn, which is the one a running row is folded for. */
   const newestTurn = $derived(
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
   /** The newest turn's key: the row a compaction in flight belongs under. */
   const newest = $derived(newestTurn?.key ?? null);
-  let opened: { seat: string; connection: Connection; stop: () => void } | null = null;
+
+  /**
+   * The echo goes the moment the conversation carries the words.
+   *
+   * **The core's own copy is the signal, in either carrier the wire uses**: a
+   * prompt that starts a turn arrives as that message's own text, and one sent
+   * while a turn is already running is held by the CLI as a queued block
+   * instead. The composer's own backstop is the turn going in flight, which is
+   * a signal a queued prompt never gives - so a reconcile that knew one
+   * carrier would leave the row saying "sending" for the rest of the turn.
+   *
+   * **And it reads only the two ENDS of the newest turn.** The core's copy
+   * lands at one end or the other - appended by the live path, at the head of
+   * the turn a page read rebuilds - while a turn can be thousands of messages
+   * long and this runs on every arriving frame. A scan of the whole thing is a
+   * cost that grows with exactly the turn the reader is sending into, which is
+   * #1591's shape one layer down.
+   */
+  $effect(() => {
+    const held = echoes.of(seat);
+    if (held === undefined) return;
+    const turn = newestTurn;
+    if (turn === null) return;
+    if (!carries(turn.messages, held.words)) return;
+    echoes.clear(seat);
+  });
+
+  /**
+   * Whether a turn's own messages carry these words.
+   *
+   * **Each end, and stopped by the first frame that is not the reader's**: a run
+   * of their own words is what either end of a turn holds - the live path
+   * appends one, and a page read opens the turn with one - and everything
+   * between is the work the turn did, which is where the length is.
+   */
+  function carries(messages: unknown[], words: string): boolean {
+    const run = (from: number, step: number): boolean => {
+      for (let at = from; at >= 0 && at < messages.length; at += step) {
+        const message = messages[at];
+        if (message === undefined) break;
+        const said = ownWords(message);
+        if (said.length === 0) break;
+        if (said.includes(words)) return true;
+      }
+      return false;
+    };
+    return run(messages.length - 1, -1) || run(0, 1);
+  }
+
+  /**
+   * Send the words again, from the row that says they did not go.
+   *
+   * The same dispatch the composer makes, because it is the same send: the row
+   * hands back words the reader already typed rather than asking them to type
+   * them again, which is what a refused send used to mean.
+   */
+  function retry(): void {
+    const held = echoes.of(seat);
+    if (held === undefined) return;
+    // The newest turn's own state, which is what says whether this send starts
+    // a turn: one retried into a turn already running is not taken by it, so
+    // the mark holds until the words themselves arrive.
+    echoes.post(seat, held.words, newestTurn?.running === true);
+    try {
+      // Fire-and-forget like the composer's own send: the outcome rides the
+      // subscription rather than a reply, so there is nothing to await.
+      void connection.dispatch({ prompt: { key: slot, text: held.words, attachments: [] } });
+    } catch {
+      // A closed socket throws rather than answering, so the row says why
+      // rather than the words going with a command that never left.
+      echoes.refuse(seat, 'the socket is closed');
+    }
+  }
+  /**
+   * Every seat's conversation, kept after the reader leaves it.
+   *
+   * A switch used to throw the current one away and ask the server again, so a
+   * seat already drawn came back as a blank column and a round trip. The record
+   * for every seat this client has visited is kept for the same reason
+   * (`session/live.ts`); this is the half that was missing.
+   *
+   * **Nothing draws from either map, and every read of them is untracked**: the
+   * seat on screen is `held` above, and a tracked read here would make the
+   * effect below depend on the entry the subscription writes on every frame -
+   * which is a column that re-keys itself, and a `placed` that resets, under
+   * each one.
+   */
+  const kept = new SvelteMap<string, Conversation>();
+  /** The seats whose conversation is still open here, so a switch back does not open a second. */
+  const live = new SvelteMap<string, { connection: Connection; chat: Chat; stop: () => void }>();
   /**
    * Pages of older turns asked for and not yet answered.
    *
@@ -104,6 +211,8 @@
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
   let accounted = 0;
+  /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
+  let shaped = 0;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -132,7 +241,7 @@
     viewport = node;
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (atFoot()) working?.following(true);
+      if (holdsEverything()) working?.following(true);
       if (held.following) land();
     });
     watcher.observe(node);
@@ -155,35 +264,68 @@
     return viewport !== null && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight;
   }
 
+  /**
+   * Whether the whole conversation fits, which is the only size change that
+   * re-arms the follow.
+   *
+   * **A size change is not the reader moving**, and the column's height is not
+   * only the conversation's: the composer below it changes shape - a dictation
+   * row appearing, its panel closing - and a reader a little way up measures as
+   * being at the very end once the column has taken the room, because they are
+   * at the end of what now fits. That arithmetic is right and the conclusion is
+   * wrong: the end is not where they put themselves. What is left is the case
+   * this arm exists for, where nothing is left to scroll and being at the end
+   * is not a position anyone chose.
+   */
+  function holdsEverything(): boolean {
+    return viewport !== null && viewport.scrollHeight <= viewport.clientHeight;
+  }
+
   $effect(() => {
     const which = seat;
     const open = connection;
-    if (opened !== null && opened.seat === which && opened.connection === open) return;
-    opened?.stop();
+    let entry = untrack(() => live.get(which));
+    // A seat reopened on another connection is a different conversation, so the
+    // one held goes with the socket that carried it.
+    if (entry !== undefined && entry.connection !== open) {
+      entry.stop();
+      live.delete(which);
+      kept.delete(which);
+      entry = undefined;
+    }
+    if (entry === undefined) {
+      const chat = new Chat(open, slot);
+      // Written to the seat's own entry rather than straight to `held`: a
+      // conversation kept for a seat the reader has left must not draw.
+      const unsubscribe = chat.value.subscribe((value) => {
+        kept.set(which, value);
+        if (untrack(() => seat) === which) held = value;
+      });
+      const stop = chat.start();
+      entry = {
+        connection: open,
+        chat,
+        stop: () => {
+          unsubscribe();
+          stop();
+        },
+      };
+      live.set(which, entry);
+    }
+    working = entry.chat;
     // The placement belonged to the conversation that is going.
     placed = null;
-    const chat = new Chat(open, slot);
-    working = chat;
-    const unsubscribe = chat.value.subscribe((value) => {
-      held = value;
-    });
-    const stop = chat.start();
-    opened = {
-      seat: which,
-      connection: open,
-      stop: () => {
-        unsubscribe();
-        stop();
-        working = null;
-      },
-    };
+    // The seat coming on screen is put there from what was kept, not from a
+    // read, which is the whole point of holding it.
+    held = untrack(() => kept.get(which)) ?? NOTHING;
   });
 
-  // The column's own teardown, which the effect above cannot do: it stops a
-  // conversation only to put the next one in its place.
+  // The column's own teardown, which the effect above cannot do: it closes one
+  // conversation only to open the next in its place.
   $effect(() => () => {
-    opened?.stop();
-    opened = null;
+    for (const entry of live.values()) entry.stop();
+    live.clear();
+    kept.clear();
   });
 
   // The first page is drawn at the end rather than the start, and that is not
@@ -241,7 +383,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = fold(turn.messages, cwd, slot, beingWritten(turn));
+    const units = fold(turn.messages, slot, beingWritten(turn));
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
@@ -348,6 +490,39 @@
     placed = viewport.scrollTop;
   }
 
+  /** The ask already answered, so a repeat of the same token is not acted on twice. */
+  let answeredAsk: number | null = null;
+  /** An ask still being worked: its row is not loaded yet, and pages are being pulled. */
+  let asking = false;
+
+  /**
+   * The header's ask: reveal the latest compaction.
+   *
+   * Through the list's handle rather than the element, because the row may
+   * not be drawn - and the scroll it performs fires the same scroll event a
+   * reader's own wheel does, so the follow turns off exactly the way it does
+   * when anyone scrolls away from the foot. Nothing else has to remember it.
+   *
+   * **The cut is often older than what is loaded**, so the ask walks the
+   * history: each page that lands re-runs this effect, and it stops asking
+   * when the history runs out rather than retrying forever.
+   */
+  $effect(() => {
+    const ask = $scrollAsk;
+    if (ask !== null && ask.token !== answeredAsk) {
+      answeredAsk = ask.token;
+      asking = true;
+    }
+    if (!asking || !held.loaded) return;
+    const at = latestCompaction(held.turns);
+    if (at !== null) {
+      asking = false;
+      list?.scrollToIndex(at, { align: 'start' });
+      return;
+    }
+    if (!loadOlder()) asking = false;
+  });
+
   // A reader at the end FOLLOWS the newest turn: that is what the end of a
   // conversation means, and a page that grew without the view moving would
   // lose the very thing it was opened on. A reader anywhere else is left
@@ -384,8 +559,35 @@
     // scroll event of its own, and the foot can settle past the height one
     // asked for: both read as the reader back above the foot with nothing
     // moving them, and disarming there is a column stuck where it opened.
-    if (atFoot()) working?.following(true);
-    else if (placed !== null && offset < placed) working?.following(false);
+    //
+    // **And a size change is not a reader moving either, which is the harder
+    // half.** A row corrected to its drawn height takes height out of the
+    // column, the browser clamps the reader down with the content, and THAT
+    // fires a scroll event landing at the foot - so a resize that re-armed the
+    // follow through the observer re-armed it here as well, and a reader who
+    // scrolled away was carried back by whatever arrived. The height the
+    // content had at the last event is what tells the two apart: an event whose
+    // height has moved is the layout, and only an event at the height the
+    // reader last saw can be them arriving at the end of it.
+    // **Only a SHRINK can be a clamp.** Content arriving grows the column and
+    // leaves the reader exactly where they are, so an event after one is the
+    // reader's own; content corrected shorter takes the room out from under
+    // them, and the event that follows is the browser moving them rather than
+    // them moving. The one test covers the disarm below as well as the arming,
+    // because a clamp that put the follow back on and a clamp that took it off
+    // are the same mistake pointing two ways.
+    const height = viewport?.scrollHeight ?? 0;
+    const shrank = height < shaped;
+    shaped = height;
+    if (!shrank) {
+      if (atFoot()) working?.following(true);
+      // `placed` is where the last pin left the reader; before any pin has
+      // run it is unknown, and a reader above the foot is above it whatever
+      // that number is - so the comparison falls back to any upward move
+      // rather than never disarming, which left the way-back hidden on a
+      // column that had not pinned yet (Ved, 2026-10-03).
+      else if (offset < (placed ?? Infinity)) working?.following(false);
+    }
     if (offset < REACH) loadOlder();
   }
 
@@ -403,9 +605,10 @@
    * appended below the reader then goes through the prepend path, which moves
    * them AND leaves the list's measured sizes attributed to the wrong rows.
    */
-  function loadOlder(): void {
-    if (working?.older() !== true) return;
+  function loadOlder(): boolean {
+    if (working?.older() !== true) return false;
     outstanding += 1;
+    return true;
   }
 </script>
 
@@ -443,10 +646,17 @@
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
-    <div class="hold">
-      Nothing said yet
-      <span class="sub">this seat has no history: what is said here starts it</span>
-    </div>
+    {#if echo !== undefined}
+      <!-- A seat with no history still has a message on its way, and that row
+           is the first thing it says: the empty copy would claim nothing was
+           said while the reader watches their own words arrive. -->
+      <Echo {echo} onretry={retry} />
+    {:else}
+      <div class="hold">
+        Nothing said yet
+        <span class="sub">this seat has no history: what is said here starts it</span>
+      </div>
+    {/if}
     {#if compacting}
       <Compacting />
     {/if}
@@ -469,16 +679,22 @@
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}
+    bind:this={list}
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
         <Turn
           {turn}
-          {cwd}
           {slot}
           compacting={compacting && turn.key === newest}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}
         />
+        <!-- The echo rides the newest row, which is where the words will land:
+             the row it is drawn in is the one the core's own copy opens or
+             joins, so nothing moves when the send is taken. -->
+        {#if echo !== undefined && turn.key === newest}
+          <Echo {echo} onretry={retry} />
+        {/if}
       </div>
     {/snippet}
   </VList>
@@ -488,4 +704,21 @@
        sibling of the scroller rather than a row of the grid, so the composer
        and the dock - both drawn under this column - never have to know it. -->
   <Pinned info={pinned?.info ?? null} />
+  <!-- The way back to the foot, shown ONLY while the reader is away from it:
+       following means the newest row is on screen, so its presence is the
+       state read at a glance and its click is the whole way back - at the
+       foot and following again, in one move. -->
+  {#if !held.following}
+    <button
+      class="follow"
+      type="button"
+      title="back to the latest"
+      onclick={() => {
+        working?.following(true);
+        land();
+      }}
+    >
+      <Icon name="down" />
+    </button>
+  {/if}
 {/if}

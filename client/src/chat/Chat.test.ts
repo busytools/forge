@@ -3,7 +3,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
+import { echoes } from './echoes.svelte';
 import { freeze } from './testing/frozen';
+import { subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -39,11 +41,15 @@ const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
   const asks: ClientMessage[] = [];
+  const dispatched: ClientMessage[] = [];
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
     unsubscribe: () => undefined,
     refresh: () => undefined,
-    dispatch: () => null,
+    dispatch: (message: ClientMessage) => {
+      dispatched.push(message);
+      return null;
+    },
     more: (conversation: SessionSlot, before: string | null, turns: number) => {
       asks.push({ kind: 'more', conversation, before, turns });
       return true;
@@ -62,6 +68,7 @@ function stub() {
   return {
     connection,
     asks,
+    dispatched,
     send(message: ServerMessage): void {
       for (const fn of listeners) fn(message);
       flushSync();
@@ -78,7 +85,7 @@ let app: Record<string, unknown> | null = null;
 function draw(props: Record<string, unknown>, server: ReturnType<typeof stub>): void {
   app = mount(Chat, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, cwd: null, ...props },
+    props: { slot: LEAD, connection: server.connection, ...props },
   });
   flushSync();
 }
@@ -308,7 +315,7 @@ describe('the chat column as it draws', () => {
     ]);
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'every message is on the page, both asks included').toContain('3 messages');
+    expect(drawn(), 'every message is on the page, both asks included').toContain('is it filed?');
     expect((html.match(/>ask</g) ?? []).length, 'the two asks share one lane').toBe(1);
     expect((html.match(/>message</g) ?? []).length, 'and the message its own').toBe(1);
     expect(html, 'a counterparty in this project').toContain('i-bot');
@@ -346,8 +353,8 @@ describe('the chat column as it draws', () => {
     ]);
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'both lanes drew, so the turn drew').toContain('2 tool calls');
-    expect((html.match(/>read</g) ?? []).length, 'and each kept its own word').toBe(2);
+    expect(drawn(), 'both calls drew, so the turn drew').toContain('a.rs');
+    expect((html.match(/>read</g) ?? []).length, 'and each lane kept its own word').toBe(2);
   });
 
   it('draws a message whose body repeats a paragraph, which a text key refuses', () => {
@@ -377,7 +384,7 @@ describe('the chat column as it draws', () => {
       },
     ]);
 
-    expect(drawn(), 'the message drew, both paragraphs of it').toContain('1 message');
+    expect(drawn(), 'the message drew').toContain('forge/steward');
     expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
   });
 
@@ -466,16 +473,11 @@ describe('the chat column as it draws', () => {
     server.answer([], null);
     server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: edit } } });
 
-    const run = document.querySelector('details.kind');
     const leaf = document.querySelector('details.leaf');
-    if (!(run instanceof HTMLDetailsElement) || !(leaf instanceof HTMLDetailsElement)) {
-      throw new Error('the run did not draw');
-    }
+    if (!(leaf instanceof HTMLDetailsElement)) throw new Error('the call did not draw');
     expect(leaf.open, 'a mutation draws open without being asked').toBe(true);
-    for (const row of [run, leaf]) {
-      row.open = false;
-      row.dispatchEvent(new Event('toggle'));
-    }
+    leaf.open = false;
+    leaf.dispatchEvent(new Event('toggle'));
 
     // The page lands with the turn grown, which is what re-renders the row.
     server.answer([{ key: null, messages: [edit, answered] }], '1');
@@ -517,7 +519,7 @@ describe('the chat column as it draws', () => {
     });
 
     const html = document.body.innerHTML;
-    expect(drawn(), 'the message is on the page as a group of one').toContain('1 message');
+    expect(drawn(), 'the message is on the page').toContain('picking it up');
     expect(html, 'marked by the counterparty class').toContain('i-bot');
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
@@ -823,5 +825,106 @@ describe('the chat column as it draws', () => {
     const handed = seen.at(-1);
     expect(handed, 'a conversation was published').toBeDefined();
     expect(() => handed?.turns.at(-1)?.messages.push({}), 'and it is frozen').toThrow(TypeError);
+  });
+});
+
+describe('the reader own words before the core has them', () => {
+  /** The seat's key, which is what a pending send is held under. */
+  const key = subjectKey({ session: LEAD });
+
+  /** A turn's own opening words, which is the frame the core echoes a prompt in. */
+  const said = (text: string): unknown => ({
+    type: 'user',
+    uuid: `u-${text}`,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+
+  afterEach(() => {
+    echoes.clear(key);
+  });
+
+  it('draws the words while they are on their way, and stops when the core has them', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too', false);
+    flushSync();
+    expect(drawn(), 'the words are drawn before the core has them').toContain(
+      'and run the gate too',
+    );
+    expect(drawn(), 'and the row says so').toContain('sending');
+
+    // The core starting the turn takes the MARK off, not the words: the core's
+    // own copy of a prompt forge injected is not echoed as a frame, so the row
+    // is the reader's message until the next page read carries one.
+    echoes.take(key);
+    flushSync();
+    expect(drawn(), 'the words stay on screen').toContain('and run the gate too');
+    expect(
+      drawn(),
+      'and the mark holds its beat, which is what makes an instant answer visible',
+    ).toContain('sending');
+
+    // The core's own copy is the signal, and it arrives as its own frame.
+    server.send(appended(said('and run the gate too')));
+    expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
+  });
+
+  it('stops when a page read carries the words, which is where a dropped send lands', () => {
+    // The other end of a turn: a read rebuilds the turn with the reader's own
+    // words at its head, which is the shape a send that outlived a dropped
+    // socket comes back in. Read only from the ends, so this end has to be
+    // looked at as well as the appended one.
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and the gate again', false);
+    flushSync();
+    expect(drawn(), 'the row is up before the read lands').toContain('and the gate again');
+
+    server.answer([{ key: 't2', messages: [said('and the gate again'), frame('a2', 12)] }]);
+    expect(echoes.of(key), 'the page carrying the words at the head settles it').toBeUndefined();
+  });
+
+  it('draws a send on a seat with no history, which is the first thing it says', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    expect(drawn(), 'nothing is claimed about a seat that has said nothing').toContain(
+      'Nothing said yet',
+    );
+
+    echoes.post(key, 'start here', false);
+    flushSync();
+    expect(drawn(), 'the first thing the seat says is the reader own words').toContain(
+      'start here',
+    );
+    expect(drawn(), 'and the empty copy goes with them').not.toContain('Nothing said yet');
+  });
+
+  it('keeps a refused send, names the reason, and sends it again from the row', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too', false);
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+    expect(drawn(), 'the words stay where they were sent from').toContain('and run the gate too');
+    expect(drawn(), 'and the row says why they did not go').toContain(
+      'not sent · the session is not running',
+    );
+
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    expect(server.dispatched, 'the row sends the same words again').toContainEqual({
+      prompt: { key: LEAD, text: 'and run the gate too', attachments: [] },
+    });
+    expect(echoes.of(key)?.state, 'and the row is back to saying it is on its way').toBe('sending');
   });
 });

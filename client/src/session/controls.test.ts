@@ -43,6 +43,11 @@ function control(): HTMLButtonElement {
   return button;
 }
 
+/** The mark the control draws, which is what says what the click did. */
+function mark(): string | null {
+  return control().querySelector('use')?.getAttribute('href') ?? null;
+}
+
 describe('the copy control', () => {
   it('says what the click did, and forgets it when the occupant changes', async () => {
     const written: string[] = [];
@@ -55,17 +60,14 @@ describe('the copy control', () => {
 
     control().click();
     await settle();
-    expect(control().textContent?.trim(), 'a write that resolved did not say so').toBe('copied');
+    expect(mark(), 'a write that resolved did not say so').toBe('#i-check');
     expect(written, 'the whole id is not what was copied').toEqual(['d4f70669-1f2a']);
 
     // The occupant swap: the same cell, a new id underneath it.
     props.id = 'aaaa1111-2222';
     flushSync();
     expect(document.body.textContent, 'the new occupant is not drawn').toContain('aaaa1111');
-    expect(
-      control().textContent?.trim(),
-      'the control vouched for an id the row no longer shows',
-    ).toBe('copy');
+    expect(mark(), 'the control vouched for an id the row no longer shows').toBe('#i-copy');
   });
 
   /**
@@ -92,21 +94,18 @@ describe('the copy control', () => {
     // The swap lands first, and the reset has already run.
     props.id = 'aaaa1111-2222';
     flushSync();
-    expect(control().textContent?.trim(), 'the reset did not run on the swap').toBe('copy');
+    expect(mark(), 'the reset did not run on the swap').toBe('#i-copy');
 
     // Now the write the FIRST occupant's row issued comes back.
     gate.land?.();
     await settle();
-    expect(
-      control().textContent?.trim(),
-      'a write issued for the previous id vouched for the new one',
-    ).toBe('copy');
+    expect(mark(), 'a write issued for the previous id vouched for the new one').toBe('#i-copy');
   });
 
   /**
    * The other arm of the same guard. A refusal that lands after a swap is
    * about the occupant the row has already left, so it must no more change the
-   * control's word than a resolve would.
+   * control's mark than a resolve would.
    */
   it('ignores a refused write that settles after the occupant changed', async () => {
     const gate: { refuse: (() => void) | null } = { refuse: null };
@@ -125,10 +124,7 @@ describe('the copy control', () => {
 
     gate.refuse?.();
     await settle();
-    expect(
-      control().textContent?.trim(),
-      'a refusal issued for the previous id spoke for the new one',
-    ).toBe('copy');
+    expect(mark(), 'a refusal issued for the previous id spoke for the new one').toBe('#i-copy');
   });
 
   it('says the write was refused rather than passing as a click that worked', async () => {
@@ -137,7 +133,8 @@ describe('the copy control', () => {
 
     control().click();
     await settle();
-    expect(control().textContent?.trim()).toBe('copy failed');
+    expect(mark(), 'a refused write drew the same mark as a done one').toBe('#i-x');
+    expect(control().getAttribute('aria-label')).toContain('refused');
   });
 
   it('names the missing clipboard when the page has none', () => {
@@ -146,7 +143,7 @@ describe('the copy control', () => {
 
     control().click();
     flushSync();
-    expect(control().textContent?.trim()).toBe('copy needs https');
+    expect(mark(), 'a page with no clipboard drew the same mark as a done write').toBe('#i-x');
     expect(
       control().getAttribute('aria-label'),
       'the name says nothing about the reason',

@@ -31,8 +31,8 @@ use std::sync::OnceLock;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::{LogOptions, send_logs_to_tracing};
 
 /// Everything the normalizer can fail with.
@@ -57,19 +57,6 @@ pub enum NormalizeError {
     /// A context could not be created for the loaded weights.
     #[error("could not create an inference context: {0}")]
     Context(#[from] llama_cpp_2::LlamaContextLoadError),
-
-    /// The input could not be turned into tokens. Interior nul bytes are
-    /// the only realistic cause.
-    #[error("could not tokenize the input: {0}")]
-    Tokenize(#[from] llama_cpp_2::StringToTokenError),
-
-    /// A control token reached detokenization, which asks for no bytes. That
-    /// is the only reachable cause: bytes run through an incremental decoder
-    /// so invalid UTF-8 cannot arise, and a short buffer is retried
-    /// internally. The end-of-turn guard in `normalize::lookup` is what
-    /// keeps drafted end-of-turn tokens out.
-    #[error("could not decode a generated token: {0}")]
-    Detokenize(#[from] llama_cpp_2::TokenToStringError),
 
     /// The batch would not hold the tokens offered to it.
     #[error("could not fill the decode batch: {0}")]
@@ -194,13 +181,13 @@ impl Normalizer {
         // Tokenized alone rather than sliced out of the prompt: generation
         // starts fresh, so the output's token boundaries match a standalone
         // tokenization and not an embedded one.
-        let source = self.model.str_to_token(source, AddBos::Never)?;
+        let source = self.model.vocab().tokenize(source.as_bytes(), false, true);
         lookup::generate(&self.model, &mut session, &source, opts.ngram, opts.k)
     }
 
     /// Decode the prompt and hand back everything generation needs.
     fn session(&self, prompt: &str, k: usize) -> Result<Session<'_>, NormalizeError> {
-        let tokens = self.model.str_to_token(prompt, AddBos::Never)?;
+        let tokens = self.model.vocab().tokenize(prompt.as_bytes(), false, true);
         let Plan { budget, n_ctx, batch_capacity } = plan(tokens.len(), k);
 
         let mut ctx = self.model.new_context(
@@ -217,6 +204,24 @@ impl Normalizer {
 
         let start = i32::try_from(tokens.len()).unwrap_or(i32::MAX);
         Ok(Session { ctx, batch, start, budget })
+    }
+}
+
+/// Decode one token's bytes through a decoder the whole generation reuses.
+/// The decoder must persist across tokens: a piece can end mid-character,
+/// and a fresh decoder would replace both halves.
+fn decode_piece(decoder: &mut encoding_rs::Decoder, bytes: &[u8]) -> String {
+    let mut piece = String::with_capacity(
+        decoder.max_utf8_buffer_length(bytes.len()).unwrap_or(bytes.len().saturating_mul(3)),
+    );
+    let mut rest = bytes;
+    loop {
+        let (result, read, _) = decoder.decode_to_string(rest, &mut piece, false);
+        if matches!(result, encoding_rs::CoderResult::InputEmpty) {
+            return piece;
+        }
+        piece.reserve(rest.len().saturating_mul(3).max(8));
+        rest = &rest[read..];
     }
 }
 
@@ -359,22 +364,21 @@ mod tests_against_the_model {
     /// divergence in the generation loop and nothing else. Everything
     /// `session` decides is common to both sides and therefore invisible to
     /// the comparison: `budget`, `n_ctx`, batch capacity, which prompt
-    /// position carries logits, and `AddBos::Never`.
+    /// position carries logits, and the tokenizer's `add_special = false`.
     fn greedy(n: &Normalizer, prompt: &str, k: usize) -> String {
         let mut s = n.session(prompt, k).expect("prompt decodes");
         let mut sampler = LlamaSampler::greedy();
+        let vocab = n.model.vocab();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut out = String::new();
         let mut current = sampler.sample(&s.ctx, s.batch.n_tokens() - 1);
 
         for pos in (s.start..).take(s.budget) {
-            if n.model.is_eog_token(current) {
+            if vocab.is_eog(current) {
                 break;
             }
             sampler.accept(current);
-            out.push_str(
-                &n.model.token_to_piece(current, &mut decoder, false, None).expect("detokenize"),
-            );
+            out.push_str(&decode_piece(&mut decoder, &vocab.token_to_piece(current, false, None)));
             s.batch.clear();
             s.batch.add(current, pos, &[0], true).expect("batch has room for one token");
             s.ctx.decode(&mut s.batch).expect("decode");
@@ -456,10 +460,10 @@ mod tests_against_the_model {
 
     /// Tokenizing parses special tokens, so a transcript ending in a literal
     /// end-of-turn marker puts a real EOG token where the accept loop will
-    /// draft onto it. Detokenizing a control token asks for no bytes, which
-    /// surfaces as `UnknownTokenType`, so an unguarded accept fails the whole
-    /// call. An already-clean sentence is what lands the marker on the
-    /// boundary: an edited one never drafts that far.
+    /// draft onto it. An unguarded accept decodes to no bytes, so it fails
+    /// nothing and instead runs one step past the marker into whatever the
+    /// model emits next. An already-clean sentence is what lands the marker
+    /// on the boundary: an edited one never drafts that far.
     ///
     /// The byte-identical gate does not cover this. Both paths share the
     /// input, and greedy stops on the EOG before ever detokenizing it.

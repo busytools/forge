@@ -5,14 +5,12 @@
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
   import Group from './Group.svelte';
-  import Hook from './Hook.svelte';
   import Hooks from './Hooks.svelte';
-  import Messages from './Messages.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
-  import Thinking from './Thinking.svelte';
+  import Skill from './Skill.svelte';
   import { fold, type Self, type Unit } from './units';
 
   /**
@@ -24,18 +22,17 @@
    * neither re-measures it nor closes what the reader has open.
    *
    * **The fold is not this component's.** `fold` decides what the turn's
-   * messages are - one group per run of calls, one lane per family, a card for
-   * a question, a notice for a delivery - and this draws what it is given.
+   * messages are - one group per stretch of work, a lane per family and per
+   * kind of peer traffic, a card for a question, a notice for a delivery - and
+   * this draws what it is given.
    */
   let {
     turn,
-    cwd,
     slot = null,
     compacting = false,
     carried = null,
   }: {
     turn: HeldTurn;
-    cwd: string | null;
     slot?: Self | null;
     compacting?: boolean;
     /**
@@ -51,7 +48,7 @@
     carried?: string | null;
   } = $props();
 
-  const folded = $derived(fold(turn.messages, cwd, slot, beingWritten(turn)));
+  const folded = $derived(fold(turn.messages, slot, beingWritten(turn)));
 
   /**
    * The fold's units, less the one row the pin is carrying.
@@ -119,16 +116,16 @@
   });
 
   /**
-   * The index the turn's trailing furniture starts at: the hooks chip, the
-   * report row, and a hook's own run.
+   * The index the turn's trailing furniture starts at: the hooks chip and the
+   * report row.
    *
-   * **A hook run belongs here because it is the chip's own family, and the
-   * state where that decides anything is captured.** In `compact.jsonl` a
-   * `SessionStart:compact` run's frames land between the `status: compacting`
-   * frame and the one that clears it, so a run arriving while a compaction is
-   * in flight is a shape the corpus holds - and that is the state where this
-   * set decides where the line draws. Left out, the line's place would depend
-   * on whether a hook happened to fire.
+   * **The chip belongs here, and the state where that decides anything is
+   * captured.** In `compact.jsonl` a `SessionStart:compact` run's frames land
+   * between the `status: compacting` frame and the one that clears it, so
+   * frames arriving while a compaction is in flight is a shape the corpus
+   * holds - and that is the state where this set decides where the line
+   * draws. Left out, the line's place would depend on whether a hook happened
+   * to fire.
    *
    * **Whether a Stop hook's frames also arrive after the result that settled
    * the turn is open**, and none of the above rests on it: no capture holds
@@ -138,7 +135,7 @@
     let at = units.length;
     while (at > 0) {
       const kind = units[at - 1]?.kind;
-      if (kind !== 'hooks' && kind !== 'report' && kind !== 'hook') break;
+      if (kind !== 'hooks' && kind !== 'report') break;
       at -= 1;
     }
     return at;
@@ -174,16 +171,14 @@
         {/if}
         {#if unit.kind === 'text'}
           <Prose text={unit.text} />
-        {:else if unit.kind === 'thinking'}
-          <Thinking text={unit.text} />
         {:else if unit.kind === 'group'}
-          <Group families={unit.families} status={unit.status} />
+          <Group lanes={unit.lanes} />
         {:else if unit.kind === 'question'}
           <Card asked={unit.asked} />
-        {:else if unit.kind === 'messages'}
-          <Messages lanes={unit.lanes} status={unit.status} />
         {:else if unit.kind === 'notice'}
           <Notice notice={unit.notice} />
+        {:else if unit.kind === 'skill'}
+          <Skill name={unit.name} body={unit.body} />
         {:else if unit.kind === 'hooks'}
           <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
         {:else if unit.kind === 'compaction'}
@@ -191,9 +186,8 @@
             trigger={unit.trigger}
             preTokens={unit.preTokens}
             postTokens={unit.postTokens}
+            summary={unit.summary}
           />
-        {:else if unit.kind === 'hook'}
-          <Hook run={unit.run} />
         {:else if unit.kind === 'report'}
           <Report info={unit.info} />
         {/if}

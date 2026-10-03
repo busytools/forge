@@ -203,9 +203,8 @@ pub enum Message {
     },
 
     /// Assistant-turn wall-clock + message-count summary emitted at
-    /// the end of each turn. Subtype `"turn_duration"` (#273). The
-    /// renderer composes `Claude · N.Ns` banner-side chip from
-    /// `ms`.
+    /// the end of each turn. Subtype `"turn_duration"` (#273); decoded
+    /// for wire conformance, and no renderer composes a chip from `ms`.
     TurnDuration {
         /// Total wall-clock duration of the turn in milliseconds.
         /// Wire field is `durationMs` (camelCase).

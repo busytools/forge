@@ -26,6 +26,10 @@
     {/each}
     {#if pair.typed_note !== null}
       <div class="a">
+        <!-- The typed row holds the slot the picked rows mark in - empty - so
+             its label starts in the column the picked labels do rather than a
+             step to their left. -->
+        <span class="gap"></span>
         <span class="am">you typed:</span>
         <span class="typed">{pair.typed_note}</span>
       </div>

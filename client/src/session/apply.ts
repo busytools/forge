@@ -116,7 +116,10 @@ export const HANDLERS: Record<string, Apply> = {
 
   slack_post_pending: (held, payload) => parked(held, 'slack_draft', payload['draft']),
 
-  slack_draft_expired: (held, payload) => {
+  slack_draft_resolved: (held, payload) => {
+    // The draft left the core's registry - answered in another view, expired,
+    // or its session gone. A draft is answered by its own id, so this is the
+    // only thing on the stream that clears a parked one this view never sent.
     const id = text(payload['id']);
     const heldDraft = record(record(held.pending_ask)['request'])['id'];
     if (id === null || heldDraft !== id) return held;
@@ -269,6 +272,15 @@ export const IGNORED: readonly string[] = [
   'set_mode_failed',
   'set_model_failed',
   'slash_command_error',
+  /**
+   * **The conversation this record carries is not the one the page draws.**
+   * The page's is `chat/conversation.ts`'s, fed by the live stream, so a line
+   * folded in here would reach nothing - and the record has no field of its
+   * own for one. That store draws the core's line on arrival and deliberately
+   * keeps no copy: the CLI wrote no such row, so a page attaching later has
+   * nothing to read it from.
+   */
+  'notice',
   'slack_message_appended',
   'status_snapshot',
   'worker_status_changed',

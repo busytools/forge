@@ -34,7 +34,6 @@ const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
 const run = (extra: Partial<HookRun> = {}): HookRun => ({
   name: 'SessionStart:startup',
   event: null,
-  state: 'success \u{b7} exit 0',
   failed: false,
   body: 'capture-line-1\ncapture-line-2\n',
   ...extra,
@@ -56,13 +55,24 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the hook run row', () => {
-  it('names the hook and the state it reached on the closed row', () => {
+  it("names the hook and the output's first line on the closed row", () => {
     const body = draw();
     const said = summaryWords(body);
 
-    expect(said, 'the kind, ahead of the name').toMatch(/^hook\b/);
+    // The row leads with the name: the lane above it says the kind, so a row
+    // repeating "hook" would be the second telling the lane exists to end.
+    expect(said, 'the name, and nothing ahead of it').toMatch(/^SessionStart:startup/);
     expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
-    expect(said, 'and how the run ended, without opening it').toContain('success \u{b7} exit 0');
+    expect(said, 'and the first line of what it printed, without opening it').toContain(
+      'capture-line-1',
+    );
+    expect(said, 'with only that line, the rest of the output staying in the body').not.toContain(
+      'capture-line-2',
+    );
+    expect(
+      summaryOf(draw({ body: null })),
+      'a run that printed nothing carries no tail',
+    ).not.toContain('class="ev"');
     // Once, not twice: every captured name already carries its event, so a row
     // repeating it would say `SessionStart:startup (SessionStart)`.
     expect(said, 'and the event only where the name does not say it').not.toContain(
@@ -94,7 +104,7 @@ describe('the hook run row', () => {
       // pinned together: dropping the mark's class or swapping the token is what
       // turns a failed run green.
       expect(sheet, `${what} colours the failed row's mark`).toMatch(
-        /details\.hookrun > summary \.st\.err \{[^}]*color: var\(--bad\)/,
+        /details\.leaf > summary \.st\.err \{[^}]*color: var\(--bad\)/,
       );
     }
   });
@@ -132,22 +142,27 @@ describe('the hook run row', () => {
    */
   it('wears names neither sheet already reaches', () => {
     const body = draw();
-    expect(body, "the row wears the box class the sheet's rules are written for").toContain(
-      '<details class="hookrun"',
+    // The row is a tool row: it wears the shared leaf box, so the sheet's own
+    // leaf rules (and nothing of another kind) are what draws it.
+    expect(body, 'the row wears the shared tool-row box').toContain(
+      '<details class="leaf hookrow"',
     );
     for (const [what, sheet] of sheets()) {
-      // Every class the row wears, not only the ones it leads with: `.ev` and
-      // `.nm` are the kind of short name a later rule picks up by accident.
+      // Every class the row wears, not only the ones it leads with: `.ev` is
+      // the kind of short name a later rule picks up by accident.
       for (const name of WORN) {
         // The markup is where the list is held to the row: a name misspelled
         // here would have no bare rule and no wearer, and would read as clean.
-        expect(body, `the row wears .${name}`).toContain(`class="${name}"`);
+        expect(body, `the row wears .${name}`).toMatch(new RegExp(`class="[^"]*\\b${name}\\b`));
         expect(bareRules(sheet, name), `${what} has no bare .${name} rule`).toEqual([]);
       }
+      // The control the loop above needs: the scan that reports no bare rule
+      // would also report no rule at all, so the sheet has to be seen to carry
+      // the row's own class before its silence about a bare one means anything.
       expect(
-        bareRules(sheet, 'hookrun'),
-        `${what} spells the row's own box, so its silence means something`,
-      ).not.toEqual([]);
+        sheet,
+        `${what} spells the row's own state class, so its silence means something`,
+      ).toMatch(/details\.hookrow > summary \.ev/);
     }
     expect(bareRules(SHEET, 'hooks'), 'where the name it must not take is taken').not.toEqual([]);
   });
@@ -165,7 +180,7 @@ describe('the hook run row', () => {
    *
    * **It guards every rule that can reach the row, not only the rules that name
    * the body's classes.** A clamp scoped to the row is the likelier mistake of
-   * the two - scoping a tweak to this row is the point - and `details.hookrun >
+   * the two - scoping a tweak to this row is the point - and `details.hookrow >
    * div` is the body without naming it, so the scope is the row and everything
    * that reaches it. A rule touching both scopes takes the body's tighter list.
    *
@@ -192,7 +207,7 @@ describe('the hook run row', () => {
         `${what} spells a rule reaching the body's own classes`,
       ).toBeGreaterThan(0);
       expect(
-        reaching.filter((rule) => rule.selector.includes('.hookrun')).length,
+        reaching.filter((rule) => rule.selector.includes('.hookrow')).length,
         `${what} spells the row's own rules`,
       ).toBeGreaterThan(0);
       for (const name of BODY_CLASSES) {
@@ -265,9 +280,9 @@ describe('the hook run row', () => {
    */
   it('keeps the control to what answers for the row', () => {
     for (const kept of [
-      '.hookrun',
-      'details.hookrun',
-      '.hookrun:hover',
+      '.hookrow',
+      'details.hookrow',
+      '.hookrow:hover',
       '.body',
       '.term',
       '.conv',
@@ -280,8 +295,8 @@ describe('the hook run row', () => {
     // because what it styles is not what this comparison reads.
     for (const dropped of [
       'details > div',
-      'details.hookrun > div',
-      'details.hookrun > summary',
+      'details.hookrow > div',
+      'details.hookrow > summary',
       'div',
       '.nm',
       '.ev',
@@ -350,20 +365,20 @@ describe('the hook run row', () => {
     // media query in the other compares EQUAL, and a responsive tweak to this
     // row made in one sheet alone leaves the pin green - which is the shape of
     // instrument the rest of this file exists to refuse.
-    const flat = '.hookrun { margin: 3px 0; }';
-    const stepped = '@media (min-width: 900px) { .hookrun { margin: 3px 0; } }';
+    const flat = '.hookrow { margin: 3px 0; }';
+    const stepped = '@media (min-width: 900px) { .hookrow { margin: 3px 0; } }';
     // And the other shape an at-rule has: one that ends at its semicolon owns no
     // block, and left in the walker's buffer it becomes the next rule's prelude.
-    const stated = '@import url("x.css");\n.hookrun { margin: 3px 0; }';
+    const stated = '@import url("x.css");\n.hookrow { margin: 3px 0; }';
 
     expect(rowRules(flat).map(ruleText), 'a sheet of one plain rule').toEqual([
-      '.hookrun { margin: 3px 0 }',
+      '.hookrow { margin: 3px 0 }',
     ]);
     expect(rowRules(stepped).map(ruleText), 'and the same rule inside a query').toEqual([
-      '@media (min-width: 900px) .hookrun { margin: 3px 0 }',
+      '@media (min-width: 900px) .hookrow { margin: 3px 0 }',
     ]);
     expect(rowRules(stated).map(ruleText), 'and one after a statement at-rule').toEqual([
-      '.hookrun { margin: 3px 0 }',
+      '.hookrow { margin: 3px 0 }',
     ]);
     expect(rowRules(flat), 'which are not the same rule').not.toEqual(rowRules(stepped));
   });
@@ -389,9 +404,9 @@ describe('the hook run row', () => {
         `${spelling} reaches the body's classes`,
       ).toBeGreaterThan(0);
     }
-    expect(reachesRow('details.hookrun > div'), 'a row-scoped rule reaches the row').toBe(true);
+    expect(reachesRow('details.hookrow > div'), 'a row-scoped rule reaches the row').toBe(true);
     expect(
-      reachesBody('details.hookrun > div'),
+      reachesBody('details.hookrow > div'),
       "and names none of the body's classes, which is why the scope has to be the row",
     ).toEqual([]);
   });
@@ -399,11 +414,11 @@ describe('the hook run row', () => {
   it('draws the row in the book, open and closed', () => {
     // The page is the visual truth for both states, and a closed-only drawing is
     // how a surface ends up described in one of them.
-    const rows = PAGE.match(/<details class="hookrun"[\s\S]*?<\/details>/g) ?? [];
+    const rows = PAGE.match(/<details class="leaf hookrow"[\s\S]*?<\/details>/g) ?? [];
     expect(rows.length, 'the drawing carries the row').toBeGreaterThan(0);
     expect(
       rows.filter((row) => !row.includes('class="body"')),
-      'with a closed one, carrying its state and no body',
+      'with a closed one, carrying its first line and no body',
     ).not.toEqual([]);
     expect(
       rows.filter((row) => row.includes('open')),
@@ -425,14 +440,14 @@ function sheets(): Array<[string, string]> {
  * is not among them: it is the name the row must NOT take, one letter from the
  * chip's `.hooks`, and is checked as the collision rather than as a wearer.
  */
-const WORN = ['hk', 'nm', 'ev'];
+const WORN = ['hookrow', 'ev'];
 
 /**
  * The class the row's own box wears, and the classes its body draws through.
  * The two body classes are shared with other rows, so a rule written for one of
  * them reaches this one.
  */
-const ROW_CLASS = 'hookrun';
+const ROW_CLASS = 'hookrow';
 const BODY_CLASSES = ['body', 'term'];
 
 /**
@@ -455,21 +470,7 @@ const BODY_PROPERTIES = [
   'white-space',
 ];
 
-const ROW_PROPERTIES = [
-  'align-items',
-  'color',
-  'cursor',
-  'display',
-  'flex',
-  'font-family',
-  'font-size',
-  'font-weight',
-  'gap',
-  'list-style',
-  'margin',
-  'margin-left',
-  'white-space',
-];
+const ROW_PROPERTIES = ['color'];
 
 /**
  * Every class token a selector names, wherever inside the selector it sits.
@@ -614,7 +615,7 @@ function bodyStyle(sheet: string): Record<string, string> {
     { pretendToBeVisual: true },
   );
   const win = dom.window;
-  const row = win.document.querySelector('.hookrun');
+  const row = win.document.querySelector('.hookrow');
   if (row === null) throw new Error('the row did not render for the sheet to reach');
   const out: Record<string, string> = {};
   for (const element of row.querySelectorAll('[class]')) {

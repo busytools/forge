@@ -186,7 +186,6 @@ export interface McpView {
  */
 export interface ConversationProps {
   /** The directory the seat's calls are named against. */
-  cwd: string;
   /** Whether a seat is behind this page at all. */
   waking: boolean;
   /** Why it is not running, when the roster says. */
@@ -382,29 +381,13 @@ export function compactionFigure(count: number): string | null {
  */
 export type CopyOutcome = 'ready' | 'copied' | 'failed' | 'no-clipboard';
 
-/** What the copy control says on the row. */
-export function copyLabel(outcome: CopyOutcome): string {
-  switch (outcome) {
-    case 'ready':
-      return 'copy';
-    case 'copied':
-      return 'copied';
-    case 'failed':
-      return 'copy failed';
-    case 'no-clipboard':
-      return 'copy needs https';
-  }
-}
-
 /**
  * What the control is for: its accessible name, and the reason a state other
- * than `copy` is showing.
+ * than the ready one is showing.
  *
- * The name is spelt out rather than left as the visible word, so a reader who
- * cannot see the id beside it still knows what the click does - and it OPENS
- * with the label it draws, because a name that stopped matching the visible
- * text would leave someone speaking the label they can see with nothing to
- * match.
+ * The name is spelt out rather than left as the mark, so a reader who cannot
+ * see the glyph beside the id still knows what the click does and, when it
+ * changed, why.
  */
 export function copyReason(outcome: CopyOutcome): string {
   switch (outcome) {

@@ -1,7 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
+  import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
+  import { slotOf } from '../protocol';
+  import { variantOf } from '../session/apply';
+  import { report } from '../socket';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
@@ -24,6 +28,7 @@
   import {
     blocked,
     composerState,
+    draftEndingLine,
     joined,
     noticeLine,
     pendingAsk,
@@ -71,9 +76,22 @@
   // svelte-ignore state_referenced_locally
   let box = $state.raw<Box>(boxes.of(boxKey(slot)));
   $effect.pre(() => {
-    const next = boxes.of(boxKey(slot));
+    const key = boxKey(slot);
+    const next = boxes.of(key);
     if (untrack(() => box) !== next) box = next;
   });
+
+  /**
+   * Whether the record in hand is the shown seat's.
+   *
+   * The page keeps this composer mounted while it hands it one seat's record
+   * after another, and between a switch and the new seat's first record what
+   * it hands over is the seat being LEFT's - seconds, on a seat being read for
+   * the first time. Everything a record WRITES is gated on this, because a
+   * record's writes are the seat's own: a landing the left seat's record still
+   * carries must not land in the box that just moved.
+   */
+  const owns = $derived(boxKey(record.slot) === boxKey(slot));
 
   /** The clock the beat's window is read against, which the close below moves. */
   let clock = $state(Date.now());
@@ -87,7 +105,9 @@
   const mac = navigator.platform.toLowerCase().includes('mac');
 
   const composer = $derived(composerState(record));
-  const ask = $derived(pendingAsk(record));
+  // A prompt only the shown seat's record may put up: answering the seat being
+  // left's prompt through this composer would dispatch it as the seat moved to.
+  const ask = $derived(owns ? pendingAsk(record) : null);
   /** Whether the landed beat's window is still open. */
   const beat = $derived(box.beatAt !== null && clock - box.beatAt < BEAT_MS);
 
@@ -113,12 +133,10 @@
    * The prompt the dock draws, which is the one the seat is parked on - unless
    * this composer has answered a held draft.
    *
-   * A question's answer clears the ask with an update of its own. A draft's does
-   * not: the core drops it from its registry and says nothing, and a poll's
-   * answer takes only the slices no update carries, which an ask is not. So the
-   * draft this composer answered would stand until the seat was read whole.
-   * Suppressing it is the move the terminal makes by popping its own prompt, and
-   * a refusal brings it back with the reason.
+   * A question's answer clears the ask with an update of its own. A draft's
+   * leaves the core's registry, and the stand-down that says so is a round trip
+   * away - so the mark stands the dock down from the click until the update
+   * lands, and a refusal brings it back with the reason.
    */
   const dockAsk = $derived(
     ask !== null &&
@@ -145,8 +163,62 @@
 
   const blocker = $derived(blocked(seat, composer, box.sent));
   const filled = $derived(box.draft.trim() !== '');
-  const notice = $derived(noticeLine(composer.notice, box.sawTake));
+
+  /**
+   * Whether this seat has a turn to stop.
+   *
+   * Read from the header rather than from anything this composer sent, because
+   * a turn started anywhere - another page, a cron, a delivery - is the same
+   * turn to stop, and the core is the one that knows it is running.
+   */
+  const running = $derived(record.header.turn_in_flight);
+  // The engine's notice, or what became of a draft that left this box - the
+  // dock's own stand-down, said in the row the dock leaves behind.
+  const notice = $derived(owns ? (noticeLine(composer.notice, box.sawTake) ?? box.ended) : null);
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
+
+  /**
+   * The draft this box is drawing, remembered so a stand-down can tell THIS
+   * draft from the next one: the record has already lost `pending_ask` by the
+   * time the update is read.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'slack_draft') {
+      box.shownDraft = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
+   * A held draft leaving the core, which no record field carries.
+   *
+   * Applying the update clears `pending_ask`; the ENDING rides the update
+   * alone, and it is what tells this reader what happened to a dock they did
+   * not answer. The update is read here for the same reason the conversation
+   * reads its own frames: nothing else draws it.
+   *
+   * It is recorded into the box for the update's OWN seat rather than the one
+   * on screen: a reader looking elsewhere still meets the line when they come
+   * back, and a seat nothing has drawn has no dock whose loss needs saying.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'slack_draft_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownDraft) return;
+      // The reader's own answer, taken or not: the refusal that follows says
+      // so when it is not, and the ending would only repeat the click.
+      if (held.answered === id) return;
+      held.ended = draftEndingLine(payload['ending']);
+    });
+  });
 
   /**
    * The lists a draft is matched against, pulled when a list is opened rather
@@ -181,9 +253,11 @@
     if (field !== null) field.focus();
   });
 
-  // Holding the seat's take is having seen it, and the flag never clears.
+  // Holding the seat's take is having seen it, and the flag never clears -
+  // and only the seat's own record arms it: another seat's take, still in the
+  // record in hand between two seats, is not this box having watched anything.
   $effect(() => {
-    if (composer.take !== null) box.sawTake = true;
+    if (owns && composer.take !== null) box.sawTake = true;
   });
 
   /** What the dock's own box belongs to, which is what its words go with. */
@@ -212,6 +286,7 @@
    * this effect writes cannot re-run it.
    */
   $effect(() => {
+    if (!owns) return;
     const held = composer.notice;
     if (held === null) {
       box.landed = null;
@@ -267,10 +342,18 @@
     if (!record.header.turn_in_flight) box.sent = null;
   });
 
-  // A turn in flight is the send landing: the words are the core's now, so the
-  // box owes the reader nothing back.
+  // A turn going in flight is the core taking the send: the mark that says it
+  // has not come off, and the words stay on screen until the conversation
+  // carries its own copy of them (the column clears the echo on those).
+  //
+  // Gated on `owns`, like the landing above it: between a switch and the new
+  // seat's first record the record in hand is the seat being left's, and its
+  // turn says nothing about a send on the seat being shown. `take` itself
+  // refuses a send posted into a turn already running, so this fires only for
+  // a send the turn it names actually started.
   $effect(() => {
-    if (record.header.turn_in_flight) box.sending = null;
+    if (!owns) return;
+    if (record.header.turn_in_flight) echoes.take(boxKey(slot));
   });
 
   /**
@@ -285,6 +368,7 @@
     if (box.answered === null) return;
     if (current !== null && askToolId(current) === box.answered) return;
     box.answered = null;
+    box.answeredKey = null;
     box.refusal = null;
   });
 
@@ -299,19 +383,45 @@
    */
   $effect(() => {
     return connection.onMessage((message) => {
-      if (message.kind !== 'error' || message.what !== 'dispatch') return;
+      if (message.kind !== 'error') return;
+      // The answer to a draft the core no longer holds, refused by its own
+      // operation's name: the dock is gone by then, so the reason is drawn
+      // where it stood. A generic `dispatch` refusal cannot say which command
+      // it was about, and would be read as the dock's own.
+      if (message.what === 'respond_slack_post') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what !== 'dispatch') return;
       if (box.answered !== null) {
         box.refusal = message.why;
         return;
       }
-      if (box.sending === null) return;
-      // The words come back with the reason: a send the core refused took the
-      // box's text with it, and losing it is the defect this guards.
-      box.draft = box.sending;
-      box.sending = null;
-      box.bounced = message.why;
+      // The words stay where they are and the reason is named beside them: a
+      // refusal that put the text back in the box landed it over whatever the
+      // reader had typed since. The seat to name is the one waiting, which is
+      // the only thing the error's own shape can be read against.
+      for (const key of echoes.outstanding()) echoes.refuse(key, message.why);
     });
   });
+
+  /**
+   * Stop the turn this seat is running, which the terminal binds to Escape.
+   *
+   * Fire-and-forget like a send: the turn ending is what says the stop landed,
+   * and it arrives as the header's own state going quiet rather than as a
+   * reply. The draft is left alone, since the reader may be steering with it.
+   */
+  function stop(): void {
+    try {
+      void connection.dispatch({ cancel: { key: slot } });
+    } catch (error) {
+      // A closed socket has nothing to stop, and the control goes with the
+      // turn that would have drawn it - but the click did nothing and that is
+      // reported rather than swallowed.
+      report('the stop was not sent', error);
+    }
+  }
 
   /** Send the draft, and remember the command when the draft was one. */
   function send(): void {
@@ -332,8 +442,10 @@
     }
     const [first = ''] = text.split(/\s+/);
     if (first.startsWith('/')) box.sent = first;
-    box.sending = text;
-    box.bounced = null;
+    // What the seat was doing when the words left: a send that starts a turn is
+    // taken by it, one sent into a turn already running is not (it is settled by
+    // the conversation carrying the words, or by a refusal).
+    echoes.post(boxKey(slot), text, running);
     box.draft = '';
   }
 
@@ -383,7 +495,6 @@
   /** The reader's own typing is what dismisses a notice row. */
   function oninput(): void {
     box.dismissed = notice?.text ?? null;
-    box.bounced = null;
   }
 
   /** What the bound key asks for, which is the terminal's own three. */
@@ -477,6 +588,7 @@
    */
   function remember(toolId: string | null): void {
     box.answered = toolId;
+    box.answeredKey = ownKeyOf(ask);
     box.refusal = null;
   }
 
@@ -539,6 +651,7 @@
     {#key ownKeyOf(dockAsk)}
       <Dock
         ask={dockAsk}
+        ownKey={ownKeyOf(dockAsk)}
         {slot}
         {connection}
         depth={seat.pendingDepth}
@@ -549,6 +662,9 @@
         land={dockLanded}
         onanswer={remember}
         onabandon={abandon}
+        answered={box.answeredKey !== null &&
+          box.answeredKey === ownKeyOf(dockAsk) &&
+          box.refusal === null}
       />
     {/key}
   </div>
@@ -569,8 +685,6 @@
     >
       {#if composer.take !== null}
         <Dictation take={composer.take} {slot} {connection} />
-      {:else if box.bounced !== null}
-        <div class="notice bad">{box.bounced}</div>
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
@@ -609,6 +723,11 @@
             onclick={mic}
           >
             <Icon name="mic" />
+          </button>
+        {/if}
+        {#if running}
+          <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+            <Icon name="stop" />
           </button>
         {/if}
         {#if filled}

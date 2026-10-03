@@ -2,33 +2,31 @@
 
 use super::{
     parse, push_system_info, push_system_message, push_user_message, require_active_session,
-    require_connection, set_command_pending,
+    set_command_pending,
 };
 use crate::app::App;
-use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use forge_workspace::SessionUpdate;
 
 /// One command's handler.
 type Handler = fn(&mut App, &[&str]) -> bool;
 
-/// The commands the terminal handles itself: the name as it is typed, and
-/// the handler for it. A name missing here falls to the unknown-command
-/// fallback, so this list and
-/// `forge_server::commands::FORGE_COMMANDS` are the same set - the table
-/// is what both views offer, and a name it carries that nothing here answers
-/// would be advertised by both dropdowns and refused when typed.
+/// The commands this view answers itself: the name as it is typed, and the
+/// handler for it, all of them terminal-side - an overlay, a picker, the
+/// launchpad. Everything else a composer can type is either the CLI's or the
+/// core's, and neither is decided here.
+///
+/// A name missing here falls to the unknown-command fallback, so this list
+/// and `forge_server::commands::FORGE_COMMANDS` cover the same set between
+/// them: the table is what both views offer, and a name it carries that
+/// nothing dispatches would be advertised by both dropdowns and refused
+/// when typed.
 const HANDLERS: &[(&str, Handler)] = &[
     ("/compact", handle_compact_submit),
     ("/dictate", handle_dictate_submit),
     ("/diff", handle_diff_submit),
-    ("/effort", handle_effort_submit),
     ("/extensions", handle_extensions_submit),
     ("/gateway", handle_gateway_submit),
     ("/launchpad", handle_launchpad_submit),
-    ("/mode", handle_mode_submit),
-    ("/model", handle_model_submit),
-    ("/new", handle_new_session_submit),
-    ("/resume", handle_resume_submit),
     ("/spinner", handle_spinner_submit),
     ("/usage", handle_usage_submit),
 ];
@@ -63,10 +61,63 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             _ => {}
         }
     }
+    // A command the core answers is the core's wherever it is typed: send
+    // the words as a prompt and let the one interception run them, which is
+    // the same path a client's send takes.
+    if forge_workspace::prompt::is_forge_prompt_name(parsed.name) {
+        // Bare `/model` is the one place this view answers first, because
+        // the answer is a picker: which model to run is the core's, but
+        // offering the rows is presentation. A session that advertises no
+        // models opens nothing and the core answers instead.
+        if parsed.name == "/model" && parsed.args.is_empty() && crate::app::model_picker::open(app)
+        {
+            return true;
+        }
+        return forward_to_core(app, text);
+    }
     match HANDLERS.iter().find(|(name, _)| *name == parsed.name) {
         Some((_, handler)) => handler(app, &parsed.args),
         None => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// Send one of forge's own commands to the core, drawing the words the way
+/// this view draws its own submits.
+///
+/// The core acts on them, so nothing here decides what they do - which is
+/// what keeps the terminal and a client on one path.
+fn forward_to_core(app: &mut App, text: &str) -> bool {
+    push_user_message(app, text);
+    // Only the respawning commands block the input, and only while the
+    // replacement is on its way: every other one answers here and now, so a
+    // row set for it would never be cleared.
+    if let Some(invocation) = forge_workspace::prompt::forge_invocation(text)
+        && let forge_workspace::prompt::Invocation::Command(command) = invocation
+        && command.respawns()
+    {
+        set_command_pending(app, &format!("Running {text}..."), None);
+    }
+    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::Prompt {
+        key,
+        text: text.to_owned(),
+        attachments: Vec::new(),
+    }) {
+        if let Some(key) = app.active_session_key.clone() {
+            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+                key,
+                message: format!("Failed to run {text}: {err}"),
+            });
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_COMMAND,
+                event_name = "slash_error_without_session",
+                message = "a forge command failed with no session to report it against",
+                outcome = "skipped",
+                error_message = %err,
+            );
+        }
+    }
+    true
 }
 
 /// Open the read-only `/gateway` view: every org the gateway holds,
@@ -211,171 +262,13 @@ fn handle_extensions_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
-    if args.is_empty() {
-        let label = app.mode().map_or_else(
-            || "no active mode".to_owned(),
-            |state| {
-                if state.current_mode_name.is_empty() {
-                    state.current_mode_id.clone()
-                } else {
-                    format!("{} ({})", state.current_mode_name, state.current_mode_id)
-                }
-            },
-        );
-        push_system_info(app, format!("Mode: {label}"));
-        return true;
-    }
-    let [requested_mode_arg] = args else {
-        push_system_info(app, "Usage: /mode [id]");
-        return true;
-    };
-    let requested_mode = requested_mode_arg.trim();
-    if requested_mode.is_empty() {
-        push_system_info(app, "Usage: /mode [id]");
-        return true;
-    }
-
-    let Some(_sid) = require_active_session(
-        app,
-        "Cannot switch mode: not connected yet.",
-        "Cannot switch mode: no active session.",
-    ) else {
-        return true;
-    };
-
-    if let Some(mode) = app.mode()
-        && !mode.available_modes.iter().any(|m| m.id == requested_mode)
-    {
-        push_system_message(app, format!("Unknown mode: {requested_mode}"));
-        return true;
-    }
-    let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(requested_mode)
-    else {
-        push_system_message(app, format!("Unknown mode: {requested_mode}"));
-        return true;
-    };
-
-    // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
-    // so the footer chip refreshes without waiting for the worker
-    // round-trip. The apply is synchronous, so no `CommandPending`
-    // state is needed - the UI never sees a stale pending phase.
-    apply_optimistic_mode_change(app, requested_mode);
-
-    let session_key = app.active_session_key.clone();
-    if let Err(e) =
-        app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
-    {
-        // The command never left, so no SetModeFailed can arrive;
-        // undo the optimistic apply here.
-        if app.rollback_pending_mode() {
-            app.invalidate_layout(crate::app::state::LayoutInvalidation::Global);
-        }
-        if let Some(session_key) = session_key {
-            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: format!("Failed to run /mode: {e}"),
-            });
-        }
-    }
-    true
-}
-
-fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
-    use forge_workspace::PermissionMode;
-    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
-
-    let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
-    // Rapid submits overlap: park only the FIRST pre-apply state, so a
-    // rejection of any in-flight request restores the true original and
-    // a refusal for a superseded request cannot consume a newer one.
-    let rollback = if app.pending_mode_rollback().is_none() {
-        Some(crate::app::session::ModeRollback {
-            mode_state: app.mode().cloned(),
-            turn_mode: app.with_turn_state(|ts| ts.mode),
-            supported_mode_ids: app.with_turn_state(|ts| ts.supported_mode_ids.clone()),
-        })
-    } else {
-        None
-    };
-    let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
-    let supports_auto_mode =
-        app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
-    let unavailable_modes = app.with_turn_state(|ts| ts.runtime_unavailable_mode_ids.clone());
-    let bypass_offered = crate::app::events::bypass_mode_offered(app);
-    let supported = supported_mode_ids_filtered(
-        supports_auto_mode,
-        bypass_offered,
-        Some(parsed),
-        &unavailable_modes,
-    );
-    let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
-
-    let current_mode_update = crate::agent::model::CurrentModeUpdate::new(parsed.as_wire());
-    crate::app::events::apply_current_mode_update(app, &current_mode_update);
-
-    let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
-    let model_mode_state = wire_mode_state;
-    crate::app::events::apply_mode_state_update(app, model_mode_state);
-    if let Some(rollback) = rollback {
-        app.set_pending_mode_rollback(Some(rollback));
-    }
-}
-
-fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
-    if args.is_empty() {
-        if crate::app::model_picker::open(app) {
-            return true;
-        }
-        let label = app.current_model().map_or_else(
-            || "no active model".to_owned(),
-            |model| {
-                let display = if model.display_name_long.is_empty() {
-                    model.resolved_id.clone()
-                } else {
-                    model.display_name_long.clone()
-                };
-                if model.resolved_id.is_empty() || display == model.resolved_id {
-                    display
-                } else {
-                    format!("{display} ({})", model.resolved_id)
-                }
-            },
-        );
-        push_system_info(app, format!("Model: {label}"));
-        return true;
-    }
-    let [model_name_arg] = args else {
-        push_system_info(app, "Usage: /model [id]");
-        return true;
-    };
-    let model_name = model_name_arg.trim();
-    if model_name.is_empty() {
-        push_system_info(app, "Usage: /model [id]");
-        return true;
-    }
-
-    let Some(_sid) = require_active_session(
-        app,
-        "Cannot switch model: not connected yet.",
-        "Cannot switch model: no active session.",
-    ) else {
-        return true;
-    };
-
-    let Some(session_key) = app.active_session_key.clone() else {
-        return true;
-    };
-    switch_model(app, session_key, model_name);
-    true
-}
-
 /// Switch the session `session_key` to `model_name`: optimistic UI apply
-/// plus the `SetModel` dispatch. Shared by the `/model <id>` submit path
-/// and the `/model` picker's Enter; both validate the session before
-/// calling and hand the key down. A no-op with a system notice when the
-/// session advertises models and `model_name` is not one of them; the
-/// picker's rows come from that same list, so it always passes.
+/// plus the `SetModel` dispatch. The `/model` picker's Enter calls this;
+/// the typed form goes to the core, which dispatches the same command.
+///
+/// A no-op with a system notice when the session advertises models and
+/// `model_name` is not one of them; the picker's rows come from that same
+/// list, so it always passes.
 pub(crate) fn switch_model(
     app: &mut App,
     session_key: forge_workspace::SessionSlot,
@@ -457,119 +350,6 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     if let Some(rollback) = rollback {
         app.set_pending_model_rollback(Some(rollback));
     }
-}
-
-/// `/effort` no-arg → show current effort level.
-/// `/effort <level>` → persist the level into ~/.claude/settings.json
-/// so the next session launch picks it up (mirrors today's overlay
-/// path). There's no live SDK command for effort; the change
-/// surfaces on the next session restart.
-fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
-    use crate::agent::model::EffortLevel;
-
-    if args.is_empty() {
-        let level = app.config.thinking_effort_effective();
-        push_system_info(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
-        return true;
-    }
-    let [requested_arg] = args else {
-        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
-        return true;
-    };
-    let requested = requested_arg.trim();
-    if requested.is_empty() {
-        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
-        return true;
-    }
-    let Some(level) = EffortLevel::from_stored(requested) else {
-        push_system_message(app, format!("Unknown effort level: {requested}"));
-        return true;
-    };
-
-    let Some(path) = app.config.settings_path.clone() else {
-        push_system_message(app, "Effort: settings path is unavailable");
-        return true;
-    };
-    let mut next_document = app.config.committed_settings_document.clone();
-    crate::app::config::store::set_thinking_effort_level(&mut next_document, level);
-    match crate::app::config::store::save(&path, &next_document) {
-        Ok(()) => {
-            app.config.committed_settings_document = next_document;
-            push_system_info(app, format!("Effort: {} (takes effect next session)", level.label()));
-        }
-        Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
-    }
-    true
-}
-
-fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /new");
-        return true;
-    }
-
-    push_user_message(app, "/new");
-
-    if !require_connection(app, "Cannot create new session: not connected yet.") {
-        return true;
-    }
-
-    set_command_pending(app, "Starting new session...", None);
-
-    if let Err(e) = start_new_session(app, SessionStartReason::NewSession) {
-        if let Some(session_key) = app.active_session_key.clone() {
-            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: format!("Failed to run /new: {e}"),
-            });
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_COMMAND,
-                event_name = "slash_error_without_session",
-                message = "start_new_session failed with no session to report it against",
-                outcome = "skipped",
-                error_message = %e,
-            );
-        }
-    }
-    true
-}
-
-fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
-    let [session_id_arg] = args else {
-        push_system_message(app, "Usage: /resume <session_id>");
-        return true;
-    };
-    let session_id = session_id_arg.trim();
-    if session_id.is_empty() {
-        push_system_message(app, "Usage: /resume <session_id>");
-        return true;
-    }
-
-    push_user_message(app, format!("/resume {session_id}"));
-    if !require_connection(app, "Cannot resume session: not connected yet.") {
-        return true;
-    }
-
-    set_command_pending(app, &format!("Resuming session {session_id}..."), None);
-    let session_id = session_id.to_owned();
-    if let Err(e) = begin_resume_session(app, session_id) {
-        if let Some(session_key) = app.active_session_key.clone() {
-            let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: format!("Failed to run /resume: {e}"),
-            });
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_COMMAND,
-                event_name = "slash_error_without_session",
-                message = "begin_resume_session failed with no session to report it against",
-                outcome = "skipped",
-                error_message = %e,
-            );
-        }
-    }
-    true
 }
 
 /// `/spinner` - no arg opens the style picker; `/spinner <name>` sets the

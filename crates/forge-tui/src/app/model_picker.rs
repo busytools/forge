@@ -6,9 +6,9 @@
 //! highlighted model; `esc` closes without switching. Rows are
 //! snapshotted at open together with the session they came from; a
 //! commit whose session is no longer active is refused (the rows are
-//! stale), and a session reporting no models never opens the picker
-//! (the `/model` submit falls back to the current-model
-//! info line).
+//! stale), and a session reporting no models never opens the picker -
+//! the submit reaches the core, which answers with the command's usage
+//! line.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_workspace::SessionSlot;
@@ -199,27 +199,6 @@ mod tests {
         let picker = app.model_picker.expect("the picker opens");
         assert_eq!(picker.rows.len(), 3, "the pseudo default row is not pickable");
         assert!(picker.rows.iter().all(|row| row.id != "default"));
-    }
-
-    #[test]
-    fn model_submit_falls_back_to_the_info_line_when_no_models() {
-        let mut app = App::test_default();
-
-        let handled = crate::app::slash::try_handle_submit(&mut app, "/model");
-
-        assert!(handled);
-        assert!(app.model_picker.is_none(), "no picker without models");
-        let last =
-            app.messages().expect("active session").last().expect("the info line still shows");
-        let text: String = last
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                crate::app::MessageBlock::Text(t) => Some(t.text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(text.contains("Model:"), "the info line names the model, got: {text}");
     }
 
     #[test]

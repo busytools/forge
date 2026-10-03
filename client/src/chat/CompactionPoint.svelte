@@ -1,6 +1,7 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
   import { grouped, tokens } from './numbers';
+  import Prose from './Prose.svelte';
 
   /**
    * The compaction point: where the conversation was cut and the transcript
@@ -17,19 +18,30 @@
    * did not survive the wire at all keeps the hairline and drops the handle
    * rather than opening onto nothing, and one that kept some of its facts opens
    * onto those alone.
+   *
+   * **The continuation prompt the CLI sends after a cut opens under the
+   * facts**, so the compaction stays readable - the summary is what the model
+   * was handed, and it is the one account of what was dropped.
    */
   let {
     trigger,
     preTokens,
     postTokens,
+    summary,
   }: {
     trigger: string | null;
     preTokens: number | null;
     postTokens: number | null;
+    summary: string | null;
   } = $props();
 
   /** Whether anything sits behind the row, which is what the handle promises. */
-  const opens = $derived(trigger !== null || preTokens !== null || postTokens !== null);
+  const opens = $derived(
+    trigger !== null || preTokens !== null || postTokens !== null || summary !== null,
+  );
+
+  /** Whether the frame carried any of the three facts the first line draws. */
+  const hasFacts = $derived(trigger !== null || preTokens !== null || postTokens !== null);
 </script>
 
 <details class="cpoint">
@@ -42,11 +54,16 @@
   </summary>
   {#if opens}
     <div class="cpbody">
-      {#if trigger !== null}trigger <b>{trigger}</b
-        >{#if preTokens === null && postTokens !== null},{/if}{/if}
-      {#if trigger !== null && preTokens !== null}{' \u{b7} '}{/if}
-      {#if preTokens !== null}<b>{grouped(preTokens)}</b> tokens read before the cut{#if postTokens !== null},{/if}{/if}
-      {#if postTokens !== null}<b>{grouped(postTokens)}</b> carried after it{/if}
+      {#if hasFacts}
+        {#if trigger !== null}trigger <b>{trigger}</b
+          >{#if preTokens === null && postTokens !== null},{/if}{/if}
+        {#if trigger !== null && preTokens !== null}{' \u{b7} '}{/if}
+        {#if preTokens !== null}<b>{grouped(preTokens)}</b> tokens read before the cut{#if postTokens !== null},{/if}{/if}
+        {#if postTokens !== null}<b>{grouped(postTokens)}</b> carried after it{/if}
+      {/if}
+      {#if summary !== null}
+        <div class="sum"><Prose text={summary} /></div>
+      {/if}
     </div>
   {/if}
 </details>

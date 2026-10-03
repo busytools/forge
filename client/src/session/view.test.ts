@@ -7,7 +7,6 @@ import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
   compactionFigure,
-  copyLabel,
   copyReason,
   fleetCount,
   gitSection,
@@ -167,24 +166,15 @@ describe('the compaction figure', () => {
 /**
  * The copy control's two failure states, which must not read alike: a page
  * with no clipboard is the page's origin to fix, and a refused write is a
- * permission, so a label that said the same thing for both would send a reader
+ * permission, so a name that said the same thing for both would send a reader
  * after the wrong one.
  */
 describe('the copy control', () => {
-  it('says what the click did, and which of the two failures stopped it', () => {
-    expect(copyLabel('ready')).toBe('copy');
-    expect(copyLabel('copied')).toBe('copied');
-    expect(copyLabel('failed')).toBe('copy failed');
-    expect(copyLabel('no-clipboard')).toBe('copy needs https');
+  it('names the two failures apart, and says what the click does', () => {
     expect(copyReason('failed'), 'the two failures read alike').not.toBe(
       copyReason('no-clipboard'),
     );
     expect(copyReason('ready')).toContain('session id');
-    // A name that stopped matching the label it draws would leave someone
-    // speaking the word they can see with nothing to match.
-    for (const outcome of ['ready', 'copied', 'failed', 'no-clipboard'] as const) {
-      expect(copyReason(outcome), `${outcome}'s name lost its label`).toContain(copyLabel(outcome));
-    }
   });
 });
 

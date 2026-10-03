@@ -5,6 +5,7 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
+  import Prose from './Prose.svelte';
   import { searchHits } from './text';
 
   /**
@@ -17,7 +18,8 @@
    * open in it.
    *
    * `open` is what the row's own kind decides - a mutation's diff is drawn
-   * without being asked - and the reader's own toggling takes it from there.
+   * without being asked, while it is small enough to draw - and the reader's
+   * own toggling takes it from there.
    */
   let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
 
@@ -25,9 +27,10 @@
    * Whether the row is open, held HERE rather than drawn from the prop.
    *
    * The prop says where the row starts - a mutation's diff is open without
-   * being asked - and the element owns the state from then on: a row is
-   * re-rendered whenever the turn is, and an `open` attribute written from a
-   * prop on every update closes a row the reader has just opened.
+   * being asked, while it is small enough to draw - and the element owns the
+   * state from then on: a row is re-rendered whenever the turn is, and an
+   * `open` attribute written from a prop on every update closes a row the
+   * reader has just opened.
    */
   let opened = $state(untrack(() => open));
 
@@ -46,6 +49,9 @@
     return piece.kind === 'text' ? languageFor(call) : null;
   }
 
+  /** A piece the patch box does not draw: a run of text, or a picture. */
+  type RunPiece = Exclude<CallBody, { kind: 'diff' } | { kind: 'hunk' }>;
+
   /**
    * Which box a backgrounded call's notice goes at the end of: the last one
    * the call's result drew, which is where the drawing puts it.
@@ -54,7 +60,70 @@
    * image - the notice is drawn in a box of its own there, because a line with
    * nowhere to sit is a line dropped.
    */
-  const tail = $derived(call.body.map((piece) => piece.kind).lastIndexOf('text'));
+  const rest = $derived(
+    call.body.filter((piece) => piece.kind !== 'diff' && piece.kind !== 'hunk'),
+  );
+
+  /**
+   * The diff and hunk pieces, which draw inside ONE box.
+   *
+   * **Several hunks are several parts of one change**, and a box each made them
+   * read as unrelated cards: two filled headers with nothing between them, on a
+   * row whose title already names the file both of them are in. One box, and a
+   * hairline carrying each hunk's range is the whole of what separates them.
+   */
+  const patches = $derived(
+    call.body.filter((piece) => piece.kind === 'diff' || piece.kind === 'hunk'),
+  );
+  const tail = $derived(rest.map((piece) => piece.kind).lastIndexOf('text'));
+
+  /**
+   * Whether the change only adds, which is what a file the call created is.
+   *
+   * **Then there is no old side, and no old-number column to draw**: a fixed
+   * column of blank numbers is the width of a gap on every line of a new file.
+   * Read across every part of the change, not per hunk: a file is new or it is
+   * not, and one of its hunks having an old side is what says it is not.
+   */
+  const added = $derived(
+    patches.length > 0 &&
+      patches.every((piece) =>
+        piece.kind === 'hunk' ? piece.lines.every((line) => line.old === null) : piece.old === '',
+      ),
+  );
+
+  /**
+   * Whether the change is the call's own two sides, which have no position.
+   *
+   * A hunk the CLI wrote carries line numbers, and the columns for them; the
+   * two sides an input carries have none, and two empty columns are the width
+   * of a gap on every line of it - so the columns go with the numbers.
+   */
+  const bare = $derived(patches.length > 0 && patches.every((piece) => piece.kind === 'diff'));
+
+  /**
+   * What an image result draws under its picture: every piece the picture is
+   * not.
+   *
+   * The `<img>` above IS the drawing of the result's own image block, so that
+   * piece does not draw again; the rest - the path a screenshot was saved to,
+   * the code that produced it - reached the page nowhere while the picture drew
+   * from a branch of its own.
+   */
+  const aside = $derived(rest.filter((piece) => piece.kind !== 'image'));
+
+  /**
+   * The size of a mutation's change, as the one line under its diff, or `null`
+   * for a call whose row draws no diff at all.
+   *
+   * Built here rather than in the markup: the line is one run of figures, and
+   * the marks that follow it are the only parts that are elements.
+   */
+  const size = $derived(
+    call.mutation === null || call.mutation.hunks === 0
+      ? null
+      : `${call.mutation.hunks} ${call.mutation.hunks === 1 ? 'hunk' : 'hunks'} \u{b7} +${call.mutation.added} \u{2212}${call.mutation.removed}`,
+  );
 </script>
 
 <details
@@ -75,7 +144,30 @@
     <Chevron />
   </summary>
 
-  {#if call.body.length > 0}
+  {#if call.image !== null}
+    <!-- The picture the call read, drawn only while the row is open: decoding
+         a screenshot is real work, and a column of closed rows must not pay
+         it. The harness's own line about it rides under as the caption, and
+         the result's text rides under that: the picture is one block of the
+         result, not the whole of it. -->
+    <div class="body">
+      {#if opened}
+        <div class="shot">
+          <img src={`data:${call.image.mime};base64,${call.image.data}`} alt={call.title} />
+          {#if call.imageNote !== null}
+            <div class="note">{call.imageNote}</div>
+          {/if}
+        </div>
+      {/if}
+      {@render pieces(aside)}
+    </div>
+  {:else if call.skill !== null}
+    <!-- A `Skill` call's own result is the CLI's launching line; the row opens
+         onto the skill itself, which is what anyone opening it wants to read. -->
+    <div class="body">
+      <Prose text={call.skill} />
+    </div>
+  {:else if call.body.length > 0}
     <div class="body">
       {#if hits !== null}
         {#each hits as hit, at (at)}
@@ -90,46 +182,92 @@
           </div>
         {/each}
       {:else}
-        {#each call.body as piece, at (at)}
-          {#if piece.kind === 'diff'}
-            <div class="dif">
-              <div class="h">{piece.path}</div>
-              {#each piece.old.split('\n') as line, n (`old-${n}`)}
-                {#if piece.old !== ''}
-                  <div class="ln d">
-                    <span class="n">{'\u{2212}'}</span><span class="l">{line}</span>
+        {#if patches.length > 0}
+          <div class="dif" class:added class:bare>
+            {#each patches as piece, at (at)}
+              {#if piece.kind === 'diff'}
+                <!-- No header naming the file: the row's own title is the path,
+                     and it is the same path, so a line here would print it
+                     twice. No number columns either: this is the call's own two
+                     sides, which have no position to number (`bare`). -->
+                {#each piece.old.split('\n') as line, n (`old-${n}`)}
+                  {#if piece.old !== ''}
+                    <div class="ln d">
+                      <span class="n">{'\u{2212}'}</span><span class="l">{line}</span>
+                    </div>
+                  {/if}
+                {/each}
+                {#each piece.new.split('\n') as line, n (`new-${n}`)}
+                  {#if piece.new !== ''}
+                    <div class="ln a">
+                      <span class="n">+</span><span class="l">{line}</span>
+                    </div>
+                  {/if}
+                {/each}
+              {:else}
+                <!-- The CLI's own hunk, which is where the change sits and what
+                     is around it. The header is the range it covers, and each
+                     line is read by the mark the wire prefixes it with. -->
+                <div class="h">{piece.header}</div>
+                {#each piece.lines as line, n (`h-${n}`)}
+                  <div
+                    class="ln"
+                    class:d={line.kind === 'del'}
+                    class:a={line.kind === 'add'}
+                    class:ctx={line.kind === 'ctx'}
+                  >
+                    <span class="on">{line.old ?? ''}</span>
+                    <span class="nn">{line.new ?? ''}</span>
+                    <span class="n"
+                      >{line.kind === 'del' ? '\u{2212}' : line.kind === 'add' ? '+' : ''}</span
+                    >
+                    <span class="l">{line.text}</span>
                   </div>
-                {/if}
-              {/each}
-              {#each piece.new.split('\n') as line, n (`new-${n}`)}
-                {#if piece.new !== ''}
-                  <div class="ln a"><span class="n">+</span><span class="l">{line}</span></div>
-                {/if}
-              {/each}
-            </div>
-          {:else if piece.kind === 'image'}
-            <div class="term">
-              image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
-            </div>
-          {:else if asCode(piece) !== null}
-            <Code path={call.title} text={piece.text} />
-          {:else}
-            <!-- The command a call ran leads its own output: a call given a
-                 description shows that as its title, and the command would
-                 otherwise appear nowhere. The break is an element rather than
-                 a character in the text, so it is a break whatever the box's
-                 whitespace rule turns out to be. -->
-            <div class="term">
-              {#if call.command !== null}<span class="pfx">$</span>
-                {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br
-                /><span class={call.note.tone ?? undefined}>{call.note.text}</span>{/if}
-            </div>
-          {/if}
-        {/each}
+                {/each}
+              {/if}
+            {/each}
+          </div>
+        {/if}
+        {@render pieces(rest)}
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
+        {/if}
+        {#if size !== null}
+          <!-- The size always, then only the marks that are true: a reader acts
+               on "every match" and on a file that moved, and the default of
+               each is nothing to say.
+               On ONE line, because the box is `white-space: pre-wrap`: a
+               newline in this template is a newline on screen. -->
+          <!-- prettier-ignore -->
+          <div class="patchline"><span class="patchsize">{size}</span>{#if call.mutation?.all}<span class="patchmark">every match</span>{/if}{#if call.mutation?.outside}<span class="patchmark">changed outside this edit</span>{/if}</div>
         {/if}
       {/if}
     </div>
   {/if}
 </details>
+
+<!-- One statement of how a result's pieces draw, so the picture's branch and
+     the body's branch cannot drift apart. -->
+{#snippet pieces(parts: RunPiece[])}
+  {#each parts as piece, at (at)}
+    {#if piece.kind === 'image'}
+      <div class="term">
+        image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
+      </div>
+    {:else if asCode(piece) !== null}
+      <Code path={call.title} text={piece.text} />
+    {:else}
+      <!-- The command a call ran leads its own output: a call given a
+           description shows that as its title, and the command would
+           otherwise appear nowhere. The break is an element rather than
+           a character in the text, so it is a break whatever the box's
+           whitespace rule turns out to be. -->
+      <div class="term">
+        {#if call.command !== null}<span class="pfx">$</span>
+          {call.command}<br />{/if}{piece.text}{#if at === tail && call.note !== null}<br /><span
+            class={call.note.tone ?? undefined}>{call.note.text}</span
+          >{/if}
+      </div>
+    {/if}
+  {/each}
+{/snippet}

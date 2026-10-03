@@ -11,7 +11,8 @@ const draw = (
   trigger: string | null,
   preTokens: number | null,
   postTokens: number | null,
-): string => render(CompactionPoint, { props: { trigger, preTokens, postTokens } }).body;
+  summary: string | null = null,
+): string => render(CompactionPoint, { props: { trigger, preTokens, postTokens, summary } }).body;
 
 const PAGE = readFileSync(
   new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
@@ -211,6 +212,33 @@ describe('the compaction point a boundary leaves in the conversation', () => {
         tokens(Number(whole.replaceAll(',', ''))),
       );
     }
+  });
+
+  it('opens onto the facts and the continuation summary under them', () => {
+    // The summary is the one account of what the cut dropped, and it arrives
+    // as its own frame: the row carries it rendered, under the facts.
+    const body = draw(
+      'auto',
+      68_031,
+      9_149,
+      'This session is being continued from a previous conversation that ran out of context.\n\n## What happened\n\n- the lanes rework landed',
+    );
+
+    expect(words(body), 'the facts still draw as they did').toContain('trigger auto');
+    expect(body, 'the summary is a heading, not raw text').toContain('<h2>');
+    expect(body, 'with its list').toContain('<li>');
+    expect(words(body), 'and its own lead sentence').toContain(
+      'This session is being continued from a previous conversation',
+    );
+  });
+
+  it('opens for a summary alone when the boundary carried no facts', () => {
+    // A cut whose frame never reached the fold still happened; the handle
+    // stays because the summary behind it is worth opening.
+    const body = draw(null, null, null, 'This session is being continued from a previous one.');
+
+    expect(body, 'the row still opens').toContain('<details class="cpoint"');
+    expect(body, 'on the summary').toContain('This session is being continued');
   });
 
   /**

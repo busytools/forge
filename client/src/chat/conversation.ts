@@ -28,7 +28,7 @@ import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { fold, queuedWords } from './units';
+import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -334,12 +334,96 @@ function isSystem(message: unknown): boolean {
   return (message as { type?: unknown } | null)?.type === 'system';
 }
 
+/** Every content block of a frame, when it carries any. */
+function blocksIn(message: unknown): unknown[] {
+  const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+/**
+ * The skill a frame is the body of, or null for every other frame.
+ *
+ * The CLI injects a skill's body as a user frame; the fold pairs it with the
+ * `Skill` call that loaded it, and this is the same reading for the store,
+ * which is what keeps the frame in that call's turn.
+ */
+function skillNameOf(message: unknown): string | null {
+  for (const block of blocksIn(message)) {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    if (held?.type !== 'text' || typeof held.text !== 'string') continue;
+    const skill = skillBody(held.text);
+    if (skill !== null) return skill.name;
+    // The carrier a tool-invoked skill uses: the skill's own markdown, named
+    // by its title heading (`# PR Review Loop`), with no plumbing line.
+    const titled = headingNameOf(held.text);
+    if (titled !== null) return titled;
+  }
+  return null;
+}
+
+/**
+ * Whether a frame is the harness's own line about an image it just read.
+ *
+ * It arrives as the reader's own row right behind the result that carried the
+ * picture; the fold hangs it on the call that read the picture
+ * (`imageNoteOf` in its `units.ts`), so the store keeps it in that call's turn
+ * rather than letting it open one.
+ */
+function isImageNote(message: unknown): boolean {
+  for (const block of blocksIn(message)) {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    if (held?.type !== 'text' || typeof held.text !== 'string') continue;
+    if (held.text.trim().startsWith('[Image: original ')) return true;
+  }
+  return false;
+}
+
+/** Whether a turn holds a result that carried an image. */
+function holdsImageResult(turn: Turn): boolean {
+  return turn.messages.some((held) =>
+    blocksIn(held).some((block) => {
+      const result = block as { type?: unknown; content?: unknown } | null;
+      if (result?.type !== 'tool_result' || !Array.isArray(result.content)) return false;
+      return result.content.some((inner) => (inner as { type?: unknown } | null)?.type === 'image');
+    }),
+  );
+}
+
+/** Whether a turn holds the `Skill` call a body of `name` belongs to. */
+function holdsSkillCall(turn: Turn, name: string): boolean {
+  return turn.messages.some((held) =>
+    blocksIn(held).some((block) => {
+      const use = block as { type?: unknown; name?: unknown; input?: unknown } | null;
+      if (use?.type !== 'tool_use' || typeof use.name !== 'string') return false;
+      if (use.name.toLowerCase() !== 'skill') return false;
+      const want = (use.input as { skill?: unknown } | null)?.skill;
+      return typeof want === 'string' && namesSkill(want, name);
+    }),
+  );
+}
+
+/** What a refused mode or model carries, as the wire names the fields. */
+interface FailedLine {
+  mode?: unknown;
+  model?: unknown;
+  message?: unknown;
+}
+
+/** Whether a frame is the core's own line, which stands alone where it must. */
+function isForgeNotice(message: unknown): boolean {
+  const frame = message as { type?: unknown; subtype?: unknown } | null;
+  return frame?.type === 'system' && frame.subtype === 'forge_notice';
+}
+
 /** The update's variant name, for the ones the chat acts on. */
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
   const [name] = Object.keys(update);
   return name ?? null;
 }
+
+/** How long a refused page waits before it is asked again, while the column is live. */
+const RETRY_MS = 2_000;
 
 /**
  * One conversation, over one connection.
@@ -370,6 +454,17 @@ export class Chat {
   private abandoned = 0;
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
+  /**
+   * The timer a refused page re-asks on, or `null`.
+   *
+   * A refusal is the server declining a page for a conversation it has not
+   * attached yet, and it says so - asking again may find it. A refusal that
+   * nothing asks again is that same dead end by another route: its words stand
+   * over a conversation whose frames are landing, and everything said before
+   * the client attached stays unreachable, because the page that would set the
+   * walk's cursor never came.
+   */
+  private retry: ReturnType<typeof setTimeout> | null = null;
   /** This seat's subject key, which is how a snapshot is known to be its own. */
   private readonly key: string;
   /**
@@ -476,12 +571,14 @@ export class Chat {
         this.inFlight = null;
         this.abandoned = 0;
       } else {
+        this.clearRetry();
         this.ask(null);
       }
     });
     this.running = () => {
       stopMessages();
       stopStatus();
+      this.clearRetry();
       this.running = null;
     };
     this.ask(null);
@@ -539,6 +636,33 @@ export class Chat {
     return false;
   }
 
+  /**
+   * Ask a refused page again, once a beat, while the column is live.
+   *
+   * **The refusal's own words are the instruction** ("asking again may find
+   * it"), and the condition it refuses on - the core has not attached this
+   * conversation yet - clears on its own once the seat's session is up. What
+   * must not clear it is nothing: a reader who stays on the column never asks
+   * again otherwise, and the history before the refusal stays unreachable.
+   */
+  private retryAsk(): void {
+    if (this.retry !== null || this.running === null) return;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      if (this.running === null) return;
+      if (this.read().refused === null) return;
+      this.ask(null);
+    }, RETRY_MS);
+  }
+
+  /** A page landed, or the occupant changed: nothing is owed a re-ask. */
+  private clearRetry(): void {
+    if (this.retry !== null) {
+      clearTimeout(this.retry);
+      this.retry = null;
+    }
+  }
+
   private receive(message: ServerMessage): void {
     switch (message.kind) {
       case 'page':
@@ -558,6 +682,7 @@ export class Chat {
         this.inFlight = null;
         this.abandoned = 0;
         this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
+        this.retryAsk();
         return;
       case 'snapshot':
         // The seat's own record, which is where the core's answer for a turn in
@@ -592,6 +717,9 @@ export class Chat {
       return;
     }
     this.inFlight = null;
+    // A landed page is the refusal's ask answered: the timer that would ask
+    // again is owed nothing, and the page's cursor is what the walk uses.
+    this.clearRetry();
     this.inner.update((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
@@ -804,6 +932,7 @@ export class Chat {
     // one is known until its own record or frames say.
     this.turnRunning = false;
     this.inner.set(NOTHING);
+    this.clearRetry();
     this.ask(null);
   }
 
@@ -831,6 +960,36 @@ export class Chat {
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       this.heard(false);
       this.refresh();
+    }
+    // The core's own line: a command's answer, or why one did not run. It is
+    // drawn here because this store is the conversation the page draws, and the
+    // record's copy of the transcript is not. **Live only, deliberately**: the
+    // CLI never wrote such a row, so a page that attaches afterwards has
+    // nothing to read it from and the line is not owed to it.
+    if (variant === 'notice') {
+      const line = (update as { notice?: { severity?: unknown; text?: unknown } }).notice;
+      const text = line?.text;
+      if (typeof text !== 'string' || text === '') return;
+      this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
+      return;
+    }
+    // A mode or a model the CLI refused. It answers through no frame of its
+    // own either, so it is the same line: what was asked for, and the CLI's own
+    // words for the refusal.
+    if (variant === 'set_mode_failed' || variant === 'set_model_failed') {
+      const payload = (update as { set_mode_failed?: FailedLine; set_model_failed?: FailedLine })[
+        variant
+      ];
+      if (payload === undefined) return;
+      const asked = typeof payload.mode === 'string' ? payload.mode : payload.model;
+      const why = typeof payload.message === 'string' ? payload.message : '';
+      const what = typeof asked === 'string' && asked !== '' ? asked : 'the session';
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'error',
+        text: `${what} was refused: ${why}`.trimEnd(),
+      });
     }
   }
 
@@ -878,6 +1037,37 @@ export class Chat {
       // something to arrive, so a column left where they had scrolled to would
       // hide the very answer they are waiting on.
       const follow = held.following || units.some((unit) => unit.kind === 'user');
+      // **A skill's body belongs to the turn whose `Skill` call loaded it.**
+      // The CLI injects the frame mid-turn, but it can arrive above a settled
+      // turn, and a row of its own is a second telling of the same thing under
+      // the reader's name. The turn is found by the skill's own name, the same
+      // match the fold pairs the two by.
+      const skill = skillNameOf(message);
+      if (skill !== null) {
+        for (let at = held.turns.length - 1; at >= 0; at -= 1) {
+          const target = held.turns[at];
+          if (target === undefined || !holdsSkillCall(target, skill)) continue;
+          const grown: Turn = { ...target, messages: [...target.messages, message] };
+          return this.answered({
+            ...held,
+            turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
+          });
+        }
+      }
+      // **The harness's image line joins the turn that read the picture**, for
+      // the same reason: it is that call's row caption, and a turn of its own
+      // draws it as a separating row of the reader's.
+      if (isImageNote(message)) {
+        for (let at = held.turns.length - 1; at >= 0; at -= 1) {
+          const target = held.turns[at];
+          if (target === undefined || !holdsImageResult(target)) continue;
+          const grown: Turn = { ...target, messages: [...target.messages, message] };
+          return this.answered({
+            ...held,
+            turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
+          });
+        }
+      }
       // A frame that draws opens a row of its own only where no turn is being
       // written. A row the core says is running is one of those too, whichever
       // way the client learned it: a seat reached mid-turn has its row from a
@@ -893,7 +1083,12 @@ export class Chat {
         draws &&
         !isSystem(message) &&
         (last === undefined || (!writing && (opensATurn(message) || !beingWritten(last))));
-      if (!opens) {
+      // **The core's own line is the one `system` frame that opens a row**, and
+      // only where there is no turn to join. Its only copy is this frame - the
+      // CLI wrote none - so on a seat with no turn yet, which is every fresh
+      // one, holding it back drops it rather than placing it, and the reader's
+      // own words draw with no answer under them.
+      if (!opens && !(last === undefined && draws && isForgeNotice(message))) {
         if (last === undefined) return held;
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return this.answered({
@@ -904,12 +1099,20 @@ export class Chat {
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
+      // **A row opened for the core's own line is not a turn being written.**
+      // The line is a command's answer, so there is no turn in flight and the
+      // core's own header says so; a live row would draw the running strip and
+      // its clock for it, which nothing would clear but a later page. It is
+      // also what the page's next account replaces a live row with - so a row
+      // marked live here would be consumed by a turn settling that has nothing
+      // to do with it.
+      const live = !isForgeNotice(message);
       // Every turn above it is the object it was: only the row that grew is
       // rebuilt, so growing one turn does not re-render the conversation.
       return this.answered({
         ...held,
         following: follow,
-        turns: [...held.turns, { key, messages: [message], live: true }],
+        turns: [...held.turns, { key, messages: [message], live }],
       });
     });
   }

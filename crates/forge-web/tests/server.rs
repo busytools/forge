@@ -4212,7 +4212,8 @@ fn tool_call(id: &str, title: &str, input: &serde_json::Value) -> serde_json::Va
     })
 }
 
-/// A permission prompt, as the CLI sends it.
+/// A permission prompt for the dock, hand-written: the option ids are
+/// this test's, not the core's synthesized ones.
 fn permission() -> forge_primitives::permission_interaction::PermissionRequest {
     wire(serde_json::json!({
         "tool_call": tool_call("tu-1", "Bash", &serde_json::json!({
@@ -4225,14 +4226,14 @@ fn permission() -> forge_primitives::permission_interaction::PermissionRequest {
             {"option_id": "edits", "name": "Allow with edits", "kind": "edit",
              "action": {"kind": "allow_with_input"}},
             {"option_id": "deny", "name": "Deny", "kind": "deny", "action": {"kind": "deny"}},
-            {"option_id": "notes", "name": "Tell Claude something else", "kind": "notes",
+            {"option_id": "notes", "name": "Tell the agent something else", "kind": "notes",
              "action": {"kind": "deny"}},
         ],
         "display": {"decision_reason": "not on the allow list"},
     }))
 }
 
-/// A question, as the CLI sends it.
+/// A question for the dock, hand-written: the option ids are this test's.
 fn question() -> forge_primitives::question::QuestionRequest {
     question_from("tu-2")
 }
@@ -4282,7 +4283,7 @@ async fn a_pending_prompt_morphs_the_box_and_lists_its_options() {
     let allow = page.find("Allow once").expect("the first option");
     let always = page.find("Allow always for Bash").expect("the second");
     let deny = page.find("Deny").expect("the deny option");
-    let notes = page.find("Tell Claude something else").expect("the escape hatch");
+    let notes = page.find("Tell the agent something else").expect("the escape hatch");
     assert!(allow < always && always < deny && deny < notes, "in the order the CLI built: {page}");
 }
 
@@ -4562,7 +4563,7 @@ async fn the_sign_in_hint_falls_back_to_the_command_that_fixes_it() {
     );
 }
 
-/// A status frame, as the CLI sends it.
+/// A status frame, hand-typed for the test.
 fn status(value: &str) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
         "type": "system",

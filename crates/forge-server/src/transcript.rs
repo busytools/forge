@@ -252,6 +252,20 @@ pub fn render(messages: &[Message]) -> Rendered {
     // Where each turn opens, taken as the fold pushes the unit that opens it:
     // one push per turn, in order, so the keys below line up with them.
     let mut turns: Vec<TurnSpan> = Vec::new();
+    // The skills whose `Skill` call the open turn holds and whose body has not
+    // arrived yet, oldest first: a body belongs in the call's turn, and the
+    // claim is what keeps it there. Cleared wherever a turn opens, so a body
+    // cannot join a turn whose calls are not the ones it belongs to.
+    let mut turn_skills: Vec<String> = Vec::new();
+    // Whether a compaction boundary has landed in the open turn. The
+    // continuation prompt that follows belongs beside it - it is the row's own
+    // account - so it opens no turn of its own while this holds.
+    let mut turn_boundary = false;
+    // Whether the open turn has taken any tool call. The harness's line about
+    // an image it read arrives right behind the call that read it, so it joins
+    // that turn rather than opening one; the note claims the call by content
+    // in the views, and this only keeps the two in one turn.
+    let mut turn_calls = false;
     for (index, message) in messages.iter().enumerate() {
         // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
         if is_dispatched(message) {
@@ -273,6 +287,12 @@ pub fn render(messages: &[Message]) -> Rendered {
                 });
             }
             continue;
+        }
+        // The boundary a compaction left. It draws no unit of its own here -
+        // the web client folds the frame itself - but which turn it lands in
+        // is what the continuation prompt after it must join, so it is watched.
+        if matches!(message, Message::CompactBoundary { .. }) {
+            turn_boundary = true;
         }
         // What the turn has thought so far, summed from the frame deltas: the
         // wire's running counter restarts at every thinking block, so the
@@ -320,6 +340,27 @@ pub fn render(messages: &[Message]) -> Rendered {
         };
         for block in content {
             match block {
+                // A skill's body, which the CLI injects as the reader's own
+                // row right after the call that loaded it. It stays in that
+                // call's turn - the second telling of what the call's row
+                // already carries - and a body no call holds falls through to
+                // the arms below and opens a turn as it always did.
+                ContentBlock::Text { text }
+                    if !assistant && claims_skill_call(&mut turn_skills, text) => {}
+                // The continuation prompt a compaction leaves behind, which
+                // belongs in the boundary's own turn: the client hangs it on
+                // that row, and a turn of its own draws the compaction twice.
+                // With no boundary in this turn it opens one as it always did.
+                ContentBlock::Text { text }
+                    if !assistant && turn_boundary && is_continuation(text) =>
+                {
+                    turn_boundary = false;
+                }
+                // The harness's own line about an image it just read: it
+                // belongs in the open turn, right behind the call whose result
+                // carried the picture, where the view hangs it on that call's
+                // row as the caption. It draws no unit of its own either way.
+                ContentBlock::Text { text } if !assistant && turn_calls && is_image_note(text) => {}
                 // The harness's task ending in its other carrier: the same XML
                 // written into a user row, which the scan hands on as this
                 // plain text. A turn opened for it draws a task id and an
@@ -351,6 +392,9 @@ pub fn render(messages: &[Message]) -> Rendered {
                         match unit {
                             ChatUnit::UserTurn { text } => {
                                 open_turn(&mut turns, &mut units, text, index);
+                                turn_skills.clear();
+                                turn_boundary = false;
+                                turn_calls = false;
                             }
                             other => units.push(other),
                         }
@@ -377,10 +421,24 @@ pub fn render(messages: &[Message]) -> Rendered {
                         flush_peers(&mut peers, &mut units);
                         close_traced(&mut traced, &mut units, true, &mut keys);
                         open_turn(&mut turns, &mut units, text, index);
+                        turn_skills.clear();
+                        turn_boundary = false;
+                        turn_calls = false;
                     }
                 }
                 ContentBlock::ToolUse { id, name, input }
                 | ContentBlock::ServerToolUse { id, name, input } => {
+                    turn_calls = true;
+                    // A `Skill` call's own name for the skill it loads, held
+                    // until that skill's body arrives: the body is what this
+                    // claim decides the turn of.
+                    if let Some(want) = input
+                        .get("skill")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|_| name.eq_ignore_ascii_case("skill"))
+                    {
+                        turn_skills.push(want.to_owned());
+                    }
                     push_call(
                         id, name, input, &results, &endings, &answers, &mut run, &mut peers,
                         &mut units,
@@ -819,6 +877,102 @@ fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) 
 /// here and not elsewhere.
 fn is_task_notice(text: &str) -> bool {
     text.trim_start().starts_with("<task-notification>")
+}
+
+/// The skill a body's own frame names, off its first line's directory.
+///
+/// The CLI injects a skill's body as a user row whose first line names the
+/// skill's directory and whose remainder is the skill's markdown. The name is
+/// the path's last segment that is not a version, so a plugin-cached skill
+/// (`.../ui-ux-pro-max/2.13.0`) is named as its directory names it - the same
+/// reading the web client's fold makes (`skillBody` in its `units.ts`).
+fn skill_body_name(text: &str) -> Option<&str> {
+    let lead = text.split('\n').next()?;
+    if let Some(path) = lead.strip_prefix("Base directory for this skill:") {
+        let path = path.trim();
+        return path
+            .split('/')
+            .rev()
+            .find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()));
+    }
+    // The carrier a tool-invoked skill uses: the skill's own markdown, opening
+    // on its title heading (`# PR Review Loop` for `pr-review-loop`) with no
+    // plumbing line. The heading is the whole of what names it, so that is the
+    // name - normalized by `names_skill`, the same match the client makes.
+    let trimmed = lead.trim();
+    let title = trimmed.trim_start_matches('#');
+    if title.len() == trimmed.len() || !title.starts_with(' ') {
+        return None;
+    }
+    let title = title.trim();
+    (!title.is_empty()).then_some(title)
+}
+
+/// Whether `text` is the harness's own line about an image it just read.
+///
+/// The CLI sends it as the reader's own row right after the result that
+/// carried the image; the client fold hangs it on the call that read the
+/// picture (`imageNoteOf` in its `units.ts`), so it belongs in that call's
+/// turn rather than in one of its own.
+fn is_image_note(text: &str) -> bool {
+    text.trim().starts_with("[Image: original ")
+}
+
+/// Whether `text` is the continuation prompt a compaction leaves behind.
+///
+/// The CLI sends it as the reader's own user row right after the boundary
+/// frame, and it is the compaction's own account of what was cut. The client
+/// fold hangs it on the boundary's row (`attachContinuation` in its
+/// `units.ts`), and the two reads must agree.
+fn is_continuation(text: &str) -> bool {
+    text.starts_with("This session is being continued from a previous conversation")
+}
+
+/// Whether a `Skill` call's own input names the skill a body's path ended in.
+///
+/// The spellings differ two ways: a plugin skill is `ui-ux-pro-max:ui-ux-pro-max`
+/// where the path ends `ui-ux-pro-max`, and a tool-invoked body's heading is
+/// `PR Review Loop` where the call says `pr-review-loop`. The client fold
+/// matches the same way (`namesSkill` in its `units.ts`); the two must agree,
+/// or the same frame lands in one view and not the other.
+fn names_skill(want: &str, name: &str) -> bool {
+    if want == name || want.ends_with(&format!(":{name}")) || want.starts_with(&format!("{name}:"))
+    {
+        return true;
+    }
+    let held = normalized_skill(want);
+    let wanted = normalized_skill(name);
+    held == wanted || held.contains(&wanted) || wanted.contains(&held)
+}
+
+/// A skill name as its words, so `pr-review-loop` and `PR Review Loop` agree.
+fn normalized_skill(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c == '-' || c == '_' || c == ':' { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `text` is the body of a skill the open turn holds a call for,
+/// consuming that claim.
+///
+/// A body belongs in the turn whose call loaded it: it is the same telling the
+/// call's row already carries, and a turn of its own draws it a second time
+/// under the reader's name. The claim is consumed so a later body for the same
+/// skill lands on the call after it, and a body no call holds opens a turn as
+/// it did before - nothing may be dropped.
+fn claims_skill_call(turn_skills: &mut Vec<String>, text: &str) -> bool {
+    let Some(name) = skill_body_name(text) else {
+        return false;
+    };
+    let Some(at) = turn_skills.iter().position(|want| names_skill(want, name)) else {
+        return false;
+    };
+    turn_skills.remove(at);
+    true
 }
 
 /// What a persisted task ending says, which is what the live wire's
@@ -1863,6 +2017,104 @@ mod tests {
     /// in this machine's transcripts, 3,113 carry the mode, 3,113 open with
     /// the tag, and none disagrees - so the pair looks redundant, and a row
     /// carrying both could not tell a two-signal guard from a one-signal one.
+    /// A skill's body arrives as the reader's own user row, right after the
+    /// call that loaded it - and a page read can cut the two apart. The body
+    /// belongs in the call's turn, where the call's row is what tells the
+    /// story: a turn of its own is the same thing said twice under the
+    /// reader's name, and the web client pairs the two by name whatever their
+    /// turns say.
+    #[test]
+    fn a_skill_body_stays_in_the_turn_whose_call_loaded_it() {
+        let call = |want: &str| {
+            assistant(vec![ContentBlock::ToolUse {
+                id: format!("toolu_{want}"),
+                name: "Skill".to_owned(),
+                input: serde_json::json!({ "skill": want }),
+            }])
+        };
+        let body = |path: &str| {
+            user(vec![ContentBlock::Text {
+                text: format!("Base directory for this skill: {path}\n\n# The skill\n\nDo it."),
+            }])
+        };
+        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+
+        let rendered =
+            render(&[prompt(), call("unslop"), body("/Users/ved/.claude/skills/unslop")]);
+        assert_eq!(rendered.turns.len(), 1, "the body opens no turn of its own");
+        assert_eq!(
+            rendered.units.iter().filter(|unit| matches!(unit, ChatUnit::UserTurn { .. })).count(),
+            1,
+            "and draws no second row under the reader's name"
+        );
+
+        // The plugin spelling: the call says `a:b` where the path ends `b`.
+        let cached = render(&[
+            prompt(),
+            call("ui-ux-pro-max:ui-ux-pro-max"),
+            body("/Users/ved/.claude/plugins/cache/x/ui-ux-pro-max/2.13.0"),
+        ]);
+        assert_eq!(cached.turns.len(), 1, "a versioned plugin path still matches its call");
+
+        // The control: a body no call claimed opens a turn, so nothing is lost.
+        let orphan = render(&[prompt(), body("/Users/ved/.claude/skills/other")]);
+        assert_eq!(orphan.turns.len(), 2, "an unclaimed body opens a turn as it always did");
+
+        // The carrier a tool-invoked skill uses: the skill's own markdown,
+        // named only by its title heading.
+        let titled = render(&[
+            prompt(),
+            call("pr-review-loop"),
+            user(vec![ContentBlock::Text {
+                text: "# PR Review Loop\n\nReview a change with parallel reviewers.".to_owned(),
+            }]),
+        ]);
+        assert_eq!(titled.turns.len(), 1, "a titled body stays in its call's turn");
+
+        // The harness's line about an image it read: it belongs behind the
+        // call that read it, where the view hangs it on that call's row.
+        let note = user(vec![ContentBlock::Text {
+            text: "[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]".to_owned(),
+        }]);
+        let pictured = render(&[prompt(), tool_call("read"), note.clone()]);
+        assert_eq!(pictured.turns.len(), 1, "the image line opens no turn of its own");
+
+        // The control: with no call in the turn it opens one, so nothing is lost.
+        let loose = render(&[prompt(), note]);
+        assert_eq!(loose.turns.len(), 2, "with no call to join it opens a turn");
+    }
+
+    /// The continuation prompt a compaction leaves behind arrives as the
+    /// reader's own row, right after the boundary frame. It belongs in the
+    /// boundary's turn - the web client hangs it on that row - and a prompt
+    /// with no boundary opens a turn as it always did, so nothing is lost.
+    #[test]
+    fn a_continuation_prompt_stays_in_the_boundarys_turn() {
+        let boundary = || Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 68_031,
+            post_tokens: 9_149,
+            uuid: "cb-1".to_owned(),
+            session_id: "session".to_owned(),
+        };
+        let summary = user(vec![ContentBlock::Text {
+            text: "This session is being continued from a previous conversation that ran out of context. And so on.".to_owned(),
+        }]);
+        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+
+        let rendered = render(&[prompt(), boundary(), summary.clone()]);
+        assert_eq!(rendered.turns.len(), 1, "the prompt opens no turn of its own");
+        assert_eq!(
+            rendered.units.iter().filter(|unit| matches!(unit, ChatUnit::UserTurn { .. })).count(),
+            1,
+            "and draws no row under the reader's name"
+        );
+
+        // The control: no boundary in the turn, so it opens one as it did.
+        let orphan = render(&[prompt(), summary]);
+        assert_eq!(orphan.turns.len(), 2, "a prompt with no boundary still opens a turn");
+    }
+
     #[test]
     fn a_notification_row_opens_no_turn() {
         let by_mode = user(vec![ContentBlock::QueuedCommand {

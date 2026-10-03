@@ -171,7 +171,7 @@ The `:` counts only at the start of a line or directly after whitespace, and the
 
 Permission requests, plan approval, AskUserQuestion and a held Slack post route through one widget with three modes (single-select, multi-select, selection+text). When a prompt arrives the input box morphs: the text slot disappears, the orange chrome stays, options appear inside with a `▸` pointer - arrows move, <kbd>Enter</kbd> confirms, <kbd>Esc</kbd> cancels. The tool block above keeps its in-progress render. Prompts queue FIFO per session; with more than one pending a dim "`▼ N more pending after this`" line tops the dock body.
 
-**Slack approval** covers five actions and uses the same picker: `slack__post` (send a message), `slack__edit` (replace a message body), `slack__edit` with `delete: true` (remove a message), `slack__react` (add or remove a reaction), and the `slack__attachment` upload arm (send a file) - every one held, `Post` focused as the default answer, since only the approving option sends anything. The header names the workspace, the conversation by its name rather than its id (a DM keeps its partner's id, since Slack names it nothing) and the thread, and the body prints exactly what would be sent or replaced; a deletion names the message ts it would remove, and an upload names the local file it would send, because that is what the approval is for. <kbd>Esc</kbd>, quitting, an unanswered prompt, or the asking session going away all reject, and the message is left untouched; a draft left unanswered for ten minutes expires and the dock prompt retires itself. The prompt is queued on the session that asked, not the focused one.
+**Slack approval** covers five actions and uses the same picker: `slack__post` (send a message), `slack__edit` (replace a message body), `slack__edit` with `delete: true` (remove a message), `slack__react` (add or remove a reaction), and the `slack__attachment` upload arm (send a file) - every one held, `Post` focused as the default answer, since only the approving option sends anything. The header names the workspace, the conversation by its name rather than its id (a DM keeps its partner's id, since Slack names it nothing) and the thread, and the body prints exactly what would be sent or replaced; a deletion names the message ts it would remove, and an upload names the local file it would send, because that is what the approval is for. <kbd>Esc</kbd>, quitting, an unanswered prompt, or the asking session going away all reject, and the message is left untouched; a draft left unanswered for ten minutes expires and the dock prompt retires itself. Every ending is spoken: a draft another view answers, one that expires, or one whose asking session goes away retires the dock here and leaves a line in the session's chat naming the ending, and an answer that lands after the draft is gone says so in that same chat rather than doing nothing. The prompt is queued on the session that asked, not the focused one.
 
 **Common-case permission** (most Bash / Edit / Read calls):
 
@@ -184,7 +184,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Bash · git push *</span>                              <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell the agent something else</span>                                   <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -205,7 +205,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Read · paths matching //tmp/**</span>                 <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell the agent something else</span>                                   <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -213,7 +213,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 
 </div>
 
-**AskUserQuestion** - multi-select with the notes option toggled: a rust-orange `?` on the header, white body below, `[x]` / `[ ]` markers before the icons; toggling `... Tell Claude something else` expands an inline notes editor:
+**AskUserQuestion** - multi-select with the notes option toggled: a rust-orange `?` on the header, white body below, `[x]` / `[ ]` markers before the icons; toggling `… Tell the agent something else` expands an inline notes editor:
 
 <div class="term">
 
@@ -225,7 +225,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Staging</span>                                                     <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Production</span>                                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="dim">[ ]</span> <span class="success">✓</span> <span class="dim">Development</span>                                                 <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell Claude something else:</span>                               <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">…</span> <span class="bold">Tell the agent something else</span>                               <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                           <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">space toggle  ↑↓ move  ⏎ submit  esc cancel</span>                         <span class="accent bold">┃</span>
@@ -235,6 +235,32 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 </div>
 
 **Recommended options.** A `(Recommended)` suffix on an option label is the CLI's own text: it reaches the row verbatim and the option moves to the top of the list, so the marker and the `▸` pointer land on the same row. The pointer starts on the first option either way, and a recommended option is styled like any other unfocused one - dim, with no extra emphasis. A question with no suffix keeps the CLI's order exactly.
+
+**Focused option preview.** An option can carry a preview, and the focused one's draws as a block under the option list, headed by a white `Preview:` row. The string is the CLI's own markdown, drawn the way a message body draws markdown: bold, inline code, links and lists as their text, an ATX heading as bold text with a blank row before it, and a fenced block as the same quiet code panel. The CLI writes previews line-structured and the block keeps those lines, with two exceptions it inherits from the shared renderer: a setext heading draws with its marker kept, and an indented code block draws its lines merged between fence rows the preview never had (#1634). A row wider than the dock wraps, with the continuation keeping the row's own indentation. The block is absent when the focused option carries no preview, or a blank one.
+
+<div class="term">
+
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent">? </span><span class="bold">Environments (Q2 of 3)</span>                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Pick the environments to deploy to.</span>                                 <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Staging</span>                                                         <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Production</span>                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell the agent something else</span>                                   <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Preview:</span>                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  Staging runs deploy --env staging, the same job as the production   <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  release.                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="code-panel">  <span class="code-label">sh</span>                                                              </span>  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="code-panel">  deploy --env staging --skip-migrations                          </span>  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+
+</div>
 
 <details>
 <summary>The dictate blip on the dock</summary>
@@ -255,7 +281,7 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Edit · src/**</span>                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell the agent something else</span>                                   <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -270,12 +296,12 @@ While a take is live the pulsing circle blip - orange while recording, blue whil
 | `✓` | Allow (any Allow variant) | green |
 | `✗` | Deny | red |
 | `✎` | Allow with edits - synthesized for editable tools (Bash, Edit, Write, MultiEdit, NotebookEdit) | blue |
-| `...` | "Tell Claude something else", the synthesized escape hatch, always last | dim |
+| `…` | "Tell the agent something else", the synthesized escape hatch, always last | dim |
 
 <details>
 <summary>Where options come from</summary>
 
-Options derive from the CLI's `permission_suggestions`: `addRules` (Read outside workspace) offers "Allow always for {tool} · paths matching {pattern}" - macOS `/tmp` + `/private/tmp` mirror entries are deduped for display, both rule entries kept on the wire; `addDirectories` (Write / Edit outside workspace) offers "Allow always & add {dirs} to allowed dirs"; `setMode` (typically the prompt that intercepts plan-mode) offers "Allow always & switch to {mode}" - ExitPlanMode itself sends `permission_suggestions: null`, so the mode switch lives on the earlier intercept prompt, not on ExitPlanMode. Two options are synthesized universally: `... Tell Claude something else` (always last) routes to deny with the notes text, and `✎ Allow with edits` (editable tools only) routes to allow-with-input. The Notes row's `[x]` is display-only - it tracks the live notes buffer, and the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`.
+Options derive from the CLI's `permission_suggestions`: `addRules` (Read outside workspace) offers "Allow always for {tool} · paths matching {pattern}" - macOS `/tmp` + `/private/tmp` mirror entries are deduped for display, both rule entries kept on the wire; `addDirectories` (Write / Edit outside workspace) offers "Allow always & add {dirs} to allowed dirs"; `setMode` (typically the prompt that intercepts plan-mode) offers "Allow always & switch to {mode}" - ExitPlanMode itself sends `permission_suggestions: null`, so the mode switch lives on the earlier intercept prompt, not on ExitPlanMode. Two options are synthesized universally: `… Tell the agent something else` (always last) routes to deny with the notes text, and `✎ Allow with edits` (editable tools only) routes to allow-with-input. The Notes row's `[x]` is display-only - it tracks the live notes buffer, and the wire `annotation.notes` field carries the typed text independently of `selected_option_indices`.
 
 </details>
 

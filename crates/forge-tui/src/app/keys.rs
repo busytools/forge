@@ -754,8 +754,10 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone(), description: None })
         .collect();
 
-    // The apply below is optimistic, so park the pre-apply state for
-    // the SetModeFailed rollback, same as the /mode submit path.
+    // The apply below is optimistic, so park the pre-apply state for the
+    // SetModeFailed rollback. This cycle is the only path that applies
+    // optimistically now: a typed `/mode` is the core's and moves the chip
+    // when the CLI confirms.
     let rollback = crate::app::session::ModeRollback {
         mode_state: app.mode().cloned(),
         turn_mode: app.with_turn_state(|ts| ts.mode),

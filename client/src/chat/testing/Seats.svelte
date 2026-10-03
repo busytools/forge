@@ -15,4 +15,4 @@
   let { seat, connection }: { seat: Readable<SessionSlot>; connection: Connection } = $props();
 </script>
 
-<Chat slot={$seat} {connection} cwd={null} />
+<Chat slot={$seat} {connection} />

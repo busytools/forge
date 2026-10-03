@@ -14,6 +14,10 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   status: 'completed',
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
+  mutation: null,
+  skill: null,
+  image: null,
+  imageNote: null,
 });
 
 /** The body's term boxes, as the reader sees them. */
@@ -21,6 +25,94 @@ const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
 describe('the row one call draws', () => {
+  it("opens onto the skill a Skill call loaded, which is the row's right data", () => {
+    // The call's own result is the CLI's "Launching skill: ..." line, which
+    // says nothing; the fold hangs the skill's body on the call, and the row
+    // opens onto that instead.
+    const drawn = render(Call, {
+      props: {
+        call: {
+          id: 'toolu_skill',
+          row: { kind: 'family', family: 'skill' },
+          name: 'Skill',
+          title: 'unslop',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [{ kind: 'text', text: 'Launching skill: unslop' }],
+          mutation: null,
+          skill: '# Unslop\n\nEdit text to remove AI patterns.',
+          image: null,
+          imageNote: null,
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the skill is drawn as markdown').toContain('<h1>');
+    expect(drawn, 'and the launch line draws nowhere').not.toContain('Launching skill');
+  });
+
+  it('draws the picture a call read only while the row is open', () => {
+    // Decoding a screenshot is real work, and a column of closed rows must
+    // not pay it: the data URL reaches the markup only once the row opens.
+    // The fold's test pins what the leaf carries; this pins what a closed row
+    // refuses to draw.
+    const drawn = render(Call, {
+      props: {
+        call: {
+          id: 'toolu_shot',
+          row: { kind: 'family', family: 'read' },
+          name: 'Read',
+          title: '/Users/ved/shot.png',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [],
+          mutation: null,
+          skill: null,
+          image: { mime: 'image/png', data: 'AAAA' },
+          imageNote: 'original 100x100, displayed at 100x100.',
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the closed row carries no data URL').not.toContain('data:image');
+    expect(drawn, 'and none of the caption either').not.toContain('Multiply');
+  });
+
+  it('draws the text a result carried beside the picture, not instead of it', () => {
+    // A screenshot result carries the path it was saved to (and a PDF read its
+    // provenance) as a text block of the same result. The picture drew from an
+    // exclusive branch, so that text reached the page nowhere.
+    const drawn = render(Call, {
+      props: {
+        open: true,
+        call: {
+          id: 'toolu_shot_text',
+          row: { kind: 'family', family: 'read' },
+          name: 'Read',
+          title: '/tmp/playwright/shot.png',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [
+            { kind: 'text', text: 'Saved to /tmp/playwright/shot.png' },
+            { kind: 'image', mime: 'image/png', uri: null },
+          ],
+          mutation: null,
+          skill: null,
+          image: { mime: 'image/png', data: 'AAAA' },
+          imageNote: 'original 100x100, displayed at 100x100.',
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the picture draws').toContain('data:image');
+    expect(drawn, 'and the text the same result carried draws with it').toContain(
+      'Saved to /tmp/playwright/shot.png',
+    );
+  });
+
   it('draws a backgrounded call notice in the box its own result drew', () => {
     const drawn = boxes(
       render(Call, {

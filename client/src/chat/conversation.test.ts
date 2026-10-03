@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MORE_TURNS } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
@@ -16,6 +16,12 @@ vi.mock('./conversation', async (importOriginal) => {
 import { fold } from './units';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+// A test that fails part-way through a fake-timer case would otherwise leave
+// every later case in this file on fake time.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * One turn as a page carries it.
@@ -197,6 +203,101 @@ function fakeConnection() {
 }
 
 describe('the conversation the chat draws', () => {
+  /**
+   * The core's own line, which no transcript holds: the CLI never wrote a row
+   * for it, so this store is the only place it can be drawn from.
+   */
+  it("draws the core's own line, at the severity it carries", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    const row = get(chat.value).turns.at(-1);
+    expect(JSON.stringify(row?.messages), 'the line is drawn in the turn it arrived in').toContain(
+      'Usage: /mode <id>',
+    );
+    expect(JSON.stringify(row?.messages), 'and it carries the severity it came with').toContain(
+      'forge_notice',
+    );
+
+    // Nothing to say is nothing to draw: a malformed frame must not put an
+    // empty row in front of the reader. Read off the ROWS, not their count -
+    // a line that got through joins the turn it arrived in, which leaves the
+    // count where it was.
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    const before = drawn();
+    server.update({ notice: { key: LEAD, severity: 'info', text: '' } });
+    expect(drawn(), 'an empty line is not drawn').toBe(before);
+  });
+
+  /**
+   * A seat with no turn yet is the ordinary state, and a line that joins the
+   * turn it arrived in has nothing to join there - so the core's own line is
+   * the one `system` frame that opens a row. Held back, it would be dropped:
+   * its only copy is the live frame.
+   */
+  it('draws the core line on a seat with no turn to join it to', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    expect(get(chat.value).turns, 'precondition: nothing is drawn yet').toHaveLength(0);
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    const [row] = get(chat.value).turns;
+    expect(JSON.stringify(row), 'the line is drawn rather than dropped').toContain(
+      'Usage: /mode <id>',
+    );
+    // **Not a turn being written.** A live row draws the running strip and its
+    // clock, and the core's own header says no turn is in flight for a command
+    // that ran none; nothing would clear the strip but a later page.
+    expect(row?.live ?? false, 'the line is not a running turn').toBe(false);
+  });
+
+  /**
+   * The other half of the same narrowing: with a turn to join, the line joins
+   * it rather than opening a row of its own.
+   */
+  it('joins a turn the seat already has rather than opening a row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'Usage: /mode <id>' } });
+
+    expect(get(chat.value).turns, 'the row it joined is the one that was there').toHaveLength(1);
+  });
+
+  it('draws a mode or a model the CLI refused, which answers through no frame of its own', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      set_mode_failed: { key: LEAD, mode: 'plan', message: 'mode not permitted' },
+    });
+    const refusedMode = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(refusedMode, 'the refusal names what was asked for').toContain('plan');
+    expect(refusedMode, 'and carries the CLI own words for it').toContain('mode not permitted');
+
+    // The same arm carries a refused model, whose field is the other one: a
+    // reader that read `mode` alone would draw "the session was refused".
+    server.update({
+      set_model_failed: { key: LEAD, model: 'sonnet', message: 'model not available' },
+    });
+    const refusedModel = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(refusedModel, 'the refused model is named').toContain('sonnet');
+    expect(refusedModel, 'with the CLI own words for that refusal').toContain(
+      'model not available',
+    );
+  });
+
   it('opens at the latest turn rather than the first', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
@@ -239,6 +340,162 @@ describe('the conversation the chat draws', () => {
       after.turns.slice(0, before.turns.length - 1),
       'and nothing above the turn the frame belongs to moved',
     ).toEqual(before.turns.slice(0, before.turns.length - 1));
+  });
+
+  it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
+    // The CLI injects the body as a user frame, and it can arrive above a
+    // settled turn - where it opened a second row telling the same thing the
+    // skill lane's call already tells. The store keeps it in that call's turn,
+    // which is where the fold pairs the two.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'assistant',
+                uuid: 'a-skill',
+                message: {
+                  id: 'm-skill',
+                  role: 'assistant',
+                  model: 'claude-opus-5',
+                  content: [
+                    { type: 'tool_use', id: 'toolu_s', name: 'Skill', input: { skill: 'unslop' } },
+                  ],
+                },
+              },
+              ended(),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-body',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Base directory for this skill: /Users/ved/.claude/skills/unslop\n\n# Unslop\n\nEdit text.',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'one turn, not a row beside it').toHaveLength(1);
+    const units = fold(turns[0]?.messages ?? []);
+    const [group] = units.filter((unit) => unit.kind === 'group');
+    const calls =
+      group?.kind === 'group'
+        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+        : [];
+    expect(calls[0]?.leaf.skill, "the call's row is where the body landed").toBe(
+      '# Unslop\n\nEdit text.',
+    );
+  });
+
+  it("joins the harness's image line to the turn that read the picture", () => {
+    // The line arrives as a user frame behind the result; on its own row it
+    // draws as a separating notice of the reader's, where the agreed shape is
+    // the call's own caption.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'assistant',
+                uuid: 'a-read',
+                message: {
+                  id: 'm-read',
+                  role: 'assistant',
+                  model: 'claude-opus-5',
+                  content: [
+                    {
+                      type: 'tool_use',
+                      id: 'toolu_shot',
+                      name: 'Read',
+                      input: { file_path: '/Users/ved/shot.png' },
+                    },
+                  ],
+                },
+              },
+              {
+                type: 'user',
+                uuid: 'u-shot',
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'toolu_shot',
+                      content: [
+                        {
+                          type: 'image',
+                          source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-note',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'one turn, not a notice beside it').toHaveLength(1);
+    const units = fold(turns[0]?.messages ?? []);
+    expect(
+      units.map((unit) => unit.kind),
+      'and no row of its own',
+    ).toEqual(['group']);
+    const [group] = units.filter((unit) => unit.kind === 'group');
+    const calls =
+      group?.kind === 'group'
+        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+        : [];
+    expect(calls[0]?.leaf.imageNote, "the call's row carries it").toContain('Multiply coordinates');
   });
 
   it('re-renders only the turn in flight when its frames arrive', () => {
@@ -596,6 +853,52 @@ describe('the conversation the chat draws', () => {
     ).toEqual(['t0', 't1']);
   });
 
+  it('asks a refused page again while the column is live, and stops once one lands', () => {
+    vi.useFakeTimers();
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    expect(server.more(), 'the first ask').toHaveLength(1);
+
+    // The core has not attached this conversation yet, and it refuses rather
+    // than answering an empty page - an empty page reads as "nothing above"
+    // and would make the history unreachable rather than late - and its own
+    // words say asking again may find it.
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    expect(get(chat.value).refused, 'the refusal did not reach the column').not.toBeNull();
+
+    // A beat later the column asks again by itself: a reader who stays put has
+    // nothing else that would, and without this the words stand over a
+    // conversation whose frames are landing while everything before the
+    // refusal stays invisible.
+    vi.advanceTimersByTime(2_000);
+    expect(server.more(), 'the refused page was never asked again').toHaveLength(2);
+
+    // This time the conversation is there, and the page answers the refusal.
+    server.send(page([turn('t1', 'first')], '1'));
+    expect(get(chat.value).refused, 'a landed page did not answer the refusal').toBeNull();
+
+    // And a landed page ends the asking rather than being asked over.
+    vi.advanceTimersByTime(10_000);
+    expect(server.more(), 'a landed page kept being asked for').toHaveLength(2);
+    stop();
+  });
+
+  it('stops asking a refused page once the column is stopped', () => {
+    vi.useFakeTimers();
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.refuse('more', 'the conversation is not held yet; asking again may find it');
+    stop();
+
+    // Nothing draws the refusal any more, so nothing is owed an ask: a timer
+    // left running here would poll a seat no page is showing.
+    vi.advanceTimersByTime(30_000);
+    expect(server.more(), 'a stopped column kept asking').toHaveLength(1);
+  });
+
   it('drops the drawn conversation when the seat changes occupant', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
@@ -883,9 +1186,9 @@ describe('the conversation the chat draws', () => {
 
     const held = get(chat.value).turns.at(-1)?.messages ?? [];
     expect(
-      fold(held, null, LEAD).map((unit) => unit.kind),
+      fold(held, LEAD).map((unit) => unit.kind),
       'the forged frame draws as traffic, not as the reader own turn',
-    ).toEqual(['messages']);
+    ).toEqual(['group']);
   });
 
   it('keeps every row keyed when older turns arrive', () => {

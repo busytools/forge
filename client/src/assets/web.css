@@ -426,12 +426,28 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* The chat column. min-height:0 or the column refuses to shrink below its
    content and the composer is pushed past the viewport, where
    overflow:hidden eats it. */
-main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.sess { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
-  flex-wrap: wrap; row-gap: 8px; }
-.sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+/* One row, never two. The seat and its facts are a single line, and what does
+   not fit FOLDS by priority rather than wrapping - the terminal's own answer:
+   at its narrow tier both panes fold and the bar keeps the handles and the
+   identity, dropping every fact. The container is the header itself, so the
+   tiers answer the width the column actually has: folding a rail gives the
+   facts room without the window changing, and a phone gets the narrow tiers
+   for free. */
+.sess { container-type: inline-size;
+  display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
+  flex-wrap: nowrap; min-width: 0; }
+.sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sess .f-org { overflow: hidden; text-overflow: ellipsis; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
+  min-width: 0; overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.sess .facts > .fact { white-space: nowrap; flex: none; }
+/* Each fact carries the dot before it, so a fact that folds takes its dot with
+   it and none is left standing alone; the tier that folds the then-first fact
+   moves the dot off the one that becomes first. */
+.sess .facts > .fact + .fact::before { content: '\00b7'; color: var(--line); margin-right: 13px; }
 /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
    book page; a terminal draws one row per line at 1.231em of its own text
    size, and 1.35 is nearer that without sitting on it - a browser still has to
@@ -489,10 +505,13 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 /* A worker's mark is a step down from its project's: the size is what makes
    the indent read as nesting rather than as another project. */
 .wk .dot { width: 8px; height: 8px; flex: 0 0 8px; }
-/* The reason a row is in this group, on every row that has one. */
-.why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+/* The reason a row is in this group, on every row that has one. Scoped to the
+   rail's own rows: bare, this rule reached the dock's option descriptions too,
+   where `display: flex` and the 34px inset stacked every description under its
+   option and indented it. */
+.pj .why { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   padding: 0 10px 6px 34px; display: flex; align-items: center; gap: 7px; }
-.why.bad { color: var(--bad); }
+.pj .why.bad { color: var(--bad); }
 .rail .nm a { color: inherit; text-decoration: none; }
 .rail .nm a:hover { text-decoration: underline; }
 /* A project's sleeping workers, behind one row that carries the count. The
@@ -600,11 +619,9 @@ details.sec[open] > summary .arw { color: var(--accent); }
      implicit second column that takes the width, leaving the composer -
      which is on column one - zero pixels wide. */
   .app main.chat { grid-column: 1; }
-  .sess { flex-wrap: wrap; gap: 8px; }
-  .sess .facts { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
-  /* Wrapped, the dots between the facts are noise rather than separators. */
-  .sess .facts .sep { display: none; }
-  .sess .tog-r { order: 0; }
+  /* The header's own fold answers the column width, and the inspector handle
+     keeps the row's far end at every width: moving it beside the title here
+     made it jump ends as the layout folded. */
   /* One column, so a shown rail covers it rather than sitting beside it. */
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
   .rail.left, .rail.right { display: none; }
@@ -647,8 +664,27 @@ details.sec[open] > summary .arw { color: var(--accent); }
    pixels on a retina display rather than 4, and the weight the page already
    draws a lane inside the conversation at (`.pbody`); the accent colour is
    what keeps it a mark rather than structure. */
-.mine { margin: 15px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
-.work { padding: 4px 0 8px; }
+/* One blank line between blocks, the terminal's whole spacing policy, read the
+   same on both sides of a work block: the turn's margin and the block's own
+   padding add up to about a line each way, where the trailing padding used to
+   make the seam under a tool block half again as tall as the one above it. */
+.mine { margin: 12px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+/* The echo: the reader's words from submit until the core has them. The word
+   carries the state rather than the rule, because the accent line means "these
+   words are yours" and a mark that also meant "in flight" would be two
+   meanings on one thing. A refusal keeps the words here and names the reason:
+   the box is never refilled, since words typed since would land over them. */
+.mine.bad { border-left-color: var(--bad); }
+.mine .st { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.mine .why { display: flex; align-items: center; gap: 9px; margin-top: 9px;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
+.mine .why .ic { width: 12px; height: 12px; flex: 0 0 12px; color: var(--bad); }
+.mine .retry { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 1px 7px; cursor: pointer; }
+.mine .retry:hover { color: var(--muted); }
+.work { padding: 4px 0; }
 /* Prose draws in both blocks - the work a turn did, and what the reader typed,
    which the terminal folds as a document too - so these read `.prose` alone. */
 /* A paragraph wraps at its spaces and not inside a word, so a path, a hash or a
@@ -721,21 +757,11 @@ details.sec[open] > summary .arw { color: var(--accent); }
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
-/* the family tree is the default view */
-.kind { margin: 3px 0; }
-.kind > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-  padding: 6px 10px; border-radius: 9px; cursor: pointer;
-  font-family: var(--mono); font-size: var(--fs-group); }
-.kind > summary::-webkit-details-marker { display: none; }
-.kind > summary:hover { background: rgba(27,33,48,.45); }
-/* The aggregate: enough to know the run has a failure in it, never a
-   substitute for the per-call status that says which one. */
-.kind > summary .st { color: var(--ok); }
-.kind > summary .st.err { color: var(--bad); }
-.kind > summary .nm { font-weight: 700; white-space: nowrap; }
-.kind > summary .arw { margin-left: auto; color: var(--dim); }
-.kind[open] > summary .arw { color: var(--accent); }
-.leaves { padding: 0 0 6px 4px; }
+/* A run of calls, or of peer messages: a family row per kind with its calls
+   under it. There is no disclosure around the run - no count, no roll-up -
+   because a run is not a thing to hide: the family rows always show, and each
+   call still opens on its own. */
+.leaves { padding: 0 0 6px 4px; margin: 6px 0; }
 /* One family inside a group: a label, and its calls on their own lane, so
    what is a group and what is a call never reads alike. */
 .knd { display: flex; align-items: center; gap: 8px; padding: 9px 8px 3px;
@@ -754,6 +780,9 @@ details.leaf > summary:hover { background: rgba(27,33,48,.4); }
 details.leaf > summary .st { color: var(--ok); }
 details.leaf > summary .st.err { color: var(--bad); }
 details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row's inline marks - a thought preview renders emphasis and code - take the
+   prose tone rather than the row's own muting, so a mark reads as a mark. */
+details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary { color: var(--text); }
@@ -763,7 +792,7 @@ details.leaf[open] > summary .arw { color: var(--accent); }
 details.leaf.running > summary { color: var(--text); }
 
 .body { margin: 3px 0 6px 27px; }
-.term { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+.term { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);
   border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 4px 0;
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .term .pfx { color: var(--dim); }
@@ -785,7 +814,7 @@ details.leaf.running > summary { color: var(--text); }
    Six pixels of padding rather than eight, and the conversation's leading: the
    panel is a line and a hairline of air, where it was a line and a third, at
    1.89x the one row the terminal draws for the same fence. */
-.code pre { font-family: var(--mono); font-size: var(--fs-data); padding: 6px 10px;
+.code pre { font-family: var(--mono); font-size: var(--fs-prose); padding: 6px 10px;
   white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
 /* A search result, one row per hit: where it is, then what matched. */
 .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
@@ -800,45 +829,88 @@ details.leaf.running > summary { color: var(--text); }
    wrapping retires that premise rather than working around it:
    `overflow-wrap: anywhere` holds the column at the container's own width, so
    nothing overflows and no tint can fall short of one. */
-.dif { display: grid; grid-template-columns: 22px 1fr;
+.dif { display: grid; grid-template-columns: 38px 38px 22px 1fr;
   border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
-  font-family: var(--mono); font-size: var(--fs-data); }
-.dif .h { grid-column: 1 / -1; color: var(--teal); background: var(--s2); padding: 4px 12px; }
+  font-family: var(--mono); font-size: var(--fs-prose); }
 .dif .ln { display: contents; }
+/* The range a hunk covers, which is the one thing the two sides of an edit
+   cannot say: where in the file the change sits.
+   A hairline rather than a filled bar: two hunks of one file are two parts of
+   one change, and a bar each made them read as two separate cards with nothing
+   between them. The range is the whole of what separates them. */
+.dif .h { grid-column: 1 / -1; color: var(--dim); background: transparent;
+  border-top: 1px solid var(--line); padding: 3px 12px 2px; font-size: var(--fs-label);
+  overflow-wrap: anywhere; }
+.dif > .h:first-child { border-top: 0; }
+/* A line the change did not touch, which is what puts it somewhere. */
+.dif .ln.ctx .l { color: var(--dim); }
+/* A mark whose default is nothing to say, so a row carries it only when it is
+   the exception. Bare rather than under `.term`: a rule that names a body's own
+   class reaches every row that draws one, and this belongs to one kind of row. */
+.patchmark { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin-right: 6px; }
+/* The line under a mutation's diff: the change's own figures as a caption
+   rather than as output. It carries no rule - a left rule is what marks a
+   command's output, and a caption wearing one read as a block belonging to
+   something else - and it sits at the label size, the one the marks beside it
+   already take. */
+.patchline { display: flex; align-items: center; padding: 4px 0 0;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+/* The figures the marks follow, which are the line's own words rather than a
+   mark. Bare for the same reason `.patchmark` is. */
+.patchsize { margin-right: 8px; }
 .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
+/* The number each side holds the line at, which is what makes two hunks in one
+   file readable: the old file's on the left, the new file's beside it, and a
+   blank where that side does not have the line at all. */
+.dif .ln .on, .dif .ln .nn { color: var(--dim); text-align: right; padding-right: 8px;
+  user-select: none; font-size: var(--fs-label); }
+/* A file with no old side - a create - has nothing to put in the old column, so
+   it is not drawn: a fixed column of blanks is that width of dead space on
+   every line of a new file. */
+.dif.added { grid-template-columns: 34px 22px 1fr; }
+.dif.added .on { display: none; }
+/* The two sides a call's own input carries, which have no position in the file:
+   there are no numbers to draw, so the columns for them follow the numbers off
+   the row rather than sitting empty. Declared after `.dif.added` so a
+   position-less create takes this template, not that one's. */
+.dif.bare { grid-template-columns: 22px 1fr; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }
 .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
 .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
-/* What the model thought. Collapsed, carrying the first of its own words: the
-   terminal's vocabulary for a block nothing else shows, where its own arm for
-   this block only sets a running status and counts the characters. Dim, because
-   it is not what the assistant said - and the words, not a label, because the
-   row's whole job is to show that there was something here. */
-details.think { margin: 3px 0; }
-details.think > summary { list-style: none; display: flex; align-items: center; gap: 9px;
-  padding: 4px 10px; border-radius: 9px; cursor: pointer; color: var(--dim);
-  font-size: var(--fs-base); }
-details.think > summary::-webkit-details-marker { display: none; }
-details.think > summary:hover { background: rgba(27,33,48,.45); }
-details.think > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The row's kind, ahead of its words: the mark is the same size as the small
-   mono labels a row carries rather than the 15px a tool row's glyph takes, so
-   the word stays the thing that reads.
-   Named `tkind` rather than `kind`, which the family-tree group disclosure
-   already owns - a bare `.kind` here would inherit its 3px margins and make
-   every thinking row taller, which is the trap this sheet's `.knd` was split
-   out of in the first place. */
-details.think > summary .tkind { display: flex; align-items: center; gap: 7px;
-  flex: none; color: var(--dim); }
-details.think > summary .tkind .ic { width: 12px; height: 12px; flex: 0 0 12px; }
-details.think > summary .tkind .word { color: var(--muted); }
-details.think > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-details.think > summary:hover .arw { color: var(--muted); }
-details.think[open] > summary { color: var(--muted); }
-details.think[open] > summary .arw { color: var(--accent); }
+/* The bulb's ink nearly fills its box, so at the marks' 15px its base sat below
+   the text's baseline and the row read low; 13 with a 1px lift sits it with
+   the words. */
+details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
+  transform: translateY(-1px); }
+
+/* A skill row's mark says what the row is, not how it ended, so it takes the
+   lane's dim rather than the ok tone a check wears. */
+details.leaf > summary .st.sk { color: var(--dim); }
+
+/* The picture a call read: the row opens onto it, with the harness's own
+   dimension line under it as the caption. */
+.shot img { max-width: 100%; max-height: 320px; display: block;
+  border: 1px solid var(--line); border-radius: 6px; }
+.shot .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 5px; }
+
+/* The way back to the foot, over the column's corner while the reader is away
+   from it: a request, not a status - the state is that it is there at all. */
+.follow { position: absolute; right: 18px; bottom: 14px; z-index: 6;
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--s2); border: 1px solid var(--line); color: var(--muted);
+  cursor: pointer; }
+.follow:hover { color: var(--text); border-color: var(--ctl); }
+.follow .ic { width: 16px; height: 16px; }
+
+/* The header's compaction count, which is a way in rather than a label: it
+   takes the reader to the latest cut. */
+.sess .f-comp { background: none; border: 0; padding: 0; font: inherit;
+  color: inherit; cursor: pointer; }
+.sess .f-comp:hover { color: var(--accent); }
 
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
@@ -853,12 +925,14 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
-.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 34px;
+.card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 12px;
   font-size: var(--fs-base); color: var(--muted); }
 .card .q .qm { color: var(--accent); flex: none; }
-.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 24px;
-  font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
+.card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 27px;
+  font-family: var(--mono); font-size: var(--fs-base); color: var(--muted); }
 .card .a .am { color: var(--dim); }
+/* The typed row's empty slot, holding the column a picked row's mark takes. */
+.card .a .gap { width: 15px; flex: 0 0 15px; }
 .card .a .picked { color: var(--ok); }
 .card .a .typed { color: var(--text); font-weight: 700; }
 
@@ -892,6 +966,9 @@ details.cpoint[open] > summary .word { color: var(--accent); }
 details.cpoint[open] > summary .arw { color: var(--accent); }
 .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
 .cpoint .cpbody b { color: var(--text); font-weight: 500; }
+/* The continuation summary under the facts, as prose rather than the body's
+   own line. */
+.cpoint .cpbody .sum { margin-top: 10px; }
 /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
 .hooks { margin: 4px 0;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
@@ -902,28 +979,17 @@ details.hooks > summary .arw { color: var(--dim); }
 details.hooks[open] > summary .arw { color: var(--accent); }
 /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
 details.hooks > summary .st.err { color: var(--bad); }
-/* A hook's own run: the lifecycle frames the CLI sends while one hook runs,
-   folded to a row per run rather than a row per frame. Collapsed on the hook it
-   matched and the state it reached, with what it printed in the body - a
+/* A hook's own run draws as a tool row: the lane says the kind, the mark says
+   how the run exited, and the state reads beside the name. The lifecycle
+   frames the CLI sends while one hook runs fold to a row per run rather than a
+   row per frame, with what it printed behind the row's own open - a
    session-start hook prints the boilerplate it injects into the session, so a
-   run drawn whole beneath its turn would bury it. A run opens no turn of its
-   own and belongs to at most one.
-   Named `hookrun` rather than `hook`, which is one letter from the chip's own
-   `.hooks` above: either of those two would read as a typo for the other. */
-.hookrun { margin: 3px 0;
-  font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
-.hookrun > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
-.hookrun > summary::-webkit-details-marker { display: none; }
-.hookrun:hover { color: var(--muted); }
-/* The row's kind, ahead of the name: the chip above leads with the same word,
-   so a run reads as that family rather than as an unlabelled line. */
-.hookrun > summary .hk { flex: none; }
-.hookrun > summary .nm { color: var(--text); font-weight: 700; white-space: nowrap; }
-.hookrun > summary .ev { color: var(--muted); }
-/* A failed run's mark takes the bad tone rather than the row's DIM. */
-details.hookrun > summary .st.err { color: var(--bad); }
-details.hookrun > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-details.hookrun[open] > summary .arw { color: var(--accent); }
+   run drawn whole beneath its turn would bury it. */
+details.hookrow > summary .ev { color: var(--muted); }
+/* An inbound row's tail line: the delivery's first line, at the warning tone
+   where the wire said the delivery is elevated. */
+details.inboundrow > summary .ev { color: var(--muted); }
+details.inboundrow > summary .ev.warn { color: var(--warn); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
@@ -984,6 +1050,11 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   color: var(--warn); }
 .conv .notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07);
   color: var(--bad); }
+/* The retry line's own two parts: which attempt of how many, right-floated,
+   and the delay under the line. Nothing else draws these. */
+.conv .notice .chip { float: right; font-family: var(--mono); font-size: 11.5px;
+  border: 1px solid rgba(201,161,59,.35); border-radius: 999px; padding: 1px 7px; margin-left: 10px; }
+.conv .notice .sub2 { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px; }
 
 /* ---------- the built-in typefaces ---------- */
 
@@ -1092,6 +1163,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    icon would otherwise sit at the top of it. */
 .send { color: var(--accent); background: none; border: 0; cursor: pointer;
   display: grid; place-items: center; width: 24px; height: 24px; }
+/* The stop, beside the send and at the same floor: a turn in flight is the one
+   thing the reader can act on without words, so the control is there whether
+   or not the box holds anything. Dim rather than the failed red, which the
+   rest of the sheet reserves for something having gone wrong. */
+.stop { color: var(--dim); background: none; border: 0; cursor: pointer;
+  display: grid; place-items: center; width: 24px; height: 24px; margin-left: 4px; }
+.stop:hover { color: var(--bad); }
 .foot { display: flex; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 
@@ -1102,7 +1180,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .keys { display: flex; gap: 14px; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--dim); }
 .ac .keys { padding: 7px 13px; border-top: 1px solid var(--line); }
-.dock .keys { padding-left: 31px; }
+.dock .keys { display: flex; justify-content: center; gap: 16px; }
 
 /* A key is drawn as the key it is, in the chip the mockups draw: `<kbd>` and
    not a span borrowing `k`, which is the sheet's keyword token for code. */
@@ -1280,31 +1358,33 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 
 /* ---------- the dock: the box morphed into a prompt ---------- */
 
-.dock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
-  background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
-  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
-  display: flex; flex-direction: column; gap: 11px; }
+/* The dock is a panel, not a warning: a neutral edge and the page's own
+   surface, with the accent left to the row being marked and the question's
+   own mark. The warm border and the orange-tinted gradient read as a state
+   rather than as a surface. */
+.dock { border: 1px solid var(--line); border-radius: 14px;
+  background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
+  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
+  display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-/* The marker the mockup draws, as the sheet's own chevron turned to face the
-   way the rest of the queue waits - the same glyph a disclosure uses open,
-   which is what `▼` was standing in for. */
-.dock .queue .more { transform: rotate(90deg); }
 .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
-.dock .head .t { font-weight: 650; color: var(--text); }
+.dock .head .t { font-weight: 650; color: var(--text); white-space: nowrap; }
 .dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
-/* The message a held Slack post would send, set apart because it is the thing
-   being approved. */
-.dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
-  font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
-  border-radius: 0 10px 10px 0; padding: 9px 13px;
-  background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
-.opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+/* The listbox takes the keyboard when the dock arrives, and its own marked row
+   is what shows where the keyboard is - so the page's accent focus ring, which
+   drew an orange rectangle around every option at once, is not drawn here. */
+.dock .opts:focus, .dock .opts:focus-visible { outline: none; }
+/* Aligned to the option's own LINE rather than to the row's full height: an
+   option whose description wraps under it would otherwise centre its mark
+   between the two, so the mark sat against the description instead of the
+   thing being chosen. */
+.opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
 .opt .ic { color: var(--dim); }
 .opt .ic.ok { color: var(--ok); }
@@ -1313,26 +1393,50 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
-/* What choosing an option means, on its own line under the name and in the
-   name's own column, which is where the terminal draws it. */
+/* What choosing an option means: its own line, starting in the same column the
+   option's own words start in - no indent of its own, so it reads as the
+   option's sentence continuing rather than as a caption hanging off it. A
+   description can run to several lines, and every one of them starts there; a
+   token with nowhere to break is split rather than widening the dock. */
 .opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
-  margin-top: 1px; }
-.opt.sel { background: var(--sel); }
+  padding: 0; margin: 0; overflow-wrap: anywhere; }
+/* The marked option is marked by its own words: brighter and heavier, and
+   nothing painted behind them - a tint read as a state of the row rather than
+   as the thing being chosen, and one carrying padding dragged the label out
+   of the column every other option's text sits in. */
 .opt.sel .lbl { color: var(--text); font-weight: 600; }
 .opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
-  border: 1.5px solid var(--ctl); display: grid; place-items: center; }
-/* A question's row that is on, which the answer carries with it. The box is
-   the only mark of it, so it is drawn rather than implied by the pointer. */
+  margin-top: 2px; border: 1px solid var(--ctl); display: grid; place-items: center; }
+/* A question's row that is on: the outline in the ok tone and the check inside
+   it. The box draws a thinner edge than the other marks, and the check runs
+   longer and thicker within it - the tick is the weight, the square is only
+   the frame. */
 .opt .box2.on { border-color: var(--ok); color: var(--ok); }
+.opt .box2 .ic { width: 12px; height: 12px; }
+/* The single-answer counterpart of the box, in the same slot: a circle that
+   fills on the row being taken, in the tone the box's check takes. */
+.opt .radio { width: 15px; height: 15px; flex: 0 0 15px; margin-top: 2px;
+  border-radius: 50%; border: 1.5px solid var(--ctl); display: grid; place-items: center; }
+.opt .radio.on { border-color: var(--ok); }
+.opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); }
+/* The escape row's slot, held empty so its words line up with every option's. */
+.opt .slot { width: 15px; flex: 0 0 15px; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
-.dock .preview { margin-left: 31px; border: 1px solid var(--line); border-radius: 9px;
-  padding: 7px 11px; font-family: var(--mono); font-size: var(--fs-data);
-  color: var(--muted); white-space: pre-wrap; }
-.dock .notes { margin-left: 31px; border: 1px solid var(--ctl); border-radius: 9px;
-  padding: 7px 11px; font-family: inherit; font-size: var(--fs-base); color: var(--text);
-  background: rgba(13,17,26,.6); resize: none; }
+/* The marked option's own prose: markdown on the wire, rendered as markdown
+   rather than shown as its source. Flush with the dock's own left edge - it is
+   a panel belonging to the prompt, not a caption hanging off the option - and
+   the renderer's own `.prose` rules set the type inside. */
+.dock .preview { border: 1px solid var(--line); border-radius: 9px;
+  padding: 7px 11px; font-size: var(--fs-data); color: var(--muted); }
+/* The escape hatch is the row's own box, so the field carries no chrome of
+   its own: no border, no second panel, no indent - the caret sits in the row
+   under its own words, and what is typed there is the answer. */
+.dock .notes { width: 100%; margin: 0; border: 0; background: none; padding: 0;
+  font-family: inherit; font-size: inherit; color: var(--text); resize: none; outline: none; }
+.dock .notes::placeholder { color: var(--dim); }
 /* A take that is still running behind the dock: the whole indicator on this
    surface, so a prompt cannot swallow a recording that is still going. */
 .dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;
@@ -1360,20 +1464,65 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    monitors ---------- */
 
 .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
-.sess .facts > span { white-space: nowrap; }
-.sess .facts .sep { color: var(--line); }
+/* Effort rides the model it belongs to: it is a property of that choice, so it
+   reads as the choice's suffix rather than a fact of its own. */
+.sess .facts .eff { color: var(--dim); }
+/* The model is the one fact whose length a name decides, so it is the one that
+   gives: it ellipsises rather than pushing the row past its column, and the
+   whole name rides the control's title. */
+.sess .facts .f-model { flex: 0 1 auto; min-width: 84px; overflow: hidden;
+  text-overflow: ellipsis; }
 
-/* The seat's own id, in the slot the account chip left. It is the one fact
-   here a reader COPIES rather than reads, so it is monospaced - its glyphs
-   line up with the ids printed elsewhere - and the control sits beside it.
-   That control carries more padding than a chip this size would otherwise
-   take, because it is a click target on a page read at 430 too. */
+/* The seat's own id, in the slot the account chip left: the short form on the
+   row, the whole id on the control's title - and the copy is a MARK rather
+   than a word, sized with the row's other marks, so the id reads as data
+   rather than the pair reading as a form. The mark carries the outcome too:
+   a check once the write landed, an x when it could not, with the reason in
+   the title. */
 .sess .facts .sid { display: flex; align-items: center; gap: 7px; }
 .sess .facts .id { font-family: var(--mono); color: var(--muted); }
-.sess .facts .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  background: none; border: 1px solid var(--line); border-radius: 5px;
-  padding: 3px 7px; cursor: pointer; }
-.sess .facts .cp:hover { color: var(--text); border-color: var(--ctl); }
+.sess .cp { color: var(--dim); background: none; border: 1px solid var(--line);
+  border-radius: 5px; padding: 2px 5px; cursor: pointer;
+  display: inline-flex; align-items: center; }
+.sess .cp .ic { width: 13px; height: 13px; }
+.sess .cp:hover { color: var(--text); border-color: var(--ctl); }
+.sess .cp.ok { color: var(--ok); border-color: var(--ok); }
+.sess .cp.bad { color: var(--bad); border-color: var(--bad); }
+
+/* Everything the row had to fold, one tap away: the facts stay reachable at
+   every width, which is what keeps the collapse honest. A popover on the
+   header's own edge, so it belongs to the row it opened from. */
+.sess > .more { position: relative; flex: none; display: none; margin-left: 2px; }
+.sess > .more > summary { list-style: none; cursor: pointer; color: var(--dim);
+  padding: 3px 4px; border: 1px solid transparent; border-radius: 6px;
+  display: flex; align-items: center; }
+.sess > .more > summary::-webkit-details-marker { display: none; }
+.sess > .more > summary:hover { color: var(--muted); border-color: var(--line); }
+.sess > .more[open] > summary { color: var(--accent); border-color: rgba(244,118,0,.45); }
+.sess > .more .mfacts { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20;
+  background: var(--s2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 12px; min-width: 250px; box-shadow: 0 14px 38px rgba(0,0,0,.45); }
+/* The fold, widest tier first, each step moving a unit behind the tap: the
+   whole session id, then the compaction count out of the context unit, then
+   the org, then the model - the permission it runs under is the one that
+   stays, because it is the state a reader acts on and its colour is the
+   signal. The seat and the context figure never fold, and below them the cell
+   drops its track and keeps the number. Sited after the tables above so an
+   equal-specificity `display` there does not outrank a tier: source order is
+   what decides between them. */
+@container (max-width: 1000px) {
+  .sess .facts .f-session { display: none; }
+  .sess .facts > .fact.f-model::before { content: none; }
+  .sess > .more { display: flex; } }
+@container (max-width: 820px) { .sess .facts .f-comp { display: none; } }
+@container (max-width: 700px) { .sess .f-org { display: none; } }
+@container (max-width: 660px) {
+  .sess .facts .f-model { display: none; }
+  .sess .facts > .fact.f-mode::before { content: none; } }
+@container (max-width: 450px) {
+  .sess .facts .f-mode { display: none; }
+  .sess .facts > .fact.f-ctx::before { content: none; } }
+@container (max-width: 300px) { .sess .facts .f-ctx .tk { display: none; } }
 
 /* The palette carries no blue, so plan mode takes the accent: the chips
    have to stay apart from each other more than they have to match the

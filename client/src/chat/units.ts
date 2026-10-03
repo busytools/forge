@@ -8,14 +8,21 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Seven places it deliberately differs from the terminal, and each is a
+ * Nine places it deliberately differs from the terminal, and each is a
  * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
  *   it;
+ * - peer traffic and calls share one group: a message does not close the calls
+ *   above it, and the lane that took the latest row draws last;
+ * - a thinking block draws as a lane of that group, where the terminal has no
+ *   row for one at all - its arm only sets a running status and counts
+ *   characters;
  * - a question the assistant asked is a card rather than a call;
  * - an envelope that is not agent traffic is a notice rather than the reader's
- *   own turn;
+ *   own turn, and the three external kinds that carry something to read - a
+ *   cron fire, a Slack message, a Gotify push - join the group as lanes of
+ *   their own kind, the same shape every other lane draws;
  * - the harness's own reminder that a skill was already loaded draws as a
  *   notice rather than the reader's turn, where the terminal drops every wire
  *   user text live as an input echo and draws this one as a user turn on
@@ -44,7 +51,7 @@ import {
   type KindRow,
 } from './families';
 import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
-import { stripEscapes } from './text';
+import { firstLine, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
 export interface AnsweredQuestion {
@@ -53,13 +60,29 @@ export interface AnsweredQuestion {
   typed_note: string | null;
 }
 
+/** One call on a family's lane, with what the fold lists it by. */
+export interface CallLeaf {
+  /**
+   * The fold's own name for the row.
+   *
+   * **The wire's `tool_use` id, or the frame and block it arrived in where the
+   * wire gave none.** The fold computes it at the call (the way it names every
+   * row), because a view that fell back to the id alone would key two id-less
+   * calls of one family to an empty string - a duplicate key, which stops the
+   * whole turn drawing at mount.
+   */
+  key: string;
+  leaf: ToolLeaf;
+}
+
 /** One family's calls inside a group. */
 export interface FamilyLeaves {
+  tag: 'family';
   /** The class the row belongs to, which is what a view picks its glyph from. */
   row: KindRow;
   /** The word the row draws. */
   label: string;
-  calls: ToolLeaf[];
+  calls: CallLeaf[];
 }
 
 /** How loudly a notice reads. */
@@ -76,6 +99,13 @@ export type NoticeSeverity = 'info' | 'warning' | 'error';
 export interface Notice {
   severity: NoticeSeverity;
   text: string;
+  /**
+   * A right-floated progress tag, which only the retry line carries: which
+   * attempt of how many the CLI is on.
+   */
+  chip?: string;
+  /** A quieter tail under the line, which the retry line's delay rides in. */
+  sub?: string;
 }
 
 /** The lane a peer message draws on: the traffic's own three words. */
@@ -115,11 +145,57 @@ export interface PeerCard {
   status: CallStatus;
 }
 
-/** One lane of a message group: its kind, and the messages that arrived as it. */
+/** One lane of peer traffic: its kind, and the messages that arrived as it. */
 export interface MessageLane {
+  tag: 'message';
   kind: MessageKind;
   cards: PeerCard[];
 }
+
+/** One thing the model thought, as a lane's row. */
+export interface ThoughtLeaf {
+  /** The frame and block it came from, which is what the row is keyed by. */
+  key: string;
+  text: string;
+}
+
+/**
+ * One lane of thinking: what the model said to itself across a stretch of work.
+ *
+ * The terminal draws none of this - its own arm for a thinking block sets a
+ * running status and counts characters - so this lane exists because the words
+ * are on the wire and dropping them is the one thing a frame may not be. It
+ * rides the group rather than sitting between the calls: a thought is
+ * commentary ON the work, and its lane takes its place in the recency order
+ * like any other.
+ */
+export interface ThoughtLane {
+  tag: 'thought';
+  thoughts: ThoughtLeaf[];
+}
+
+/** One hook run, as a lane's row. */
+export interface HookLeaf {
+  /** The run's own id, or the frame it arrived on where the wire gave none. */
+  key: string;
+  run: HookRun;
+}
+
+/**
+ * One lane of hooks: the runs that fired across a stretch of work.
+ *
+ * A run is one row - its start, its progress and its ending are the same hook
+ * arriving three times - and the lane rides the group the way the thinking
+ * does, so a hook that fires between two calls sits among them in the recency
+ * order rather than as a row of its own kind.
+ */
+export interface HookLane {
+  tag: 'hook';
+  runs: HookLeaf[];
+}
+
+/** One lane of a group: a family's calls, peer traffic, thinking, hooks, deliveries. */
+export type Lane = FamilyLeaves | MessageLane | ThoughtLane | HookLane | InboundLane;
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -143,8 +219,6 @@ export interface HookRun {
   name: string;
   /** The event that fired it, and only where the name does not already say it. */
   event: string | null;
-  /** Where the run got to: `running`, or its outcome and the code it exited on. */
-  state: string;
   /** Whether it failed, which is the code the response reports it exited on. */
   failed: boolean;
   /**
@@ -205,9 +279,9 @@ export interface AttachedFile {
  * One thing a view draws, in the order the conversation produced it.
  *
  * `key` is the unit's identity in that list, and it exists because a live turn
- * is re-folded whole on every frame: a thinking row can land ABOVE units
- * already drawn, and a list keyed by position remounts everything below it,
- * closing whatever the reader had open. Keyed by this, the row is moved.
+ * is re-folded whole on every frame: a unit can land ABOVE others already
+ * drawn, and a list keyed by position remounts everything below it, closing
+ * whatever the reader had open. Keyed by this, the row is moved.
  */
 export type Unit =
   /** A turn the user wrote, with whatever they attached to it. */
@@ -215,25 +289,31 @@ export type Unit =
   /** Prose the assistant wrote. */
   | { kind: 'text'; key: string; text: string }
   /**
-   * What the model thought before it said anything.
+   * A stretch of work: a lane per tool family, per kind of peer traffic and for
+   * the thinking, drawn as one group.
    *
-   * The wire carries it as its own block and nothing drew it, which is a frame
-   * dropped rather than a shape chosen: the row is drawn collapsed, carrying
-   * the thinking's own first words.
-   */
-  | { kind: 'thinking'; key: string; text: string }
-  /** A maximal run of consecutive tool calls, drawn as one group. */
-  | { kind: 'group'; key: string; families: FamilyLeaves[]; status: CallStatus }
-  | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
-  /**
-   * A run of peer messages, drawn as one group with a lane per kind.
+   * **The lanes are a timeline rather than a taxonomy.** An item joins the lane
+   * it belongs to - a call its family, a message its kind, a thought the
+   * thinking - wherever it lands in the stretch, and the lane that took the
+   * latest row draws last, so the one still working sits where the eye already
+   * is. The order derives from the item sequence, so a page re-read from the
+   * transcript draws what the live one drew.
    *
-   * A lone message is a group of one, which is the one place this shape
+   * A lone message is a group of one lane, which is the one place this shape
    * departs from the terminal: its own fold holds a messaging group back until
    * it holds two.
    */
-  | { kind: 'messages'; key: string; lanes: MessageLane[]; status: CallStatus }
+  | { kind: 'group'; key: string; lanes: Lane[]; status: CallStatus }
+  | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
   | { kind: 'notice'; key: string; notice: Notice }
+  /**
+   * A skill the CLI loaded into the conversation.
+   *
+   * Its body arrives as the reader's own user frame, which nobody typed; the
+   * row names the skill and holds the whole body, so the skill stays readable
+   * without wearing an attribution it never had.
+   */
+  | { kind: 'skill'; key: string; name: string; body: string }
   | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[]; errors: string[] }
   /**
    * Where the conversation was cut and the transcript replaced.
@@ -241,7 +321,9 @@ export type Unit =
    * The wire carries it as a `system` frame of its own subtype, and the fold
    * had no arm for it - so the frame that records the boundary drew nothing,
    * which is a frame dropped rather than a shape chosen. Its metadata carries
-   * the trigger and the counts either side of the cut.
+   * the trigger and the counts either side of the cut; `summary` is the
+   * continuation prompt the CLI sends after it, which is what the row opens
+   * onto, and it is null where that prompt never arrived.
    */
   | {
       kind: 'compaction';
@@ -249,9 +331,8 @@ export type Unit =
       trigger: string | null;
       preTokens: number | null;
       postTokens: number | null;
+      summary: string | null;
     }
-  /** One hook's own run, drawn collapsed on the hook and the state it reached. */
-  | { kind: 'hook'; key: string; run: HookRun }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -304,6 +385,8 @@ interface Frame {
   hook_event?: unknown;
   outcome?: unknown;
   exit_code?: unknown;
+  /** `NoticeSeverity`, on the core's own line about a command. */
+  severity?: unknown;
   output?: unknown;
   stdout?: unknown;
   stderr?: unknown;
@@ -314,6 +397,11 @@ interface Frame {
   summary?: unknown;
   status?: unknown;
   estimated_tokens_delta?: unknown;
+  /** The CLI's retry report: which attempt, of how many, after what, waiting how long. */
+  attempt?: unknown;
+  max_retries?: unknown;
+  retry_delay_ms?: unknown;
+  error_status?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
@@ -421,6 +509,96 @@ function isSkillReminder(text: string): boolean {
 }
 
 /**
+ * A skill's body, which the CLI injects as the reader's own user frame.
+ *
+ * The frame is one text block: a plumbing line naming the skill's directory,
+ * then the skill's markdown. That line is the only marker the wire carries -
+ * the disk's own meta flag does not survive to it - so the row is built from
+ * it, its name read off the path, and the line itself dropped from the body.
+ */
+export function skillBody(text: string): { name: string; body: string } | null {
+  const [lead, ...rest] = text.split('\n');
+  if (lead === undefined || !lead.startsWith('Base directory for this skill:')) return null;
+  const parts = lead.slice('Base directory for this skill:'.length).trim().split('/');
+  // A plugin-cached skill's path ends in its version, so the name is the last
+  // segment that is not one: `.../ui-ux-pro-max/2.13.0` is `ui-ux-pro-max`.
+  const name = parts.reverse().find((part) => part !== '' && !/^\d/.test(part)) ?? 'skill';
+  return { name, body: rest.join('\n').trim() };
+}
+
+/**
+ * Whether a frame is one of the local-command family, which the chat draws
+ * nothing for.
+ *
+ * The four heads are the CLI's own: the caveat announcing what follows, the
+ * echo of a command, and a local command's output. They are the reader's
+ * typing in the LAUNCH terminal arriving as plumbing, and the terminal's own
+ * chat filters the same set - so this is a decided ignore rather than an
+ * accidental drop. Ved's ruling, 2026-10-03, after the audit measured the
+ * family across every transcript: caveat 31, command echo 75, output 30, and
+ * nothing else in the family.
+ */
+function isLocalCommand(text: string): boolean {
+  const held = text.trimStart();
+  return (
+    held.startsWith('<local-command-caveat>') ||
+    held.startsWith('<local-command-stdout>') ||
+    held.startsWith('<command-name>') ||
+    held.startsWith('<command-message>')
+  );
+}
+
+/** The harness's own line about an image, or null for every other text. */
+function imageNoteOf(text: string): string | null {
+  const held = text.trim();
+  return held.startsWith('[Image: original ') ? held : null;
+}
+
+/**
+ * A skill's body carried as the skill's OWN markdown, for a body the CLI
+ * injects when the Skill tool loads one.
+ *
+ * That carrier has no plumbing line: the frame IS the skill, opening on its
+ * title heading (`# PR Review Loop` for `pr-review-loop`). The name is the
+ * heading, so the pairing is by that - normalized, because the two spellings
+ * differ in case and separator - and the whole text is the body.
+ */
+export function headingNameOf(text: string): string | null {
+  const lead = text.trimStart().split('\n')[0] ?? '';
+  const match = /^#{1,6}\s+(.+)$/.exec(lead.trim());
+  return match?.[1] ?? null;
+}
+
+/** A skill name as its words, so `pr-review-loop` and `Pr Review Loop` agree. */
+function normalizedSkill(name: string): string {
+  return name.toLowerCase().replaceAll(/[-_:]/g, ' ').replaceAll(/\s+/g, ' ').trim();
+}
+
+/**
+ * Whether a `Skill` call's own input names the skill a body names.
+ *
+ * The spellings differ two ways: a plugin skill is `ui-ux-pro-max:ui-ux-pro-max`
+ * where the path ends `ui-ux-pro-max`, and a tool-invoked body's heading is
+ * `Pr Review Loop` where the call says `pr-review-loop`.
+ */
+export function namesSkill(want: string, name: string): boolean {
+  if (want === name || want.endsWith(`:${name}`) || want.startsWith(`${name}:`)) return true;
+  const held = normalizedSkill(want);
+  const wanted = normalizedSkill(name);
+  return held === wanted || held.includes(wanted) || wanted.includes(held);
+}
+
+/**
+ * The continuation prompt a compaction leaves behind, which nobody typed.
+ *
+ * It arrives as a user frame right after the boundary frame, so the fold hands
+ * it to the compaction row rather than drawing it as the reader's own turn.
+ */
+function isContinuation(text: string): boolean {
+  return text.startsWith('This session is being continued from a previous conversation');
+}
+
+/**
  * Whether a `queued_command` block is the harness's own background-completion
  * notice, which nobody typed and this page does not draw.
  *
@@ -511,8 +689,36 @@ function messageStatus(result: Block | undefined): CallStatus {
   return result.is_error === true ? 'failed' : 'completed';
 }
 
-/** What an envelope's prose turned into: a peer message, or a line nobody typed. */
-type Envelope = { kind: 'peer'; card: PeerCard } | { kind: 'notice'; notice: Notice };
+/** The external kinds an inbound line draws as a lane of its own. */
+export type InboundKind = 'cron' | 'slack' | 'gotify';
+
+/** One inbound delivery, as its lane's row draws it. */
+export interface InboundLeaf {
+  /** The frame and block it arrived in, which is what the row is keyed by. */
+  key: string;
+  /** The row's title: the schedule, the channel, or the app. */
+  title: string;
+  /** The whole of what arrived, which the row opens onto. */
+  body: string;
+  /** Whether the row reads at the warning tone: an elevated delivery. */
+  elevated: boolean;
+}
+
+/** One lane of inbound deliveries: a kind's own lines, in arrival order. */
+export interface InboundLane {
+  tag: 'inbound';
+  kind: InboundKind;
+  rows: InboundLeaf[];
+}
+
+/**
+ * What an envelope's prose turned into: a peer message, an inbound lane's
+ * row, or a line nobody typed.
+ */
+type Envelope =
+  | { kind: 'peer'; card: PeerCard }
+  | { kind: 'inbound'; inbound: InboundKind; title: string; body: string; elevated: boolean }
+  | { kind: 'notice'; notice: Notice };
 
 /**
  * A Slack id is not a name to print.
@@ -622,12 +828,11 @@ function inbound(text: string, self: Self | null): Envelope | null {
     const title = cut === -1 ? raw : raw.slice(0, cut);
     const message = cut === -1 ? '' : raw.slice(cut + 1);
     return {
-      kind: 'notice',
-      notice: {
-        severity: priority >= 5 ? 'warning' : 'info',
-
-        text: `app '${parts[0]}' \u{b7} priority ${priority}: ${title}\n${message}`.trimEnd(),
-      },
+      kind: 'inbound',
+      inbound: 'gotify',
+      title: `${parts[0]} \u{b7} priority ${priority}`,
+      body: `${title}\n${message}`.trimEnd(),
+      elevated: priority >= 5,
     };
   }
 
@@ -650,13 +855,16 @@ function inbound(text: string, self: Self | null): Envelope | null {
         ? `${parts[0]} \u{b7} ${parts[1]}`
         : `${parts[0]} \u{b7} ${parts[1]} \u{b7} ${named}`;
     return {
-      kind: 'notice',
-      notice: { severity: 'info', text: `${head}: ${said}`.trimEnd() },
+      kind: 'inbound',
+      inbound: 'slack',
+      title: head,
+      body: said.trimEnd(),
+      elevated: false,
     };
   }
 
   if (header === 'Cron') {
-    return { kind: 'notice', notice: { severity: 'info', text: body } };
+    return { kind: 'inbound', inbound: 'cron', title: firstLine(body), body, elevated: false };
   }
 
   return null;
@@ -713,7 +921,7 @@ function address(fields: Record<string, unknown>): string | null {
 }
 
 /** The card a question call draws, with whatever the person answered. */
-function questionCard(input: unknown, answer: unknown, key: string): Unit {
+function questionCard(input: unknown, answer: unknown, key: string): Unit | null {
   const questions = obj(input)['questions'];
   const answers = obj(obj(answer)['answers']);
   const annotations = obj(obj(answer)['annotations']);
@@ -733,12 +941,23 @@ function questionCard(input: unknown, answer: unknown, key: string): Unit {
         ? [recorded]
         : [];
     const picked = values.filter((value) => value !== '' && labels.includes(value));
+    // The annotation first: it is the field the CLI fills with what was TYPED,
+    // and a selected value that is not one of the question's own labels is the
+    // escape row's label - so reading values first drew "you typed: Tell the
+    // agent something else" where the reader's own words should be.
     const typed =
-      values.find((value) => value !== '' && !labels.includes(value)) ??
       str(obj(annotations[text]), 'notes') ??
+      values.find((value) => value !== '' && !labels.includes(value)) ??
       null;
 
     asked.push({ question: text, picked_labels: picked, typed_note: typed === '' ? null : typed });
+  }
+  // A question still waiting is not drawn here at all: the dock is its row
+  // while it waits, and the card that carried both the question and its answer
+  // read as a second copy of the prompt rather than as the record of one. It
+  // appears the moment an answer lands.
+  if (!asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
+    return null;
   }
   return { kind: 'question', key, asked };
 }
@@ -791,6 +1010,42 @@ function beside(sentence: string, word: string | null): string {
  * array, when the frame carries one, is the CLI's own diagnostic of it. Both
  * go in one line, because a failure is one thing.
  */
+/**
+ * The core's own severity word, narrowed where it enters.
+ *
+ * `NoticeSeverity` on the Rust side is two levels; a word this page does not
+ * know reads as an informational line, because a line nobody can classify is
+ * not a failure to shout about.
+ */
+function noticeSeverity(value: unknown): NoticeSeverity {
+  return value === 'error' ? 'error' : 'info';
+}
+
+/**
+ * The terminal's own words for a retry classification, so the two views name
+ * the same failure the same way (`app/events/api_retry.rs`'s `error_label`).
+ */
+function retryLabel(value: unknown): string {
+  switch (value) {
+    case 'authentication_failed':
+    case 'billing_error':
+    case 'rate_limit':
+    case 'invalid_request':
+    case 'server_error':
+    case 'max_output_tokens':
+      return value;
+    default:
+      return 'connection error';
+  }
+}
+
+/** The delay as the terminal writes it: tenths of a second past 1s, else ms. */
+function retryDelay(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const tenths = Math.floor((ms + 50) / 100);
+  return `${Math.floor(tenths / 10)}.${tenths % 10}s`;
+}
+
 function turnFailure(frame: Frame): Notice | null {
   if (frame.is_error !== true) return null;
   const subtype = str(frame, 'subtype');
@@ -863,23 +1118,9 @@ function hookFailed(frame: Frame): boolean {
 function hookRun(frame: Frame): HookRun {
   const name = str(frame, 'hook_name') ?? '';
   const fired = str(frame, 'hook_event') ?? '';
-  // An empty word is no word, the way the frames' own sentences are read: a
-  // frame answering `''` has said nothing about how it ended, and joining it
-  // would draw a row whose state trails off.
-  const outcome = str(frame, 'outcome') || null;
-  const exit = typeof frame.exit_code === 'number' ? frame.exit_code : null;
   return {
     name,
     event: fired !== '' && !name.includes(fired) ? fired : null,
-    // A run that has not answered yet has neither an outcome nor a code, so it
-    // says the state it is in rather than leaving the half of a line it would
-    // fill looking like a hole.
-    state:
-      outcome === null && exit === null
-        ? 'running'
-        : [outcome, exit === null ? null : `exit ${exit}`]
-            .filter((part): part is string => part !== null && part !== '')
-            .join(' \u{b7} '),
     failed: hookFailed(frame),
     body: hookOutput(frame),
   };
@@ -921,17 +1162,12 @@ function noticeFields(words: string): {
  * means "read from disk". A turn still being written draws a running report
  * from what its frames already carry.
  */
-export function fold(
-  messages: readonly unknown[],
-  cwd: string | null = null,
-  self: Self | null = null,
-  live = false,
-): Unit[] {
+export function fold(messages: readonly unknown[], self: Self | null = null, live = false): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
-  /** What each question was answered with, by the call that asked it. */
-  const answers = new Map<string, unknown>();
+  /** The result's own record, by the call it answers: a question's answer, and a mutation's hunks and marks. */
+  const records = new Map<string, unknown>();
   /**
    * The LAST frame the turn failed on, which is what bounds the sweep.
    *
@@ -952,6 +1188,13 @@ export function fold(
   const tasks = new Map<string, BackgroundTask>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
+  /**
+   * The `Skill` calls this turn holds, by the name each asked for and with the
+   * row each drew, so a body arriving behind its call still finds the row that
+   * should open onto it - and does so even across a flush, because the leaf is
+   * the row the lane holds rather than a copy.
+   */
+  const skillCalls: Array<{ want: string; leaf: ToolLeaf }> = [];
   for (const [at, frame] of frames.entries()) {
     // A dispatched agent's frames are not the conversation, and its verdict is
     // not the session's: a sub-agent's failed result says nothing about the
@@ -1030,11 +1273,12 @@ export function fold(
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         results.set(block.tool_use_id, block);
-        // The record of what was answered rides beside the result, keyed the
-        // same way, and a question is drawn from it rather than from the
-        // result's own text - which is the CLI saying it was answered.
+        // The result's own record rides beside the block, keyed the same way:
+        // a question is drawn from it rather than from the result's text -
+        // which is the CLI saying it was answered - and a mutation's hunks and
+        // its marks are in it too.
         if (frame.tool_use_result !== undefined) {
-          answers.set(block.tool_use_id, frame.tool_use_result);
+          records.set(block.tool_use_id, frame.tool_use_result);
         }
       }
     }
@@ -1047,8 +1291,28 @@ export function fold(
   };
 
   const units: Unit[] = [];
-  let run: Array<{ row: KindRow; label: string; leaf: ToolLeaf; key: string }> = [];
-  let peers: PeerCard[] = [];
+  /**
+   * The stretch's items, in the order they arrived: tool calls, peer cards and
+   * thoughts.
+   *
+   * A peer message does not close the calls above it, and a call does not close
+   * the traffic: the lane an item belongs to is what it joins, wherever in the
+   * stretch it lands.
+   */
+  type Item =
+    | { tag: 'call'; row: KindRow; label: string; leaf: ToolLeaf; key: string }
+    | { tag: 'card'; card: PeerCard }
+    | { tag: 'thought'; key: string; text: string }
+    | { tag: 'hook'; key: string; run: HookRun }
+    | {
+        tag: 'inbound';
+        kind: InboundKind;
+        key: string;
+        title: string;
+        body: string;
+        elevated: boolean;
+      };
+  let pending: Item[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
   /**
@@ -1078,10 +1342,110 @@ export function fold(
     { input: number; output: number; read: number; written: number }
   >();
   /**
-   * The row each hook run opened, by the id the CLI ties its frames together
-   * with: a run's later frames rewrite that row rather than drawing beside it.
+   * The row the last boundary opened, by index, so the continuation prompt
+   * that follows it lands on that row rather than drawing as the reader's.
    */
-  const hookRows = new Map<string, number>();
+  let lastCompaction: number | null = null;
+
+  /**
+   * Hang a skill's body on the call that loaded it, by name.
+   *
+   * The first unclaimed call naming that skill takes it - the order bodies
+   * arrive in is the order their calls were made - and the row is the leaf
+   * itself, so a run that flushed between the two changes nothing.
+   */
+  const attachSkillBody = (name: string, body: string): boolean => {
+    for (const held of skillCalls) {
+      if (held.leaf.skill !== null || !namesSkill(held.want, name)) continue;
+      held.leaf.skill = body;
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Rewrite the row a hook run opened, wherever it currently sits.
+   *
+   * A later frame of one run replaces that run's row rather than drawing
+   * beside it - and the replacement counts as the stretch's latest, which is
+   * what the lane order reads, so a run still working sits at the group's end.
+   */
+  const rewriteHook = (key: string, run: HookRun): boolean => {
+    for (const [index, item] of pending.entries()) {
+      if (item.tag !== 'hook' || item.key !== key) continue;
+      pending.splice(index, 1);
+      pending.push({ tag: 'hook', key, run });
+      return true;
+    }
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit?.kind !== 'group') continue;
+      const lane = unit.lanes.find(
+        (held): held is HookLane => held.tag === 'hook' && held.runs.some((one) => one.key === key),
+      );
+      if (lane === undefined) continue;
+      lane.runs = lane.runs.map((held) => (held.key === key ? { key, run } : held));
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Rewrite the retry line this turn already drew, or open it.
+   *
+   * A retry run reports every attempt it makes and the row is the RUN, so a
+   * later frame replaces its own line - the shape the terminal's deduped turn
+   * notice draws, and why a storm is one row rather than fifty.
+   */
+  const upsertNotice = (key: string, notice: Notice): void => {
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit?.kind !== 'notice' || unit.key !== key) continue;
+      units[at] = { kind: 'notice', key, notice };
+      return;
+    }
+    push({ kind: 'notice', key, notice });
+  };
+
+  /**
+   * Hang the harness's line about an image on the call that read it.
+   *
+   * The note arrives as a user frame right after the result, while the call
+   * is still pending, so the last pending call holding an image is the row
+   * the note belongs to. A note no call holds draws as its own line instead.
+   */
+  const attachImageNote = (note: string): boolean => {
+    for (let at = pending.length - 1; at >= 0; at -= 1) {
+      const item = pending[at];
+      if (item?.tag === 'call' && item.leaf.image !== null && item.leaf.imageNote === null) {
+        item.leaf.imageNote = note;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /** Attach a continuation prompt to the compaction row it belongs under. */
+  const attachContinuation = (text: string, key: string): void => {
+    flushWork();
+    const row = lastCompaction;
+    const held = row === null ? undefined : units[row];
+    if (row !== null && held !== undefined && held.kind === 'compaction') {
+      units[row] = { ...held, summary: text };
+      return;
+    }
+    // No boundary frame reached this fold, so the prompt's own row carries
+    // what it has: the cut happened, whatever the wire said about it.
+    units.push({
+      kind: 'compaction',
+      key,
+      trigger: null,
+      preTokens: null,
+      postTokens: null,
+      summary: text,
+    });
+    lastCompaction = units.length - 1;
+  };
 
   /** The running totals across the distinct messages seen so far, or null before any. */
   const liveUsage = (): { input: number; output: number; read: number; written: number } | null => {
@@ -1096,63 +1460,120 @@ export function fold(
     return totals;
   };
 
-  const flushRun = (): void => {
-    const calls = run;
-    run = [];
-    // The first element is the guard and the group's name in one: a call always
-    // carries its own key, so no counter is invented here - one would move as
+  const flushWork = (): void => {
+    const items = pending;
+    pending = [];
+    // The first item is the guard and the group's name in one: it always
+    // carries its own id, so no counter is invented here - one would move as
     // the turn grows, which is the remount this keying exists to stop.
-    const first = calls[0];
+    const first = items[0];
     if (first === undefined) return;
-    const families: FamilyLeaves[] = [];
-    for (const entry of calls) {
-      const held = families.find(
-        (family) => family.label === entry.label && family.row.kind === entry.row.kind,
-      );
-      if (held === undefined)
-        families.push({ row: entry.row, label: entry.label, calls: [entry.leaf] });
-      else held.calls.push(entry.leaf);
-    }
-    units.push({
-      kind: 'group',
-      key: first.key,
-      families,
-      status: aggregateStatus(calls.map((entry) => entry.leaf.status)),
-    });
-  };
-
-  const flushPeers = (): void => {
-    const cards = peers;
-    peers = [];
-    const first = cards[0];
-    if (first === undefined) return;
-    // One lane per KIND, first seen first - not one per run. The terminal's own
-    // tally draws a lane per kind over the whole group, and a lane's word is
-    // what a view opens its leaves by: two runs of the same kind would give two
-    // lanes the same word, which a keyed list refuses at mount.
-    const lanes: MessageLane[] = [];
-    const seen = new Map<MessageKind, MessageLane>();
-    for (const card of cards) {
-      const held = seen.get(card.kind);
-      if (held !== undefined) {
-        held.cards.push(card);
+    /** When each lane last took a row, which is the lane order's only input. */
+    const families: Array<{ lane: FamilyLeaves; at: number }> = [];
+    const traffic: Array<{ lane: MessageLane; at: number }> = [];
+    const thought: Array<{ lane: ThoughtLane; at: number }> = [];
+    const hooks: Array<{ lane: HookLane; at: number }> = [];
+    const inbounds: Array<{ lane: InboundLane; at: number }> = [];
+    /** What each row came back as, which is what the group's roll-up reads. */
+    const statuses: CallStatus[] = [];
+    for (const [index, item] of items.entries()) {
+      if (item.tag === 'call') {
+        statuses.push(item.leaf.status);
+        const held = families.find(
+          (entry) => entry.lane.label === item.label && entry.lane.row.kind === item.row.kind,
+        );
+        if (held === undefined) {
+          families.push({
+            lane: {
+              tag: 'family',
+              row: item.row,
+              label: item.label,
+              calls: [{ key: item.key, leaf: item.leaf }],
+            },
+            at: index,
+          });
+        } else {
+          held.lane.calls.push({ key: item.key, leaf: item.leaf });
+          held.at = index;
+        }
         continue;
       }
-      const lane: MessageLane = { kind: card.kind, cards: [card] };
-      seen.set(card.kind, lane);
-      lanes.push(lane);
+      if (item.tag === 'thought') {
+        const held = thought[0];
+        if (held === undefined) {
+          thought.push({
+            lane: { tag: 'thought', thoughts: [{ key: item.key, text: item.text }] },
+            at: index,
+          });
+        } else {
+          held.lane.thoughts.push({ key: item.key, text: item.text });
+          held.at = index;
+        }
+        continue;
+      }
+      if (item.tag === 'hook') {
+        const held = hooks[0];
+        if (held === undefined) {
+          hooks.push({
+            lane: { tag: 'hook', runs: [{ key: item.key, run: item.run }] },
+            at: index,
+          });
+        } else {
+          held.lane.runs.push({ key: item.key, run: item.run });
+          held.at = index;
+        }
+        continue;
+      }
+      if (item.tag === 'inbound') {
+        // One lane per kind, like the traffic: a lane's word is what a view
+        // opens it by, and two lanes of one kind would give two lanes the
+        // same word, which a keyed list refuses at mount.
+        const row = {
+          key: item.key,
+          title: item.title,
+          body: item.body,
+          elevated: item.elevated,
+        };
+        const held = inbounds.find((entry) => entry.lane.kind === item.kind);
+        if (held === undefined) {
+          inbounds.push({ lane: { tag: 'inbound', kind: item.kind, rows: [row] }, at: index });
+        } else {
+          held.lane.rows.push(row);
+          held.at = index;
+        }
+        continue;
+      }
+      statuses.push(item.card.status);
+      // One lane per kind, not one per run: a lane's word is what a view opens
+      // its leaves by, and two lanes of the same kind would give two lanes the
+      // same word, which a keyed list refuses at mount.
+      const held = traffic.find((entry) => entry.lane.kind === item.card.kind);
+      if (held === undefined) {
+        traffic.push({
+          lane: { tag: 'message', kind: item.card.kind, cards: [item.card] },
+          at: index,
+        });
+      } else {
+        held.lane.cards.push(item.card);
+        held.at = index;
+      }
     }
+    // The lane that took the latest row draws last: the one still working sits
+    // where the eye already is, and the order derives from the item sequence,
+    // so a page reopened from the transcript draws what the live one drew.
+    const lanes = [...families, ...traffic, ...thought, ...hooks, ...inbounds]
+      .sort((a, b) => a.at - b.at)
+      .map((entry) => entry.lane);
     units.push({
-      kind: 'messages',
-      key: `p-${first.id}`,
+      kind: 'group',
+      key: first.tag === 'card' ? `p-${first.card.id}` : first.key,
       lanes,
-      status: aggregateStatus(cards.map((c) => c.status)),
+      status: aggregateStatus(statuses),
     });
   };
 
   const push = (unit: Unit): void => {
-    flushRun();
-    flushPeers();
+    flushWork();
     units.push(unit);
   };
 
@@ -1172,6 +1593,36 @@ export function fold(
     }
 
     if (frame.type === 'system') {
+      // The core's own line about the seat: a command's answer, or why one
+      // did not run. Nothing the CLI emitted carries it, so it is marked with
+      // a subtype of its own rather than folded out of anything here.
+      if (frame.subtype === 'forge_notice') {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'notice'),
+          notice: { severity: noticeSeverity(frame.severity), text: str(frame, 'text') ?? '' },
+        });
+        continue;
+      }
+      // The CLI's own retry report, after a call it refused. One row per run
+      // - a later attempt rewrites this line rather than drawing beside it -
+      // and the words are the terminal's own, so a 429 storm reads as a line
+      // saying why rather than as a stall.
+      if (frame.subtype === 'api_retry') {
+        const attempt = typeof frame.attempt === 'number' ? frame.attempt : null;
+        const cap = typeof frame.max_retries === 'number' ? frame.max_retries : null;
+        const delay = typeof frame.retry_delay_ms === 'number' ? frame.retry_delay_ms : null;
+        if (attempt !== null && cap !== null && delay !== null) {
+          const status = typeof frame.error_status === 'number' ? frame.error_status : null;
+          upsertNotice('api-retry', {
+            severity: 'warning',
+            text: `API retry after ${retryLabel(frame.error)}${status === null ? '' : ` HTTP ${status}`}`,
+            chip: `attempt ${attempt} / ${cap}`,
+            sub: `retrying in ${retryDelay(delay)}`,
+          });
+        }
+        continue;
+      }
       // The counter arrives as a subtype of its own, and the wire's running
       // value restarts at every thinking block - so a turn's estimate is the
       // sum of its deltas rather than the last absolute one. Read before the
@@ -1222,13 +1673,16 @@ export function fold(
           trigger: str(metadata, 'trigger'),
           preTokens: count('pre_tokens'),
           postTokens: count('post_tokens'),
+          summary: null,
         });
+        lastCompaction = units.length - 1;
         continue;
       }
       // A hook's own lifecycle: one row per RUN, because the frames are one
-      // hook's start, its interim output and its ending. It closes the run
-      // above it, the way the summary does, so a hook that fired between two
-      // calls draws between them rather than above the pair.
+      // hook's start, its interim output and its ending - the later frames
+      // rewrite the run's own row rather than drawing beside it. The run rides
+      // the group as a lane of its own, so a hook that fired between two calls
+      // sits among them in the recency order.
       if (
         frame.subtype === 'hook_started' ||
         frame.subtype === 'hook_progress' ||
@@ -1237,18 +1691,9 @@ export function fold(
         const run = str(frame, 'hook_id');
         // A frame with no id can be paired with no other, so it draws as itself
         // rather than being folded onto a run it may not belong to.
-        const opened = run === null ? undefined : hookRows.get(run);
-        const row: Unit = {
-          kind: 'hook',
-          key: run === null ? keyOf(at, frame, 'hook') : `hook-${run}`,
-          run: hookRun(frame),
-        };
-        if (opened === undefined) {
-          push(row);
-          if (run !== null) hookRows.set(run, units.length - 1);
-        } else {
-          units[opened] = row;
-        }
+        const key = run === null ? keyOf(at, frame, 'hook') : `hook-${run}`;
+        if (run !== null && rewriteHook(key, hookRun(frame))) continue;
+        pending.push({ tag: 'hook', key, run: hookRun(frame) });
         continue;
       }
       continue;
@@ -1283,8 +1728,7 @@ export function fold(
 
     if (frame.type === 'result') {
       sawResult = true;
-      flushRun();
-      flushPeers();
+      flushWork();
       units.push({
         kind: 'report',
         info: reportOf(frame, model, thinking, endedAt),
@@ -1329,18 +1773,34 @@ export function fold(
       if (block.type === 'text' && typeof block.text === 'string') {
         if (frame.type === 'user') {
           const stripped = stripEscapes(block.text);
+          // The local-command family draws nothing at all: it is the reader's
+          // typing in the launch terminal, and the terminal's own chat filters
+          // the same heads. A decided ignore, not a dropped frame.
+          if (isLocalCommand(stripped)) continue;
           const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
-              // A peer message is a row the CLI answered as a turn of its own,
-              // so the run above it belongs to the turn before: it closes here.
-              flushRun();
               // A header with no id leaves nothing in the data to name the
-              // batch by, so the frame and block stand in - position, but a
+              // card by, so the frame and block stand in - position, but a
               // stable one, where a counter would move as the turn grows.
-              peers.push({
-                ...envelope.card,
-                id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+              pending.push({
+                tag: 'card',
+                card: {
+                  ...envelope.card,
+                  id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+                },
+              });
+            } else if (envelope.kind === 'inbound') {
+              // A delivery by cron, Slack or Gotify joins the work as a lane
+              // of its own kind, the way a family's calls do - one shape for
+              // every lane, so a new external kind is a lane and a glyph.
+              pending.push({
+                tag: 'inbound',
+                kind: envelope.inbound,
+                key: keyOf(at, frame, blockAt),
+                title: envelope.title,
+                body: envelope.body,
+                elevated: envelope.elevated,
               });
             } else {
               push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
@@ -1356,6 +1816,45 @@ export function fold(
               key: keyOf(at, frame, blockAt),
               notice: { severity: 'info', text: stripped },
             });
+            continue;
+          }
+          // Same rule for the frames nobody typed that arrive as the
+          // reader's: a loaded skill's body and a compaction's continuation
+          // prompt. Each rides the row it belongs to rather than the
+          // reader's own.
+          const skill = skillBody(stripped);
+          const carried = skill?.name ?? headingNameOf(stripped);
+          if (carried !== null) {
+            if (attachSkillBody(carried, skill?.body ?? stripped.trim())) continue;
+            // Unclaimed: a body with the CLI's plumbing line still gets a row
+            // of its own rather than being dropped; a heading frame is an
+            // ordinary user frame and falls through as it always did.
+            if (skill !== null) {
+              push({
+                kind: 'skill',
+                key: keyOf(at, frame, blockAt),
+                name: skill.name,
+                body: skill.body,
+              });
+              continue;
+            }
+          }
+          if (isContinuation(stripped)) {
+            attachContinuation(stripped, keyOf(at, frame, blockAt));
+            continue;
+          }
+          // The harness's own line about the image the call above it just
+          // read: it is the picture's caption on that call's row, not a turn
+          // of the reader's own.
+          const note = imageNoteOf(stripped);
+          if (note !== null) {
+            if (!attachImageNote(note)) {
+              push({
+                kind: 'notice',
+                key: keyOf(at, frame, blockAt),
+                notice: { severity: 'info', text: note },
+              });
+            }
             continue;
           }
         }
@@ -1381,10 +1880,10 @@ export function fold(
         // whole point is the words it carries.
         if (block.thinking.trim() !== '') {
           // Not `push`: a thought is commentary ON the work rather than a
-          // separator between pieces of it, so nothing is flushed here. The run
-          // stays whole across the row, and so does a batch of peer traffic -
-          // the row draws above both.
-          units.push({ kind: 'thinking', key: keyOf(at, frame, blockAt), text: block.thinking });
+          // separator between pieces of it, so nothing is flushed here. The
+          // stretch stays whole across it, and the thinking lane takes its
+          // place in the recency order like any other lane.
+          pending.push({ tag: 'thought', key: keyOf(at, frame, blockAt), text: block.thinking });
         }
         continue;
       }
@@ -1399,10 +1898,21 @@ export function fold(
         const envelope = inbound(stripEscapes(words), self);
         if (envelope !== null) {
           if (envelope.kind === 'peer') {
-            flushRun();
-            peers.push({
-              ...envelope.card,
-              id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+            pending.push({
+              tag: 'card',
+              card: {
+                ...envelope.card,
+                id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+              },
+            });
+          } else if (envelope.kind === 'inbound') {
+            pending.push({
+              tag: 'inbound',
+              kind: envelope.inbound,
+              key: keyOf(at, frame, blockAt),
+              title: envelope.title,
+              body: envelope.body,
+              elevated: envelope.elevated,
             });
           } else {
             push({ kind: 'notice', key: keyOf(at, frame, blockAt), notice: envelope.notice });
@@ -1434,26 +1944,39 @@ export function fold(
           id !== '' ? id : keyOf(at, frame, blockAt),
         );
         if (card !== null) {
-          flushRun();
-          peers.push(card);
+          pending.push({ tag: 'card', card });
           continue;
         }
         if (isQuestion(name)) {
-          push(
-            questionCard(
-              block.input,
-              answers.get(id),
-              id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
-            ),
+          const card = questionCard(
+            block.input,
+            records.get(id),
+            id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
           );
+          if (card !== null) push(card);
           continue;
         }
-        flushPeers();
-        run.push({
+        const leaf = leafOf(
+          id,
+          name,
+          block.input,
+          results.get(id),
+          records.get(id),
+          tasks.get(id),
+          abandoned,
+        );
+        if (name.toLowerCase() === 'skill') {
+          // A skill's body follows its call as a user frame; the claim is
+          // recorded here, and the body attaches to this row when it arrives.
+          const want = str(obj(block.input), 'skill');
+          if (want !== null) skillCalls.push({ want, leaf });
+        }
+        pending.push({
+          tag: 'call',
           row: rowOf(name),
           label: labelOf(name),
           key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
-          leaf: leafOf(id, name, block.input, results.get(id), cwd, tasks.get(id), abandoned),
+          leaf,
         });
         continue;
       }
@@ -1472,8 +1995,7 @@ export function fold(
     }
   }
 
-  flushRun();
-  flushPeers();
+  flushWork();
   // A live turn that has not settled draws its own row from what its frames
   // already carry: the stamps give the span so far, the assistant messages'
   // usage gives the token side, the counter frames give thinking. The

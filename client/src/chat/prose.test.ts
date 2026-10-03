@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { fenceLanguage, languageOf, renderCode } from './code';
-import { renderProse } from './prose';
+import { renderInlineProse, renderProse } from './prose';
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
@@ -117,6 +117,16 @@ describe('markdown, as the maintained module renders it', () => {
     expect(html).toContain('<li>one</li>');
     expect(html).toContain('<code>code</code>');
     expect(html).toContain('<strong>bold</strong>');
+  });
+
+  it('renders a row own line inline: emphasis and code, no block around them', () => {
+    // A row is one line by the design's rule, so its line takes the marks it
+    // can draw and none of the wrappers a block would arrive in.
+    const html = renderInlineProse('the **fold** joins and `cargo check` runs');
+
+    expect(html, 'bold draws bold').toContain('<strong>fold</strong>');
+    expect(html, 'code draws code').toContain('<code>cargo check</code>');
+    expect(html, 'and nothing wraps it in a paragraph').not.toContain('<p>');
   });
 
   it('never lets raw HTML through into the page', () => {

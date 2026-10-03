@@ -1,13 +1,18 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
 
-  import type { Connection } from '../socket';
+  import Icon from '../components/Icon.svelte';
+  import { subjectKey } from '../protocol';
+  import { report, type Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
+  import CopyButton from './CopyButton.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
   import SessionId from './SessionId.svelte';
   import { watchSession, type SessionRead } from './live';
+  import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
     headerFacts,
@@ -62,6 +67,57 @@
   const record: SessionRecord | null = $derived(read.wire);
   const seat = $derived(seatState(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
+  /** The count the folded panel names, where the row's unit draws the figure. */
+  const compactionCount = $derived(record?.conversation.compaction_count ?? 0);
+
+  /**
+   * The seams this page has already asked the core to start.
+   *
+   * The terminal refuses a second click on a seat that is mid-spawn for the
+   * same reason: a second ask races the first, and the seat scrambles. Here
+   * the ask is an effect rather than a click handler, so it re-runs on every
+   * frame that touches the roster - and the roster names a seat only once
+   * `Spawning` has landed, so without this the ask would repeat until then.
+   *
+   * Nothing draws from it, so an ordinary `Set` would do - the reactive one
+   * is what the sheet's lint takes for a mutable `Set`, and it costs nothing
+   * here.
+   */
+  const asked = new SvelteSet<string>();
+
+  /**
+   * Start a lead nothing is running behind, which is the terminal's own rail
+   * click (`switch_to_project_lead`). A seat the roster already names is up or
+   * on its way, and switching to it is what the route this page is on already
+   * did.
+   *
+   * A project's own lead is the one seat the core can start by name: a worker
+   * is spawned by the lead that owns it, so a worker seat with nothing behind
+   * it stays as it is rather than asking for a spawn the core cannot place.
+   *
+   * The only refusal this can meet is the socket's own - the ask names a
+   * project the roster carries, so the core has one to start, and its refusal
+   * for a project it does not know cannot be reached from here.
+   */
+  $effect(() => {
+    const open = connection;
+    const seatSlot = slot;
+    if (seatSlot.label !== 'lead' || !seat.waking) return;
+    const key = subjectKey({ session: seatSlot });
+    if (asked.has(key)) return;
+    asked.add(key);
+    try {
+      void open.dispatch({
+        spawn_project: { project_name: seatSlot.project, launch_settings: {} },
+      });
+    } catch (error) {
+      // A closed socket has nothing to start: the seat keeps drawing its
+      // not-running state, which is the truth about it - and the click did
+      // nothing, so it is reported rather than swallowed.
+      report('the spawn was not sent', error);
+      asked.delete(key);
+    }
+  });
   // Beside the context figure, which is the row the terminal draws it on: the
   // count belongs to the conversation and not to the header, and the row is
   // where a reader looks for it.
@@ -125,7 +181,6 @@
   });
 
   const conversationProps = $derived<ConversationProps>({
-    cwd: record?.state.scan_cwd ?? '',
     waking: seat.waking,
     reason: seat.reason,
     compacting: record?.composer.compacting ?? false,
@@ -182,39 +237,84 @@
       </button>
       <span class="dot {seat.mark}"></span>
       <span class="nm">{seat.name}</span>
-      <span class="mono dim">{slot.org}</span>
+      <span class="mono dim f-org">{slot.org}</span>
       <span class="facts">
         {#if facts !== null}
           {#if facts.sessionId !== null}
-            <SessionId id={facts.sessionId} />
-            <span class="sep">{'\u{b7}'}</span>
+            <span class="fact f-session"><SessionId id={facts.sessionId} /></span>
           {/if}
-          <span><span class="fk">model</span> <span class="v">{facts.model}</span></span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span><span class="fk">effort</span> <span class="v">{facts.effort}</span></span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span>
+          <!-- Effort rides the model it belongs to: a property of that choice,
+               so it reads as the choice's suffix rather than a fact of its own,
+               with the whole reading on the control's title. -->
+          <span
+            class="fact f-model"
+            title={`model ${facts.model} ${'\u{b7}'} effort ${facts.effort}`}
+            ><span class="fk">model</span> <span class="v">{facts.model}</span>
+            <span class="eff">{facts.effort}</span></span
+          >
+          <span class="fact f-mode">
             <span class="fk">mode</span>
             {#if facts.mode !== null}<span class="perm {facts.mode.klass}">{facts.mode.wire}</span
               >{:else}<span class="perm">{'\u{2014}'}</span>{/if}
           </span>
-          <span class="sep">{'\u{b7}'}</span>
-          <span class="cm">
+          <!-- The conversation's context is one unit: how full it is, and how
+               many times it has been cut. The track is drawn only for a usage
+               that was reported - an empty track stands for an unknown value as
+               readily as for a real zero, and nothing in the record says which
+               of the two this is. -->
+          <span class="cm fact f-ctx">
             <span class="fk">ctx</span>
-            <!-- The track is drawn only for a usage that was reported. An empty
-                 track stands for an unknown value as readily as for a real zero,
-                 and nothing in the record says which of the two this is. -->
             {#if facts.percent !== null}
               <span class="tk"><span class="fl" style={`width:${facts.percent}%`}></span></span>
             {/if}
             <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
+            {#if compactions !== null}
+              <!-- Tappable: the count is a fact about the conversation, and
+                   the one thing a reader wants from it is to see the latest
+                   cut - so the click takes them there. -->
+              {'\u{b7}'}
+              <button
+                class="f-comp"
+                type="button"
+                title="go to the latest compaction"
+                onclick={askCompaction}>{compactions}</button
+              >
+            {/if}
           </span>
-          {#if compactions !== null}
-            <span class="sep">{'\u{b7}'}</span>
-            <span>{compactions}</span>
-          {/if}
         {/if}
       </span>
+      {#if facts !== null}
+        <!-- Everything the row folds, one tap away: the facts stay reachable at
+             every width, which is what keeps the collapse honest. -->
+        <details class="more">
+          <summary title="every fact"><Icon name="dots" /></summary>
+          <div class="mfacts">
+            {#if facts.sessionId !== null}
+              <div class="kv">
+                <span class="k">session</span>
+                <span class="v">{facts.sessionId}<CopyButton id={facts.sessionId} /></span>
+              </div>
+            {/if}
+            <div class="kv"><span class="k">model</span><span class="v">{facts.model}</span></div>
+            <div class="kv"><span class="k">effort</span><span class="v">{facts.effort}</span></div>
+            <div class="kv">
+              <span class="k">mode</span>
+              <span class="v"
+                >{#if facts.mode !== null}<span class="perm {facts.mode.klass}"
+                    >{facts.mode.wire}</span
+                  >{:else}<span class="perm">{'\u{2014}'}</span>{/if}</span
+              >
+            </div>
+            <div class="kv">
+              <span class="k">ctx</span>
+              <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
+            </div>
+            <div class="kv">
+              <span class="k">compactions</span><span class="v">{compactionCount}</span>
+            </div>
+          </div>
+        </details>
+      {/if}
     </div>
 
     <!-- The column's element is the chat's own where a chat is mounted: it

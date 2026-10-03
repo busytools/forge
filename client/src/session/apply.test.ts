@@ -383,15 +383,15 @@ describe('applyUpdate', () => {
       expect(next).toBe(held);
     });
 
-    it('parks a held slack draft, and drops the one that expired', () => {
+    it('parks a held slack draft, and drops the one the core resolved', () => {
       const draft = { id: 'd1', workspace: 'Trust Machines', text: 'hello' };
       const held = applyUpdate(empty(), { slack_post_pending: { key: SLOT, draft } });
       expect(held.pending_ask).toEqual({ kind: 'slack_draft', request: draft });
 
       expect(
-        applyUpdate(held, { slack_draft_expired: { key: SLOT, id: 'd1' } }).pending_ask,
+        applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd1' } }).pending_ask,
       ).toBeNull();
-      expect(applyUpdate(held, { slack_draft_expired: { key: SLOT, id: 'd2' } })).toBe(held);
+      expect(applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd2' } })).toBe(held);
     });
   });
 
@@ -643,7 +643,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 57 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 58 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -664,6 +664,7 @@ const EVERY_VARIANT = [
   'connection_failed',
   'auth_required',
   'slash_command_error',
+  'notice',
   'runtime_reload_completed',
   'runtime_reload_failed',
   'set_mode_failed',
@@ -704,7 +705,7 @@ const EVERY_VARIANT = [
   'cron_prompt_appended',
   'slack_message_appended',
   'slack_post_pending',
-  'slack_draft_expired',
+  'slack_draft_resolved',
   'prompt_queued_while_busy',
   'review_activity_notice',
   'dictate_availability',
@@ -724,9 +725,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (57 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (58 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(57);
+    ).toBe(58);
   });
 
   it('classifies every variant the core can send', () => {

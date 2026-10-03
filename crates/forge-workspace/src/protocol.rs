@@ -866,6 +866,19 @@ pub enum PromptOrigin {
     View,
 }
 
+/// How loudly a [`SessionUpdate::Notice`] reads.
+///
+/// Two levels rather than a scale, because the core has two things to say:
+/// what a command found, and why one did not run.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeSeverity {
+    /// A command's own answer.
+    Info,
+    /// One that did not run.
+    Error,
+}
+
 /// Update envelope: forge-workspace -> forge-tui.
 ///
 /// Permission/Question variants do NOT carry response oneshots -
@@ -951,6 +964,24 @@ pub enum SessionUpdate {
     SlashCommandError {
         key: SessionSlot,
         message: String,
+    },
+    /// One line the core has for a view about `key`, which nothing else
+    /// carries.
+    ///
+    /// A command answered where both views dispatch has no other way to say
+    /// anything: the CLI emits no frame for a command it never saw, and the
+    /// line is the core's own answer rather than a view's opinion - what a
+    /// command found, or why it refused.
+    ///
+    /// **Live only, and that is intended.** The CLI writes no transcript row
+    /// for a line it never produced, so a view draws this on arrival and a
+    /// page that attaches afterwards has nothing to read it from. It is a
+    /// statement about the moment a command ran, not a record of the
+    /// conversation.
+    Notice {
+        key: SessionSlot,
+        severity: NoticeSeverity,
+        text: String,
     },
     RuntimeReloadCompleted {
         key: SessionSlot,
@@ -1234,11 +1265,14 @@ pub enum SessionUpdate {
         key: SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     },
-    /// A held Slack draft expired without a decision. The TUI retires
-    /// the dock prompt; nothing was sent.
-    SlackDraftExpired {
+    /// A held Slack draft left the core's registry: answered in some view,
+    /// expired, or its asking session gone. Each view keeps its own copy of
+    /// the parked draft, so this is the only update that clears it - and
+    /// `ending` is what a view that did not answer it says happened.
+    SlackDraftResolved {
         key: SessionSlot,
         id: Uuid,
+        ending: forge_primitives::slack::SlackDraftEnding,
     },
     /// A workspace-originated prompt (cron fire, peer, gotify or slack
     /// delivery, kick) landed while the target session's turn was in
@@ -1326,6 +1360,7 @@ impl SessionUpdate {
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
             | Self::SlashCommandError { key, .. }
+            | Self::Notice { key, .. }
             | Self::SetModeFailed { key, .. }
             | Self::SetModelFailed { key, .. }
             | Self::PermissionRequest { key, .. }
@@ -1348,7 +1383,7 @@ impl SessionUpdate {
             | Self::PromptQueuedWhileBusy { key }
             | Self::DictateEnded { key, .. }
             | Self::SlackPostPending { key, .. }
-            | Self::SlackDraftExpired { key, .. }
+            | Self::SlackDraftResolved { key, .. }
             | Self::RuntimeReloadCompleted { key }
             | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
@@ -1408,6 +1443,9 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::SlashCommandError { key, .. } => {
                 f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
+            }
+            Self::Notice { key, .. } => {
+                f.debug_struct("Notice").field("key", key).finish_non_exhaustive()
             }
             Self::RuntimeReloadCompleted { key } => {
                 f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
@@ -1553,9 +1591,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("workspace", &draft.workspace)
                 .field("conversation", &draft.conversation)
                 .finish_non_exhaustive(),
-            Self::SlackDraftExpired { key, id } => {
-                f.debug_struct("SlackDraftExpired").field("key", key).field("id", id).finish()
-            }
+            Self::SlackDraftResolved { key, id, ending } => f
+                .debug_struct("SlackDraftResolved")
+                .field("key", key)
+                .field("id", id)
+                .field("ending", ending)
+                .finish(),
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
             }
@@ -1611,6 +1652,16 @@ pub enum DispatchError {
         "no prompt of that kind is waiting on {tool_id} for key {key:?}: it has been answered, or it asked something else"
     )]
     NoPromptWaiting { key: SessionSlot, tool_id: String },
+    /// A Slack answer named a draft the registry does not hold. Its own
+    /// word rather than [`Self::NoPromptWaiting`]'s: a draft is answered by
+    /// its own id and names no tool call, and this line is drawn where the
+    /// dock stood. The three endings are the whole set a draft can have -
+    /// answered, expired, or its asking session gone - so the line names
+    /// them rather than guessing which one.
+    #[error(
+        "that Slack draft is no longer waiting: it has been answered, it expired, or its asking session went away"
+    )]
+    NoDraftWaiting { key: SessionSlot, id: Uuid },
 }
 
 #[cfg(test)]
@@ -1694,6 +1745,36 @@ mod session_update_variants {
             "the client's `EVERY_VARIANT` and the enum's variants are not the same set: the \
              census is what the client's own assertions filter over, so a variant missing from \
              it is a variant nothing checks",
+        );
+    }
+
+    /// The draft ending crosses as the core's own externally tagged enum, and
+    /// `draftEndingLine` narrows exactly that shape - a unit variant as its
+    /// name, the answered one as a name around its field. Neither side
+    /// compiles the link, so this is what holds serde's output and the
+    /// client's narrowing together.
+    #[test]
+    fn a_draft_ending_serialises_as_the_client_narrows_it() {
+        use crate::SessionSlot;
+        use forge_primitives::slack::SlackDraftEnding;
+        use uuid::Uuid;
+
+        let ending = |ending: SlackDraftEnding| {
+            let update = super::SessionUpdate::SlackDraftResolved {
+                key: SessionSlot::from_str_for_test("k"),
+                id: Uuid::nil(),
+                ending,
+            };
+            serde_json::to_value(update).expect("an update serialises")["slack_draft_resolved"]
+                ["ending"]
+                .clone()
+        };
+
+        assert_eq!(ending(SlackDraftEnding::Expired), serde_json::json!("expired"));
+        assert_eq!(ending(SlackDraftEnding::Abandoned), serde_json::json!("abandoned"));
+        assert_eq!(
+            ending(SlackDraftEnding::Answered { approved: true }),
+            serde_json::json!({ "answered": { "approved": true } }),
         );
     }
 

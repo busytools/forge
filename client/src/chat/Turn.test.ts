@@ -9,24 +9,22 @@ import { fold } from './units';
 
 /** A turn holding `messages`, drawn as the page draws it. */
 const draw = (...messages: unknown[]): string =>
-  render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null } })
-    .body;
+  render(Turn, { props: { turn: { key: 't1', messages, live: false } as HeldTurn } }).body;
 
 /** The same turn while its frames are still arriving. */
 const live = (...messages: unknown[]): string =>
-  render(Turn, { props: { turn: { key: 't1', messages, live: true } as HeldTurn, cwd: null } })
-    .body;
+  render(Turn, { props: { turn: { key: 't1', messages, live: true } as HeldTurn } }).body;
 
 /** The same turn, while a compaction is in flight. */
 const compacting = (...messages: unknown[]): string =>
   render(Turn, {
-    props: { turn: { key: 't1', messages, live: false } as HeldTurn, cwd: null, compacting: true },
+    props: { turn: { key: 't1', messages, live: false } as HeldTurn, compacting: true },
   }).body;
 
 /** The same turn as a page carried it, while the seat says a turn is running. */
 const seatRunning = (...messages: unknown[]): string =>
   render(Turn, {
-    props: { turn: { key: 't1', messages, live: false, running: true } as HeldTurn, cwd: null },
+    props: { turn: { key: 't1', messages, live: false, running: true } as HeldTurn },
   }).body;
 
 /** One assistant message carrying prose and the counters of its own call. */
@@ -66,10 +64,11 @@ const use = (id: string, name: string, input: unknown): unknown => ({
   input,
 });
 
-const result = (id: string, value: string): unknown => ({
+const result = (id: string, value: string, record?: unknown): unknown => ({
   type: 'user',
   message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: value }] },
   uuid: `r-${id}`,
+  ...(record === undefined ? {} : { tool_use_result: record }),
 });
 
 /** The frame a turn ends on, which is the only carrier of a session cost. */
@@ -89,7 +88,7 @@ const ended = (uuid: string, total: number): unknown => ({
  * - a fixture naming one would be asserting the name rather than the row.
  */
 const reportKeys = (turn: HeldTurn): string[] =>
-  fold(turn.messages, null, null, beingWritten(turn))
+  fold(turn.messages, null, beingWritten(turn))
     .filter((unit) => unit.kind === 'report')
     .map((unit) => unit.key);
 
@@ -154,11 +153,12 @@ describe('one turn, as the page draws it', () => {
     expect(answered, 'and the assistant prose still joins').not.toContain('<br>');
   });
 
-  it('draws what the model thought as a collapsed row carrying its own words', () => {
+  it('draws what the model thought as a collapsed row carrying its words joined', () => {
     // The terminal does not render thinking text at all - its arm sets a status
     // and traces a count - so this is the client beyond it rather than beside
-    // it, in the terminal's own collapsed vocabulary: the row carries the first
-    // of its words, and the whole of it is behind the row's open.
+    // it, in the terminal's own collapsed vocabulary: the row carries the
+    // thought joined into one line, and the layout breaks it at the row's
+    // width, where a reader expects the row to end.
     const body = draw(
       said([
         {
@@ -173,15 +173,14 @@ describe('one turn, as the page draws it', () => {
     // the whole render passes whether or not the row carries them.
     const at = body.indexOf('<span class="tn">');
     const summary = body.slice(at, body.indexOf('</summary>', at));
-    expect(summary, 'the row leads with the thinking own first words').toContain(
-      'first the model wondered',
+    expect(summary, 'the row leads with the thought joined, not cut at its newline').toContain(
+      'first the model wondered and then it kept going',
     );
-    expect(summary, 'and only that line of it').not.toContain('and then it kept going');
     expect(summary, 'and carries the shared disclosure chevron').toContain('#i-chev');
     expect(body, 'with the whole of it inside').toContain('and then it kept going');
   });
 
-  it("draws a hook's own run as the row the fold made, closed on its state", () => {
+  it("draws a hook's own run as the row the fold made, closed on its first line", () => {
     // The wiring is one line in this component's arm list, and nothing else
     // here covers it: the row's own tests render it directly, and axe sees it
     // through the page rather than through this turn.
@@ -209,15 +208,17 @@ describe('one turn, as the page draws it', () => {
       },
     );
 
-    expect(body, 'the run is a row of the turn rather than a drop').toContain('class="hookrun"');
+    expect(body, 'the run is a row of the turn rather than a drop').toContain(
+      'class="leaf hookrow"',
+    );
     // The summary alone, because the output is in the body too: an assertion on
-    // the whole render passes whether or not the state reached the closed row.
+    // the whole render passes whether or not the first line reached the row.
     const at = body.indexOf('<summary');
     const summary = body.slice(at, body.indexOf('</summary>', at));
-    expect(summary, 'the hook it matched and how it ended, without opening it').toContain(
-      'SessionStart:startup',
+    expect(summary, 'the hook it matched, without opening it').toContain('SessionStart:startup');
+    expect(summary, "with the output's first line on the closed row").toContain(
+      'repository is clean',
     );
-    expect(summary, 'with the state on the closed row').toContain('success');
     expect(body, 'and the whole of what it printed behind the row').toContain(
       'repository is clean',
     );
@@ -248,7 +249,7 @@ describe('one turn, as the page draws it', () => {
     // comes back here the moment the pin lets go, which is the half that makes
     // this a move rather than a loss.
     const at = (turn: HeldTurn, carried: string | null): string =>
-      render(Turn, { props: { turn, cwd: null, carried } }).body;
+      render(Turn, { props: { turn, carried } }).body;
     const settled: HeldTurn = {
       key: 't1',
       live: false,
@@ -282,7 +283,7 @@ describe('one turn, as the page draws it', () => {
     // a filter that dropped every report row would lose the row the pin never
     // took, for as long as the pin holds the one it did.
     const at = (turn: HeldTurn, carried: string | null): string =>
-      render(Turn, { props: { turn, cwd: null, carried } }).body;
+      render(Turn, { props: { turn, carried } }).body;
     const rows = (body: string): number => (body.match(/details class="turninfo"/g) ?? []).length;
     const twice: HeldTurn = {
       key: 't1',
@@ -313,10 +314,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
-    // A question splits a run, so this turn holds TWO groups with a card
-    // between them. A component that grouped its own rows instead of drawing
-    // the fold's would merge them into one - and every other test here passes
-    // either way, which is what makes this the one that pins it.
+    // An ANSWERED question splits a run, so this turn holds TWO groups with a
+    // card between them. A component that grouped its own rows instead of
+    // drawing the fold's would merge them into one - and every other test here
+    // passes either way, which is what makes this the one that pins it.
     const body = draw(
       said([
         use('c1', 'Read', { file_path: 'a.rs' }),
@@ -325,12 +326,14 @@ describe('one turn, as the page draws it', () => {
         }),
         use('c2', 'Read', { file_path: 'b.rs' }),
       ]),
+      result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
     );
 
-    const groups = body.match(/<details class="kind"/g) ?? [];
-    expect(groups, 'two runs, so two groups').toHaveLength(2);
+    const lanes = body.match(/<div class="knd"/g) ?? [];
+    expect(lanes, 'two runs, so two family rows').toHaveLength(2);
     expect(body).toContain('<div class="card">');
-    expect(body, 'and the first run keeps its own one call').toContain('1 tool call');
+    expect(body, 'and each run keeps its own call').toContain('a.rs');
+    expect(body, 'and the other its own').toContain('b.rs');
   });
 
   it('draws a search hit as a location and the line beneath it', () => {
@@ -465,11 +468,11 @@ describe('one turn, as the page draws it', () => {
     expect(at('Compacting context'), 'and above the report row').toBeLessThan(at('turninfo'));
   });
 
-  it('puts the compaction line above a hook run that landed after the result', () => {
+  it('draws a hook run that landed after the result in the group, line and all', () => {
     // A Stop hook's frames arrive at the turn's end, after the result that
-    // settled it, so that row is trailing furniture of the same family as the
-    // chip - the chip IS a hook summary. Left out of the footer set, where the
-    // line draws would depend on whether a hook happened to fire.
+    // settled it. The run is work the turn did, so it rides the group like
+    // any other lane - and the compaction line, which marks where the cut
+    // will land, draws at the turn's end after that work.
     const body = compacting(
       said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
       {
@@ -491,9 +494,13 @@ describe('one turn, as the page draws it', () => {
     );
 
     const at = (marker: string): number => body.indexOf(marker);
+    expect(
+      at('class="leaf hookrow"'),
+      'the run drew, in the group it belongs to',
+    ).toBeGreaterThanOrEqual(0);
     expect(at('Compacting context'), 'the line is drawn').toBeGreaterThanOrEqual(0);
-    expect(at('Compacting context'), 'and above the hook run that landed last').toBeLessThan(
-      at('hookrun'),
+    expect(at('Compacting context'), "and at the turn's end, after the work").toBeGreaterThan(
+      at('class="leaf hookrow"'),
     );
   });
 
@@ -572,7 +579,6 @@ describe('one turn, as the page draws it', () => {
     const seated = render(Turn, {
       props: {
         turn: { key: 't1', messages: [envelope('gateway-backend')], live: false } as HeldTurn,
-        cwd: null,
         slot: seat,
       },
     }).body;

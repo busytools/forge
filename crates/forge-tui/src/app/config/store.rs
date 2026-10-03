@@ -1,14 +1,7 @@
 use serde_json::{Map, Value};
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{DefaultPermissionMode, OutputStyle};
-use crate::agent::model::EffortLevel;
-
-const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
@@ -16,11 +9,6 @@ const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
-    /// `None` when no session is bound. The file lives in the
-    /// workspace's shared config dir, and nothing can name that before
-    /// a spawn. There is deliberately no fallback: this path is also
-    /// what a saved setting is written back to.
-    pub settings: Option<PathBuf>,
     /// `None` when no project root resolved, which is the launchpad
     /// boot. There is deliberately no fallback path: a cwd-derived one
     /// would make the launch directory shape forge's settings.
@@ -29,7 +17,6 @@ pub struct SettingsPaths {
 }
 
 pub struct LoadedSettingsDocuments {
-    pub paths: SettingsPaths,
     pub settings_document: Value,
     pub local_settings_document: Value,
     pub preferences_document: Value,
@@ -37,9 +24,8 @@ pub struct LoadedSettingsDocuments {
 
 /// Workspace-backed entry point into the bridge's settings reader.
 /// Holds a borrowed `&Workspace` plus the active session's
-/// `&SessionSlot` so `load` / `resolve_paths` can ask the workspace
-/// for the bridge's documents + config_dir without TUI ever holding
-/// an `AgentHandle` directly.
+/// `&SessionSlot` so `load` can ask the workspace for the bridge's
+/// documents without TUI ever holding an `AgentHandle` directly.
 #[derive(Clone, Copy)]
 pub struct WorkspaceBridge<'a> {
     pub workspace: &'a Arc<forge_workspace::Workspace>,
@@ -51,7 +37,7 @@ pub fn load(
     project_root: Option<&Path>,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<LoadedSettingsDocuments, String> {
-    let paths = resolve_paths(home_override, project_root, bridge)?;
+    let paths = resolve_paths(home_override, project_root)?;
 
     // Production path delegates to the workspace facade so the same
     // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere.
@@ -83,70 +69,7 @@ pub fn load(
         ),
     };
 
-    Ok(LoadedSettingsDocuments {
-        paths,
-        settings_document,
-        local_settings_document,
-        preferences_document,
-    })
-}
-
-pub fn save(path: &Path, document: &Value) -> Result<(), String> {
-    let resolved = resolve_symlink(path)
-        .map_err(|err| format!("Failed to resolve settings symlink: {err}"))?;
-    let path = resolved.as_path();
-    let parent = path.parent().ok_or_else(|| "Settings path has no parent directory".to_owned())?;
-    if !parent.is_dir() {
-        // A link whose target directory is gone. Writing still repairs
-        // the canonical file, but building a tree for a stale link
-        // should not happen silently.
-        tracing::warn!(
-            target: "forge_tui::config",
-            path = %path.display(),
-            "settings symlink resolved to a path whose parent does not exist; creating it"
-        );
-    }
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("Failed to create settings directory: {err}"))?;
-
-    let normalized = normalized_root(document);
-    let temp_path = unique_temp_path(parent, path.file_name().and_then(std::ffi::OsStr::to_str));
-    let result = write_then_rename(&temp_path, path, &normalized);
-    if result.is_err() {
-        // Best-effort: a failed rename would otherwise leave
-        // `.settings.json.<nanos>.tmp` in the config dir forever.
-        // Propagate the original error, not the cleanup's.
-        if let Err(cleanup) = std::fs::remove_file(&temp_path) {
-            tracing::debug!(
-                target: "forge_tui::config",
-                error = %cleanup,
-                "failed to clean up settings temp file; original error follows"
-            );
-        }
-    }
-    result
-}
-
-fn write_then_rename(temp_path: &Path, path: &Path, document: &Value) -> Result<(), String> {
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temp_path)
-        .map_err(|err| format!("Failed to create settings temp file: {err}"))?;
-    serde_json::to_writer_pretty(&mut temp, document)
-        .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-    temp.write_all(b"\n").map_err(|err| format!("Failed to finalize settings file: {err}"))?;
-    temp.flush().map_err(|err| format!("Failed to flush settings file: {err}"))?;
-    temp.sync_all().map_err(|err| format!("Failed to sync settings file: {err}"))?;
-    drop(temp);
-    // Carry the existing file's mode over. settings.json is 0600 for a
-    // reason and a fresh temp file would otherwise widen it to 0644.
-    if let Ok(existing) = std::fs::metadata(path) {
-        std::fs::set_permissions(temp_path, existing.permissions())
-            .map_err(|err| format!("Failed to apply settings file mode: {err}"))?;
-    }
-    std::fs::rename(temp_path, path)
-        .map_err(|err| format!("Failed to move settings file into place: {err}"))
+    Ok(LoadedSettingsDocuments { settings_document, local_settings_document, preferences_document })
 }
 
 fn read_bool(document: &Value, path: &[&str]) -> Result<Option<bool>, ()> {
@@ -170,6 +93,7 @@ fn write_bool(document: &mut Value, path: &[&str], enabled: bool) {
     set_json_path(document, path, Value::Bool(enabled));
 }
 
+#[cfg(test)]
 fn write_string(document: &mut Value, path: &[&str], value: &str) {
     set_json_path(document, path, Value::String(value.to_owned()));
 }
@@ -177,22 +101,6 @@ fn write_string(document: &mut Value, path: &[&str], value: &str) {
 #[cfg(test)]
 fn write_missing(document: &mut Value, path: &[&str]) {
     remove_json_path(document, path);
-}
-
-pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["alwaysThinkingEnabled"])?.unwrap_or(false))
-}
-
-pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
-    match read_string(document, &["effortLevel"])? {
-        // Forge defaults to `max` effort when unset.
-        None => Ok(EffortLevel::Max),
-        Some(value) => EffortLevel::from_stored(&value).ok_or(()),
-    }
-}
-
-pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
-    write_string(document, &["effortLevel"], level.as_stored());
 }
 
 pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
@@ -204,13 +112,6 @@ pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
     write_bool(document, &["prefersReducedMotion"], enabled);
 }
 
-pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
-    match read_string(document, &["outputStyle"])? {
-        None => Ok(OutputStyle::Default),
-        Some(value) => OutputStyle::from_stored(&value).ok_or(()),
-    }
-}
-
 #[cfg(test)]
 pub fn set_model(document: &mut Value, model: Option<&str>) {
     match model {
@@ -219,79 +120,18 @@ pub fn set_model(document: &mut Value, model: Option<&str>) {
     }
 }
 
-pub fn model(document: &Value) -> Result<Option<String>, ()> {
-    read_string(document, &["model"])
-}
-
-pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
-    match read_string(document, &["permissions", "defaultMode"])? {
-        // Forge defaults to `Auto` permission mode when unset (the
-        // CLI itself defaults to `default`). The override lives
-        // here so launch_settings / picker render all pick up the
-        // same forge-flavoured default.
-        None => Ok(DefaultPermissionMode::Auto),
-        Some(value) => DefaultPermissionMode::from_stored(&value).ok_or(()),
-    }
-}
-
 #[cfg(test)]
 pub fn set_respect_gitignore(document: &mut Value, enabled: bool) {
     write_bool(document, &["respectGitignore"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
-    write_string(document, &["permissions", "defaultMode"], mode.as_stored());
-}
-
-#[cfg(test)]
-pub fn set_language(document: &mut Value, value: Option<&str>) {
-    match value.map(str::trim).filter(|text| !text.is_empty()) {
-        Some(text) => write_string(document, &["language"], text),
-        None => write_missing(document, &["language"]),
-    }
-}
-
-#[cfg(test)]
-pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["alwaysThinkingEnabled"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_output_style(document: &mut Value, style: OutputStyle) {
-    write_string(document, &["outputStyle"], style.as_stored());
-}
-
-#[cfg(test)]
-pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["spinnerTipsEnabled"], enabled);
-}
-
-#[cfg(test)]
-pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
-    write_bool(document, &["terminalProgressBarEnabled"], enabled);
 }
 
 pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
     read_string(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV])
 }
 
-pub fn language(document: &Value) -> Result<Option<String>, ()> {
-    read_string(document, &["language"])
-}
-
-pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["spinnerTipsEnabled"])?.unwrap_or(true))
-}
-
-pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
-    Ok(read_bool(document, &["terminalProgressBarEnabled"])?.unwrap_or(true))
-}
-
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root: Option<&Path>,
-    bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
@@ -299,24 +139,7 @@ fn resolve_paths(
         dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
     };
 
-    // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR - delegate to the workspace facade so the
-    // env var is resolved in exactly one place. The home_override
-    // case (used by tests) and the no-bridge case (early init /
-    // disconnected) both bypass the workspace, and neither can name
-    // the session's config dir, so neither produces a path.
-    let settings = match (home_override, bridge) {
-        (None, Some(bridge)) => {
-            forge_server::surface::ViewSurface::new(Arc::clone(bridge.workspace))
-                .roster()
-                .config_dir(bridge.key)
-                .map(|dir| dir.join(SETTINGS_FILENAME))
-        }
-        (Some(_), _) | (None, None) => None,
-    };
-
     Ok(SettingsPaths {
-        settings,
         local_settings: project_root
             .map(|root| root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME)),
         preferences: home.join(PREFERENCES_FILENAME),
@@ -367,46 +190,6 @@ fn read_json_or_empty(path: &Path) -> Value {
     }
 }
 
-fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
-    let stamp =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    let filename = filename_hint.unwrap_or(SETTINGS_FILENAME);
-    parent.join(format!(".{filename}.{stamp}.tmp"))
-}
-
-/// Walk a symlink chain to the file it ultimately names, resolving
-/// each relative target against its own link's parent. Renaming onto
-/// a symlink replaces the link itself, which would break profile
-/// setups that point `~/.claude-<profile>/settings.json` at the
-/// canonical `~/.claude/settings.json`.
-///
-/// Not `canonicalize`, which fails on a dangling link - here a link
-/// whose target is missing should still resolve, so the write
-/// recreates the canonical file rather than clobbering the link.
-fn resolve_symlink(path: &Path) -> std::io::Result<PathBuf> {
-    // Chains are one hop in practice; the cap is only a cycle guard.
-    const MAX_HOPS: usize = 32;
-
-    let mut current = path.to_path_buf();
-    for _ in 0..MAX_HOPS {
-        match std::fs::symlink_metadata(&current) {
-            Ok(md) if md.file_type().is_symlink() => {
-                let link = std::fs::read_link(&current)?;
-                current = if link.is_absolute() {
-                    link
-                } else {
-                    current.parent().map_or_else(|| link.clone(), |parent| parent.join(&link))
-                };
-            }
-            _ => return Ok(current),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        format!("settings symlink chain exceeded {MAX_HOPS} hops: {}", path.display()),
-    ))
-}
-
 fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = document;
     for key in path {
@@ -415,6 +198,7 @@ fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
     Some(current)
 }
 
+#[cfg(test)]
 fn set_json_path(document: &mut Value, path: &[&str], value: Value) {
     let Some((last_key, parents)) = path.split_last() else {
         return;
@@ -469,13 +253,7 @@ fn remove_from_object_path(object: &mut Map<String, Value>, path: &[&str]) -> bo
     object.is_empty()
 }
 
-fn normalized_root(document: &Value) -> Value {
-    match document {
-        Value::Object(object) => Value::Object(object.clone()),
-        _ => Value::Object(Map::new()),
-    }
-}
-
+#[cfg(test)]
 fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
     if !document.is_object() {
         *document = Value::Object(Map::new());
@@ -500,12 +278,13 @@ mod tests {
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
-        assert_eq!(loaded.paths.settings, None, "no session to name a config dir");
+
+        let paths = resolve_paths(Some(dir.path()), Some(dir.path())).expect("paths");
         assert_eq!(
-            loaded.paths.local_settings,
+            paths.local_settings,
             Some(dir.path().join(".claude").join("settings.local.json"))
         );
-        assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
+        assert_eq!(paths.preferences, dir.path().join(".claude.json"));
     }
 
     /// The bridge arm - the one a live session takes - reads the root the
@@ -569,29 +348,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_setting_readers_apply_defaults() {
-        let document = Value::Object(Map::new());
-
-        // Forge defaults `defaultMode` to `Auto` when missing.
-        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
-        assert_eq!(output_style(&document), Ok(OutputStyle::Default));
-        assert_eq!(model(&document), Ok(None));
-    }
-
-    #[test]
-    fn persisted_setting_readers_reject_invalid_values() {
-        let invalid_output_style = serde_json::json!({ "outputStyle": "Verbose" });
-        let invalid_model = serde_json::json!({ "model": true });
-        let invalid_permission_mode = serde_json::json!({
-            "permissions": { "defaultMode": "not-a-mode" }
-        });
-
-        assert_eq!(output_style(&invalid_output_style), Err(()));
-        assert_eq!(model(&invalid_model), Err(()));
-        assert_eq!(default_permission_mode(&invalid_permission_mode), Err(()));
-    }
-
-    #[test]
     fn opus_version_pin_returns_none_when_unset() {
         let document = Value::Object(Map::new());
 
@@ -617,127 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn set_thinking_effort_level_writes_string_value() {
-        let mut document = Value::Object(Map::new());
-        set_thinking_effort_level(&mut document, EffortLevel::High);
-        assert_eq!(thinking_effort_level(&document), Ok(EffortLevel::High));
-    }
-
-    #[test]
     fn set_model_writes_or_removes_value() {
         let mut document = serde_json::json!({ "model": "sonnet" });
         set_model(&mut document, Some("opus"));
-        assert_eq!(model(&document), Ok(Some("opus".to_owned())));
+        assert_eq!(document["model"], serde_json::json!("opus"));
         set_model(&mut document, None);
-        assert_eq!(model(&document), Ok(None));
-    }
-
-    /// Regression: a symlink at the write target must be preserved.
-    /// `std::fs::rename(temp, symlink_path)` replaces the symlink
-    /// itself, clobbering profile setups such as
-    /// `/tmp/forge-test-stargate/settings.json -> ~/.claude/settings.json`.
-    #[test]
-    fn save_preserves_a_symlink_at_the_write_target() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical_dir = dir.path().join("canonical");
-        let profile_dir = dir.path().join("profile");
-        std::fs::create_dir_all(&canonical_dir).expect("mkdir canonical");
-        std::fs::create_dir_all(&profile_dir).expect("mkdir profile");
-
-        let canonical = canonical_dir.join(SETTINGS_FILENAME);
-        let profile = profile_dir.join(SETTINGS_FILENAME);
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(&canonical, &profile).expect("symlink");
-
-        save(&profile, &serde_json::json!({ "effortLevel": "max" })).expect("save");
-
-        let md = std::fs::symlink_metadata(&profile).expect("symlink_metadata");
-        assert!(md.file_type().is_symlink(), "profile path got clobbered into a real file");
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("effortLevel"), Some(&serde_json::json!("max")));
-    }
-
-    #[test]
-    fn save_resolves_a_relative_symlink_against_its_own_parent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical = dir.path().join(SETTINGS_FILENAME);
-        let profile_dir = dir.path().join("profile");
-        std::fs::create_dir_all(&profile_dir).expect("mkdir profile");
-        let profile = profile_dir.join(SETTINGS_FILENAME);
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(Path::new("..").join(SETTINGS_FILENAME), &profile)
-            .expect("symlink");
-
-        save(&profile, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        let md = std::fs::symlink_metadata(&profile).expect("symlink_metadata");
-        assert!(md.file_type().is_symlink(), "profile path got clobbered into a real file");
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("model"), Some(&serde_json::json!("opus")));
-    }
-
-    /// A profile link can point at another link. Resolving only one hop
-    /// writes the intermediate and leaves the canonical file stale.
-    #[test]
-    fn save_walks_a_symlink_chain_to_the_canonical_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let canonical = dir.path().join("real.json");
-        let mid = dir.path().join("mid.json");
-        let top = dir.path().join("top.json");
-        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
-        std::os::unix::fs::symlink(&canonical, &mid).expect("symlink mid");
-        std::os::unix::fs::symlink(&mid, &top).expect("symlink top");
-
-        save(&top, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        for (label, p) in [("top", &top), ("mid", &mid)] {
-            let md = std::fs::symlink_metadata(p).expect("symlink_metadata");
-            assert!(md.file_type().is_symlink(), "{label} got clobbered into a real file");
-        }
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
-                .expect("parse");
-        assert_eq!(written.get("model"), Some(&serde_json::json!("opus")));
-    }
-
-    #[test]
-    fn save_preserves_the_existing_file_mode() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(SETTINGS_FILENAME);
-        std::fs::write(&path, b"{}\n").expect("seed");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-
-        save(&path, &serde_json::json!({ "model": "opus" })).expect("save");
-
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "a restricted settings file must not become world-readable");
-    }
-
-    #[test]
-    fn save_leaves_no_temp_file_behind_when_the_rename_fails() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A directory at the target path makes rename fail after the temp
-        // has been written and synced.
-        let path = dir.path().join(SETTINGS_FILENAME);
-        std::fs::create_dir(&path).expect("mkdir at target");
-
-        assert!(save(&path, &serde_json::json!({ "model": "opus" })).is_err());
-
-        let strays: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("read_dir")
-            .filter_map(Result::ok)
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| Path::new(n).extension().is_some_and(|ext| ext == "tmp"))
-            .collect();
-        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+        assert!(document.get("model").is_none(), "a cleared model is removed, not blanked");
     }
 
     /// With no project root no project-local path is resolved, and the
@@ -753,7 +394,7 @@ mod tests {
         let loaded = load(Some(dir.path()), None, None).expect("load");
 
         assert!(
-            loaded.paths.local_settings.is_none(),
+            resolve_paths(Some(dir.path()), None).expect("paths").local_settings.is_none(),
             "an empty root must not become a relative local-settings path",
         );
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
@@ -762,8 +403,7 @@ mod tests {
     /// `settings.json` lives in the session's config dir, which is
     /// per-account. Nothing can name it before a spawn, so a boot with
     /// no session applies no user settings document rather than reading
-    /// the default config dir's, which belongs to another account. The
-    /// path goes with it: nothing may write that file back either.
+    /// the default config dir's, which belongs to another account.
     #[test]
     fn load_without_a_session_applies_no_user_settings_document() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -778,6 +418,5 @@ mod tests {
             Value::Object(Map::new()),
             "no session, no user settings document",
         );
-        assert!(loaded.paths.settings.is_none(), "and no path to write one back to");
     }
 }

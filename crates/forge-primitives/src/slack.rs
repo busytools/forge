@@ -309,6 +309,20 @@ pub struct SlackDraft {
     pub tool: String,
 }
 
+/// What ended a held draft, which a view that did not answer it has no
+/// other way to learn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackDraftEnding {
+    /// The reader answered it, in whichever view: `approved` says whether
+    /// the message went out.
+    Answered { approved: bool },
+    /// The approval window ran out with nothing answered.
+    Expired,
+    /// The asking session went away before anyone answered.
+    Abandoned,
+}
+
 /// One message as the pump sees it, after matching. Carries what delivery
 /// needs and nothing the wire happened to include.
 #[derive(Debug, Clone, PartialEq, Eq)]

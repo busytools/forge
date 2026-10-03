@@ -15,7 +15,7 @@ use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::delivery::delivery_turn;
 use crate::live::Live;
-use crate::{Command, SessionUpdate};
+use crate::{Command, DispatchError, SessionUpdate};
 
 /// Take the upgrade and give the connection its own task.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
@@ -269,7 +269,7 @@ async fn handle_client(
                         send(
                             socket,
                             ServerMessage::Error {
-                                what: "dispatch".to_owned(),
+                                what: refusal_tag(&refusal).to_owned(),
                                 why: refusal.to_string(),
                             },
                         )
@@ -513,7 +513,10 @@ async fn dispatch_answering(
             Err(refusal) => {
                 send(
                     socket,
-                    ServerMessage::Error { what: "dispatch".to_owned(), why: refusal.to_string() },
+                    ServerMessage::Error {
+                        what: refusal_tag(&refusal).to_owned(),
+                        why: refusal.to_string(),
+                    },
                 )
                 .await
             }
@@ -538,6 +541,19 @@ fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>
             configured: catalog.configured,
         },
         Err(why) => ServerMessage::Error { what: "devices".to_owned(), why },
+    }
+}
+
+/// The operation a dispatch refusal names, which a client routes by.
+///
+/// `dispatch` alone does not say which of a client's commands was refused,
+/// and an answer to a draft the core no longer holds is drawn where that
+/// draft's dock stood - the dock itself is gone by then. Every arm that
+/// refuses a dispatch builds the tag here, so the two cannot drift.
+fn refusal_tag(refusal: &DispatchError) -> &'static str {
+    match refusal {
+        DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+        _ => "dispatch",
     }
 }
 

@@ -425,13 +425,6 @@ impl super::App {
         self.active_bucket_mut().map(|s| &mut s.login_hint)
     }
 
-    pub fn resuming_session_id(&self) -> Option<&str> {
-        self.active_session().and_then(|s| s.resuming_session_id.as_deref())
-    }
-    pub fn resuming_session_id_mut(&mut self) -> Option<&mut Option<String>> {
-        self.active_bucket_mut().map(|s| &mut s.resuming_session_id)
-    }
-
     pub fn pending_command_label(&self) -> Option<&str> {
         self.active_session().and_then(|s| s.pending_command_label.as_deref())
     }
