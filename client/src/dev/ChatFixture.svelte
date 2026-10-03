@@ -105,17 +105,112 @@
     }
 
     /**
+     * One thought arriving in the turn already open, which is the regrouping
+     * case: a turn's lanes sort by the latest row each one took, so the whole
+     * thinking lane moves to the end of the order whenever a thought lands -
+     * rows move under a reader who is not at the foot, and their offset does
+     * not.
+     */
+    function think(): number {
+      nth += 1;
+      say({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: canned.slot,
+            msg: {
+              type: 'assistant',
+              uuid: `thought-${nth}`,
+              message: {
+                id: `msg_thought_${nth}`,
+                role: 'assistant',
+                model: 'claude-opus-5',
+                content: [
+                  {
+                    type: 'thinking',
+                    thinking: `Reconsidering the order of things (${nth}). A line long enough to take a row of its own in the lane.`,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      });
+      return nth;
+    }
+
+    /**
+     * One tool call and its result, landing in the turn already open: a family
+     * lane of its own, which is what a later thought re-sorts past.
+     */
+    function call(): number {
+      nth += 1;
+      const id = `toolu_fixture_${nth}`;
+      say({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: canned.slot,
+            msg: {
+              type: 'assistant',
+              uuid: `call-${nth}`,
+              message: {
+                id: `msg_call_${nth}`,
+                role: 'assistant',
+                model: 'claude-opus-5',
+                content: [
+                  { type: 'tool_use', id, name: 'Read', input: { file_path: 'src/lib.rs' } },
+                ],
+              },
+            },
+          },
+        },
+      });
+      say({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: canned.slot,
+            msg: {
+              type: 'user',
+              uuid: `result-${nth}`,
+              message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }],
+              },
+            },
+          },
+        },
+      });
+      return nth;
+    }
+
+    /**
      * Append on a timer, which is what makes the scroll behaviour observable
      * without a hand on the mouse: a reader parked mid-column cannot be
      * watching for a button, and what the page has to survive is a turn
      * arriving while they are reading something else.
+     *
+     * **The cycle is the regrouping, in order**: a thought opens the thinking
+     * lane, a call opens a family lane after it, and the next thought takes the
+     * lane back to the end of the order - which moves the family's rows UP
+     * under a reader parked among them. That drift is what the column's anchor
+     * is for, and this is its repro.
      */
     function every(ms: number): () => void {
-      const timer = setInterval(append, ms);
+      let at = 0;
+      const timer = setInterval(() => {
+        at += 1;
+        const turn = at % 4;
+        if (turn === 1) think();
+        else if (turn === 2) call();
+        else if (turn === 3) think();
+        else append();
+      }, ms);
       return () => clearInterval(timer);
     }
 
-    return { connection, append, every };
+    return { connection, append, think, call, every };
   }
 
   /**
@@ -153,7 +248,12 @@
   </div>
   <div class="devbar">
     <button onclick={canned.held.append}>append a turn</button>
-    <span>a turn lands every four seconds; scroll the column and watch where it stays</span>
+    <button onclick={canned.held.think}>append a thought</button>
+    <button onclick={canned.held.call}>append a call</button>
+    <span
+      >a thought, a call and a thought land every four seconds; scroll the column and watch where it
+      stays</span
+    >
   </div>
 {/if}
 

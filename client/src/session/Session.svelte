@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
 
+  import Brand from '../components/Brand.svelte';
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
@@ -35,6 +36,7 @@
     slot,
     connection,
     wire,
+    mark = null,
     conversation = null,
     composer = null,
   }: {
@@ -42,6 +44,8 @@
     connection: Connection;
     /** The home's snapshot, which the rail, the header and four sections read. */
     wire: HomeWire;
+    /** The brand the header's wordmark draws, as the home's own brand does. */
+    mark?: string | null;
     /** The conversation column. Absent, the seat's own not-running state draws. */
     conversation?: Snippet<[ConversationProps]> | null;
     /** The box under it, which replaces itself while the seat cannot take keys. */
@@ -200,6 +204,15 @@
 
   <main class="chat">
     <div class="sess">
+      <!-- The wordmark, the way home: the home's own brand a size down so the
+           session's name still leads, in a real anchor so the keyboard reaches
+           it, the URL stays real and the router follows it in place. The
+           hairline is what separates the app's brand from the seat's own. -->
+      <a class="brand" href="/" title="home">
+        <Brand name={mark} />
+        <span class="word">forge</span>
+      </a>
+      <span class="mastsep" aria-hidden="true"></span>
       <!-- The handle to each column lives with the title, so a folded column
            leaves no edge behind and its control stays reachable. -->
       <button

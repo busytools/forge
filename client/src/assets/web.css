@@ -439,6 +439,16 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   flex-wrap: nowrap; min-width: 0; }
 .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The wordmark in the header, the way home: the home's own brand a size down
+   so the session's name still leads, in a real anchor so the keyboard reaches
+   it, the URL stays real and the router follows it in place. The hairline is
+   what separates the app's brand from the seat's own. */
+.sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
+  color: inherit; text-decoration: none; }
+.sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+.sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
+.sess .brand:hover .word { text-decoration: underline; }
+.sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   min-width: 0; overflow: hidden;
@@ -925,12 +935,13 @@ details.leaf > summary .tn.warn { color: var(--warn); }
 details.leaf > summary .tn.warn .k { color: var(--warn); }
 details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+/* A peer row's body: the message as prose, then the facts its own result
+   carried. The lane rule is what a reader's own turn is drawn against. */
 .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
   border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
 .pbody p + p { margin-top: 9px; }
 .pbody code { font-family: var(--mono); font-size: .88em; color: var(--text);
   background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
-
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
 .card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 12px;
@@ -1001,9 +1012,15 @@ details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
    take the prose tone the name's marks do, rather than the tail's muting. */
 details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
-   where the wire said the delivery is elevated. */
-details.inboundrow > summary .ev { color: var(--muted); }
+   where the wire said the delivery is elevated - clamped to its one line and
+   taking the width the name leaves, the way the hook row's tail does. */
+details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.inboundrow > summary .ev.warn { color: var(--warn); }
+/* The tail's own inline marks take the prose tone, the hook row's twin rule:
+   a mark reads as a mark in both rows, not as the muting around it. */
+details.inboundrow > summary .ev strong, details.inboundrow > summary .ev code {
+  color: var(--text); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
