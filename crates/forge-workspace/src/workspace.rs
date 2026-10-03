@@ -1984,14 +1984,17 @@ impl Workspace {
                     .into_arc()
             });
             crate::mcp::build_forge_server(
-                workspace_facade,
-                worker_facade,
-                review_facade,
-                cron_facade,
-                gotify_facade,
-                slack_facade,
-                tasks_facade,
-                systemone_facade,
+                crate::mcp::ForgeServerFacades {
+                    workspace: workspace_facade,
+                    worker: worker_facade,
+                    review: review_facade,
+                    cron: cron_facade,
+                    gotify: gotify_facade,
+                    slack: slack_facade,
+                    tasks: tasks_facade,
+                    systemone: systemone_facade,
+                },
+                &crate::mcp::McpFamily::all(),
                 session_slot.clone(),
                 session_kind,
             )
@@ -12190,19 +12193,22 @@ mod worker_respawn_tests {
         kind: crate::mcp::SessionKind,
     ) -> Vec<String> {
         let server = crate::mcp::build_forge_server(
-            crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
-            crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
-            crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
-            crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
-            crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
-            crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
-            crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
-            workspace.systemone.as_ref().map(|client| {
-                crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
-                    client,
-                ))
-                .into_arc()
-            }),
+            crate::mcp::ForgeServerFacades {
+                workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
+                worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
+                review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
+                cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
+                gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
+                slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+                tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
+                systemone: workspace.systemone.as_ref().map(|client| {
+                    crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
+                        client,
+                    ))
+                    .into_arc()
+                }),
+            },
+            &crate::mcp::McpFamily::all(),
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
