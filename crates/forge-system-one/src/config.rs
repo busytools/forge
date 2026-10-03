@@ -15,6 +15,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// The raw `[systemone]` section as written in forge.toml.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemOneSection {
     pub enabled: Option<bool>,
     pub base_url: Option<String>,
@@ -117,6 +118,13 @@ mod tests {
         let section = SystemOneSection { enabled: None, base_url: Some("https://api.typesafe.ai".to_owned()), api_key: Some("   ".to_owned()), model: Some("jev-latest".to_owned()), timeout_ms: None };
         let cfg = section.into_config().expect("an enabled section with url and model resolves");
         assert_eq!(cfg.expect("resolved").api_key, None);
+    }
+
+    #[test]
+    fn unknown_key_in_section_is_refused() {
+        let result: Result<SystemOneSection, _> = toml::from_str("enabled = true\nbase_uri = \"https://api.typesafe.ai\"\nmodel = \"jev-latest\"\n");
+        let err = result.expect_err("a mistyped key refuses the section");
+        assert!(err.to_string().contains("base_uri"), "{err}");
     }
 
     #[test]
