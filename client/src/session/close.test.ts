@@ -232,11 +232,14 @@ describe('a seat removed under the reader', () => {
     expect(removedSeat({ kind: 'update', update: { chat_appended: {} } })).toBeNull();
   });
 
+  /**
+   * The worker is not the last row and a second project is behind it, so the
+   * walk and the lead preference answer differently: the hop is what the
+   * name claims, not the wrap.
+   */
   it('lands a removed worker on its spawning lead', () => {
-    expect(removedLanding(home(LEAD, W1), W1, LEAD, NOW)).toEqual({
-      name: 'session',
-      slot: LEAD,
-    });
+    const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD);
+    expect(removedLanding(held, W1, LEAD, NOW)).toEqual({ name: 'session', slot: LEAD });
   });
 
   /**

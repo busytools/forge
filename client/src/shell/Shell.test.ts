@@ -305,12 +305,17 @@ describe('a seat removed under the reader', () => {
   /**
    * The other half: a removal somewhere else is not the reader's business,
    * and a page that moved on every update would be unusable.
+   *
+   * The reader is on the HOME, and the removed seat's own landing is a seat
+   * elsewhere - so a watcher that moved on any removal would teleport them
+   * into a session, which is the regression this pin has to kill.
    */
   it('leaves the reader where they are when another seat is removed', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
-    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await openAt('/', forge.address);
     await crossed();
+    expect(location.pathname, 'the fixture did not land on the home').toBe('/');
 
     forge.remove(
       { org: 'TestOrg', project: 'proj', label: 'w1' },
@@ -318,8 +323,6 @@ describe('a seat removed under the reader', () => {
     );
     await crossed();
 
-    expect(location.pathname, 'a removal elsewhere moved the reader').toBe(
-      '/session/TestOrg/proj/lead',
-    );
+    expect(location.pathname, 'a removal elsewhere moved the reader').toBe('/');
   });
 });
