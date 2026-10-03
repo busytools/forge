@@ -1594,8 +1594,8 @@ pub(crate) fn handle_spawn_worker(
 /// Shared worker teardown used by both `handle_close_worker` (the TUI
 /// X-button) and `handle_despawn_worker` (the `agents__despawn` MCP
 /// tool): remove the latest-spawned worker matching `label` from
-/// `live_workers[project_key]`, release its session (terminates the
-/// claude subprocess on drop), and expire its inflight asks. Returns
+/// `live_workers[project_key]` and release its session (terminates the
+/// claude subprocess on drop). Returns
 /// the removed `WorkerEntry`, or `None` when no live worker matched.
 /// JSONL on disk is NOT deleted - teardown only removes the in-memory
 /// live state.
@@ -2659,6 +2659,12 @@ provider = "anthropic"
         assert_eq!(
             bucket.peer[0].wrapped.id, w.id,
             "and it is the payload that was handed to the delivery",
+        );
+        assert_eq!(
+            bucket.peer[0].sender, caller,
+            "with the SENDER beside it, which is the seat the ack goes back to when the spawn \
+             fails - the bucket's own key is the target, so a mutant that parked the target \
+             there would pass every other assertion here",
         );
     }
 

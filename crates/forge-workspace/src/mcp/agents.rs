@@ -682,8 +682,8 @@ impl Tool for Despawn {
     fn description(&self) -> &'static str {
         "Despawn (close + clean up) a worker in YOUR project by label \
          (lead-only). Kills the worker's claude subprocess, removes it \
-         from agents__list, expires any inflight asks addressed to it, \
-         AND cleans up its git worktree. A CLEAN worktree is removed as \
+         from agents__list, AND cleans up its git worktree. A CLEAN \
+         worktree is removed as \
          part of the despawn; a DIRTY one (uncommitted/untracked changes \
          or unpushed commits) BLOCKS the despawn and returns a reason - \
          clean it up (commit + push, or reset) and retry, or pass \

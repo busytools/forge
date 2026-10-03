@@ -106,8 +106,8 @@ impl PeerInboundKind {
     }
 }
 
-/// The envelope's own correlation id out of a peer wrapper header
-/// (`[Message id=t-1a2b3c from agent ...]`). Unique per delivered
+/// The envelope's own message id out of a peer wrapper header
+/// (`[Message id=m-1a2b3c from agent ...]`). Unique per delivered
 /// envelope, so it keys an inbound-led messaging group independently
 /// of where the message sits in the session - unlike a positional key,
 /// it survives history pruning and index shifts.

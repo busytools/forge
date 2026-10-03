@@ -162,7 +162,7 @@ pub enum SessionChoice {
 #[serde(rename_all = "snake_case")]
 pub enum DespawnResult {
     /// The worker was torn down (subprocess killed, dropped from
-    /// `live_workers`, inflight asks expired). `worktree_cleanup_warning`
+    /// `live_workers`). `worktree_cleanup_warning`
     /// is `Some` when the post-teardown `git worktree remove` failed -
     /// the worker is still gone; only the worktree directory lingers.
     /// Teardown and worktree cleanup are independent: a cleanup failure
@@ -463,8 +463,8 @@ pub enum Command {
         url: String,
     },
     /// Despawn the worker identified by `label` in `project_key`:
-    /// terminate its agent, drop it from `live_workers`, expire its
-    /// inflight asks, AND clean up its git worktree. Dispatched by the
+    /// terminate its agent, drop it from `live_workers`, AND clean up
+    /// its git worktree. Dispatched by the
     /// `agents__despawn` MCP tool (lead-only). Unlike `CloseWorker`
     /// (the TUI X-button), this also removes the worker's git worktree:
     /// a clean worktree is removed; a dirty one (uncommitted/untracked

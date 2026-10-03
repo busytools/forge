@@ -839,9 +839,9 @@ fn append_user_block(
     match block {
         MessageBlock::Text(block) => {
             // Peer-coordination wrappers (#114) - when the
-            // workspace injects a `[Question id=...]` /
-            // `[Reply id=...]` / etc. user-turn, render a styled
-            // peer block instead of the default user bubble.
+            // workspace injects a `[Message id=...]` / failure
+            // notice user-turn, render a styled peer block
+            // instead of the default user bubble.
             // Inbound peer blocks follow the global collapse
             // directive via `resolve_collapsed_bool`. Per-block
             // click override wins; absent falls through to
@@ -2353,9 +2353,8 @@ fn role_label_line(msg: &ChatMessage) -> Option<Line<'static>> {
 }
 
 /// True when this `MessageRole::User` carries a peer / worker MCP
-/// inbound envelope (a `[Question id=q-...]`, `[Message id=t-...]`,
-/// `[Reply id=t-...]`, or one of the timeout/expired/failed
-/// notification shapes).
+/// inbound envelope (a `[Message id=m-...]` or the failed-delivery /
+/// spawn-failed notice).
 ///
 /// #143 item 2: reads the cached `is_peer_envelope` flag on
 /// `ChatMessage` (stamped at push time by the
@@ -5009,7 +5008,7 @@ mod tests {
     /// flat list with the same substrings would satisfy any number of
     /// `contains` probes, so only the full shape holds the decision.
     #[test]
-    fn messaging_group_l2_renders_a_tree_keyed_on_envelope_kind() {
+    fn messaging_group_l2_renders_a_tree_keyed_on_the_envelope_row() {
         // One inbound kind now, so the label the fixture passes is its own
         // name for the peer: every header is the same shape.
         let envelope = |_kind: &str, from: &str, body: &str| {

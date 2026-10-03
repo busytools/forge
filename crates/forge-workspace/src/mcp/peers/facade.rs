@@ -172,10 +172,9 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
     }
 }
 
-/// Mock for unit tests in the four Tool impls. Captures every dispatched
-/// call into a Vec so tests can assert "tool X dispatched
-/// register_inflight_ask with these args" without spinning up a real
-/// Workspace.
+/// Mock for unit tests in the Tool impls. Captures every dispatched call
+/// into a Vec so tests can assert "tool X dispatched deliver_peer_prompt
+/// with these args" without spinning up a real Workspace.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct MockWorkspaceFacade {

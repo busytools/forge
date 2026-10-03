@@ -424,8 +424,8 @@ impl SessionTask {
                     workspace.record_spawn_failure(&key, &message);
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
-                // live turn without a Result, so flush the same way the
-                // peer-ask expiry below does.
+                // live turn without a Result, so flush the turn's own
+                // bookkeeping here.
                 let caller = self.domain.lock().key.clone();
                 self.drain_review_activity_for(&caller);
                 // A spawn that never connected still holds everything

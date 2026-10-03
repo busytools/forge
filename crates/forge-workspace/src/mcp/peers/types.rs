@@ -82,21 +82,20 @@ pub fn seat_name(slot: &SessionSlot) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerLiveness {
-    /// Spawned and connected; ready to receive ask/tell immediately.
+    /// Spawned and connected; ready to receive a message immediately.
     Running,
-    /// Configured in forge.toml but not currently spawned. Ask/tell
+    /// Configured in forge.toml but not currently spawned. A message
     /// will auto-spawn it via `Command::SpawnProject`.
     Sleeping,
 }
 
 /// Reason why a peer message couldn't be delivered. Carried in the
-/// `DeliveryFailureNotice` wrapper dispatched to the caller's chat
-/// when target-crash detection fires.
+/// `DeliveryFailureNotice` wrapper dispatched to the sender's chat when
+/// the spawn a parked message was waiting on fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PeerFailureReason {
-    /// Target's session task crashed or was closed while the ask was
-    /// in flight.
+    /// The target never came up, so nothing could take the message.
     TargetConnectionFailed,
 }
 
@@ -248,8 +247,8 @@ mod tests {
     }
 
     /// #146: WorkerSpawnFailedNotice prose carries the label as
-    /// sender_name, the reason as body, and a synthetic correlation
-    /// id so detect_inbound's parser can key on `id=`.
+    /// sender_name, the reason as body, and a freshly minted id so
+    /// detect_inbound's parser can key on `id=`.
     #[test]
     fn wrapped_prompt_worker_spawn_failed_notice_prose() {
         let w = wrapper(

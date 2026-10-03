@@ -22,7 +22,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 2, "settings": {"mark": null, "theme": null, "font": null}}
+{"kind": "greeting", "version": 3, "settings": {"mark": null, "theme": null, "font": null}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -66,7 +66,7 @@ variant's own name rather than on `kind`:
 A command's variant is its name around its field bag - `Command` has 34
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 53 of `SessionUpdate`'s 58 variants are struct variants too. The other
+and 52 of `SessionUpdate`'s 57 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -220,7 +220,7 @@ facts a row is drawn from.
 | Field | What it is |
 |---|---|
 | `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
-| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, the seat's peer-coordination counters - the numbers its activity badge is drawn from - and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
+| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
 | `plugins` | Every remembered plugin update, latest write per installed entry. |

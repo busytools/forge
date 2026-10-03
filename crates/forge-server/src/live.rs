@@ -481,8 +481,6 @@ mod tests {
         }
     }
 
-    /// The peer-activity counters behind a row's badge. They carry a slot, so
-    /// a home subscriber heard nothing of them while the terminal drew the
     /// The updates that land after the listener binds, and that a page
     /// opened in that window has already painted an answer for: the
     /// catalog scan, the dictation snapshot, the claude version probe and

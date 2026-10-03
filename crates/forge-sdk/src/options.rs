@@ -544,8 +544,7 @@ mod tests_options_build {
         // The lead-only verbs live under the same `mcp__forge__`
         // namespace - auto-approve must cover them with one predicate.
         assert!(pred("mcp__forge__agents__spawn"));
-        assert!(pred("mcp__forge__agents__list"));
-        assert!(pred("mcp__forge__agents__list"));
+        assert!(pred("mcp__forge__agents__capacity"));
         assert!(pred("mcp__forge__agents__update"));
         assert!(pred("mcp__forge__agents__despawn"));
         // Cron tools share the same namespace - one predicate covers them.
