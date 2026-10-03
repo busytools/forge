@@ -150,7 +150,7 @@ describe('the salvage copies', () => {
     // pages carry different numbers of tokens. A count that moves means the
     // sweep's reach moved - a page gone, or a page that stopped declaring a
     // palette - and both are the drift this test exists for.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(125);
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(140);
   });
 
   /**
@@ -221,7 +221,7 @@ describe('the salvage copies', () => {
     }
 
     expect(drifts, 'drawings name stacks the app does not ship').toEqual([]);
-    expect(compared, 'the sweep no longer reaches every stack').toBe(18);
+    expect(compared, 'the sweep no longer reaches every stack').toBe(20);
   });
 });
 

@@ -194,12 +194,24 @@
     font-size: var(--fs-label);
     color: var(--dim);
   }
-  .m .src.you { color: var(--text); }
-  .m .src.cron { color: var(--warn); }
-  .m .src.gotify { color: var(--teal); }
-  .m .src.slack { color: var(--ok); }
-  .m .src.peer { color: var(--blue); }
-  .m .nx { color: var(--accent); }
+  .m .src.you {
+    color: var(--text);
+  }
+  .m .src.cron {
+    color: var(--warn);
+  }
+  .m .src.gotify {
+    color: var(--teal);
+  }
+  .m .src.slack {
+    color: var(--ok);
+  }
+  .m .src.peer {
+    color: var(--blue);
+  }
+  .m .nx {
+    color: var(--accent);
+  }
   .del {
     margin-left: auto;
     display: inline-flex;

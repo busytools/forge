@@ -16,12 +16,18 @@ place.
 |---|---|---|
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
+| The queue pile | (session page pending) | `web-queue.html` |
 
 The session page, the chat and the composer are built; their drawings are
 here and their pages are still to land. `web-session.html` declares six
 sections and the client's plan owns four of them: the fifth is the
 composer's blocking states and the sixth is the diff review overlay,
 which is deliberately not built.
+
+`web-queue.html` is the queued-prompt pile that draws above the composer:
+the variants it can be in, and the wire's own lifecycle it follows. It
+takes the session page's tokens, its `.strip` neighbours and its own
+spine, and its page lands with the session page's set.
 
 ## The spine
 

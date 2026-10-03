@@ -58,7 +58,9 @@ function pile(): HTMLElement {
 }
 
 function key(target: HTMLElement, name: string): void {
-  target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+  target.dispatchEvent(
+    new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }),
+  );
   flushSync();
 }
 
