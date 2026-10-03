@@ -14,13 +14,28 @@
    * It is never clipped: the whole of what arrived sits behind the row.
    */
   let { row }: { row: InboundLeaf } = $props();
+
+  /**
+   * The tail line, or null where it would only repeat the title.
+   *
+   * **A cron fire's title IS its body's first line** (the fold reads it so),
+   * so the row drew the same sentence twice - the first copy cut by its
+   * one-line clamp, the second whole (Ved, 2026-10-03). A tail that adds
+   * nothing to the title is not a tail, and everything the delivery carried
+   * is still behind the row's own open.
+   */
+  const tail = $derived.by((): string | null => {
+    if (row.body === '') return null;
+    const line = firstLine(row.body);
+    return line === row.title ? null : line;
+  });
 </script>
 
 <details class="leaf inboundrow">
   <summary>
     <span class="tn">{row.title}</span>
-    {#if row.body !== ''}
-      <span class="ev" class:warn={row.elevated}>{firstLine(row.body)}</span>
+    {#if tail !== null}
+      <span class="ev" class:warn={row.elevated}>{tail}</span>
     {/if}
     <Chevron />
   </summary>
