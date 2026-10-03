@@ -120,6 +120,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
     forge_server=debug,\
+    forge_workspace::work=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -432,6 +433,11 @@ mod tests {
         // command wrote that cannot be decoded is that command's own
         // output. Without the directive the record never lands at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
+        // The seat's working-tree watch says why it holds nothing and why it
+        // stops, both at `debug` because neither is forge's health. They are
+        // the only record of a seat whose tree is silently not being read, so
+        // the target needs the directive or the silence has no explanation.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
         // The web view's `enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.

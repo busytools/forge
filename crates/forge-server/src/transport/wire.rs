@@ -816,10 +816,14 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// Async because a session's git section is a filesystem read, so the
 /// working tree's state is awaited rather than guessed at.
 ///
-/// A seat forge holds no session for is an error rather than an empty
-/// snapshot: `Roster::cwd_for` answers `None` for a project nobody has
-/// started, and a client drawing an empty page would read that as a broken
-/// one rather than as a seat that does not exist.
+/// A seat naming no project forge has loaded is an error rather than an empty
+/// snapshot, because a client drawing an empty page would read that as a
+/// broken one rather than as a seat that does not exist.
+///
+/// **A project that has simply not started is not that case**: its directory
+/// resolves from the declaration, so it is answered - with the session's own
+/// fields empty and a working tree read per read, since no held seat has a
+/// store to keep one in.
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
     let surface = &state.surface;
     match subject {
@@ -1975,9 +1979,30 @@ mod tests {
     /// a second derivation is the only way the two could ever disagree.
     #[tokio::test]
     async fn the_pushed_row_is_the_records_own_fields() {
-        let state = fixture_state();
+        // Its OWN fleet rather than `fixture_state`'s shared root: that root is
+        // one fixed path, and two tests calling it in one binary's parallel
+        // run unlink it under each other.
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
         let seat = fixture_seat();
-        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        surface.store_work_snapshot(
+            &seat,
+            forge_workspace::work::WorkSnapshot {
+                diff: scanned(),
+                cwd: std::path::PathBuf::from(&cwd),
+                read_at: std::time::Instant::now(),
+            },
+        );
+        let state = TransportState {
+            surface,
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
 
         let encoded =
             encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");

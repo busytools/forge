@@ -1367,7 +1367,10 @@ fn a_scan(
             branch: GitBranch::Named(branch.to_owned()),
             pushed_sha: None,
             pr_fetched_at: Some(std::time::SystemTime::now()),
-            default_branch: Some("main".to_owned()),
+            // None, as the scanner would answer for this fixture: the repo
+            // has no `origin/HEAD` and no local `main`, so a scan-faithful
+            // seed says the default is unresolved.
+            default_branch: None,
             repo_gate: RepoGate::InRepo,
             worktree: LayerState::Populated(GitDiffStats {
                 files: Vec::new(),
