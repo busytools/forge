@@ -190,7 +190,22 @@ impl SessionTask {
         // First, update DomainSession in-place.
         {
             let mut guard = self.domain.lock();
-            apply_event_to_domain(&mut guard, &event);
+            let moved = apply_event_to_domain(&mut guard, &event);
+            // The two sets that move whole are announced from the scope the
+            // fold wrote in, so what goes out is what the core now holds -
+            // and only when the fold moved it.
+            if moved.monitors {
+                self.emit(SessionUpdate::MonitorsChanged {
+                    key: self.key.clone(),
+                    monitors: guard.monitors.clone(),
+                });
+            }
+            if moved.background_tasks {
+                self.emit(SessionUpdate::BackgroundTasksChanged {
+                    key: self.key.clone(),
+                    tasks: guard.background_tasks.clone(),
+                });
+            }
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -1356,7 +1371,21 @@ const API_RETRY_SUBTYPE: &str = "api_retry";
 /// (`session_id`) plus the facts a view reads through the view
 /// surface. Operational state a view renders from the update stream
 /// itself (lifecycle, cwd, account info) stays on the view.
-pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
+/// What one event MOVED in the domain's two whole sets.
+///
+/// **A set that did not change is not news.** Both move whole and on discrete
+/// frames, and every frame of a busy seat reaches this fold - so a viewer
+/// redrawing on each one would pay for nothing, and the answer is taken by
+/// comparing the sets the fold was handed with the ones it left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Moved {
+    pub monitors: bool,
+    pub background_tasks: bool,
+}
+
+pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) -> Moved {
+    let held_monitors = domain.monitors.clone();
+    let held_tasks = domain.background_tasks.clone();
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1583,6 +1612,10 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     } = event
     {
         domain.agents_emitted_this_turn = false;
+    }
+    Moved {
+        monitors: domain.monitors != held_monitors,
+        background_tasks: domain.background_tasks != held_tasks,
     }
 }
 
@@ -3519,6 +3552,110 @@ provider = "anthropic"
 
         assert_eq!(domain.runtime_state, None, "runtime_state cleared on ConnectionFailed");
         assert!(!domain.turn_pending, "turn_pending cleared on ConnectionFailed");
+    }
+
+    /// The monitor sets these updates announced, in the order they went out.
+    fn announced_monitors(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<Vec<forge_primitives::MonitorRecord>> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::MonitorsChanged { monitors, .. } = update {
+                announced.push(monitors);
+            }
+        }
+        announced
+    }
+
+    /// The task sets these updates announced, in the order they went out.
+    fn announced_tasks(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<Vec<forge_workspace::BackgroundTask>> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } = update {
+                announced.push(tasks);
+            }
+        }
+        announced
+    }
+
+    /// The monitor set moves on discrete task frames, so the frame that moved
+    /// it announces the whole set and a frame that moved nothing says nothing.
+    ///
+    /// **The no-move half is the one worth having.** Every frame here reaches
+    /// the fold, and a stamp that repeats an id already stamped must not
+    /// redraw every viewer of the seat.
+    #[test]
+    fn a_monitor_set_that_moved_is_announced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        // The call that starts a watch enters the set.
+        task.translate_event(sdk_message(monitor_tool_use("tu-mon", "ci-watch")));
+        let announced = announced_monitors(&mut updates);
+        assert_eq!(announced.len(), 1, "the call that starts a watch announces the set");
+        assert_eq!(
+            announced[0],
+            task.domain.lock().monitors,
+            "and what it announces is what the core holds",
+        );
+
+        // The task id the CLI stamps is a move; the same stamp again is not.
+        task.translate_event(sdk_message(task_started("t-mon", Some("tu-mon"))));
+        assert_eq!(
+            announced_monitors(&mut updates).len(),
+            1,
+            "stamping the task id moves the set, so it is announced",
+        );
+        task.translate_event(sdk_message(task_started("t-mon", Some("tu-mon"))));
+        assert_eq!(
+            announced_monitors(&mut updates).len(),
+            0,
+            "and a frame that moves nothing says nothing",
+        );
+    }
+
+    /// The background registry is the CLI's whole set on every change, so a
+    /// frame that moved it announces it and one that did not says nothing.
+    #[test]
+    fn a_background_registry_that_moved_is_announced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(sdk_message(background_tasks(one_live_task())));
+        let announced = announced_tasks(&mut updates);
+        assert_eq!(announced.len(), 1, "the frame that fills the registry announces it");
+        assert_eq!(
+            announced[0],
+            task.domain.lock().background_tasks,
+            "and what it announces is what the core holds",
+        );
+
+        task.translate_event(sdk_message(background_tasks(one_live_task())));
+        assert_eq!(
+            announced_tasks(&mut updates).len(),
+            0,
+            "the same set again is not a move, so nothing is announced",
+        );
+
+        // A connection that died leaves nothing standing: a registry that
+        // outlived its process spins rows over tasks nobody is running.
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "reader died".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+        let cleared = announced_tasks(&mut updates);
+        assert_eq!(cleared.len(), 1, "and the clear is announced");
+        assert!(cleared[0].is_empty(), "with the empty set the core now holds");
     }
 
     /// A monitor still running when the connection dies can never be settled,
