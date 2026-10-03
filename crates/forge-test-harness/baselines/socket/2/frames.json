@@ -66,6 +66,7 @@
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",
+    "WorkChanged": "work_changed",
     "WorkerStatusChanged": "worker_status_changed"
   },
   "subject": {

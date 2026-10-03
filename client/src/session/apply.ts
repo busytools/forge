@@ -283,6 +283,13 @@ export const IGNORED: readonly string[] = [
   'notice',
   'slack_message_appended',
   'status_snapshot',
+  /**
+   * The seat's pushed working tree, which this build reads from the read it
+   * already makes rather than from the frame: the fields it carries are
+   * merged from the poll, so a handler here would be replaced by the next
+   * read anyway. The handler arrives with the read that stops carrying them.
+   */
+  'work_changed',
   'worker_status_changed',
 ];
 

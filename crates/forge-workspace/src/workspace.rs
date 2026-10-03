@@ -283,6 +283,9 @@ pub struct Workspace {
     /// for the slot comes up again, so it reports an unrecovered failure
     /// rather than a history.
     spawn_failures: Mutex<HashMap<SessionSlot, String>>,
+    /// The seats a view is showing, each with the working-tree scan loop it
+    /// runs. Empty is the quiet case: a seat nobody holds is not scanned.
+    pub(crate) held_work_seats: crate::work::HeldSeats,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
@@ -1470,6 +1473,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             spawn_failures: Mutex::new(HashMap::new()),
+            held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),

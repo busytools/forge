@@ -1111,6 +1111,19 @@ pub enum SessionUpdate {
         servers: Vec<McpServerStatus>,
         error: Option<String>,
     },
+    /// The seat's working tree moved, as the row a view draws it.
+    ///
+    /// **Pushed rather than read.** The three fields are the record's own -
+    /// the branch and count, the open PR on the pushed sha, and the issues it
+    /// closes - so a client applies them to the fields it already narrows. A
+    /// seat nobody is showing is not scanned, so this is only sent for a seat
+    /// somebody holds.
+    WorkChanged {
+        key: SessionSlot,
+        work: crate::work::WorkState,
+        pr: Option<forge_primitives::git::GitPrInfo>,
+        closes: Vec<forge_primitives::git::GitIssueRef>,
+    },
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
@@ -1392,6 +1405,7 @@ impl SessionUpdate {
             | Self::OauthCredentialsSnapshot { key, .. }
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
+            | Self::WorkChanged { key, .. }
             | Self::PeerEnvelopeAppended { key, .. }
             | Self::GotifyNotificationAppended { key, .. }
             | Self::CronPromptAppended { key, .. }
@@ -1512,6 +1526,9 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::McpSnapshot { key, .. } => {
                 f.debug_struct("McpSnapshot").field("key", key).finish_non_exhaustive()
+            }
+            Self::WorkChanged { key, .. } => {
+                f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
             Self::SessionsListed { key, sessions } => f
                 .debug_struct("SessionsListed")

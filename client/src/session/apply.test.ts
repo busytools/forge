@@ -685,6 +685,7 @@ const EVERY_VARIANT = [
   'oauth_credentials_snapshot',
   'context_usage_snapshot',
   'mcp_snapshot',
+  'work_changed',
   'sessions_listed',
   'service_status',
   'catalog_loaded',
@@ -717,6 +718,27 @@ const EVERY_VARIANT = [
   'fatal_error',
 ] as const;
 
+/**
+ * A variant this build has never heard of leaves the record exactly as it was.
+ *
+ * **The server ships ahead of the client**, so a frame from a newer core
+ * arrives here before anything reads it: an update naming a variant this
+ * build does not know has to be a no-op - the pane keeps what its own poll
+ * read - rather than a crash or a field defaulted back. `HANDLERS`'s miss is
+ * what makes that true, and this pins the arm rather than assuming it.
+ */
+it('leaves the record alone for a variant it does not know', () => {
+  const held = empty();
+  const next = applyUpdate(held, {
+    a_variant_this_build_lacks: {
+      key: SLOT,
+      work: { branch: 'main', changed: 2, gate: 'in_repo' },
+    },
+  });
+
+  expect(next, 'an unknown variant must not move what the page holds').toBe(held);
+});
+
 describe('the variant list', () => {
   it('carries the whole census, so the two assertions below can be trusted', () => {
     // **The count, because `[].filter(f).toEqual([])` holds for every `f`.** A
@@ -725,9 +747,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (58 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (59 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(58);
+    ).toBe(59);
   });
 
   it('classifies every variant the core can send', () => {
