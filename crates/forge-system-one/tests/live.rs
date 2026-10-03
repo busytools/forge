@@ -24,9 +24,15 @@ async fn live_typesafe_noul() {
 
     let question = Question::Noul {
         instructions: "Is this state a greeting?".to_owned(),
-        criteria: Some(NoulCriteria { r#true: "The state greets a reader.".to_owned(), r#false: "Anything else.".to_owned() }),
+        criteria: Some(NoulCriteria {
+            r#true: "The state greets a reader.".to_owned(),
+            r#false: "Anything else.".to_owned(),
+        }),
     };
-    let outcome = client.ask(&serde_json::json!("Hello, world"), &question).await.expect("live call succeeds");
+    let outcome = client
+        .ask(&serde_json::json!("Hello, world"), &question)
+        .await
+        .expect("live call succeeds");
 
     assert!(!outcome.model.is_empty(), "the response names the model that answered");
     match outcome.answer {
