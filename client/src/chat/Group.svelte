@@ -91,7 +91,7 @@
               }
             : {
                 key: 'h:hook',
-                glyph: 'cmd',
+                glyph: 'hook',
                 label: 'hook',
                 calls: [] as ToolLeaf[],
                 cards: [] as PeerCard[],
