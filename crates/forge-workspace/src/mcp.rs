@@ -323,8 +323,8 @@ mod tests {
         out
     }
 
-    /// The tracked `.rs` and `.md` files, read from the working tree, paired
-    /// with how many were listed.
+    /// The tracked source files, read from the working tree, paired with how
+    /// many were listed.
     ///
     /// Tracked content, not a filesystem walk. A surface forge ships is a
     /// file in the repository, and a walk descends into everything git
@@ -333,6 +333,12 @@ mod tests {
     /// depending on who else is using the machine. The recorded baselines
     /// are `.jsonl`, so the extension filter leaves them out: a capture
     /// holds whatever the capture machine printed.
+    ///
+    /// **The client's own files count, and they are the ones this most
+    /// rewrote.** A rename that reached `client/src/` and stopped there leaves
+    /// the page calling a tool nothing registers, which is the failure the scan
+    /// exists to catch - so `.ts` and `.svelte` are in, and the exemption is
+    /// line-based like everything else.
     fn tracked_source_files(root: &std::path::Path) -> (usize, Vec<(String, String)>) {
         let listed = std::process::Command::new("git")
             .arg("-C")
@@ -347,7 +353,7 @@ mod tests {
             .filter(|rel| {
                 matches!(
                     std::path::Path::new(rel).extension().and_then(|ext| ext.to_str()),
-                    Some("rs" | "md")
+                    Some("rs" | "md" | "ts" | "svelte")
                 )
             })
             .collect();

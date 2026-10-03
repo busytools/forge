@@ -10,8 +10,10 @@
 //! `Reply` headers and the `Ask ... failed to deliver` header are what a
 //! transcript recorded before the peer surface collapsed to one verb
 //! holds, and resuming replays that history through this same parser -
-//! so the shapes still resolve to the kinds they always did, and those
-//! rows keep drawing as peer blocks rather than as raw bracket text.
+//! so those rows keep drawing as peer blocks rather than as raw bracket
+//! text. The two message headers resolve to the one kind that replaced
+//! them; the recorded failure keeps its own, which is still the failure
+//! kind today.
 
 /// One inbound peer block parsed from the user-turn text.
 ///

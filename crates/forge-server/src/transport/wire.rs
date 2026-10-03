@@ -1563,9 +1563,6 @@ mod tests {
     /// fixture does not pin one machine's temp directory.
     const FIXTURE_ROOT: &str = "/tmp/forge-wire-fixture";
 
-    /// The instant a seeded failure counter moved. Fixed rather than taken
-    /// from the clock: a fixture pins shape, and a wall-clock stamp would pin
-    /// the moment the fixture was generated.
     /// The surface the fixtures are produced from, and both halves of the
     /// reason are deliberate.
     ///
@@ -1733,12 +1730,12 @@ mod tests {
         }
     }
 
-    /// A row's peer-activity badge: the counters the terminal draws per seat.
+    /// A seat's own working tree crosses on its row, which is what lets a
+    /// worker's row draw its own branch rather than its project's.
     ///
-    /// They reach a subscriber as an update, so the home's snapshot is what a
-    /// client that attached after the last ask reads them from - and a
-    /// subscriber that hears the update and not the snapshot draws the badge
-    /// from nothing.
+    /// Read through the same shared cache the project rows use, so this is one
+    /// read drawn twice rather than two reads - and it is a read a page cannot
+    /// derive from the project's, because the two name different directories.
     #[tokio::test]
     async fn a_home_agents_row_carries_its_own_tree() {
         let fleet =

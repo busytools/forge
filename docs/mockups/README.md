@@ -58,7 +58,7 @@ renders today.
 | `launchpad-view.html` | the project picker |
 | `preflight-dictation.html` | the boot screen's dictation rows and the device pick |
 | `help-and-welcome.html` | the help overlay and the welcome block |
-| `agents-surface.html` | agent messaging blocks and the peer badges |
+| `agents-surface.html` | agent messaging blocks and the worker roster |
 | `slack-connector.html` | Slack subscriptions, a delivered block, the approval dock |
 | `reference-glyphs.html` | theme tokens, the glyph inventory, notices |
 
