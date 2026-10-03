@@ -77,6 +77,10 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // - 2.1.280 `permission_denied`: the CLI refused a tool call;
         //   forge surfaces the refusal through the tool result, so the
         //   frame is a no-op.
+        // - 2.1.280 `command_lifecycle`: the per-prompt queue state
+        //   (queued/started/...). The queued-prompt pile that reads it is
+        //   the client's; the terminal's own queued row is unchanged, so
+        //   the frame is a no-op here.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
@@ -84,6 +88,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         | Message::HookProgress { .. }
         | Message::HookResponse { .. }
         | Message::Notification { .. }
+        | Message::CommandLifecycle { .. }
         | Message::PermissionDenied { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {

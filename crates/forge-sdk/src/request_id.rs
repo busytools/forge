@@ -18,6 +18,25 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// (chroot without `/dev/urandom`, seccomp filter, etc.) is visible
 /// to log readers without breaking ID generation.
 pub fn next() -> String {
+    mint("forge")
+}
+
+/// Generate a new prompt id in the shape `forge_prompt_<counter>_<hex8>`.
+///
+/// Stamped as the `uuid` on every user frame forge writes. The CLI echoes it
+/// back on each of that prompt's `command_lifecycle` frames, which is what
+/// lets a view key a queued card to its own send; the distinct prefix keeps
+/// prompt ids apart from control request ids in a stream-json log.
+///
+/// Never reuse one: the CLI treats a repeated id as a duplicate and drops the
+/// prompt silently (measured, no frames and no delivery).
+pub fn next_prompt_id() -> String {
+    mint("forge_prompt")
+}
+
+/// The mint itself: `<prefix>_<counter>_<hex8>`, with the counter-derived
+/// suffix standing in when the entropy source is unreachable.
+fn mint(prefix: &str) -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut bytes = [0_u8; 4];
     if let Err(e) = getrandom::fill(&mut bytes) {
@@ -25,10 +44,10 @@ pub fn next() -> String {
         if !LOGGED_ONCE.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 error = %e,
-                "getrandom failed; falling back to counter-derived request_id suffix"
+                "getrandom failed; falling back to counter-derived id suffix"
             );
         }
         bytes.copy_from_slice(&n.to_le_bytes()[..4]);
     }
-    format!("forge_{n}_{}", hex::encode(bytes))
+    format!("{prefix}_{n}_{}", hex::encode(bytes))
 }

@@ -472,12 +472,34 @@ impl Client {
 
     /// Send a user prompt as a stream-json user turn.
     ///
+    /// Mints the prompt's own id and returns it: the id is stamped on the
+    /// frame, and the CLI echoes it on that prompt's `command_lifecycle`
+    /// frames, so a caller that keeps it can key its own row to them.
+    ///
     /// # Errors
     ///
     /// [`Error::Io`] on pipe write failure.
-    pub async fn send_user_message(&self, prompt: &str) -> Result<(), Error> {
+    pub async fn send_user_message(&self, prompt: &str) -> Result<String, Error> {
+        let uuid = crate::request_id::next_prompt_id();
+        self.send_user_message_under(prompt, &uuid).await?;
+        Ok(uuid)
+    }
+
+    /// Send a user prompt under an id the caller minted.
+    ///
+    /// Use this when the id must be known before the write - a dispatcher
+    /// that draws the prompt's row and reconciles against the lifecycle
+    /// frames by id. Mint with
+    /// [`crate::request_id::next_prompt_id`] and never reuse one: the CLI
+    /// drops a repeated id's prompt silently.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on pipe write failure;
+    /// [`Error::MessageParse`] on JSON serialization failure.
+    pub async fn send_user_message_under(&self, prompt: &str, uuid: &str) -> Result<(), Error> {
         let session_id = self.session_id();
-        let line = crate::transport::codec::encode_user_prompt(prompt, &session_id)?;
+        let line = crate::transport::codec::encode_user_prompt(prompt, &session_id, uuid)?;
         self.inner.writer.write_line(&line).await
     }
 
@@ -491,6 +513,8 @@ impl Client {
     /// objects (e.g. `{"type":"text","text":"..."}`,
     /// `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`).
     ///
+    /// Mints and returns the prompt's id, as [`Self::send_user_message`] does.
+    ///
     /// # Errors
     ///
     /// [`Error::Io`] on pipe write failure;
@@ -498,9 +522,27 @@ impl Client {
     pub async fn send_user_message_with_content(
         &self,
         content: &[serde_json::Value],
+    ) -> Result<String, Error> {
+        let uuid = crate::request_id::next_prompt_id();
+        self.send_user_message_with_content_under(content, &uuid).await?;
+        Ok(uuid)
+    }
+
+    /// Send structured content under an id the caller minted, as
+    /// [`Self::send_user_message_under`] does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on pipe write failure;
+    /// [`Error::MessageParse`] on JSON serialization failure.
+    pub async fn send_user_message_with_content_under(
+        &self,
+        content: &[serde_json::Value],
+        uuid: &str,
     ) -> Result<(), Error> {
         let session_id = self.session_id();
-        let line = crate::transport::codec::encode_user_prompt_with_content(content, &session_id)?;
+        let line =
+            crate::transport::codec::encode_user_prompt_with_content(content, &session_id, uuid)?;
         self.inner.writer.write_line(&line).await
     }
 

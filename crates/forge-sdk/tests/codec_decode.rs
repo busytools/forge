@@ -29,7 +29,7 @@ fn decode_unknown_type_returns_message_parse_error() {
 
 #[test]
 fn encode_user_prompt_is_single_line_with_newline() {
-    let out = encode_user_prompt("hello", "sess_01").expect("encode");
+    let out = encode_user_prompt("hello", "sess_01", "p1").expect("encode");
     assert!(out.ends_with('\n'), "must terminate with newline for stream-json");
     assert_eq!(out.matches('\n').count(), 1, "must be exactly one line");
     let v: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
@@ -39,6 +39,30 @@ fn encode_user_prompt_is_single_line_with_newline() {
     // Python sends `content` as a bare string for plain-text prompts
     // (client.py:260-267); forge-sdk matches byte-for-byte.
     assert_eq!(v["message"]["content"], "hello");
+    // The prompt's own id rides every frame: the CLI emits this prompt's
+    // `command_lifecycle` frames only when it is present, and echoes it back
+    // as `command_uuid`.
+    assert_eq!(v["uuid"], "p1");
+}
+
+#[test]
+fn dispatch_detects_command_lifecycle() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"command_lifecycle","command_uuid":"p1","state":"queued","uuid":"e1","session_id":"s1"}"#;
+    match decode_dispatch(line, 1) {
+        DecodedLine::Message(forge_primitives::Message::CommandLifecycle {
+            command_uuid,
+            state,
+            session_id,
+            ..
+        }) => {
+            assert_eq!(command_uuid, "p1");
+            assert_eq!(state, "queued");
+            assert_eq!(session_id, "s1");
+        }
+        other => panic!("expected CommandLifecycle, got {other:?}"),
+    }
 }
 
 #[test]

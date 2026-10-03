@@ -56,6 +56,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
         forge_primitives::Message::Assistant { .. } => "Assistant",
         forge_primitives::Message::User { .. } => "User",
         forge_primitives::Message::System { .. } => "System",
+        forge_primitives::Message::CommandLifecycle { .. } => "CommandLifecycle",
         forge_primitives::Message::Result { .. } => "Result",
         forge_primitives::Message::TaskStarted { .. } => "TaskStarted",
         forge_primitives::Message::TaskUpdated { .. } => "TaskUpdated",

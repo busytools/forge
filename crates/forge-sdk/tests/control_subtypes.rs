@@ -1,4 +1,4 @@
-//! Integration tests for the 9 outbound `control_request` subtypes on
+//! Integration tests for the 10 outbound `control_request` subtypes on
 //! [`Client`]. Each test spawns the minimal `mock_claude_control.sh`
 //! fixture, invokes the corresponding method, and asserts the round-trip
 //! either returned `Ok(())` or the expected decoded payload - and that
@@ -53,6 +53,38 @@ async fn interrupt_round_trip() {
     let client = spawn_client(&echo).await;
     client.interrupt().await.expect("interrupt");
     assert_last_subtype(&echo, "interrupt");
+    client.disconnect().await.expect("disconnect");
+}
+
+/// The cancel answers the CLI's own `cancelled` field, and the body carries
+/// the uuid the prompt was sent under - the id the lifecycle frames echo back,
+/// so a wrong id here would mean the view asks to drop one prompt and the CLI
+/// drops another.
+#[tokio::test]
+async fn cancel_queued_message_round_trip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let echo = dir.path().join("echo");
+    let requests = dir.path().join("requests");
+    let opts = OptionsBuilder::new()
+        .binary(fixture("mock_claude_control.sh"))
+        .env("FORGED_MOCK_ECHO_SUBTYPE", echo.to_string_lossy().as_ref())
+        .env("FORGED_MOCK_ECHO_REQUEST", requests.to_string_lossy().as_ref())
+        .build();
+    let (client, _events) = Client::spawn(opts).await.expect("spawn");
+
+    let cancelled = client.cancel_queued_message("cap_p1").await.expect("cancel_queued_message");
+    assert!(cancelled, "the canned answer is cancelled:true, so the call must report true");
+    assert_last_subtype(&echo, "cancel_async_message");
+
+    let sent: serde_json::Value = std::fs::read_to_string(&requests)
+        .expect("the mock echoes every observed request")
+        .lines()
+        .last()
+        .map(|line| serde_json::from_str(line).expect("a JSON request line"))
+        .expect("the cancel request was observed");
+    assert_eq!(sent["request"]["subtype"], "cancel_async_message");
+    assert_eq!(sent["request"]["message_uuid"], "cap_p1");
+
     client.disconnect().await.expect("disconnect");
 }
 

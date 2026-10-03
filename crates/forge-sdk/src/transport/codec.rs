@@ -171,7 +171,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> DecodedLine {
             }
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
-        | "error" => match serde_json::from_value::<Message>(value) {
+        | "command_lifecycle" | "error" => match serde_json::from_value::<Message>(value) {
             Ok(msg) => DecodedLine::Message(msg),
             Err(e) => DecodedLine::Malformed { line: line_number, reason: e.to_string() },
         },
@@ -196,11 +196,17 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> DecodedLine {
 /// Returns a string terminated by `\n` suitable for writing directly to the
 /// subprocess's stdin.
 ///
+/// `uuid` is the prompt's own id, and it is stamped on every frame: the CLI
+/// emits that prompt's `command_lifecycle` frames (queued, started, …) only
+/// when the frame carries one (measured: zero frames without), and a reused id
+/// makes the CLI drop the prompt outright with no error anywhere. Mint a fresh
+/// one per send ([`crate::request_id::next_prompt_id`]).
+///
 /// # Errors
 ///
 /// [`Error::MessageParse`] wrapping a JSON serialization failure
 /// (extraordinarily rare for string inputs; included for totality).
-pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Error> {
+pub fn encode_user_prompt(prompt: &str, session_id: &str, uuid: &str) -> Result<String, Error> {
     // The CLI accepts both the bare-string and
     // `[{"type":"text","text":prompt}]` shapes for `content` on
     // user turns. forge-sdk emits the simpler bare-string form.
@@ -209,6 +215,7 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
         "message": {"role": "user", "content": prompt},
         "session_id": session_id,
         "parent_tool_use_id": null,
+        "uuid": uuid,
     });
     let mut line = serde_json::to_string(&payload).map_err(|e| Error::encode("user prompt", e))?;
     line.push('\n');
@@ -225,18 +232,22 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
 /// `{"type":"text","text":"..."}`,
 /// `{"type":"image","source":{...}}`).
 ///
+/// `uuid` is stamped as it is on the text form, for the same reason.
+///
 /// # Errors
 ///
 /// [`Error::MessageParse`] wrapping a JSON serialization failure.
 pub fn encode_user_prompt_with_content(
     content: &[Value],
     session_id: &str,
+    uuid: &str,
 ) -> Result<String, Error> {
     let payload = json!({
         "type": "user",
         "message": {"role": "user", "content": content},
         "session_id": session_id,
         "parent_tool_use_id": null,
+        "uuid": uuid,
     });
     let mut line =
         serde_json::to_string(&payload).map_err(|e| Error::encode("user prompt blocks", e))?;
