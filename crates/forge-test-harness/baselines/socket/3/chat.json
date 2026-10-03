@@ -212,6 +212,12 @@
     "plan",
     "planFilePath"
   ],
+  "/plugins[]": [
+    "name",
+    "path",
+    "source",
+    "version"
+  ],
   "/rate_limit_info": [
     "isUsingOverage",
     "overageResetsAt",
