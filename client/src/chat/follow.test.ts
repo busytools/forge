@@ -173,7 +173,7 @@ function stub() {
         what: 'more',
         why: 'forge holds no session for this seat',
         ...(seat === undefined ? {} : { seat }),
-      } as ServerMessage);
+      });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
