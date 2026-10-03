@@ -1467,9 +1467,17 @@ pub(crate) fn handle_spawn_worker(
     // `resume_kick`), and writing that here would make it the worker's
     // opening turn on every later `--new` re-spawn.
     let kick_field = if is_resume { None } else { entry.kick.as_deref() };
-    // A resume adopts what the row already stores, so it states none.
-    let families_field =
-        if is_resume || from_boot_respawn { None } else { mcp_families.as_deref() };
+    // The stored-selection contract, mirrored exactly by `families`
+    // below so the reply, the running surface and the row cannot
+    // disagree: a re-spawn stating nothing adopts the stored value; a
+    // stated list is a revision; a fresh spawn stating nothing means
+    // every family, which writes as absence.
+    let resume_like = is_resume || from_boot_respawn;
+    let families_field: Option<&[String]> = if resume_like && mcp_families.is_none() {
+        None
+    } else {
+        Some(mcp_families.as_deref().unwrap_or(&[]))
+    };
     let durability_warning = match workspace.record_worker_row(
         &project_key,
         label,
@@ -1520,10 +1528,13 @@ pub(crate) fn handle_spawn_worker(
     // existing ConnectionFailed surface (workspace.rs:570) reports
     // it - we don't silently fall back to fresh-spawn (that would
     // lose state without warning).
-    // The family selection this spawn composes its tool surface from: a
-    // resume or boot re-spawn reads what the row already carries; a
-    // first spawn writes the same value to the row just above.
-    let families = if is_resume || from_boot_respawn {
+    // The selection this spawn composes from: a stated argument wins (a
+    // resume stating one is a revision); otherwise a resume or boot
+    // re-spawn adopts the row; a fresh spawn with nothing stated means
+    // every family.
+    let families = if mcp_families.is_some() {
+        mcp_families.clone()
+    } else if resume_like {
         workspace.recorded_worker_mcp_families(&project_key, label).unwrap_or_else(|error| {
             tracing::warn!(
                 target: "forge_workspace::spawn",
@@ -1537,12 +1548,12 @@ pub(crate) fn handle_spawn_worker(
             None
         })
     } else {
-        mcp_families.clone()
+        None
     };
     let settings = SessionLaunchSettings {
         charter: Some(charter_with_withheld_families(
             &charter,
-            &crate::mcp::resolve_mcp_families(families.as_deref()),
+            &crate::mcp::effective_mcp_families(families.as_deref(), workspace.systemone.is_some()),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
@@ -3084,6 +3095,152 @@ provider = "anthropic"
             "the row keeps the worker's original first turn; overwriting it makes the restart \
              note the worker's opening turn on every later --new re-spawn",
         );
+    }
+
+    fn spawn_scaffold() -> (Arc<Workspace>, crate::ProjectKey, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        (ws, key, dir)
+    }
+
+    /// A fresh spawn that omits `mcp_families` states "every family", so
+    /// a stale stored selection must not survive it: reply, running
+    /// surface and row have to agree.
+    #[tokio::test]
+    async fn a_fresh_spawn_without_families_clears_a_stale_selection() {
+        let (ws, key, _dir) = spawn_scaffold();
+        ws.record_worker_row(
+            &key,
+            "tester",
+            "tester-id",
+            "charter",
+            None,
+            None,
+            false,
+            false,
+            Some(&["cron".to_owned()]),
+        )
+        .expect("seed a stale selection");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the fresh spawn succeeds: {reply:?}");
+        assert_eq!(reply.expect("ok").mcp_families, None, "the reply says every family");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.mcp_families, None,
+            "the row cannot keep a selection the running surface does not have; a restart \
+             would silently narrow the worker",
+        );
+    }
+
+    /// A re-spawn that states no selection adopts the row's; one that
+    /// states a selection is a revision and both the reply and the row
+    /// carry it.
+    #[tokio::test]
+    async fn a_respawn_adopts_the_rows_selection_or_honours_a_stated_one() {
+        let (ws, key, _dir) = spawn_scaffold();
+        ws.record_worker_row(
+            &key,
+            "tester",
+            "tester-id",
+            "charter",
+            None,
+            None,
+            false,
+            false,
+            Some(&["cron".to_owned()]),
+        )
+        .expect("seed the stored selection");
+
+        // Adopt: no argument, boot re-spawn reads the row.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            true,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert_eq!(
+            reply.expect("ok").mcp_families,
+            Some(vec!["cron".to_owned()]),
+            "a re-spawn with nothing stated adopts the row's selection",
+        );
+
+        // State one: it wins, and the row is revised. Clear the live
+        // entry the first re-spawn left, or the one-live-worker guard
+        // refuses this second spawn for a reason unrelated to families.
+        ws.remove_latest_worker(&key, "tester");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["tasks".to_owned()]),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            true,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert_eq!(
+            reply.expect("ok").mcp_families,
+            Some(vec!["tasks".to_owned()]),
+            "a stated selection wins on a re-spawn",
+        );
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row");
+        assert_eq!(stored.mcp_families, Some(vec!["tasks".to_owned()]), "and is written");
     }
 
     /// The prompt charter carries one line per withheld family; the ROW

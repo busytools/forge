@@ -587,7 +587,9 @@ impl Tool for Spawn {
          in the worker's own prompt so it knows what it does not have - \
          a worker without systemone is told to route decisions to you. \
          The choice is stored on the worker and survives restarts; \
-         revise it with agents__update. \
+         revise it with agents__update. On a resume or re-spawn that \
+         states no `mcp_families`, the worker's stored selection \
+         applies; stating one then revises it. \
          This tool errors if called from a worker session; only the \
          project lead may spawn."
     }
