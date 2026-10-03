@@ -96,10 +96,10 @@ function stub() {
       send({ kind: 'page', conversation: seat, turns, cursor: null });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
-    frame(text = 'a line arriving'): void {
+    frame(): void {
       send({
         kind: 'update',
-        update: { chat_appended: { key: LEAD, msg: said(text) } },
+        update: { chat_appended: { key: LEAD, msg: said('a line arriving') } },
       });
     },
     /** A prompt the reader sends, as the CLI echoes it back on the seat. */
