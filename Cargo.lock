@@ -1318,7 +1318,7 @@ dependencies = [
 name = "forge-primitives"
 version = "1.0.108"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1391,7 +1391,7 @@ dependencies = [
  "ansi-to-tui",
  "anyhow",
  "arboard",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "clap_complete",
  "crossterm",
