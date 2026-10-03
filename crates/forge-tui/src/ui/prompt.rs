@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_pointer_on_focused_option() {
+    fn renders_focused_pointer_and_agent_wording_on_the_escape_row() {
         let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         let out = render_to_string(&prompt, 1, 80, 12);
         assert!(
