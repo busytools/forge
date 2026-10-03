@@ -115,6 +115,7 @@ const FITS = { asked: VIEWPORT, landed: 0 };
 
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
+  const watchers = new Set<(status: 'closed' | 'open') => void>();
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
     unsubscribe: () => undefined,
@@ -125,7 +126,10 @@ function stub() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: 'closed' | 'open') => void) => {
+      watchers.add(fn);
+      return () => watchers.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     status: () => 'open' as const,
@@ -139,8 +143,18 @@ function stub() {
 
   return {
     connection,
-    page(turns: unknown[], seat: SessionSlot = LEAD): void {
-      send({ kind: 'page', conversation: seat, turns, cursor: null });
+    /** The socket drops, the way it does mid-ask. */
+    drop(): void {
+      for (const fn of watchers) fn('closed');
+      flushSync();
+    },
+    /**
+     * A page landing. `cursor` says there are older turns above it, which is
+     * what lets the column ask for them at all - `null` is a page with nothing
+     * behind it, and no ask follows.
+     */
+    page(turns: unknown[], seat: SessionSlot = LEAD, cursor: string | null = null): void {
+      send({ kind: 'page', conversation: seat, turns, cursor });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
@@ -465,6 +479,9 @@ describe('whether the column follows the newest end', () => {
       props: { slot: LEAD, connection: server.connection },
     });
     flushSync();
+    // No cursor: nothing above this page, so the reader's scroll asks for
+    // nothing and the compensation stays off - which is what makes this arm
+    // about the restore alone.
     server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
     await settle();
     expect(list(), 'rows to hold').not.toBeNull();
@@ -481,6 +498,79 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(element.offset, "the reader's row carried them down with it").toBe(250);
+  });
+
+  /**
+   * **A size change with an ask in flight is the compensation's business.**
+   * Near the top a page of older turns is asked for, and while that ask is out
+   * the restore stands aside - the list is holding the reader by its own shift,
+   * and a row above them growing is not theirs to compensate. (Before the
+   * guard this path restored anyway: the offset would read 250 here.)
+   */
+  it('leaves a prepend in flight to the list, not to the restore', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    // 40px rows, the reader 50 down - inside the second row, near enough to the
+    // top that the column asks for the turns above.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The first row grows by 200 and the browser reports a size change: the
+    // observer's own path, while the ask is out.
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the compensation is still on').toBe(50);
+  });
+
+  /**
+   * **And when the ask is gone, the restores come back.** A dropped socket
+   * takes a page in flight with it and the reconnect asks again - so the
+   * conversation says it forgot the ask, and the column's own count drains.
+   * Without that drain the count outlives the ask, `shift` stays on for the
+   * life of the seat, and this PR's own hold quietly stops working: the offset
+   * left at 50 where the row above the reader had moved it to 250.
+   */
+  it('drains a dropped ask, and the row holds the reader again', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The socket drops with that ask in flight, and the reader stays put.
+    server.drop();
+    await settle();
+
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the row carried them down once the ask was drained').toBe(250);
   });
 
   it('brings the reader back for their own prompt', async () => {

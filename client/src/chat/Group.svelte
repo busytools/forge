@@ -187,7 +187,7 @@
         <span class="nm">{lane.label}</span>
       </div>
       {#each lane.calls as call (call.key)}
-        <Call call={call.leaf} open={opens(call.leaf)} />
+        <Call call={call.leaf} k={call.key} open={opens(call.leaf)} />
       {/each}
       {#each lane.cards as card (card.id)}
         {@const title = titleOf(card)}

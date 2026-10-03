@@ -36,6 +36,27 @@ describe("the reader's anchor", () => {
   });
 
   /**
+   * **Only the rows up to the edge are measured.** The caller hands a generator
+   * of boxes, and measuring one is a layout read on every scroll event of the
+   * giant seat: buffering the whole window would survive the code without this
+   * arm, and the doc's claim would have no witness.
+   */
+  it('measures rows only until the edge is found', () => {
+    let asked = 0;
+    function* rows(): Generator<RowBox> {
+      for (let at = 0; at < 5; at += 1) {
+        asked += 1;
+        yield row(`r${at}`, at * 40, at * 40 + 40);
+      }
+    }
+
+    // The edge is inside the second row: the three below it are never asked of
+    // the layout, which is the whole point of taking an iterable.
+    expect(anchorAt(rows(), 50), 'the row under the edge').toEqual({ key: 'r1', into: 10 });
+    expect(asked, 'the scan stopped at the edge').toBe(2);
+  });
+
+  /**
    * **The pair is a capture and its inverse.** What `anchorAt` reads off a row
    * has to be put back by `anchoredScroll` exactly where it was: capture at a
    * viewport top, then ask where to scroll for the same row top, and the answer

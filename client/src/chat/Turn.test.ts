@@ -121,6 +121,10 @@ describe('one turn, as the page draws it', () => {
 
     expect(body, "the reader's own row carries its key").toMatch(carrying('mine'));
     expect(body, 'and the work rows theirs').toMatch(carrying('unit'));
+    // **And each carries its turn's key too**: the fold names an id-less frame
+    // within its own turn, so two turns can carry the same unit key and an
+    // unprefixed lookup could hold a row of the wrong one.
+    expect(body, "the row's key is its turn's").toContain('data-k="t1:');
   });
 
   it('draws what the reader said, and the work under it', () => {

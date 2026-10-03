@@ -21,7 +21,23 @@
    * without being asked, while it is small enough to draw - and the reader's
    * own toggling takes it from there.
    */
-  let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
+  let {
+    call,
+    open = false,
+    k = null,
+  }: {
+    call: ToolLeaf;
+    open?: boolean;
+    /**
+     * The fold's own name for this row, which the column's anchor scans by.
+     *
+     * **Where it is absent the wire's id stands in, and an id-less call leaves
+     * `call-` alone** - which is why the lane hands the fold's key down: two
+     * such rows would carry one key, and the anchor's lookup takes the first
+     * match it finds.
+     */
+    k?: string | null;
+  } = $props();
 
   /**
    * Whether the row is open, held HERE rather than drawn from the prop.
@@ -130,7 +146,7 @@
   class="leaf"
   class:running={call.status === 'in_progress'}
   bind:open={opened}
-  data-k={`call-${call.id}`}
+  data-k={`call-${k ?? call.id}`}
 >
   <summary>
     {#if call.status === 'completed'}

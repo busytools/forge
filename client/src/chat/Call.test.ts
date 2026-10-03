@@ -25,6 +25,22 @@ const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
 describe('the row one call draws', () => {
+  /**
+   * **The row carries the fold's own name, not the wire id alone.** The
+   * column's anchor scans by `data-k`, and an id-less `tool_use` leaves the
+   * wire id empty - two such rows would carry one key and the lookup takes the
+   * first match. The lane hands the fold's key down for it; this pins both
+   * halves, the key where it comes and the id as the fallback.
+   */
+  it("carries the fold's key on the row, and the wire id where none came", () => {
+    const named = render(Call, { props: { call: backgrounded(null), k: 'f7' } }).body;
+    expect(named, "the fold's own name for the row").toContain('data-k="call-f7"');
+    const wire = render(Call, { props: { call: backgrounded(null) } }).body;
+    expect(wire, 'the wire id, where the lane handed no key').toContain(
+      'data-k="call-toolu_012ygCheCDa6s8YmU5JxxVp2"',
+    );
+  });
+
   it("opens onto the skill a Skill call loaded, which is the row's right data", () => {
     // The call's own result is the CLI's "Launching skill: ..." line, which
     // says nothing; the fold hangs the skill's body on the call, and the row
