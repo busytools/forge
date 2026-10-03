@@ -355,16 +355,20 @@ fn build_option_lines(
 
 /// The focused option's preview is markdown on the wire, and the CLI
 /// writes it line-structured - mockups, aligned blocks - so it draws the
-/// way the reader's own words do, every source line keeping its own row.
-/// The dock's paragraph draws no wrap of its own, so a row wider than the
-/// dock is wrapped here rather than losing its tail off the right edge.
+/// way the reader's own words do, source lines keeping their own rows.
+/// Two shared-renderer shapes are the exception: a setext heading keeps
+/// its marker, and an indented code block merges its lines between fence
+/// rows the preview never had (#1634). The dock's paragraph draws no wrap
+/// of its own, so a row wider than the dock is wrapped here rather than
+/// losing its tail off the right edge.
 fn build_preview_lines(preview: &str, content_width: usize) -> Vec<Line<'static>> {
     let width = u16::try_from(content_width).unwrap_or(u16::MAX);
     let (rows, _) = message::render_markdown_segments(preview, width, true, 0);
-    if rows.is_empty() {
-        // Markdown renders some non-blank sources to nothing - a bare HTML
-        // tag, a link-reference definition - and a preview nobody can see
-        // is worse than its source drawn as itself.
+    if rows.iter().all(row_is_blank) {
+        // Some non-blank sources draw nothing at all - a bare HTML tag, a
+        // link-reference definition - or only rows with nothing visible on
+        // them, like a lone `&nbsp;` or an empty fenced block. A preview
+        // nobody can see is worse than its source drawn as itself.
         return plain_preview_rows(preview, content_width);
     }
     let mut out = Vec::new();
@@ -391,6 +395,11 @@ fn build_preview_lines(preview: &str, content_width: usize) -> Vec<Line<'static>
         }
     }
     out
+}
+
+/// Whether a rendered row carries nothing visible.
+fn row_is_blank(row: &Line<'_>) -> bool {
+    row.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
 /// A preview's own text, a row per source line, wrapped to the dock.
@@ -737,15 +746,21 @@ mod tests {
 
     /// The rows the dock draws for the preview block: after the `Preview:`
     /// row, before the footer hint. An assertion about the block's own
-    /// content reads this, not the whole dock.
+    /// content reads this, not the whole dock. The header is required, and
+    /// the LAST footer hint ends the block, so a preview quoting that hint
+    /// cannot truncate it.
     fn preview_block(out: &str) -> String {
         let rows: Vec<&str> = out.lines().collect();
-        let start = rows.iter().position(|row| row.contains("Preview:")).map_or(0, |i| i + 1);
+        let header = rows
+            .iter()
+            .position(|row| row.contains("Preview:"))
+            .unwrap_or_else(|| panic!("the dock drew no Preview: row; got:\n{out}"));
         let end = rows
             .iter()
-            .position(|row| row.contains("⏎ confirm") || row.contains("⏎ submit"))
-            .unwrap_or(rows.len());
-        rows[start.min(end)..end].join("\n")
+            .rposition(|row| row.contains("⏎ confirm") || row.contains("⏎ submit"))
+            .unwrap_or(rows.len())
+            .max(header + 1);
+        rows[header + 1..end].join("\n")
     }
 
     /// Display column of the first occurrence of `needle` in `row`.
@@ -796,7 +811,10 @@ mod tests {
             block.contains("staging runs deploy, see the runbook (https://x.dev/rb)."),
             "expected bold, inline code and the link to draw as their text; got:\n{out}"
         );
-        assert!(block.contains("Staging"), "expected the heading's text to draw; got:\n{out}");
+        assert!(
+            block.lines().any(|row| row.trim_matches(['┃', ' ']) == "Staging"),
+            "expected the heading to draw as its own text row, marker gone; got:\n{out}"
+        );
         assert!(block.contains("one at a time"), "expected the list item to draw; got:\n{out}");
         assert!(!block.contains("**"), "bold markers must not reach the screen; got:\n{out}");
         assert!(!block.contains('`'), "code backticks must not reach the screen; got:\n{out}");
@@ -858,19 +876,22 @@ mod tests {
         );
     }
 
-    /// Markdown renders some non-blank payloads to nothing; the preview
-    /// then draws its own text rather than a header over an empty block.
+    /// Markdown renders some non-blank payloads to nothing, or to rows
+    /// with nothing on them; the preview then draws its own text rather
+    /// than a header over a blank block.
     #[test]
     fn a_preview_markdown_cannot_render_draws_as_its_source() {
-        let mut request = make_question_request(false);
-        request.prompt.options[0].preview = Some("<img alt=\"diagram\">".into());
-        let prompt = PromptState::from_question("tc-q".into(), request);
-        let out = render_to_string(&prompt, 1, 80, 24);
-        let block = preview_block(&out);
-        assert!(
-            block.contains("<img alt=\"diagram\">"),
-            "a preview with nothing renderable must draw as itself; got:\n{out}"
-        );
+        for preview in ["<img alt=\"diagram\">", "&nbsp;"] {
+            let mut request = make_question_request(false);
+            request.prompt.options[0].preview = Some(preview.into());
+            let prompt = PromptState::from_question("tc-q".into(), request);
+            let out = render_to_string(&prompt, 1, 80, 24);
+            let block = preview_block(&out);
+            assert!(
+                block.contains(preview),
+                "a preview with nothing visible must draw its source; {preview:?} got:\n{out}"
+            );
+        }
     }
 
     /// A row wrapped for width keeps its own line style: a blockquote's
