@@ -104,8 +104,8 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
 }
 
 /**
- * A question as the core offers one, with whatever the test overrides in its
- * prompt.
+ * A question for the dock, hand-written, with whatever the test overrides in
+ * its prompt: the default option ids are this test's own.
  *
  * The index is a parameter because one tool call carries every question in a
  * batch: the core reuses the tool id and advances this, so a test that needs two

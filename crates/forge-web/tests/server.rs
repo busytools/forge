@@ -4233,7 +4233,7 @@ fn permission() -> forge_primitives::permission_interaction::PermissionRequest {
     }))
 }
 
-/// A question, as the CLI sends it.
+/// A question for the dock, hand-written: the option ids are this test's.
 fn question() -> forge_primitives::question::QuestionRequest {
     question_from("tu-2")
 }
@@ -4563,7 +4563,7 @@ async fn the_sign_in_hint_falls_back_to_the_command_that_fixes_it() {
     );
 }
 
-/// A status frame, as the CLI sends it.
+/// A status frame, hand-typed for the test.
 fn status(value: &str) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
         "type": "system",
