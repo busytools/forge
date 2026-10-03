@@ -1372,9 +1372,12 @@ dependencies = [
 name = "forge-system-one"
 version = "1.0.109"
 dependencies = [
+ "axum",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
 ]
 
