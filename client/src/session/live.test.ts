@@ -481,6 +481,10 @@ function openSection(name: string): void {
  * vitest builds its window with `pretendToBeVisual` - but on a timer of its
  * own, so a publish would land whenever that clock said. The queue here is the
  * test's, and `paint()` is the paint.
+ *
+ * The stub is the whole file's, so a case anywhere in it that lands an update
+ * and then reads the page needs `paint()`: the socket cases below land none
+ * today and so never paint.
  */
 let frames = new Map<number, () => void>();
 let nextFrame = 1;
@@ -792,6 +796,7 @@ describe('the record a page holds over an update stream', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('held') } }));
+    const published = page.publishes();
 
     // A poll's answer, encoded before the frame landed.
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
@@ -800,6 +805,11 @@ describe('the record a page holds over an update stream', () => {
     expect(spoken(page), 'the frame was folded at the paint rather than on arrival').toEqual([
       'held',
     ]);
+    // And the paint states what the answer already stated: the frame it was
+    // waiting for went with the write, rather than a second redraw for it.
+    expect(page.publishes(), 'the paint stated a record the read had already stated').toBe(
+      published + 1,
+    );
     page.stop();
   });
 
@@ -948,9 +958,15 @@ describe('the record a page holds over an update stream', () => {
     const showing = watch(connection);
     showing.land(snapshotOf(LEAD));
     showing.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('held') } }));
+    // A frame was waiting for a paint when the page left.
     showing.stop();
 
     const back = watch(connection);
+    // The paint that follows has nothing left to write: the leave took the
+    // waiting frame out of the queue along with the record it carried. The one
+    // write counted here is the subscribe's own handing over.
+    paint();
+    expect(back.publishes(), 'the leave left a frame armed to paint again').toBe(1);
     expect(spoken(back), 'the frame the leave cut short was lost').toEqual(['held']);
     back.stop();
   });
