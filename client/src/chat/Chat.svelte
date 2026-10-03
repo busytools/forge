@@ -260,8 +260,11 @@
       }
       if (held.following) land();
       // A reader away from the foot has a place of their own, and a size change
-      // is one of the two ways it moves under them.
-      else restoreAnchor();
+      // is one of the two ways it moves under them. **Not while the prepend
+      // compensation is on**, same as the effect's own pass: that path holds
+      // the reader by the list's own shift as older turns arrive above them,
+      // and two hands on the scroll is one too many.
+      else if (!shift) restoreAnchor();
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
@@ -271,19 +274,19 @@
     };
   }
 
-  /** The keyed rows the column has drawn, in document order, with their boxes. */
-  function keyedRows(): RowBox[] {
-    if (viewport === null) return [];
-    return [...viewport.querySelectorAll('[data-k]')].map((row) => {
+  /** The drawn rows' boxes, measured one at a time as the scan asks for them. */
+  function* drawnRows(): Generator<RowBox> {
+    if (viewport === null) return;
+    for (const row of viewport.querySelectorAll('[data-k]')) {
       const box = row.getBoundingClientRect();
-      return { key: row.getAttribute('data-k') ?? '', top: box.top, bottom: box.bottom };
-    });
+      yield { key: row.getAttribute('data-k') ?? '', top: box.top, bottom: box.bottom };
+    }
   }
 
   /** Hold the row the reader's top edge is on, which is what their place means. */
   function captureAnchor(): void {
     if (viewport === null) return;
-    const landed = anchorAt(keyedRows(), viewport.getBoundingClientRect().top);
+    const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
     if (landed !== null) anchor = landed;
   }
 
@@ -293,6 +296,10 @@
    * the column cannot measure where it went. The anchor stays for a pass that
    * can, and the row coming back into the window is a size change like any
    * other.
+   *
+   * **The key is the turn's own plus the unit's**, which `Turn` writes, so the
+   * lookup cannot land on a row of another turn: the fold names an id-less
+   * frame `f<index>` within its own turn, and two turns can each carry one.
    */
   function restoreAnchor(): void {
     const held = anchor;

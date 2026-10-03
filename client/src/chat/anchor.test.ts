@@ -27,11 +27,38 @@ describe("the reader's anchor", () => {
   it('scrolls with the row it holds', () => {
     const held = { key: 'b', into: 20 };
 
-    expect(anchoredScroll(held, 40), 'where the row was').toBe(20);
-    expect(anchoredScroll(held, 140), 'a row pushed down 100').toBe(120);
-    expect(anchoredScroll(held, 4), 'a row pulled up 36').toBe(-16);
+    expect(anchoredScroll(held, 40), 'where the row was').toBe(60);
+    expect(anchoredScroll(held, 140), 'a row pushed down 100').toBe(160);
+    expect(anchoredScroll(held, 4), 'a row pulled up 36').toBe(24);
     // Fractional rows are laid out by the browser; the answer is whole pixels,
     // which is what a scroll offset is.
-    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(21);
+    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(61);
+  });
+
+  /**
+   * **The pair is a capture and its inverse.** What `anchorAt` reads off a row
+   * has to be put back by `anchoredScroll` exactly where it was: capture at a
+   * viewport top, then ask where to scroll for the same row top, and the answer
+   * is that viewport top again.
+   *
+   * The first version of this pair subtracted, landing twice the distance into
+   * the row short of the capture - and the test pinned the same wrong numbers,
+   * so nothing failed. Measured in a real browser before that was believed
+   * (`into` 10 -> 20px short, 100 -> 200px short). This arm is the relation
+   * itself, so no sign can be wrong quietly again.
+   */
+  it('restores the viewport to exactly where it was captured', () => {
+    for (const top of [0, 40, 40.6, 173, 900]) {
+      for (const offset of [-40, 0, 20, 59]) {
+        const viewTop = top + offset;
+        const held = anchorAt([row('a', top, top + 60)], viewTop);
+        expect(held, `the row is under the edge at ${viewTop}`).not.toBeNull();
+        if (held === null) continue;
+        expect(
+          anchoredScroll(held, top),
+          `the capture at ${viewTop} over a row at ${top} comes back`,
+        ).toBe(Math.round(viewTop));
+      }
+    }
   });
 });

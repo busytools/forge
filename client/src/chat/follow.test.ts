@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, list, pinned, setElement, setMeasured } = await import('./testing/records');
+const { clear, element, list, pinned, setElement, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
 
@@ -46,6 +46,53 @@ const turn = (key: string): unknown => ({
   key,
   messages: [{ type: 'user', uuid: `u-${key}`, message: { role: 'user', content: [] } }],
 });
+
+/**
+ * One turn carrying words, which is what draws a row the anchor can hold.
+ *
+ * A user message with no content draws nothing at all, so the empty `turn`
+ * above has no `data-k` row to find.
+ */
+const spoken = (key: string): unknown => ({
+  key,
+  messages: [
+    {
+      type: 'user',
+      uuid: `u-${key}`,
+      message: { role: 'user', content: [{ type: 'text', text: `${key} said` }] },
+    },
+  ],
+});
+
+/**
+ * Lay the drawn rows out by hand, because jsdom performs no layout.
+ *
+ * Each row gets a box `height` tall from the column's own top, in the order the
+ * document holds them, less the reader's offset - which is what a rect is, and
+ * read LIVE off the element, because the offset moves after this is called and
+ * a browser's box is whatever it is at the moment it is asked. The first row can
+ * be given a different height, which is how one above the reader grows under
+ * them.
+ */
+function layOut(height: number, leader = height): void {
+  const root = document.querySelector('.conv');
+  if (root === null) return;
+  [...root.querySelectorAll('.turn [data-k]')].forEach((row, at) => {
+    const tall = at === 0 ? leader : height;
+    const top = at * height + (at === 0 ? 0 : leader - height);
+    row.getBoundingClientRect = () => ({
+      top: top - element.offset,
+      bottom: top + tall - element.offset,
+      height: tall,
+      width: 0,
+      left: 0,
+      right: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+  });
+}
 
 /**
  * A console a thousand pixels tall, so a reader can be anywhere in it.
@@ -396,6 +443,44 @@ describe('whether the column follows the newest end', () => {
       { asked: ASKED + 400, landed: FOOT + 400 },
       { asked: ASKED + 400, landed: FOOT + 400 },
     ]);
+  });
+
+  /**
+   * **The place a parked reader holds is put back when the layout moves under
+   * them.** The boxes are synthetic, since jsdom performs no layout, but the
+   * relation is the whole of it: a row above the reader grows by 200 and the
+   * column's own scroll follows by 200, holding the row where their eye was.
+   *
+   * It is also the wiring's arm: with the restore's write disabled this case is
+   * the only one in the suite that notices - the math in `anchor.test.ts` pins
+   * the relation, but nothing else asks the column to use it.
+   */
+  it('puts a parked reader back on their row when the layout moves above them', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    expect(list(), 'rows to hold').not.toBeNull();
+
+    // Rows 40px tall, the reader 50px down: inside the second row, 10px into it.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The first row grows by 200, so the reader's row starts 200 further down.
+    layOut(40, 240);
+    server.frame();
+    await settle();
+
+    expect(element.offset, "the reader's row carried them down with it").toBe(250);
   });
 
   it('brings the reader back for their own prompt', async () => {
