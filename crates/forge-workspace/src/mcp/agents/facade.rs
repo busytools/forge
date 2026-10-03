@@ -57,7 +57,7 @@ impl AgentDispatcher {
         }
         if target.label() == LEAD_LABEL {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
-                Ok(_) => Ok(()),
+                Ok(()) => Ok(()),
                 Err(err) => Err(format!(
                     "project '{}' is no longer reachable ({err:?}); call agents__list to see \
                      who you can reach.",

@@ -1069,12 +1069,10 @@ mod tests {
             !is_run_breaker(&tool_call_block("x", "Monitor")),
             "a Monitor with no parseable input paints an ordinary card and folds",
         );
-        for name in ["mcp__forge__agents__send_message"] {
-            assert!(
-                is_run_breaker(&tool_call_block("x", name)),
-                "{name} renders as an agent block and MUST break runs",
-            );
-        }
+        assert!(
+            is_run_breaker(&tool_call_block("x", "mcp__forge__agents__send_message")),
+            "agents__send_message renders as an agent block and MUST break runs",
+        );
         // A pre-rename card in a resumed transcript renders the same way,
         // so it has to break runs the same way. All six retired names:
         // this set mirrors `detect_outbound`'s, and a name covered on one

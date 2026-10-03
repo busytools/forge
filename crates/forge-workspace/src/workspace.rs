@@ -4049,7 +4049,7 @@ impl Workspace {
                         message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
-                    spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
+                    spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
                 }
                 Command::SpawnWorker {
                     project_key,
@@ -4116,7 +4116,7 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_deliver_worker_prompt(
                         self,
-                        caller,
+                        &caller,
                         &project_key,
                         &target_label,
                         wrapped,
@@ -4131,7 +4131,7 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_deliver_worker_prompt_to_lead(
                         self,
-                        caller,
+                        &caller,
                         &target_lead_key,
                         wrapped,
                     );

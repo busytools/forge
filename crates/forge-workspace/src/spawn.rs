@@ -333,7 +333,7 @@ pub(crate) fn handle_spawn_project(
 /// prompt as a regular `Command::Prompt`.
 pub(crate) fn handle_deliver_peer_prompt(
     workspace: &Arc<Workspace>,
-    caller: SessionSlot,
+    caller: &SessionSlot,
     target_project: String,
     wrapped: WrappedPrompt,
 ) {
@@ -395,7 +395,7 @@ pub(crate) fn handle_deliver_peer_prompt(
     // spawn that never connects can acknowledge the message back to it.
     workspace.park_peer_prompt(
         &crate::SessionSlot::lead(&target.org, &target.name),
-        &caller,
+        caller,
         wrapped,
     );
 
@@ -2122,7 +2122,7 @@ fn buffer_prompt_until_connected(
 
 pub(crate) fn handle_deliver_worker_prompt(
     workspace: &Arc<Workspace>,
-    caller: SessionSlot,
+    caller: &SessionSlot,
     project_key: &ProjectKey,
     target_label: &str,
     wrapped: WrappedPrompt,
@@ -2151,7 +2151,7 @@ pub(crate) fn handle_deliver_worker_prompt(
     // its Connected handler drains the bucket (render + dispatch)
     // exactly like the sleeping-peer path. Skips the tag retry / dispatch
     // below.
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, &caller, &target_key, wrapped)
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, caller, &target_key, wrapped)
     else {
         return;
     };
@@ -2224,7 +2224,7 @@ pub(crate) fn handle_deliver_worker_prompt(
 /// authorized to make.
 pub(crate) fn handle_deliver_worker_prompt_to_lead(
     workspace: &Arc<Workspace>,
-    caller: SessionSlot,
+    caller: &SessionSlot,
     target_lead_key: &SessionSlot,
     wrapped: WrappedPrompt,
 ) {
@@ -2244,7 +2244,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     // Same pre-Connect guard as the sibling-worker path: if the lead
     // hasn't stamped its session_id yet, buffer for its Connected drain
     // rather than dispatching a Command::Prompt that would be dropped.
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, &caller, target_lead_key, wrapped)
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, caller, target_lead_key, wrapped)
     else {
         return;
     };
@@ -2589,7 +2589,7 @@ provider = "anthropic"
         let caller = SessionSlot::from_str_for_test("caller-1");
         handle_deliver_peer_prompt(
             &workspace,
-            caller,
+            &caller,
             "no-such-project".to_owned(),
             fixture_wrapped(),
         );
@@ -2645,7 +2645,7 @@ provider = "anthropic"
         let caller = SessionSlot::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
-        handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w.clone());
+        handle_deliver_peer_prompt(&workspace, &caller, "gateway-backend".to_owned(), w.clone());
 
         // The sleeping branch parks the envelope for the project's lead
         // under `(org, project, None)`. EXACTLY ONE bucket holds our
@@ -5368,7 +5368,7 @@ provider = "anthropic"
         let project = ProjectKey::new("forge");
         let caller = SessionSlot::from_str_for_test("caller-1");
 
-        handle_deliver_worker_prompt(&workspace, caller, &project, "missing", fixture_wrapped());
+        handle_deliver_worker_prompt(&workspace, &caller, &project, "missing", fixture_wrapped());
         // No panic, no dispatch attempted. (We can't easily observe
         // "no dispatch" without a stubbed dispatch; the absence of a
         // panic + dropped channels is the test.)
@@ -5413,7 +5413,7 @@ provider = "anthropic"
 
         handle_deliver_worker_prompt(
             &workspace,
-            SessionSlot::lead("TestOrg", "forge"),
+            &SessionSlot::lead("TestOrg", "forge"),
             &project,
             "builder",
             fixture_wrapped(),
@@ -5539,7 +5539,7 @@ provider = "anthropic"
         // It also dispatches Command::Prompt which the stub agent
         // accepts (the side-effect we don't assert on here).
         let caller = SessionSlot::from_str_for_test("caller-1");
-        handle_deliver_worker_prompt(&workspace, caller, &project_key, "idle", fixture_wrapped());
+        handle_deliver_worker_prompt(&workspace, &caller, &project_key, "idle", fixture_wrapped());
 
         // Wait briefly for the spawned task to finish the retry +
         // status update. The retry should succeed on first attempt

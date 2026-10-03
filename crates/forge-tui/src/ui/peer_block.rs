@@ -134,11 +134,8 @@ pub(crate) fn render_outbound_with_metas(
     collapsed: bool,
     copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Vec<Line<'static>> {
-    match kind {
-        PeerOutboundKind { target, body } => {
-            render_block("Message", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
-        }
-    }
+    let PeerOutboundKind { target, body } = kind;
+    render_block("Message", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
 }
 
 /// Header glyph for every chat block. Distinct enough from the

@@ -200,8 +200,8 @@ mod tests {
         // Resume feeds recorded history through this same walker, so a
         // pre-rename card has to keep rendering as an agent block rather
         // than degrade to a generic tool card.
-        // replay-only: agents__tell
         let agents_tell = make_tc(
+            // replay-only: agents__tell
             "mcp__forge__agents__tell",
             serde_json::json!({
                 "org": "Personal",
@@ -218,8 +218,8 @@ mod tests {
             other => panic!("a pre-rename tell card must still read, got {other:?}"),
         }
 
-        // replay-only: agents__ask
         let agents_ask = make_tc(
+            // replay-only: agents__ask
             "mcp__forge__agents__ask",
             serde_json::json!({ "org": "Gateway", "project": "gateway-backend", "prompt": "?" }),
         );
