@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use forge_primitives::{
     FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionHistory, SessionMessage, SessionMessageKind,
+    worker_tag,
 };
 use forge_sdk::projects_dir_for;
 
@@ -361,11 +362,25 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// # Panics
 ///
 /// Never - filesystem errors fall through and produce an empty Vec.
-/// True when `info` represents a worker session that should be
-/// hidden from default `list_sessions` / session-picker / resolver
-/// output. Callers opt in via `include_workers = true` to see them.
+/// True when `info` represents a worker session: one whose transcript
+/// carries a `forge:worker:<label>` tag.
 pub fn should_exclude_worker_tag(info: &SDKSessionInfo) -> bool {
     info.tag.as_deref().is_some_and(|t| t.starts_with(FORGE_WORKER_TAG_PREFIX))
+}
+
+/// Which worker sessions a listing may carry.
+///
+/// The seat decides, not the directory: a non-git worker runs in the
+/// project root, so its own sessions sit in the same directory as its
+/// lead's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Workers {
+    /// None. A lead's listing is the project's own sessions and never
+    /// its workers', and the boot catalog wants the same.
+    Hidden,
+    /// Only the transcripts tagged for `label`: what a worker ran under
+    /// its own label is what it can resume.
+    Only(String),
 }
 
 /// `tag_cache` carries the previous run's tag scans so an unchanged
@@ -376,7 +391,7 @@ pub async fn list_sessions(
     directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
-    include_workers: bool,
+    workers: Workers,
     tag_cache: Option<&std::sync::Arc<SessionTagCache>>,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
@@ -436,10 +451,17 @@ pub async fn list_sessions(
     }
 
     entries.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
-    let entries: Vec<SDKSessionInfo> = if include_workers {
-        entries
-    } else {
-        entries.into_iter().filter(|info| !should_exclude_worker_tag(info)).collect()
+    let entries: Vec<SDKSessionInfo> = match &workers {
+        Workers::Hidden => {
+            entries.into_iter().filter(|info| !should_exclude_worker_tag(info)).collect()
+        }
+        Workers::Only(label) => {
+            let wanted = worker_tag(label);
+            entries
+                .into_iter()
+                .filter(|info| info.tag.as_deref() == Some(wanted.as_str()))
+                .collect()
+        }
     };
     let end = limit.map_or(entries.len(), |l| offset.saturating_add(l));
     entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
@@ -1504,6 +1526,55 @@ mod tests {
         let untagged = session_info_with_tag("s2", None);
         assert!(!should_exclude_worker_tag(&lead));
         assert!(!should_exclude_worker_tag(&untagged));
+    }
+
+    /// A listing is the seat's own sessions. A worker's label is what it
+    /// can resume, and the directory cannot answer that alone: a non-git
+    /// worker shares the project root with its lead, so the two seats'
+    /// transcripts sit in one directory. Catches a filter that hides
+    /// every worker tag whatever the seat, and one that keeps another
+    /// label's sessions.
+    #[tokio::test]
+    async fn a_listing_keeps_the_seats_own_sessions_and_no_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let dir = projects_dir_for(tmp.path()).join(project_key_for_directory(Some(&cwd)));
+        fs::create_dir_all(&dir).unwrap();
+        let body = |tag: Option<&str>| {
+            use std::fmt::Write as _;
+            let mut body = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\
+                            \"message\":{\"content\":\"hi\"}}\n"
+                .to_owned();
+            if let Some(tag) = tag {
+                let _ = writeln!(body, "{{\"type\":\"tag\",\"tag\":\"{tag}\"}}");
+            }
+            body
+        };
+        write_session_jsonl(&dir, "lead-own", &body(None));
+        write_session_jsonl(&dir, "alpha-own", &body(Some("forge:worker:alpha")));
+        write_session_jsonl(&dir, "beta-own", &body(Some("forge:worker:beta")));
+
+        let ids = |entries: &[SDKSessionInfo]| -> Vec<String> {
+            entries.iter().map(|info| info.session_id.clone()).collect()
+        };
+
+        let lead = list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Hidden, None).await;
+        assert_eq!(
+            ids(&lead),
+            vec!["lead-own"],
+            "a lead's listing is the project's own sessions, never its workers'"
+        );
+
+        let worker =
+            list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Only("alpha".to_owned()), None)
+                .await;
+        assert_eq!(
+            ids(&worker),
+            vec!["alpha-own"],
+            "a worker's listing is the sessions its own label ran"
+        );
     }
 
     // -----------------------------------------------------------------

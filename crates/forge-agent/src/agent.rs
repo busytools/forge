@@ -328,7 +328,9 @@ impl Agent {
     /// carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`
     /// `env` - stamped onto the spawned subprocess
-    /// alongside `CLAUDE_CONFIG_DIR`. Returns a
+    /// alongside `CLAUDE_CONFIG_DIR`. `worker_label` is the seat's own
+    /// worker label, `None` for a lead, and narrows the seat's resume
+    /// listing to the sessions that seat ran. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
     pub fn spawn(
@@ -336,8 +338,10 @@ impl Agent {
         display_name: Option<String>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
+        worker_label: Option<String>,
     ) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env);
+        let bridge =
+            ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env, worker_label);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

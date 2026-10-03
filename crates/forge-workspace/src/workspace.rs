@@ -793,7 +793,7 @@ async fn run_background_catalog_scan(
         None, // every project in the catalog
         None, // no limit
         0,
-        false, // hide worker-tagged sessions from default catalog
+        forge_agent::userdata::catalog::scan::Workers::Hidden,
         Some(&tag_cache),
     )
     .await;
@@ -2016,6 +2016,9 @@ impl Workspace {
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
+                // This seat's own label, so its resume listing can keep the
+                // sessions it ran; a lead has none.
+                (!session_slot.is_lead()).then(|| session_slot.label().to_owned()),
             )
         };
         // A test that installed a stand-in reads the settings this spawn
