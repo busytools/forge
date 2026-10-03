@@ -239,8 +239,8 @@ function openSection(name: string): void {
 
 beforeEach(() => {
   counts.clear();
-  // The seat's read poll is an INTERVAL, so it has to be faked with the two
-  // timeouts: a file that fakes only those cannot advance a poll at all.
+  // The page schedules paints on animation frames, and a case that drives one
+  // needs a clock it can advance.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 

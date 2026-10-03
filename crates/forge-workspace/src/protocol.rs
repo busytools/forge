@@ -1189,9 +1189,10 @@ pub enum SessionUpdate {
     /// The conversation dispatched a sub-agent, and did not before.
     ///
     /// **Pushed rather than read.** A dispatch is a call frame the CLI already
-    /// sends, so the fold that sees it announces the flip - the section the
+    /// sends, so the fold that sees it announces the raise - the section the
     /// flag gates appears as the dispatch happens rather than on the next
-    /// read. It only ever goes on: a seat that dispatched keeps the section.
+    /// read. A connect reassigns the flag from the history it carries and is
+    /// not announced, because the read on that same event answers it.
     DispatchesChanged {
         key: SessionSlot,
         has_dispatches: bool,
@@ -1201,9 +1202,10 @@ pub enum SessionUpdate {
     /// **Pushed rather than read, and throttled here rather than by the
     /// socket.** The socket's batch folds only consecutive token appends, so
     /// a burst of index frames would go out one per change: the walk runs at
-    /// most once per `INDEX_STALENESS` and the frame goes out only when the
-    /// index actually differs from the one last announced, so a tree being
-    /// built into says nothing however much it churns.
+    /// most once per poke while the watch says the tree is moving - so a
+    /// build's writes inside one poke become one walk - and once per
+    /// `INDEX_STALENESS` when it is still. The frame goes out only when the
+    /// index actually differs from the one last announced.
     FileIndexChanged {
         key: SessionSlot,
         index: std::sync::Arc<crate::file_index::FileIndex>,
@@ -1913,11 +1915,12 @@ mod session_update_variants {
         closed: bool,
     }
 
-    /// The names the client's three classifying tables hold.
+    /// The names the client's classifying tables hold.
     ///
-    /// The handler table's keys, and the quoted entries of the two lists. The
-    /// `UNFED` export is skipped rather than read: those are the record's field
-    /// names, and a field is not a variant.
+    /// The handler table's keys, and the quoted entries of the two lists. An
+    /// export of anything else is skipped rather than read: a table of the
+    /// record's FIELD names would answer a variant check with names the enum
+    /// never declares.
     fn classified_names(client: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut table = "";

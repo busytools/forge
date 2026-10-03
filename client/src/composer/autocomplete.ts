@@ -10,7 +10,7 @@
  * **The ordering is this file's, not the server's.** Which match a typeahead
  * offers first is ordering-for-display, so it lives with the view that draws it:
  * the emoji ranking comes from `crates/forge-tui/src/app/emoji.rs`, and the file
- * ranking from `crates/forge-server/src/file_index.rs`. The trigger rules are
+ * ranking from `crates/forge-workspace/src/file_index.rs`. The trigger rules are
  * the terminal's own, ported rather than reinvented - a slash command is the
  * whole draft while it is typed, and the `:` counts only at the start of the
  * text or after whitespace.

@@ -7,8 +7,8 @@
  * up with a busy seat that this page used to fall behind: answering every
  * update with a read is a full encode on the server - the transcript re-folded
  * into turns, the process tree walked, the working tree scanned - so the page
- * ran further behind the busier the seat was. A read is for a cold load, for a
- * reconnect, and for the slices no update carries.
+ * ran further behind the busier the seat was. A read is for a cold load, a
+ * reconnect and a seat swap: every slice has a frame.
  *
  * The subject is the SEAT, and the connection routes an update to it by the
  * slot the update carries, so a store's contents are this seat's and nothing
@@ -307,9 +307,9 @@ function createSeat(
    * Take the record the seat is holding.
    *
    * **A read is the whole record and there is nothing else to take.** Every
-   * slice a frame can carry has a handler, so an answer is not a poll's
-   * refresh of a few fields: it is the truth about the seat, and what a
-   * cold load, a reconnect and a seat swap are owed.
+   * slice a frame can carry has a handler, so an answer is not a refresh of a
+   * few fields: it is the truth about the seat, and what a cold load, a
+   * reconnect and a seat swap are owed.
    */
   function read(): void {
     if (seat.held === null) return;

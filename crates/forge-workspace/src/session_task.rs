@@ -1740,16 +1740,19 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         clear_runtime_identity(domain);
         domain.current_model = Some(current_model.clone());
         domain.available_models.clone_from(available_models);
+        // **The dispatch flag is ASSIGNED on every connect, history or not.**
+        // The history a connect carries IS the conversation it replaces - so a
+        // seat resumed after dispatching keeps the section its flag gates - and
+        // a fresh `/new` carries none, which is a conversation that dispatched
+        // nothing. A flag left standing there would draw the subagents section
+        // over an empty conversation. Assigned rather than raised: the read on
+        // this same event already carries it.
+        domain.has_dispatches =
+            history_updates.as_ref().is_some_and(|history| history.iter().any(is_dispatch));
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
         // opening the session sees the monitor rather than nothing.
         if let Some(history) = history_updates {
-            // The dispatch flag is a fact about the whole conversation, and
-            // this history IS the conversation the connect replaces: a seat
-            // resumed after dispatching keeps the section its flag gates, and
-            // one whose history holds none starts at false. Assigned rather
-            // than raised - the read on this same event already carries it.
-            domain.has_dispatches = history.iter().any(is_dispatch);
             for msg in history {
                 fold_monitor(domain, msg, MonitorOrigin::Transcript);
             }
@@ -3780,13 +3783,15 @@ provider = "anthropic"
         );
     }
 
-    /// **A connect's history is the conversation, so the flag it seeds is a
-    /// fact the page's own read on that same event carries** - announcing it
-    /// would be a frame about a record the page is being handed anyway. A seat
-    /// resumed after dispatching keeps the section its flag gates, which is
-    /// what the seed is for.
+    /// **A connect assigns the flag from the history it carries, and
+    /// announces nothing** - the page's own read on that same event carries
+    /// it. A seat resumed after dispatching keeps the section its flag gates,
+    /// which is what the assignment is for; a fresh `/new` carries NO history
+    /// (the producer only sends one for a non-empty resume), which is a
+    /// conversation that dispatched nothing - and the flag goes with the
+    /// occupant that raised it.
     #[test]
-    fn a_connect_seeds_the_flag_from_its_history_and_announces_nothing() {
+    fn a_connect_assigns_the_flag_from_its_history_and_announces_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
@@ -3810,24 +3815,21 @@ provider = "anthropic"
             "and the seed is not announced: the read on this event answers it",
         );
 
-        // The assignment is an ASSIGNMENT: a connect whose history holds no
-        // dispatch is the conversation this seat now carries, so the flag goes
-        // with the occupant that raised it - and that transition is not
-        // announced either, for the same reason.
+        // `/new`: the connect carries no history at all, and that is the
+        // conversation this seat now has. The transition is not announced
+        // either, for the same reason - and a flag left standing here would
+        // draw the subagents section over an empty conversation.
         task.translate_event(AgentEvent::Connected {
             session_id: "new-uuid".to_owned(),
             cwd: "/proj".to_owned(),
             current_model: forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude"),
             available_models: Vec::new(),
             mode: None,
-            history_updates: Some(Vec::new()),
+            history_updates: None,
             compaction_count: 0,
         });
 
-        assert!(
-            !task.domain.lock().has_dispatches,
-            "a history that dispatched nothing leaves the flag false",
-        );
+        assert!(!task.domain.lock().has_dispatches, "a fresh /new leaves no dispatch standing");
         assert!(
             announced_dispatches(&mut updates).is_empty(),
             "and the clear is not announced either",

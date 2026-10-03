@@ -205,10 +205,11 @@ pub struct DomainSession {
     pub work_snapshot: Option<crate::work::WorkSnapshot>,
     /// Whether this conversation dispatched a sub-agent, anywhere in it.
     ///
-    /// Seeded from the history a connect carries and raised by each dispatch
+    /// Assigned from the history a connect carries and raised by each dispatch
     /// frame: it is a fact about the whole conversation rather than about a
-    /// window of it, and it never goes back - a seat that dispatched keeps
-    /// the section it gates.
+    /// window of it, so within one occupant's life it never goes back - but a
+    /// connect reassigns it, and a fresh `/new`, which carries no history,
+    /// leaves it false rather than inheriting the occupant before it.
     pub has_dispatches: bool,
     /// The seat's walked file index, and when it was taken. Written by the
     /// seat's own loop while a view is showing it, so the composer's `@`
