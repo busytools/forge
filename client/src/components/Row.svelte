@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { artifactLabel, followable, markOf, waitingOn, whenOf, type Row } from '../home/view';
+  import {
+    artifactLabel,
+    asleep,
+    followable,
+    markOf,
+    waitingOn,
+    whenOf,
+    type Row,
+  } from '../home/view';
   import { hrefForSlot } from '../routes';
   import Mark from './Mark.svelte';
 
@@ -16,9 +24,15 @@
 <div class="row {mark.class}">
   <Mark state={row.state} />
   <!-- The name is the link rather than the row: a row can carry an artifact
-       anchor, and an anchor inside an anchor is not HTML. -->
+       anchor, and an anchor inside an anchor is not HTML. A sleeping seat is
+       not a link at all - its page draws a refusal - so the row is read as
+       information, which is the terminal's own treatment of one. -->
   <span class="name">
-    <a href={hrefForSlot(row.slot)}>{row.name}</a>
+    {#if asleep(row.state)}
+      {row.name}
+    {:else}
+      <a href={hrefForSlot(row.slot)}>{row.name}</a>
+    {/if}
   </span>
   <span class="where">
     {#if row.place.branch}{row.place.branch}{/if}

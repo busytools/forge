@@ -60,6 +60,21 @@ export interface TaskCell {
   artifact: string | null;
 }
 
+/**
+ * Whether a row's seat has nothing running behind it: the two lifecycles the
+ * core reports for a seat whose session is gone.
+ *
+ * Such a row is information rather than a way in - opening its seat draws a
+ * refusal - which is the terminal's own treatment of a sleeping worker row,
+ * and why a view must not draw one as a link.
+ */
+export function asleep(state: RowState): boolean {
+  return (
+    state.kind === 'lifecycle' &&
+    (state.lifecycle === 'Sleeping' || state.lifecycle === 'LoggedOut')
+  );
+}
+
 /** One row: the same shape for a lead and for a worker. */
 export interface Row {
   slot: { org: string; project: string; label: string };
