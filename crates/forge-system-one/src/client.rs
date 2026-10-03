@@ -62,16 +62,9 @@ impl SystemOneClient {
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
-        let response = request.send().await.map_err(|err| {
-            if err.is_timeout() {
-                SystemOneError::Timeout
-            } else {
-                SystemOneError::Transport(err.to_string())
-            }
-        })?;
+        let response = request.send().await.map_err(transport_or_timeout)?;
         let status = response.status();
-        let text =
-            response.text().await.map_err(|err| SystemOneError::Transport(err.to_string()))?;
+        let text = response.text().await.map_err(transport_or_timeout)?;
         if !status.is_success() {
             return Err(SystemOneError::Http {
                 status: status.as_u16(),
@@ -91,6 +84,17 @@ impl SystemOneClient {
         };
         validate_answer(question, &answer).map_err(SystemOneError::InvalidResponse)?;
         Ok(AskOutcome { model, answer, usage })
+    }
+}
+
+/// A request failure reads as a timeout wherever it struck - the send
+/// or the body read - so a stalled connection never surfaces as a
+/// decode error.
+fn transport_or_timeout(err: reqwest::Error) -> SystemOneError {
+    if err.is_timeout() {
+        SystemOneError::Timeout
+    } else {
+        SystemOneError::Transport(err.to_string())
     }
 }
 
@@ -305,6 +309,35 @@ mod tests {
             .expect_err("refused connection is an error");
 
         assert!(matches!(err, SystemOneError::Transport(_)), "{err:?}");
+    }
+
+    /// A server that sends headers and half a body, then stalls: the
+    /// stall sits inside the body read, and it must still read as a
+    /// timeout - not as a transport failure.
+    #[tokio::test]
+    async fn a_stalled_body_read_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
+        let addr = listener.local_addr().expect("bound address");
+        let hold = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"model\":")
+                .await
+                .expect("write headers and a partial body");
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let mut config = config_for(&format!("http://127.0.0.1:{}", addr.port()), Some("k"));
+        config.timeout_ms = 100;
+        let client = SystemOneClient::new(&config, reqwest::Client::new());
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("a stalled body is an error");
+
+        assert!(matches!(err, SystemOneError::Timeout), "{err:?}");
+        hold.abort();
     }
 
     #[tokio::test]
