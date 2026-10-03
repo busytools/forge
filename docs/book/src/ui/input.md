@@ -247,7 +247,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Staging</span>                                                         <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Production</span>                                                      <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell the agent something else</span>                                   <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="bold">Preview:</span>                                                            <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  Staging runs deploy --env staging, the same job as the production   <span class="accent bold">┃</span>
