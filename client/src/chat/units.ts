@@ -978,14 +978,16 @@ function resultJson(result: Block | undefined): unknown {
  * What a result said in prose, which is where a refusal puts its reason.
  *
  * A tool that answers with JSON has nothing here to read; one that refuses
- * answers with the CLI's own sentence, and that sentence is what a failure row
- * has to show rather than the input it was called with.
+ * answers with the CLI's own sentence - raw, or inside the CLI's envelope for
+ * the MCP-result shape, which the fold reads off only where the call failed -
+ * and that sentence is what a failure row has to show rather than the input it
+ * was called with.
  */
-function resultText(result: Block | undefined): string | null {
+function resultText(result: Block | undefined, failed: boolean): string | null {
   if (result === undefined) return null;
-  for (const part of bodyOf(result.content)) {
-    if (part.kind !== 'text') continue;
-    const text = part.text.trim();
+  for (const part of bodyOf(result.content, failed)) {
+    const text =
+      part.kind === 'error' ? part.message : part.kind === 'text' ? part.text.trim() : '';
     if (text !== '') return text;
   }
   return null;
@@ -1139,7 +1141,7 @@ function outbound(
       // refusal the call came back with. A refusal with no words leaves the
       // tail off rather than putting the message under it, which would say the
       // words arrived.
-      body: failed ? (resultText(result) ?? '') : (str(fields, send.body) ?? ''),
+      body: failed ? (resultText(result, failed) ?? '') : (str(fields, send.body) ?? ''),
       org: null,
       self,
       status,
