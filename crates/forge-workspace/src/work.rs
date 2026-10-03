@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use forge_agent::env::file_index::start_change_watch;
+use forge_agent::env::processes::SCAN_STALENESS;
 use forge_primitives::SessionSlot;
 use forge_primitives::git::{GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::GitDiffSnapshot;
@@ -258,7 +259,13 @@ impl Workspace {
                 None
             }
         };
-        spawn_work_watch(Arc::clone(self), slot.clone(), scanning, stopped, announced);
+        // The walk is the hold's too, for the same reason the tree's scan is:
+        // the snapshot a page opens on is this seat's, and a walk left to the
+        // loop would leave the first one as old as the last time anybody
+        // looked.
+        self.walk_processes_if_stale(slot, self.claude_pid(slot)).await;
+        let walked = self.process_snapshot(slot).map(|held| held.processes);
+        spawn_work_watch(Arc::clone(self), slot.clone(), scanning, stopped, announced, walked);
         true
     }
 
@@ -270,6 +277,57 @@ impl Workspace {
     /// The seat's scan, when one has been taken.
     pub fn work_snapshot(&self, slot: &SessionSlot) -> Option<WorkSnapshot> {
         self.domain_session_for(slot)?.lock().work_snapshot.clone()
+    }
+
+    /// Walk `slot`'s process tree when the snapshot held is missing or older
+    /// than [`SCAN_STALENESS`], and store what the walk found.
+    ///
+    /// **The held seat's own loop is the walker** - the terminal walks the one
+    /// seat a person is on, and the socket's reads used to walk the seat a
+    /// client read. This is that role moved to the loop, so a seat nobody
+    /// holds is not walked at all and the walk costs what a held seat's tree
+    /// costs rather than a whole record per read.
+    ///
+    /// The session's live backgrounded `local_bash` commands ride along, from
+    /// the registry the core holds: a backgrounded bash is `setsid`-detached
+    /// and sits outside claude's tree, so without them the walk misses the
+    /// very processes the feed leads with.
+    pub async fn walk_processes_if_stale(&self, slot: &SessionSlot, pid: Option<u32>) -> bool {
+        let Some(pid) = pid else {
+            return false;
+        };
+        let stale = self
+            .process_snapshot(slot)
+            .is_none_or(|held| held.scanned_at.elapsed().is_ok_and(|age| age >= SCAN_STALENESS));
+        if !stale {
+            return false;
+        }
+        let commands = local_bash_commands(
+            &self
+                .domain_session_for(slot)
+                .map(|domain| domain.lock().background_tasks.clone())
+                .unwrap_or_default(),
+        );
+        // `sysinfo`'s refresh is a CPU-bound system call rather than async I/O,
+        // so it runs on the blocking pool.
+        match tokio::task::spawn_blocking(move || forge_agent::env::processes::scan(pid, &commands))
+            .await
+        {
+            Ok(snapshot) => {
+                self.store_process_snapshot(slot, Some(snapshot));
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::work",
+                    event_name = "process_walk_failed",
+                    %error,
+                    slot = %slot.display(),
+                    "the process walk did not finish; the seat keeps the snapshot it had",
+                );
+                false
+            }
+        }
     }
 
     /// Store a scan for `slot`, as the seat's loop and a fixture both do.
@@ -328,14 +386,43 @@ impl Workspace {
     }
 }
 
-/// One seat's scan loop: the tree is watched, the poke reads it, and a row
-/// that moved goes to whoever is showing the seat.
+/// Whether a walk carries news: the entries the seat's viewers were last told
+/// against the ones this walk found.
+///
+/// **`None` is "nothing ever announced", not "an empty tree"**, so the first
+/// walk of a seat that holds nothing still announces - and a second walk that
+/// found the same processes says nothing, which is what keeps a still tree
+/// from redrawing every viewer once a second.
+fn walk_moved(
+    walked: Option<&Vec<forge_agent::env::processes::ProcessEntry>>,
+    snapshot: &forge_agent::env::processes::ProcessSnapshot,
+) -> bool {
+    walked != Some(&snapshot.processes)
+}
+
+/// The commands a walk hands the OS scan: each running `local_bash` task's own
+/// command.
+///
+/// A task whose card forge has not seen carries no command and is skipped -
+/// the terminal's own rule, where a rostered bash with no recorded command
+/// draws its registry row instead of being adopted by the walk.
+fn local_bash_commands(tasks: &[crate::BackgroundTask]) -> Vec<String> {
+    tasks
+        .iter()
+        .filter(|task| task.task_type == "local_bash")
+        .filter_map(|task| task.command.clone())
+        .collect()
+}
+
+/// One seat's scan loop: the tree is watched, the poke reads it and walks the
+/// seat's process tree, and whatever moved goes to whoever is showing the seat.
 fn spawn_work_watch(
     workspace: Arc<Workspace>,
     slot: SessionSlot,
     scanning: Arc<tokio::sync::Mutex<()>>,
     mut stopped: tokio::sync::oneshot::Receiver<()>,
     announced: Option<Announced>,
+    walked: Option<Vec<forge_agent::env::processes::ProcessEntry>>,
 ) {
     tokio::spawn(async move {
         let Some(cwd) = workspace.cwd_for_session(&slot) else {
@@ -353,6 +440,7 @@ fn spawn_work_watch(
         // of those moving cannot change the row this loop watches for.
         let (changes, _watch) = start_change_watch(PathBuf::from(cwd), true);
         let mut announced = announced;
+        let mut walked = walked;
         // Whether the last poke found the seat's session gone, so the quiet
         // spell is reported once rather than once a second.
         let mut quiet = false;
@@ -384,6 +472,18 @@ fn spawn_work_watch(
                 continue;
             }
             quiet = false;
+            // The walk, on its own rule: missing or older than the terminal's
+            // own second, which is this poke's interval. It runs before the
+            // tree's read and takes no part in that read's early exits.
+            if workspace.walk_processes_if_stale(&slot, workspace.claude_pid(&slot)).await
+                && let Some(walk) = workspace.process_snapshot(&slot)
+                && walk_moved(walked.as_ref(), &walk)
+            {
+                walked = Some(walk.processes.clone());
+                workspace
+                    .update_tx
+                    .send(SessionUpdate::ProcessesChanged { key: slot.clone(), snapshot: walk });
+            }
             // Whatever the watch reported since the last look is one mark:
             // the tree moved, which is all a scan decision needs.
             let mut dirty = false;
@@ -610,6 +710,141 @@ provider = "anthropic"
             Some(1),
             "the scan answers the edit the tree picked up",
         );
+    }
+
+    /// The commands a walk hands the OS scan: the running bash tasks, whose
+    /// detached processes sit outside claude's tree, and not the agent tasks
+    /// beside them, which the walk never adopts. A task whose card forge has
+    /// not seen has no command and is left to the registry's own row.
+    #[test]
+    fn only_local_bash_tasks_hand_the_scan_a_command() {
+        let tasks = vec![
+            crate::BackgroundTask {
+                task_id: "t1".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "gh run watch".to_owned(),
+                command: Some("gh run watch 123 --exit-status".to_owned()),
+            },
+            // The agent task CARRIES a command: the hold that records one is
+            // not scoped to a card's tool, so the type is the thing that keeps
+            // it out of the walk (the terminal's own rule and test).
+            crate::BackgroundTask {
+                task_id: "t2".to_owned(),
+                task_type: "local_agent".to_owned(),
+                description: "a sub-agent".to_owned(),
+                command: Some("investigate".to_owned()),
+            },
+            crate::BackgroundTask {
+                task_id: "t3".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "a bash whose card forge never saw".to_owned(),
+                command: None,
+            },
+        ];
+
+        assert_eq!(
+            local_bash_commands(&tasks),
+            vec!["gh run watch 123 --exit-status".to_owned()],
+            "only a bash task's own command is handed to the walk",
+        );
+    }
+
+    /// The walk's window, the terminal's own rule: nothing walked yet is
+    /// walked, one inside the window is the answer rather than a reason to
+    /// walk, and one past it is walked again and stored where both views
+    /// read it.
+    #[tokio::test]
+    async fn a_walk_happens_only_once_the_window_has_passed() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        let pid = Some(std::process::id());
+
+        assert!(
+            workspace.walk_processes_if_stale(&seat, pid).await,
+            "nothing walked yet is walked"
+        );
+        let walked = workspace.process_snapshot(&seat).expect("the walk stored a snapshot");
+
+        assert!(
+            !workspace.walk_processes_if_stale(&seat, pid).await,
+            "a snapshot inside the window is the answer rather than a reason to walk",
+        );
+
+        let long_ago = std::time::SystemTime::now()
+            .checked_sub(Duration::from_secs(60))
+            .expect("a minute ago");
+        workspace.store_process_snapshot(
+            &seat,
+            Some(forge_agent::env::processes::ProcessSnapshot {
+                processes: walked.processes.clone(),
+                scanned_at: long_ago,
+            }),
+        );
+        assert!(
+            workspace.walk_processes_if_stale(&seat, pid).await,
+            "a snapshot past the window is walked again",
+        );
+        assert!(
+            workspace.process_snapshot(&seat).is_some_and(|held| held.scanned_at > long_ago),
+            "and stored where the views read it",
+        );
+    }
+
+    /// A seat with no process to walk is not walked, and keeps the snapshot
+    /// it had rather than having an empty walk put in its place: an invented
+    /// empty snapshot would draw as `no processes` where the truth is
+    /// `nothing known`.
+    #[tokio::test]
+    async fn a_seat_with_no_process_to_walk_keeps_what_it_had() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        let held = std::time::SystemTime::now();
+        workspace.store_process_snapshot(
+            &seat,
+            Some(forge_agent::env::processes::ProcessSnapshot {
+                processes: Vec::new(),
+                scanned_at: held,
+            }),
+        );
+
+        assert!(!workspace.walk_processes_if_stale(&seat, None).await, "nothing is walked");
+        assert_eq!(
+            workspace.process_snapshot(&seat).map(|snapshot| snapshot.scanned_at),
+            Some(held),
+            "and the snapshot it had is kept rather than replaced",
+        );
+    }
+
+    /// A walk carries news only when the tree moved, and the FIRST walk always
+    /// does - `None` is nothing ever announced, not an empty tree.
+    #[test]
+    fn a_walk_carries_news_only_when_the_tree_moved() {
+        let entry = |pid: u32| forge_agent::env::processes::ProcessEntry {
+            pid,
+            parent_pid: 1,
+            name: "claude".to_owned(),
+            command: "claude".to_owned(),
+            memory_bytes: 1,
+        };
+        let walk = |entries: Vec<forge_agent::env::processes::ProcessEntry>| {
+            forge_agent::env::processes::ProcessSnapshot {
+                processes: entries,
+                scanned_at: std::time::SystemTime::now(),
+            }
+        };
+
+        assert!(walk_moved(None, &walk(Vec::new())), "the first walk is news whatever it found");
+        assert!(walk_moved(None, &walk(vec![entry(1)])), "and so is a tree of one");
+
+        let told = vec![entry(1)];
+        assert!(!walk_moved(Some(&told), &walk(vec![entry(1)])), "the same tree says nothing");
+        assert!(
+            walk_moved(Some(&told), &walk(vec![entry(1), entry(2)])),
+            "a process arriving is news",
+        );
+        assert!(walk_moved(Some(&told), &walk(Vec::new())), "and so is the tree emptying");
     }
 
     /// A refused hold is not a hold: the answer says so, and a caller that

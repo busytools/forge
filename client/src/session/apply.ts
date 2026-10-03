@@ -22,6 +22,7 @@ import {
   monitorFrom,
   overridesFrom,
   prFrom,
+  processesFrom,
   workFrom,
   type ComposerState,
   type Conversation,
@@ -107,8 +108,8 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   /**
-   * The three sets a seat pushes whole, each replacing its field(s) with the
-   * frame's own.
+   * The sets a seat pushes whole, each replacing its field(s) with the frame's
+   * own.
    *
    * They are narrowed by the very functions the record's read uses, so a
    * field cannot come out one way from a read and another from a frame.
@@ -131,6 +132,12 @@ export const HANDLERS: Record<string, Apply> = {
     ...held,
     background_tasks: list(payload['tasks']),
   }),
+
+  // The frame names its set `snapshot` and the record's field is `processes`.
+  processes_changed: (held, payload) => {
+    const processes = processesFrom(payload['snapshot']);
+    return processes === null ? held : { ...held, processes };
+  },
 
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
@@ -324,14 +331,12 @@ export const IGNORED: readonly string[] = [
  * only these from it. That is what keeps a poll from reverting a pushed row,
  * since an answer is encoded before a frame lands and applied after it.
  *
- * Five remain: the process walk, the CLI's catalogue pair, the composer's
- * file list and the record's own dispatch answer. The three pushed sets left
- * this list as their handlers landed, and this list is what retires the tick
- * once nothing is on it.
+ * Four remain: the CLI's catalogue pair, the composer's file list and the
+ * record's own dispatch answer. Each pushed set left this list as its handler
+ * landed, and this list is what retires the tick once nothing is on it.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
   'has_dispatches',
-  'processes',
   'slash_commands',
   'subagents',
   'file_index',

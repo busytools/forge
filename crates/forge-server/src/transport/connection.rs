@@ -16,7 +16,7 @@ use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
+use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::{Command, DispatchError, SessionUpdate};
@@ -393,15 +393,9 @@ async fn handle_client(
                 )
                 .await;
             }
-            // Reading a seat is watching it, so paging refreshes the walk the
-            // same way subscribing does. The window in the walk is what keeps
-            // a client paging a long conversation from walking on every page.
-            walk_processes_if_stale(
-                &state.surface,
-                &conversation,
-                roster.claude_pid(&conversation),
-            )
-            .await;
+            // Paging walks nothing: the walk belongs to the seat's hold and
+            // its loop now, so a page reads the store the way every other read
+            // does - and a seat nobody held is a seat nothing walks.
             // The window slices the boundaries the fold reported, so a turn
             // crosses whole. Slicing on a count of messages instead is what
             // would hand a client half a turn.
