@@ -1295,11 +1295,8 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     );
 }
 
-/// Two clients on one seat both hear it: the second neither steals the
-/// first's stream nor sees half of it.
 /// The interval a connection's stream is written on: a burst leaves as one
-/// batch, whole and in the order the core emitted it. The frames a client
-/// reads are the frames it read before, only grouped in time.
+/// batch, whole and in the order the core emitted it.
 ///
 /// **The lower bound is the change itself.** Before it every update was
 /// written where it landed, so a burst's first frame was on the wire before
@@ -1359,13 +1356,88 @@ async fn a_burst_leaves_a_connection_in_one_batch_whole_and_in_order() {
     );
 }
 
+/// A batch still waiting when a client asks goes out ahead of the answer.
+///
+/// An answer is composed after everything the core has already said, so a
+/// snapshot overtaking an update the core emitted before it would land older
+/// news on newer.
+///
+/// **The stream below is what makes the batch's window wide enough to aim
+/// at.** Each arrival holds the deadline open another interval and the
+/// ceiling caps the wait, so an ask sent mid-stream lands while updates are
+/// certainly held - and what is held goes out first. A connection starved for
+/// longer than the stream would leave the batch unopened, which is the one
+/// way this reads short rather than the code reading wrong.
+#[tokio::test]
+async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+    snapshot_answering(&mut socket).await;
+
+    let held = "held for the answer";
+    for step in 0..12 {
+        fleet.emit(SessionUpdate::ConnectionFailed {
+            key: lead_seat(),
+            message: if step == 0 { held.to_owned() } else { format!("filler {step}") },
+            fatal: false,
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    send(&mut socket, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+
+    let (subject, _, passed) = snapshot_answering(&mut socket).await;
+    assert!(
+        passed
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ConnectionFailed { message, .. }
+            if message == held)),
+        "the answer to a subscribe is composed after what the core has already said, so the held \
+         update arrives ahead of the {subject:?} snapshot rather than behind it: {passed:?}",
+    );
+}
+
+/// One token append for the fixture seat, as the CLI sends them: the running
+/// value the block has reached and the growth since the previous event.
+fn a_token_append(running: u64, delta: i64) -> SessionUpdate {
+    SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        origin: None,
+        msg: forge_primitives::Message::ThinkingTokens {
+            estimated_tokens: running,
+            estimated_tokens_delta: delta,
+            uuid: format!("tokens-{running}"),
+            session_id: "s".to_owned(),
+        },
+    }
+}
+
+/// One update, said shortly enough to compare a run of them.
+fn saying(update: &SessionUpdate) -> String {
+    match update {
+        SessionUpdate::ChatAppended {
+            msg:
+                forge_primitives::Message::ThinkingTokens {
+                    estimated_tokens,
+                    estimated_tokens_delta,
+                    ..
+                },
+            ..
+        } => format!("{estimated_tokens_delta} grown to {estimated_tokens}"),
+        SessionUpdate::TurnCancelled { .. } => "cancelled".to_owned(),
+        SessionUpdate::ConnectionFailed { message, .. } => message.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
 /// What a storm is made of: consecutive token appends inside one batch reach
 /// a client as ONE update carrying what they grew by, so the frame count a
-/// page sees drops with the arrival rate.
+/// page sees drops with the arrival rate. A run stops at the first frame that
+/// is not a counter and starts again after it.
 ///
-/// The evidence that the others were folded is ORDER, never a timeout: the
-/// frame after the merged one is the next thing the core emitted, so a
-/// leftover append would have to arrive where that is.
+/// The evidence that the others were folded is ORDER, never a timeout: what
+/// follows a merged update is the next thing the core emitted, so a leftover
+/// append would have to arrive where that is.
 #[tokio::test]
 async fn a_run_of_token_appends_reaches_a_client_as_one_update() {
     let (url, fleet) = a_server().await;
@@ -1379,62 +1451,59 @@ async fn a_run_of_token_appends_reaches_a_client_as_one_update() {
         panic!("a seat that exists is answered with its snapshot")
     };
 
-    // Two thinking blocks' worth: the running value restarts at the second,
-    // so the deltas are the turn's estimate and the last running value is not
-    // the total.
-    for (running, delta) in [(200u64, 200i64), (250, 50), (30, 30)] {
-        fleet.emit(SessionUpdate::ChatAppended {
-            key: lead_seat(),
-            origin: None,
-            msg: forge_primitives::Message::ThinkingTokens {
-                estimated_tokens: running,
-                estimated_tokens_delta: delta,
-                uuid: format!("tokens-{running}"),
-                session_id: "s".to_owned(),
-            },
-        });
+    // Two runs of two, with a frame that is not a counter between them, and
+    // two thinking blocks' worth inside the first: the running value restarts
+    // at the second block, so the deltas are the turn's estimate and the last
+    // running value is not the total.
+    for (running, delta) in [(200u64, 200i64), (250, 50)] {
+        fleet.emit(a_token_append(running, delta));
     }
-    let sentinel = "after the run";
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    for (running, delta) in [(30u64, 30i64), (45, 15)] {
+        fleet.emit(a_token_append(running, delta));
+    }
+    let sentinel = "after the runs";
     fleet.emit(SessionUpdate::ConnectionFailed {
         key: lead_seat(),
         message: sentinel.to_owned(),
         fatal: false,
     });
 
-    let update = update_until(&mut socket, "the token appends this test emitted", |update| {
-        matches!(
-            update,
-            SessionUpdate::ChatAppended {
-                msg: forge_primitives::Message::ThinkingTokens { .. },
-                ..
-            }
-        )
-    })
-    .await;
-    let SessionUpdate::ChatAppended {
-        msg:
-            forge_primitives::Message::ThinkingTokens {
-                estimated_tokens, estimated_tokens_delta, ..
-            },
-        ..
-    } = update
-    else {
-        panic!("the wait answered with what it was asked for");
-    };
-    assert_eq!(estimated_tokens_delta, 280, "the one frame carries what the run grew by, summed");
-    assert_eq!(
-        estimated_tokens, 30,
-        "and the last arrival's own running value, which restarts per block",
-    );
+    let mut heard: Vec<String> = Vec::new();
+    loop {
+        let update = update_until(&mut socket, "a frame this test emitted", |update| {
+            matches!(
+                update,
+                SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::ThinkingTokens { .. },
+                    ..
+                } | SessionUpdate::TurnCancelled { .. }
+                    | SessionUpdate::ConnectionFailed { .. }
+            )
+        })
+        .await;
+        let barrier = matches!(&update, SessionUpdate::ConnectionFailed { message, .. } if message == sentinel);
+        heard.push(saying(&update));
+        if barrier {
+            break;
+        }
+    }
 
-    let next = next_server(&mut socket).await;
-    assert!(
-        matches!(&next, ServerMessage::Update { update }
-            if matches!(&**update, SessionUpdate::ConnectionFailed { message, .. } if message == sentinel)),
-        "the run arrives as one update: what follows it is the next thing the core emitted: {next:?}",
+    let owed = vec![
+        "250 grown to 250".to_owned(),
+        "cancelled".to_owned(),
+        "45 grown to 45".to_owned(),
+        sentinel.to_owned(),
+    ];
+    assert_eq!(
+        heard, owed,
+        "each run crosses as one frame carrying its own sum, with the frame that split them \
+         where it was and nothing left over",
     );
 }
 
+/// Two clients on one seat both hear it: the second neither steals the
+/// first's stream nor sees half of it.
 #[tokio::test]
 async fn two_sockets_on_one_seat_both_hear_it() {
     let (url, fleet) = a_server().await;

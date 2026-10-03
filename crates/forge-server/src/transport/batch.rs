@@ -363,6 +363,18 @@ mod tests {
         }
     }
 
+    /// The id a token frame carries, which the frame a run folds into has to
+    /// name.
+    fn naming(update: &SessionUpdate) -> (&str, &str) {
+        match update {
+            SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::ThinkingTokens { uuid, session_id, .. },
+                ..
+            } => (uuid, session_id),
+            other => panic!("a token frame names itself, and this is {other:?}"),
+        }
+    }
+
     /// One frame, said shortly enough to compare a run of them.
     fn describe(update: &SessionUpdate) -> String {
         match update {
@@ -414,6 +426,11 @@ mod tests {
             describe(&frames(&sink)[0]),
             "lead: 30 running, 280 grown",
             "carrying the last arrival's running value and the deltas summed",
+        );
+        assert_eq!(
+            naming(&frames(&sink)[0]),
+            ("c", "s"),
+            "and the id of the arrival the run ended on, which is the one the frame stands for",
         );
     }
 
