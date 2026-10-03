@@ -28,6 +28,7 @@ import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { echoes } from './echoes.svelte';
 import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
@@ -266,7 +267,21 @@ function messagesOf(turn: PageTurn): unknown[] {
 
 /** A frame's own id, or `null` when it carries none. */
 function uuidOf(message: unknown): string | null {
-  const id = (message as { uuid?: unknown } | null)?.uuid;
+  // **A delivered mid-turn prompt is carried by its attachment, and the id on
+  // that row is the CLI's own.** The prompt's id - the one the forged row and
+  // its lifecycle frames were sent under - rides the block instead, so a
+  // reconciliation that read only the row's field would take the client's row
+  // and the page's copy for two different messages, and draw one prompt twice.
+  const frame = message as { uuid?: unknown; message?: { content?: unknown } } | null;
+  const blocks = Array.isArray(frame?.message?.content) ? frame.message.content : [];
+  for (const block of blocks) {
+    const entry = block as { type?: unknown; source_uuid?: unknown } | null;
+    if (entry?.type !== 'queued_command') continue;
+    if (typeof entry.source_uuid === 'string' && entry.source_uuid !== '') {
+      return entry.source_uuid;
+    }
+  }
+  const id = frame?.uuid;
   return typeof id === 'string' && id !== '' ? id : null;
 }
 
@@ -299,10 +314,9 @@ function pairedWith(
 /**
  * What one frame says, when it is a person's own words.
  *
- * A delivery row is a display-only user turn with no id at all, and its words
- * are the only thing its two copies agree on. A mid-turn prompt says the same
- * words under a second carrier - the `queued_command` block a page holds it in
- * - so the words are read from both.
+ * The words are read from both carriers a prompt travels in: the frame's own
+ * text blocks, and the `queued_command` block a page holds a mid-turn prompt
+ * in.
  */
 function wordsOf(message: unknown): string[] {
   const words: string[] = [];
@@ -327,13 +341,12 @@ function sameWords(one: string[], other: string[]): boolean {
  * Whether a copy already carries a frame.
  *
  * The frame's own id where it has one. **A frame with no id is found by what
- * it says**: a delivery row is forged rather than read off the wire and
- * carries no id on purpose, so an absent id read as "not carried" adds the
- * same row a second time. The copy is asked whether it says these words in any
- * of its frames rather than whether it says only them - the fold's own turns
- * carry more than one user row, and a comparison against the whole row finds
- * neither of them. A frame with neither an id nor words - a tool result, a
- * thought - is never found this way, which repeats it rather than dropping it.
+ * it says**, so an absent id read as "not carried" adds the same row a second
+ * time. The copy is asked whether it says these words in any of its frames
+ * rather than whether it says only them - the fold's own turns carry more than
+ * one user row, and a comparison against the whole row finds neither of them.
+ * A frame with neither an id nor words - a tool result, a thought - is never
+ * found this way, which repeats it rather than dropping it.
  *
  * `prose` narrows the arm at one of the four call sites, which says why there:
  * an id is unique and needs no guard, while the words are what a delivery row
@@ -458,6 +471,15 @@ function variantOf(update: SessionUpdate): string | null {
   return name ?? null;
 }
 
+/** One string field off an externally tagged update's payload. */
+function textIn(update: SessionUpdate, variant: string, field: string): string | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as Record<string, unknown>)[variant];
+  if (payload === null || typeof payload !== 'object') return null;
+  const value = (payload as Record<string, unknown>)[field];
+  return typeof value === 'string' ? value : null;
+}
+
 /** How long a refused page waits before it is asked again, while the column is live. */
 const RETRY_MS = 2_000;
 
@@ -509,6 +531,25 @@ export class Chat {
    * answer, and a page read while one runs carries no `result` frame to say so.
    */
   private turnRunning = false;
+  /**
+   * The prompts the core has said are waiting in the CLI's queue, by the id
+   * they were sent under, each with when this page saw it enter and the words
+   * it carries.
+   *
+   * **The card in the pile is what draws a waiting prompt, and the chat holds
+   * its forged row back.** Both copies of the words arrive at once - the core
+   * announces the queue and forges the user turn beside it - so a view drawing
+   * both would put "queued" in the pile under "sent" in the chat, about one
+   * prompt. The pile is upstream's own answer to where the words wait, so the
+   * chat holds its copy until the prompt starts.
+   */
+  private queued = new Map<string, { since: number; text: string }>();
+  /**
+   * Forged rows waiting for their prompt to start, by id - the core's own
+   * user turn for words no view typed, held from arrival until the lifecycle
+   * says the CLI took the prompt.
+   */
+  private drained = new Map<string, unknown>();
 
   constructor(connection: Connection, slot: SessionSlot) {
     this.connection = connection;
@@ -951,7 +992,10 @@ export class Chat {
     if (this.inFlight !== null) this.abandoned += 1;
     this.inFlight = null;
     // The occupant that left took its answer with it, and nothing about the new
-    // one is known until its own record or frames say.
+    // one is known until its own record or frames say - the queue it held
+    // included.
+    this.queued.clear();
+    this.drained.clear();
     this.turnRunning = false;
     this.inner.set(NOTHING);
     this.clearRetry();
@@ -962,9 +1006,39 @@ export class Chat {
   private takeUpdate(update: SessionUpdate): void {
     if (!sameSlot(slotOf(update), this.slot)) return;
     const variant = variantOf(update);
+    if (variant === 'prompt_queued') {
+      const uuid = textIn(update, 'prompt_queued', 'uuid');
+      const words = textIn(update, 'prompt_queued', 'text');
+      if (uuid !== null) {
+        this.queued.set(uuid, { since: Date.now(), text: words ?? '' });
+        // **The two frames race, and this side of the race is the retraction.**
+        // The dispatcher emits the user turn as it routes the prompt; the
+        // task's queue announcement follows it by a flush, so a frame often
+        // arrives before the pile knows the prompt is waiting. An announcement
+        // for a row the seat has already drawn pulls it back into the hold -
+        // in the same flush that drew it, so nothing flickers.
+        this.retract(uuid);
+      }
+      return;
+    }
+    // The seat's rows are the pile's, and nothing about a lifecycle frame is
+    // conversation - but its id is what lets a held row go.
+    if (variant === 'prompt_lifecycle') {
+      this.advanced(update);
+      return;
+    }
     if (variant === 'chat_appended') {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
       if (message === undefined) return;
+      // The forged row for a prompt the pile is drawing waits with it: the
+      // card holds the words while the CLI queues them, and this row draws
+      // them the moment it starts. Only a user turn counts: a dispatch is the
+      // one thing that forges a prompt id onto a frame.
+      const id = uuidOf(message);
+      if (id !== null && (message as { type?: unknown }).type === 'user' && this.queued.has(id)) {
+        this.drained.set(id, message);
+        return;
+      }
       // Stepped BEFORE the row is written, so a row that opens or grows answers
       // from the new state rather than the one before the frame.
       this.turnRunning = inFlightOf(this.turnRunning, message);
@@ -975,6 +1049,14 @@ export class Chat {
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
       this.replaced();
+      return;
+    }
+    // A process that is gone takes its queue with it: no lifecycle frame is
+    // coming for anything it held, so the waits go rather than standing
+    // forever. A fresh connect is the same fact from the other side.
+    if (variant === 'connection_failed' || variant === 'connected') {
+      this.queued.clear();
+      this.drained.clear();
       return;
     }
     // A turn that has settled is the server's fold's to draw, and the frames
@@ -1013,6 +1095,89 @@ export class Chat {
         text: `${what} was refused: ${why}`.trimEnd(),
       });
     }
+  }
+
+  /**
+   * Pull back a row the seat drew for a prompt the pile has just claimed, so
+   * one prompt is not drawn by the chat and the pile at once.
+   *
+   * A turn the retraction empties goes with it rather than standing as a row
+   * with nothing in it - the drain opens a fresh turn for the row when the
+   * prompt starts, which is the same turn the reader ends up seeing.
+   */
+  private retract(uuid: string): void {
+    let pulled: unknown;
+    this.inner.update((held) => {
+      let changed = false;
+      const turns: Turn[] = [];
+      for (const turn of held.turns) {
+        const hit = turn.messages.find((message) => uuidOf(message) === uuid);
+        if (hit === undefined) {
+          turns.push(turn);
+          continue;
+        }
+        changed = true;
+        pulled = hit;
+        const messages = turn.messages.filter((message) => uuidOf(message) !== uuid);
+        if (messages.length > 0) turns.push({ ...turn, messages });
+      }
+      return changed ? { ...held, turns } : held;
+    });
+    if (pulled !== undefined) this.drained.set(uuid, pulled);
+  }
+
+  /**
+   * The CLI moved a prompt, from the frame that names only its id and state.
+   *
+   * **`started` is the drain**: the held row draws, carrying how long the
+   * prompt waited - the wait being the whole difference between the card's
+   * "queued" and the row's "sent", and the reason the row was held at all.
+   * `refused` and `discarded` draw too, without the note, because those words
+   * never reached a model and the pile's own ending line is the only other
+   * place they exist. `cancelled` goes: the reader deleted it, and the send
+   * that was waiting on it is settled rather than left behind a copy that is
+   * never coming.
+   */
+  private advanced(update: SessionUpdate): void {
+    const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
+    const state = textIn(update, 'prompt_lifecycle', 'state');
+    if (uuid === null || state === null) return;
+    const entry = this.queued.get(uuid);
+    const held = this.drained.get(uuid);
+    if (entry === undefined && held === undefined) return;
+    const dropped = state === 'cancelled' || state === 'refused' || state === 'discarded';
+    const drawn = state === 'started' || state === 'completed';
+    if (!dropped && !drawn) return;
+    this.queued.delete(uuid);
+    this.drained.delete(uuid);
+    if (state === 'cancelled') {
+      // Only when the pending send is this prompt's own: the store holds one
+      // send per seat, so a second send's mark must not go with a first
+      // prompt's cancel.
+      if (entry !== undefined && echoes.of(this.key)?.words === entry.text) {
+        echoes.clear(this.key);
+      }
+      return;
+    }
+    if (held === undefined) return;
+    const waited = entry === undefined ? 0 : Date.now() - entry.since;
+    this.append(dropped ? held : this.noted(held, waited));
+  }
+
+  /**
+   * The row with its wait written on it, in the pile's own vocabulary.
+   *
+   * A wait under a second is the idle send, where the frames land inside one
+   * beat and naming a wait would invent one: the note is "sent" alone.
+   */
+  private noted(message: unknown, waitedMs: number): unknown {
+    if (typeof message !== 'object' || message === null) return message;
+    const seconds = Math.floor(waitedMs / 1000);
+    const note =
+      seconds < 1
+        ? 'sent'
+        : `queued ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · sent`;
+    return { ...message, forge_note: note };
   }
 
   /**

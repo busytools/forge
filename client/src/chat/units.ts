@@ -327,8 +327,15 @@ export interface AttachedFile {
  * whatever the reader had open. Keyed by this, the row is moved.
  */
 export type Unit =
-  /** A turn the user wrote, with whatever they attached to it. */
-  | { kind: 'user'; key: string; text: string; files: AttachedFile[] }
+  /**
+   * A turn the user wrote, with whatever they attached to it.
+   *
+   * `note` is what a drained prompt carries, written where the client released
+   * it: the wait it spent in the pile and the word "sent". Client-side only -
+   * the wire has no such field, and the row loses it when a page's own copy of
+   * the message replaces it.
+   */
+  | { kind: 'user'; key: string; text: string; files: AttachedFile[]; note?: string }
   /** Prose the assistant wrote. */
   | { kind: 'text'; key: string; text: string }
   /**
@@ -510,6 +517,17 @@ function attachmentsOf(content: readonly unknown[]): AttachedFile[] {
     });
   }
   return out;
+}
+
+/**
+ * The note a drained row carries, written by the client when it released the
+ * row - the wait it spent in the pile and the word "sent". No wire frame has
+ * this field: it is the client's own, and it goes when a page's copy of the
+ * message replaces the row.
+ */
+function noteOf(frame: Frame): string | undefined {
+  const note = (frame as { forge_note?: unknown }).forge_note;
+  return typeof note === 'string' && note !== '' ? note : undefined;
 }
 
 /**
@@ -2121,11 +2139,13 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           // The attachments ride the frame's first turn of words: a second
           // text block in the same frame is the same reader saying more, not
           // the same file sent twice.
+          const note = noteOf(frame);
           push({
             kind: 'user',
             key: keyOf(at, frame, blockAt),
             text: block.text,
             files: tookFiles ? [] : files,
+            ...(note === undefined ? {} : { note }),
           });
           tookFiles = true;
         } else {
@@ -2133,7 +2153,6 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         }
         continue;
       }
-
       if (block.type === 'thinking' && typeof block.thinking === 'string') {
         // An empty one draws nothing, the way the terminal skips it: the row's
         // whole point is the words it carries.

@@ -135,7 +135,7 @@
   <div class="tile">
     <div class="steps"><span class="mono">send</span> &nbsp; forge writes the prompt with <span class="mono">uuid 4f9c&#8230;</span> - the card enters the pile</div>
     <div class="steps"><span class="mono">queued</span> &nbsp; <span class="mono">{"type":"command_lifecycle","state":"queued","command_uuid":"4f9c&#8230;"}</span> - card stays; 1-5 ms after the send</div>
-    <div class="steps"><span class="mono">started</span> <span class="mono">{"type":"command_lifecycle","state":"started","command_uuid":"4f9c&#8230;"}</span> - that card drains into the chat; 2-3 ms after the turn boundary</div>
+    <div class="steps"><span class="mono">started</span> <span class="mono">{"type":"command_lifecycle","state":"started","command_uuid":"4f9c&#8230;"}</span> - that card drains into the chat, as the row it becomes, carrying its wait (<span class="mono">queued 0:0n &#183; sent</span>); 2-3 ms after the turn boundary. While it waited, the card was the only drawing of the words - the forged chat row is held until this frame</div>
     <div class="steps"><span class="mono">completed</span> <span class="mono">{"state":"completed","command_uuid":"4f9c&#8230;"}</span> - the turn that carried it ended</div>
     <div class="steps"><span class="mono">delete</span> &nbsp; <span class="mono">{"subtype":"cancel_async_message","message_uuid":"4f9c&#8230;"}</span> - the CLI drops it; answers <span class="mono">{"cancelled":true}</span>. Too late answers false, and the card has usually drained by then</div>
     <div class="steps"><span class="mono">parked question</span> - every prompt arriving is <span class="mono">queued</span> and stays; the answer lands, and all of them go <span class="mono">started</span> in the same instant, delivered in the one request that carries the answer</div>
@@ -258,8 +258,7 @@ const tiles = {
     { cap: 'A background seat with a queue (not settled)', items: [],
       note: 'the rail could carry a count for a seat that is not open - shown as a chip: <span class="mono">forge &#183; 3 queued</span>. Decide later' },
     { cap: 'Cancel a prompt the CLI already took', items: [],
-      ended: '<span>cancel answered</span><b>false</b><span style="margin-left:auto">the row had already drained</span>',
-      note: 'the row leaves on `started`, and a cancel that lands after it is a no-op - there is no "too late" row to draw, because the card is gone before a hand could press. What IS said, in one dim line where the card was: a row that left by `discarded` or `refused`, which delivered nothing' },
+      note: 'the row leaves on `started`, so a cancel landing after it answers <span class="mono">cancelled: false</span> and draws nothing - the card is gone before a hand could press. The one dim line the pile does draw, where the card was, is for a row that left by `discarded` or `refused`, which delivered nothing' },
   ],
 };
 for (const [id, specs] of Object.entries(tiles)) {

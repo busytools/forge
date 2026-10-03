@@ -20,20 +20,20 @@ use crate::surface::SessionUpdate;
 /// The prose is checked against the same parser the fold reads it back with,
 /// and a drift is recorded against the delivery that produced it.
 pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Message> {
-    let (source, text) = match update {
+    let (source, text, uuid) = match update {
         // The prefix is the fold's own key rather than anything the model
         // reads: `detect_inbound` picks the envelope out of the prose.
-        SessionUpdate::CronPromptAppended { key, text } if key == slot => {
-            ("cron_prompt", format!("[Cron]\n\n{text}"))
+        SessionUpdate::CronPromptAppended { key, text, uuid } if key == slot => {
+            ("cron_prompt", format!("[Cron]\n\n{text}"), uuid)
         }
-        SessionUpdate::GotifyNotificationAppended { key, notification } if key == slot => {
-            ("gotify_notification", notification.to_prose())
+        SessionUpdate::GotifyNotificationAppended { key, notification, uuid } if key == slot => {
+            ("gotify_notification", notification.to_prose(), uuid)
         }
-        SessionUpdate::SlackMessageAppended { key, prose } if key == slot => {
-            ("slack_message", prose.clone())
+        SessionUpdate::SlackMessageAppended { key, prose, uuid } if key == slot => {
+            ("slack_message", prose.clone(), uuid)
         }
-        SessionUpdate::PeerEnvelopeAppended { key, wrapped } if key == slot => {
-            ("peer_envelope", wrapped.to_prose())
+        SessionUpdate::PeerEnvelopeAppended { key, wrapped, uuid } if key == slot => {
+            ("peer_envelope", wrapped.to_prose(), uuid)
         }
         _ => return None,
     };
@@ -54,9 +54,11 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
              received it but no view will draw it",
         );
     }
-    // Forged rather than read off the wire: nothing routes on its id, and the
-    // prose is the only thing the two copies of this turn agree on.
-    Some(Message::display_only_user(text))
+    // Forged rather than read off the wire, carrying the prompt's own id:
+    // the duplicate-skip the CLI applies to re-sent uuids is a stdin concern
+    // and never sees this frame, and the id is what lets a view hold this row
+    // while the prompt waits in the pile.
+    Some(Message::display_only_user(text, uuid.clone()))
 }
 
 #[cfg(test)]
@@ -76,6 +78,7 @@ mod tests {
         let update = SessionUpdate::SlackMessageAppended {
             key: slot.clone(),
             prose: "no bracket header here".to_owned(),
+            uuid: "cap-slack".to_owned(),
         };
 
         let events = logged(|| {
@@ -114,6 +117,7 @@ mod tests {
                 SessionUpdate::CronPromptAppended {
                     key: slot.clone(),
                     text: "run the morning summary".to_owned(),
+                    uuid: "cap-cron".to_owned(),
                 },
                 "run the morning summary",
             ),
@@ -126,6 +130,7 @@ mod tests {
                         message: "All volumes backed up".to_owned(),
                         priority: 3,
                     },
+                    uuid: "cap-gotify".to_owned(),
                 },
                 "All volumes backed up",
             ),
@@ -135,12 +140,14 @@ mod tests {
                     prose: "[Slack - workspace 'Trust Machines', granite-staging-alerts] \
                             id C0AE ts 1789.5\nunknown: _Large STX Transfer_ [ts 1789.5]"
                         .to_owned(),
+                    uuid: "cap-slack-2".to_owned(),
                 },
                 "Large STX Transfer",
             ),
             (
                 SessionUpdate::PeerEnvelopeAppended {
                     key: slot.clone(),
+                    uuid: "cap-peer".to_owned(),
                     wrapped: WrappedPrompt {
                         id: MessageId("m-7f3a92e0".to_owned()),
                         kind: WrappedKind::Message,

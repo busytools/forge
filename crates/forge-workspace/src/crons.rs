@@ -725,7 +725,7 @@ mod tests {
         let echoed = drain_updates(&mut rx).into_iter().any(|u| {
             matches!(
                 u,
-                SessionUpdate::CronPromptAppended { key, text }
+                SessionUpdate::CronPromptAppended { key, text, .. }
                     if key == lead_key && text == "morning"
             )
         });

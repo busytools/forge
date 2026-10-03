@@ -583,10 +583,12 @@ impl Message {
     /// A user turn forged rather than read off the wire, for prose the model
     /// received and the CLI does not echo back.
     ///
-    /// Carries no id: the forge happens before the CLI has written the turn to
-    /// its transcript, and the CLI never sends that id, so no honest one exists
-    /// to put here. Nothing routes on the empty `session_id` either.
-    pub fn display_only_user(text: String) -> Self {
+    /// **The id is the prompt's own**, the one its `command_lifecycle` frames
+    /// carry: it is what lets a view hold this row while the prompt waits in
+    /// the queue, and pair it with the page's later copy of the same message -
+    /// which carries the same id, the CLI writing the client's uuid into the
+    /// transcript it delivers. Nothing routes on the empty `session_id`.
+    pub fn display_only_user(text: String, uuid: String) -> Self {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
@@ -594,7 +596,7 @@ impl Message {
             },
             session_id: String::new(),
             parent_tool_use_id: None,
-            uuid: None,
+            uuid: Some(uuid),
             tool_use_result: None,
             timestamp: None,
             synthetic: false,

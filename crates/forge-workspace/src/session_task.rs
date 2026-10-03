@@ -1115,10 +1115,11 @@ impl SessionTask {
         // parked entry for the expiry path alone.
         for entry in pending {
             let crate::parked::ParkedPeer { wrapped, .. } = entry;
-            crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped);
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped, &uuid);
             let text = wrapped.to_prose();
             if let Err(err) =
-                workspace.dispatch_workspace_prompt_from(&self.key, text, PromptSource::Peer)
+                workspace.dispatch_workspace_prompt_under(&self.key, text, PromptSource::Peer, uuid)
             {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -1145,9 +1146,10 @@ impl SessionTask {
         }
         for cron in pending {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
-            crate::spawn::push_cron_prompt_into_chat(workspace, &self.key, &text);
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            crate::spawn::push_cron_prompt_into_chat(workspace, &self.key, &text, &uuid);
             if let Err(err) =
-                workspace.dispatch_workspace_prompt_from(&self.key, text, PromptSource::Cron)
+                workspace.dispatch_workspace_prompt_under(&self.key, text, PromptSource::Cron, uuid)
             {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -1177,11 +1179,18 @@ impl SessionTask {
             // Echo the notification block, then re-dispatch its prose as a
             // plain user turn (mirrors the running-target path in
             // spawn::deliver_gotify_message).
-            crate::spawn::push_gotify_notification_into_chat(workspace, &self.key, &notification);
-            if let Err(err) = workspace.dispatch_workspace_prompt_from(
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            crate::spawn::push_gotify_notification_into_chat(
+                workspace,
+                &self.key,
+                &notification,
+                &uuid,
+            );
+            if let Err(err) = workspace.dispatch_workspace_prompt_under(
                 &self.key,
                 notification.to_prose(),
                 PromptSource::Gotify,
+                uuid,
             ) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -1215,10 +1224,14 @@ impl SessionTask {
         }
         for messages in by_conversation.into_values() {
             let prose = crate::spawn::slack_bundle_to_prose(&messages);
-            crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose);
-            if let Err(err) =
-                workspace.dispatch_workspace_prompt_from(&self.key, prose, PromptSource::Slack)
-            {
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose, &uuid);
+            if let Err(err) = workspace.dispatch_workspace_prompt_under(
+                &self.key,
+                prose,
+                PromptSource::Slack,
+                uuid,
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     slot = %self.key.display(),
@@ -2783,7 +2796,7 @@ mod tests {
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                SessionUpdate::SlackMessageAppended { key, prose }
+                SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == session_key &&prose.contains("the buffered text")
             ) {
                 echoed = true;
@@ -4213,7 +4226,7 @@ provider = "anthropic"
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                SessionUpdate::CronPromptAppended { key, text }
+                SessionUpdate::CronPromptAppended { key, text, .. }
                     if key == session_key && text == "morning reminder"
             ) {
                 echoed = true;

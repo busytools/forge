@@ -915,9 +915,9 @@ pub enum PromptSource {
 
 /// One prompt waiting in the CLI's queue, as a view reads it.
 ///
-/// The pile holds only prompts that are still `queued`: an entry is appended
+/// The pile holds only prompts that are still waiting: an entry is appended
 /// where the prompt is sent (the only place that knows its source and words)
-/// and leaves on the first lifecycle state that is not `queued`.
+/// and leaves on a lifecycle state the core NAMES as settled.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct QueuedPrompt {
     /// The uuid the prompt was sent under, which its lifecycle frames carry.
@@ -1313,6 +1313,10 @@ pub enum SessionUpdate {
     PeerEnvelopeAppended {
         key: SessionSlot,
         wrapped: crate::mcp::peers::types::WrappedPrompt,
+        /// The id the delivered prompt was dispatched under, which the
+        /// drawn row carries: a view holds the row while that prompt waits in
+        /// the pile and draws it when it starts.
+        uuid: String,
     },
     /// A matched Gotify notification arrived at `key`.
     /// Carries the typed `GotifyNotification` so the TUI reducer builds
@@ -1322,6 +1326,9 @@ pub enum SessionUpdate {
     GotifyNotificationAppended {
         key: SessionSlot,
         notification: crate::mcp::gotify::types::GotifyNotification,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A due cron fired into `key`. Carries the fired
     /// prompt text so the TUI reducer builds the chat-side echo (mirrors
@@ -1331,6 +1338,9 @@ pub enum SessionUpdate {
     CronPromptAppended {
         key: SessionSlot,
         text: String,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A matched Slack message arrived at `key`. Carries the
     /// prose rather than the typed message: the prose builder is `pub(crate)`
@@ -1341,6 +1351,9 @@ pub enum SessionUpdate {
     SlackMessageAppended {
         key: SessionSlot,
         prose: String,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A composed Slack message is waiting for the user's decision in the
     /// dock prompt. The authoring tool handler is blocked on a oneshot
@@ -1698,13 +1711,13 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("label", &status.label)
                 .field("worktree", worktree)
                 .finish_non_exhaustive(),
-            Self::PeerEnvelopeAppended { key, wrapped } => f
+            Self::PeerEnvelopeAppended { key, wrapped, .. } => f
                 .debug_struct("PeerEnvelopeAppended")
                 .field("key", key)
                 .field("id", &wrapped.id)
                 .field("kind", &wrapped.kind)
                 .finish_non_exhaustive(),
-            Self::GotifyNotificationAppended { key, notification } => f
+            Self::GotifyNotificationAppended { key, notification, .. } => f
                 .debug_struct("GotifyNotificationAppended")
                 .field("key", key)
                 .field("app", &notification.app)

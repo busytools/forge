@@ -792,8 +792,11 @@ mod tests {
         let echoed = drain_updates(&mut rx).into_iter().any(|u| {
             matches!(
                 u,
-                crate::protocol::SessionUpdate::GotifyNotificationAppended { key, notification }
-                    if key == worker_key && notification == notif
+                crate::protocol::SessionUpdate::GotifyNotificationAppended {
+                    key,
+                    notification,
+                    ..
+                } if key == worker_key && notification == notif
             )
         });
         assert!(echoed, "a running-target delivery emits a GotifyNotificationAppended echo");

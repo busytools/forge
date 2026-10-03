@@ -3520,6 +3520,26 @@ impl Workspace {
         text: String,
         source: PromptSource,
     ) -> Result<(), DispatchError> {
+        self.dispatch_workspace_prompt_under(
+            key,
+            text,
+            source,
+            forge_sdk::request_id::next_prompt_id(),
+        )
+    }
+
+    /// [`Self::dispatch_workspace_prompt_from`] with the id supplied by the
+    /// caller, for a site that already minted one: a delivery that draws its
+    /// own envelope row passes the same id to both, so the row a view holds
+    /// while the prompt queues and the prompt's lifecycle frames are one thing
+    /// by id.
+    pub fn dispatch_workspace_prompt_under(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        source: PromptSource,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
         // Busy is captured before the dispatch: dispatching first would
         // read the turn_pending stamp the dispatch itself just set.
         // Signalling only on success keeps a failed dispatch (the
@@ -3528,15 +3548,13 @@ impl Workspace {
         // residual signals at all depends on a session_state_changed
         // mirror being present, so it is CLI-version-dependent.
         let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
-        // The id is minted here so the queued row and the CLI's lifecycle
-        // frames share it from the first millisecond; `PromptUnder` is how it
-        // travels. `route` rather than `dispatch`: the delivery's frame is the
+        // `route` rather than `dispatch`: the delivery's frame is the
         // envelope one its own update forges, not a bare user turn.
         let result = self.route(Command::PromptUnder {
             key: key.clone(),
             text,
             attachments: Vec::new(),
-            uuid: forge_sdk::request_id::next_prompt_id(),
+            uuid,
             source,
         });
         if busy && result.is_ok() {
@@ -3557,8 +3575,14 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
-        let frame = Message::display_only_user(text.clone());
-        let result = self.dispatch_workspace_prompt(key, text);
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        let frame = Message::display_only_user(text.clone(), uuid.clone());
+        let result = self.dispatch_workspace_prompt_under(
+            key,
+            text,
+            crate::protocol::PromptSource::Forge,
+            uuid,
+        );
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -3622,14 +3646,29 @@ impl Workspace {
         cmd: Command,
         origin: PromptOrigin,
     ) -> Result<(), DispatchError> {
+        // The id is minted HERE, before the prose is taken, so the prompt, its
+        // lifecycle frames and the user turn below all carry one thing by id:
+        // a plain `Prompt` becomes the `PromptUnder` the rest of the tree
+        // already treats identically, keeping the mint on one path instead of
+        // two.
+        let cmd = match cmd {
+            Command::Prompt { key, text, attachments } => Command::PromptUnder {
+                key,
+                text,
+                attachments,
+                uuid: forge_sdk::request_id::next_prompt_id(),
+                source: crate::protocol::PromptSource::You,
+            },
+            other => other,
+        };
         // The prose is taken before the move and emitted only once the command
         // reached a session. A refused prompt never reached a model, so no view
         // draws it as a turn - and the frame for one would open a live turn in
         // every view but the sender, with nothing left to close it: the refusal
         // is written to the asking socket alone.
         let prompt = match &cmd {
-            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
-                Some((key.clone(), text.clone()))
+            Command::PromptUnder { key, text, uuid, .. } => {
+                Some((key.clone(), text.clone(), uuid.clone()))
             }
             _ => None,
         };
@@ -3645,28 +3684,26 @@ impl Workspace {
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
         let (outcome, answer) = match &cmd {
-            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
-                match crate::prompt::forge_invocation(text) {
-                    Some(crate::prompt::Invocation::Command(prompt)) => {
-                        self.run_forge_prompt(key, &prompt)
-                    }
-                    Some(crate::prompt::Invocation::Misuse(usage)) => {
-                        (Ok(()), Some(forge_misuse(usage)))
-                    }
-                    None => match self.unrunnable_slash_name(key, text) {
-                        Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
-                        None => (self.route(cmd), None),
-                    },
+            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
+                Some(crate::prompt::Invocation::Command(prompt)) => {
+                    self.run_forge_prompt(key, &prompt)
                 }
-            }
+                Some(crate::prompt::Invocation::Misuse(usage)) => {
+                    (Ok(()), Some(forge_misuse(usage)))
+                }
+                None => match self.unrunnable_slash_name(key, text) {
+                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
+                    None => (self.route(cmd), None),
+                },
+            },
             _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
-            && let Some((key, text)) = prompt
+            && let Some((key, text, uuid)) = prompt
         {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
-                msg: Message::display_only_user(text),
+                msg: Message::display_only_user(text, uuid),
                 origin: Some(origin),
             });
             if let Some((severity, answer)) = answer {
@@ -5964,10 +6001,12 @@ impl Workspace {
                     sender_org: String::new(),
                     body: reason.clone(),
                 };
-                if let Err(err) = self.dispatch_workspace_prompt_from(
+                let uuid = forge_sdk::request_id::next_prompt_id();
+                if let Err(err) = self.dispatch_workspace_prompt_under(
                     &lead_slot,
                     wrapped.to_prose(),
                     PromptSource::Peer,
+                    uuid.clone(),
                 ) {
                     tracing::warn!(
                         target: "forge_workspace::worker_async_failure",
@@ -5981,7 +6020,7 @@ impl Workspace {
                 // paints one: the CLI does not echo a prompt it was handed on
                 // stdin, so a view that only drew the wire would show nothing
                 // until the page reloaded.
-                crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped);
+                crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped, &uuid);
             } else {
                 tracing::warn!(
                     target: "forge_workspace::worker_async_failure",
@@ -6659,10 +6698,14 @@ impl Workspace {
         };
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
-        crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice);
-        if let Err(err) =
-            self.dispatch_workspace_prompt_from(sender, notice.to_prose(), PromptSource::Peer)
-        {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice, &uuid);
+        if let Err(err) = self.dispatch_workspace_prompt_under(
+            sender,
+            notice.to_prose(),
+            PromptSource::Peer,
+            uuid,
+        ) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 slot = %sender.display(),
@@ -8722,7 +8765,7 @@ provider = "anthropic"
         let echoed = drain_updates(&mut update_rx).into_iter().any(|u| {
             matches!(
                 u,
-                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose }
+                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == lead_key
                         && prose.starts_with("[Slack")
                         && prose.contains("ping")
@@ -10687,7 +10730,7 @@ provider = "anthropic"
 
         let mut echo = None;
         while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
                 echo = Some((key, wrapped));
             }
         }
@@ -14013,7 +14056,7 @@ mod async_worker_spawn_failure_tests {
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|update| {
             matches!(
                 update,
-                SessionUpdate::PeerEnvelopeAppended { key, wrapped }
+                SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
                     if key == lead_key
                         && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
             )
@@ -14414,7 +14457,7 @@ mod async_worker_spawn_failure_tests {
 
         let mut echo = None;
         while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
                 echo = Some((key, wrapped));
             }
         }
@@ -16513,7 +16556,10 @@ mod prompt_frame_origin_tests {
             } else {
                 let commands = ws.drain_test_dispatch_buffer();
                 assert!(
-                    matches!(commands.as_slice(), [Command::Prompt { .. }]),
+                    matches!(
+                        commands.as_slice(),
+                        [Command::Prompt { .. } | Command::PromptUnder { .. }]
+                    ),
                     "{text} is the CLI's: {commands:?}",
                 );
             }
@@ -16630,7 +16676,11 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/compact"),
+            matches!(
+                commands.as_slice(),
+                [Command::Prompt { text, .. } | Command::PromptUnder { text, .. }]
+                    if text == "/compact"
+            ),
             "an advertised name is the CLI's: {commands:?}",
         );
     }
@@ -16651,7 +16701,7 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { .. }]),
+            matches!(commands.as_slice(), [Command::Prompt { .. } | Command::PromptUnder { .. }]),
             "nothing is refused before the CLI has said what it has: {commands:?}",
         );
     }
@@ -16671,7 +16721,11 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/newer please"),
+            matches!(
+                commands.as_slice(),
+                [Command::Prompt { text, .. } | Command::PromptUnder { text, .. }]
+                    if text == "/newer please"
+            ),
             "a near miss is prose: {commands:?}",
         );
     }

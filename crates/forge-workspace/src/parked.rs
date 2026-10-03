@@ -237,7 +237,7 @@ mod tests {
 
         let mut echo = None;
         while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
                 echo = Some((key, wrapped));
             }
         }

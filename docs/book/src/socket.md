@@ -301,11 +301,14 @@ submitted them and has already drawn them, which is what lets the terminal
 skip its own words while drawing everyone else's; nothing else reads it,
 because no other view's composer is optimistic.
 
-**A forged turn carries no `uuid`**, because the CLI mints
-the transcript's id for that turn after the fact and never sends it, so
-there is no honest one for forge to put there. What the frame and the
-page's copy of the same turn agree on is the prose; a client that matches a
-live turn to its settled copy by id alone will not match these.
+**A forged turn carries the prompt's own `uuid`**, the id the prompt was
+dispatched under. The CLI stamps the prompt's id into the transcript it
+persists - on the user row of a prompt that started a turn, and inside the
+`queued_command` block's `source_uuid` when a mid-turn prompt is delivered
+as an attachment - so the frame and the page's later copy of the same
+message agree on it, and a client reconciles the two by id. It is also what
+lets a view hold the forged row while the prompt waits in the pile: the
+`command_lifecycle` frames carry the same id.
 
 **The server's fold is not what a terminal reads.** The terminal groups a
 message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the

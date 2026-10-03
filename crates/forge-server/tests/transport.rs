@@ -1969,6 +1969,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
     fleet.emit(SessionUpdate::CronPromptAppended {
         key: lead_seat(),
         text: "run the morning summary".to_owned(),
+        uuid: "cap-cron".to_owned(),
     });
 
     let ServerMessage::Update { update } = next_server(&mut socket).await else {
@@ -2021,6 +2022,7 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     fleet.emit(SessionUpdate::CronPromptAppended {
         key: SessionSlot::for_label("TestOrg", "proj", Some("w1")),
         text: "run the morning summary".to_owned(),
+        uuid: "cap-cron-2".to_owned(),
     });
     // The evidence is ORDER, never a timeout: a frame forged for the other
     // seat would have to arrive ahead of an update this connection does hear,

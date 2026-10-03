@@ -818,6 +818,7 @@ mod tests {
         held.apply(&SessionUpdate::CronPromptAppended {
             key: a_seat(),
             text: "the cron fired".to_owned(),
+            uuid: "cap-cron".to_owned(),
         });
 
         let conversation = held.get(&a_seat()).expect("the seat is held");

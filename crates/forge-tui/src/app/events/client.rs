@@ -1604,7 +1604,7 @@ mod tests {
     fn a_prompt_frame(text: &str, origin: Option<PromptOrigin>) -> SessionUpdate {
         SessionUpdate::ChatAppended {
             key: test_key(),
-            msg: forge_primitives::Message::display_only_user(text.to_owned()),
+            msg: forge_primitives::Message::display_only_user(text.to_owned(), "cap-1".to_owned()),
             origin,
         }
     }
@@ -2168,6 +2168,7 @@ mod tests {
             SessionUpdate::CronPromptAppended {
                 key: key_a.clone(),
                 text: "run the morning summary".to_owned(),
+                uuid: "cap-cron".to_owned(),
             },
         );
 
@@ -2222,7 +2223,11 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::SlackMessageAppended { key: key_a.clone(), prose: prose.to_owned() },
+            SessionUpdate::SlackMessageAppended {
+                key: key_a.clone(),
+                prose: prose.to_owned(),
+                uuid: "cap-slack".to_owned(),
+            },
         );
 
         let slack_msg = app
