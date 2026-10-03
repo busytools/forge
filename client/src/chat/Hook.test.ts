@@ -128,6 +128,19 @@ describe('the hook run row', () => {
       'an envelope that carried nothing carries no tail',
     ).not.toContain('class="ev"');
 
+    // **And neither does output that strips to nothing.** The emptiness check
+    // is on the joined words, not on the raw output: a body that is only block
+    // marks - a fence, a rule, measured with a run of backticks - used to pass
+    // a check made before the marks came off, and drew an empty tail slot.
+    expect(
+      summaryOf(draw({ body: '````````````````````' })),
+      'output that strips to nothing carries no tail',
+    ).not.toContain('class="ev"');
+    expect(
+      summaryOf(draw({ body: '#### ' })),
+      'and neither does a heading marker alone',
+    ).not.toContain('class="ev"');
+
     // **And only the CLI's own shapes are read.** A key in the half the CLI
     // does not read it from is a hook the session never saw anything from, so
     // it draws no tail rather than words the reader was never shown.

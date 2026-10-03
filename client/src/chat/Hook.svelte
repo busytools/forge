@@ -35,30 +35,37 @@
 
   function hookTail(body: string | null): string | null {
     if (body === null) return null;
-    const said = hookWords(body);
-    return said.trim() === '' ? null : renderInlineProse(joinedLine(said));
+    // **The check is on the joined words, not on the raw output.** Output that
+    // is nothing but block marks - a fence, a rule - strips to '', and a check
+    // made before the marks come off would draw an empty tail slot for it.
+    const said = joinedLine(hookWords(body));
+    return said === '' ? null : renderInlineProse(said);
   }
 
   /**
    * What a hook's output says.
    *
-   * **The two places the CLI's own envelopes carry text, and only those**: the
-   * context a session-start hook injects (`hookSpecificOutput.additionalContext`)
+   * **The two envelope fields whose text reaches a session, and only those**:
+   * the context a session-start hook injects (`hookSpecificOutput.additionalContext`)
    * and the line a hook shows the reader (`systemMessage`, top level). A key in
-   * the other half is read by nobody - the CLI would not have shown it either -
-   * so it draws no tail rather than words the session never saw.
+   * the other half draws no tail rather than guessing at a shape this row does
+   * not know - **and that is a gap, not a claim that such text is not
+   * shown**: the CLI does display text from `stopReason`, the permission
+   * reasons and a top-level `reason`, and no transcript carries one today
+   * (measured: 0 of 13,656 hook rows), so a reader losing that line is work
+   * this row has not done yet.
    */
   function hookWords(body: string): string {
     const text = body.trim();
     if (!text.startsWith('{')) return body;
-    let held: unknown;
+    let fields: Record<string, unknown>;
     try {
-      held = JSON.parse(text);
+      // A text that opens `{` and parses is an object, always: no null, array
+      // or primitive can open with one.
+      fields = JSON.parse(text) as Record<string, unknown>;
     } catch {
       return body;
     }
-    if (held === null || typeof held !== 'object' || Array.isArray(held)) return body;
-    const fields = held as Record<string, unknown>;
     const inner = fields['hookSpecificOutput'];
     const context =
       inner !== null && typeof inner === 'object' && !Array.isArray(inner)
@@ -83,10 +90,6 @@
         ({run.event}){/if}</span
     >
     {#if tail !== null}
-      <!--
-        The row's rendered line, which the module produced from escaped input:
-        the same renderer the body and a thought's line use, raw HTML off.
-      -->
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
       <span class="ev">{@html tail}</span>
     {/if}
