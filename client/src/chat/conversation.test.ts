@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+// jsdom for the painted frame the fold's draws land on (requestAnimationFrame),
+// which a stream frame's publish and its tests both wait for (#1670).
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -340,6 +343,47 @@ describe('the conversation the chat draws', () => {
       after.turns.slice(0, before.turns.length - 1),
       'and nothing above the turn the frame belongs to moved',
     ).toEqual(before.turns.slice(0, before.turns.length - 1));
+  });
+
+  /**
+   * A delivered burst is one draw, not one per frame (#1670).
+   *
+   * **The drain a return delivers.** A page that was away comes back to every
+   * frame that arrived meanwhile, and a store write each is a paint each -
+   * the "frames moving very fast, filling up to the latest" of the report.
+   * The fold still applies every frame (nothing is dropped, the held record
+   * stays exact); only the draw waits for a painted frame, which is the split
+   * the seat's own record already runs (`session/live.ts`'s `soon()`).
+   */
+  it('draws a burst of delivered frames once, not once per frame', async () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    let draws = 0;
+    const stop = chat.value.subscribe(() => {
+      draws += 1;
+    });
+    // The subscription's first call hands over the held value; the count
+    // starts after it.
+    draws = 0;
+
+    // Five frames delivered back-to-back, the way one task of a resumed drain
+    // delivers them.
+    for (let n = 0; n < 5; n += 1) {
+      server.update({ chat_appended: { key: LEAD, msg: said(`line ${n}`) } });
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+
+    // Exactly one: `< 5` would tolerate a partial replay, which is the shape
+    // the defect had - several draws of the same burst's states.
+    expect(draws, 'the burst is one painted state, not a replay').toBe(1);
+    expect(
+      JSON.stringify(get(chat.value)),
+      'and nothing in it is dropped: the last frame is in the drawn record',
+    ).toContain('line 4');
+    stop();
   });
 
   it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {

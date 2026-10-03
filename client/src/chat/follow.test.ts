@@ -213,6 +213,11 @@ function said(text: string): unknown {
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  // **Two painted frames, because the fold's draw lands on one.** A frame's
+  // update publishes the record on the painted frame after it arrives; the
+  // effects that respond run behind that publish; and the passes they defer -
+  // the pin's second measure, the observer's restore - are the next paint's.
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   flushSync();
 }
 
@@ -300,6 +305,11 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     server.frame();
+    // **The settle is what makes this bite**: the frame draws a painted frame
+    // after it arrives, and an assertion read before that draw passes for any
+    // follow behaviour at all - an emptiness assertion is the one shape that
+    // reads true from a frame that never landed.
+    await settle();
 
     expect(pinned(), 'nothing that lands below them moves the column').toEqual([]);
   });
@@ -333,8 +343,33 @@ describe('whether the column follows the newest end', () => {
     // Four pixels short: near enough to look like the end and not the end.
     readerAt(FOOT - 4);
     server.frame();
+    // The draw lands a painted frame after the frame, as above: without the
+    // settle this passes on the frame not having landed at all.
+    await settle();
 
     expect(pinned(), 'the very end is the rule, not a threshold near it').toEqual([]);
+  });
+
+  it('leaves a reader who just scrolled away alone, for the frame in their own breath', async () => {
+    // **The disarm is a decision, and it publishes at once.** The reader's
+    // scroll away and the frame land in ONE task, with no paint between them;
+    // a follow decision deferred to a painted frame would let the frame's own
+    // draw read the side before it - the reader back at the foot they just
+    // left, pinned by whatever arrived. This is the shape that keeps
+    // `following()` on the at-once side of the split.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 120);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the reader who just scrolled away stays where they put themselves').toEqual(
+      [],
+    );
   });
 
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
@@ -385,7 +420,19 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    expect(pinned(), 'the end the reader is at is the element, not the model').toEqual([PIN, PIN]);
+    // **The count is the passes, and the value is the property.** A frame's
+    // draw now lands on a painted frame rather than at the write (#1670), so
+    // the layout settles over one more pass and the observer pins once more
+    // than the effect's pair. What the test is about is WHICH foot every pin
+    // asks for - the element's numbers, never the model's longer ones - so
+    // that is what is asserted, and a pin asking for anything else fails
+    // whichever pass it came from.
+    const pins = pinned();
+    expect(pins.length, 'the column pinned, over its passes').toBeGreaterThanOrEqual(2);
+    expect(
+      [...new Set(pins.map((pin) => JSON.stringify(pin)))],
+      "and every pin asked for the element's foot, not the model's",
+    ).toEqual([JSON.stringify(PIN)]);
   });
 
   it('keeps following when its own pin lands before the list has measured', async () => {
@@ -487,6 +534,14 @@ describe('whether the column follows the newest end', () => {
    * It is also the wiring's arm: with the restore's write disabled this case is
    * the only one in the suite that notices - the math in `anchor.test.ts` pins
    * the relation, but nothing else asks the column to use it.
+   *
+   * **And this and the three restores beside it are where the capture's revert
+   * dies** (measured): restoring the old `if (!held.following)` read AND
+   * deferring the follow write turns exactly these four red, because the
+   * capture then reads the side before the write and never happens. Under the
+   * shipped split the re-read happens to be fresh, so a revert is silent by
+   * construction - the fix is fragility removed, and these four are what
+   * catches it if the write's timing moves again.
    */
   it('puts a parked reader back on their row when the layout moves above them', async () => {
     const server = stub();

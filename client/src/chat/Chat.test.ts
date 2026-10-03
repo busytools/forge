@@ -93,6 +93,27 @@ function draw(props: Record<string, unknown>, server: ReturnType<typeof stub>): 
 /** What the column reads as, which is what a reader has to go on. */
 const drawn = (): string => document.body.textContent ?? '';
 
+/**
+ * The painted frame a stream frame's draw lands on (#1670).
+ *
+ * A stream frame is folded the moment it arrives and DRAWN on the next
+ * painted frame - the burst a return delivers is one draw of the latest, not
+ * a replay - so a test that reads the column after one waits for that frame.
+ * A page or a refusal is a state rather than a step, and is drawn at once.
+ */
+async function painted(): Promise<void> {
+  // A test on fake timers owns the clock the frames are on, so the frames are
+  // advanced rather than waited for.
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(34);
+    flushSync();
+    return;
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  flushSync();
+}
+
 /** One assistant frame, whose usage the running row draws. */
 const frame = (uuid: string, input: number): unknown => ({
   type: 'assistant',
@@ -200,7 +221,7 @@ describe('the chat column as it draws', () => {
     );
   });
 
-  it('keeps a row the reader opened when a page prefixes the turn with their words', () => {
+  it('keeps a row the reader opened when a page prefixes the turn with their words', async () => {
     // The shape a dropped socket leaves: the turn ran while the client was
     // away, so its call arrived as frames and the reader's own words never did.
     // The page answering the reconnect carries the prompt as well, so the copy
@@ -224,6 +245,7 @@ describe('the chat column as it draws', () => {
     draw({}, server);
     server.answer([]);
     server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: call } } });
+    await painted();
 
     const row = document.querySelector<HTMLDetailsElement>('details.leaf');
     expect(row, 'the call drew as a row that opens').not.toBeNull();
@@ -386,7 +408,7 @@ describe('the chat column as it draws', () => {
     expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
   });
 
-  it('keeps a call the reader opened open when the turn is sent again', () => {
+  it('keeps a call the reader opened open when the turn is sent again', async () => {
     // The page landing replaces the turn with the server's copy and the row is
     // updated IN PLACE - the DOM node survives - so a row that draws its open
     // state from a prop closes the moment anything lands. The state has to be
@@ -417,6 +439,7 @@ describe('the chat column as it draws', () => {
     draw({}, server);
     server.answer([], null);
     server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: call } } });
+    await painted();
 
     const leaf = document.querySelector('details.leaf');
     if (!(leaf instanceof HTMLDetailsElement)) throw new Error('the call did not draw');
@@ -433,7 +456,7 @@ describe('the chat column as it draws', () => {
     );
   });
 
-  it('keeps a call the reader closed closed when the turn is sent again', () => {
+  it('keeps a call the reader closed closed when the turn is sent again', async () => {
     // The other direction, and it needs the mutation to see it: a mutation's
     // diff is drawn open, so a row the reader CLOSES used to be opened again by
     // the next update. A test that only opens things cannot tell the two
@@ -470,6 +493,7 @@ describe('the chat column as it draws', () => {
     draw({}, server);
     server.answer([], null);
     server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: edit } } });
+    await painted();
 
     const leaf = document.querySelector('details.leaf');
     if (!(leaf instanceof HTMLDetailsElement)) throw new Error('the call did not draw');
@@ -486,7 +510,7 @@ describe('the chat column as it draws', () => {
     ).toBe(false);
   });
 
-  it('draws a peer message the socket sends live, through the frame the server forges', () => {
+  it('draws a peer message the socket sends live, through the frame the server forges', async () => {
     // #1376: the server forges the frame a delivery needs and sends it beside
     // the typed update, so a peer message draws live through the `chat_appended`
     // the client already handles. Its own turn, because a user frame is what a
@@ -516,13 +540,15 @@ describe('the chat column as it draws', () => {
       },
     });
 
+    await painted();
+
     const html = document.body.innerHTML;
     expect(drawn(), 'the message is on the page').toContain('picking it up');
     expect(html, 'marked by the counterparty class').toContain('i-bot');
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
 
-  it('pins the running row above the box, and out of the turn it belongs to', () => {
+  it('pins the running row above the box, and out of the turn it belongs to', async () => {
     // **The wiring, and both halves of it.** The row moves out of the newest
     // turn while it is being written, so a column that goes on drawing it in
     // the turn draws it twice, and a column that keeps it only in the turn
@@ -531,6 +557,7 @@ describe('the chat column as it draws', () => {
     draw({}, server);
     server.answer([]);
     server.send(appended(frame('a-run', 100)));
+    await painted();
 
     expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
     expect(document.querySelectorAll('.strip .ring'), 'carrying the running mark').toHaveLength(1);
@@ -558,7 +585,7 @@ describe('the chat column as it draws', () => {
     expect(document.querySelectorAll('details.turninfo'), 'and out of the turn').toHaveLength(0);
   });
 
-  it('moves the finished row into the pin for its beat, and into the turn when the beat ends', () => {
+  it('moves the finished row into the pin for its beat, and into the turn when the beat ends', async () => {
     // **The beat is a move, not a copy.** The turn's own row stands aside for
     // exactly as long as the pin holds it: without that the same figures draw
     // twice on one page for the 450ms the beat lasts, which is the one moment
@@ -569,10 +596,12 @@ describe('the chat column as it draws', () => {
       draw({}, server);
       server.answer([]);
       server.send(appended(frame('a-run', 100)));
+      await painted();
       expect(document.querySelectorAll('.strip'), 'the running row is pinned').toHaveLength(1);
 
       server.send(ended());
       server.answer([{ key: 'turn-a-run', messages: [frame('a-run', 100), settledFrame()] }]);
+      await painted();
 
       expect(
         document.querySelector('.strip')?.textContent,
@@ -596,7 +625,7 @@ describe('the chat column as it draws', () => {
     }
   });
 
-  it('takes the pin back for the next turn, and beats its own finish', () => {
+  it('takes the pin back for the next turn, and beats its own finish', async () => {
     // A beat left armed by the turn before shows up here: it fires mid-flight,
     // clears the turn the pin is carrying, and the next turn's own finish then
     // never beats.
@@ -606,14 +635,17 @@ describe('the chat column as it draws', () => {
       draw({}, server);
       server.answer([]);
       server.send(appended(frame('a-one', 100)));
+      await painted();
       server.send(ended());
       server.answer([{ key: 'turn-a-one', messages: [frame('a-one', 100), settledFrame()] }]);
+      await painted();
       expect(
         document.querySelector('.strip')?.textContent,
         'the first finish is beating',
       ).toContain('cumulative');
 
       server.send(appended(frame('a-two', 700)));
+      await painted();
       expect(
         document.querySelector('.strip')?.textContent,
         'the next turn draws its own figures',
@@ -629,6 +661,7 @@ describe('the chat column as it draws', () => {
 
       server.send(ended());
       server.answer([{ key: 'turn-a-two', messages: [frame('a-two', 700), settledFrame()] }]);
+      await painted();
 
       expect(document.querySelector('.strip')?.textContent, 'and its own finish beats').toContain(
         'cumulative',
@@ -664,7 +697,7 @@ describe('the chat column as it draws', () => {
     ).toHaveLength(1);
   });
 
-  it('holds one of two finished rows, and leaves the other in the turn', () => {
+  it('holds one of two finished rows, and leaves the other in the turn', async () => {
     // **The pin holds one row, so the turn stands aside for one.** A turn can
     // carry two report rows - one per Result that landed in it, which is what a
     // refused ask leaves behind - and a column that withheld every report row
@@ -676,6 +709,7 @@ describe('the chat column as it draws', () => {
       draw({}, server);
       server.answer([]);
       server.send(appended(frame('a-run', 100)));
+      await painted();
 
       server.send(ended());
       server.answer([
@@ -684,6 +718,7 @@ describe('the chat column as it draws', () => {
           messages: [frame('a-run', 100), settledFrame('r-1', 12.5), settledFrame('r-2', 9)],
         },
       ]);
+      await painted();
 
       expect(document.querySelector('.strip')?.textContent, 'the pin holds the last row').toContain(
         '$9.00 cumulative',
@@ -709,7 +744,7 @@ describe('the chat column as it draws', () => {
     }
   });
 
-  it('pins the row of the newest turn, not of the first one the column holds', () => {
+  it('pins the row of the newest turn, not of the first one the column holds', async () => {
     const server = stub();
     draw({}, server);
     server.answer([
@@ -717,6 +752,7 @@ describe('the chat column as it draws', () => {
       { key: 't2', messages: [frame('a-two', 200), settledFrame()] },
     ]);
     server.send(appended(frame('a-three', 700)));
+    await painted();
 
     expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
     expect(document.querySelector('.strip')?.textContent, 'carrying the newest turn').toContain(
@@ -728,7 +764,7 @@ describe('the chat column as it draws', () => {
     ).toHaveLength(2);
   });
 
-  it('keeps a row the reader opened mounted when a thinking row lands above it', () => {
+  it('keeps a row the reader opened mounted when a thinking row lands above it', async () => {
     // A thinking unit lands ABOVE the run it interrupted, so every unit below
     // it shifts position - and a list keyed by position remounts that whole
     // subtree, closing whatever the reader had open, again for every thought on
@@ -762,6 +798,7 @@ describe('the chat column as it draws', () => {
         ]),
       ),
     );
+    await painted();
 
     // The call drew as a row that opens, and the reader opens it.
     const row = document.querySelector<HTMLDetailsElement>('details.leaf');
@@ -772,13 +809,14 @@ describe('the chat column as it draws', () => {
     server.send(
       appended(frame('a2', [{ type: 'thinking', thinking: 'about the file', signature: 's' }])),
     );
+    await painted();
 
     expect(row?.isConnected, 'the row the reader opened is the row still on the page').toBe(true);
     expect(row?.open, 'and it is still open').toBe(true);
     expect(drawn(), 'the thought drew beside it').toContain('about the file');
   });
 
-  it('draws a record it is handed frozen, because the column writes into nothing it is given', () => {
+  it('draws a record it is handed frozen, because the column writes into nothing it is given', async () => {
     // Both halves are frozen here: the rows as they arrive off the wire, and -
     // by the module mock above - the conversation the class composes and hands
     // the column. A write into either throws in strict mode, so this failing
@@ -798,6 +836,7 @@ describe('the chat column as it draws', () => {
 
     server.answer(freeze([{ key: 't1', messages: [frame('a1', 'first words')] }]));
     server.send(appended(freeze(frame('a2', 'second words'))));
+    await painted();
 
     expect(drawn(), 'the frozen page drew').toContain('first words');
     expect(drawn(), 'and the frozen frame drew with it').toContain('second words');
@@ -841,7 +880,7 @@ describe('the reader own words before the core has them', () => {
     echoes.clear(key);
   });
 
-  it('draws the words while they are on their way, and stops when the core has them', () => {
+  it('draws the words while they are on their way, and stops when the core has them', async () => {
     const server = stub();
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
@@ -866,6 +905,7 @@ describe('the reader own words before the core has them', () => {
 
     // The core's own copy is the signal, and it arrives as its own frame.
     server.send(appended(said('and run the gate too')));
+    await painted();
     expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
   });
 

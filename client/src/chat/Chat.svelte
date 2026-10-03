@@ -718,8 +718,9 @@
     const height = viewport?.scrollHeight ?? 0;
     const shrank = height < shaped;
     shaped = height;
+    const foot = atFoot();
     if (!shrank) {
-      if (atFoot()) {
+      if (foot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
@@ -735,8 +736,12 @@
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the
     // row under their top edge is what the column holds their place by from
-    // here on.
-    if (!held.following) captureAnchor();
+    // here on. Read off this event's own arithmetic rather than the record:
+    // the record's follow flag is the fold's, this disarm publishes at once,
+    // and a STREAM fold that engages the follow - a prompt frame - lands a
+    // painted frame later - so a capture that read the record would depend on
+    // which side of that timing it caught.
+    if (!foot) captureAnchor();
     if (offset < REACH) loadOlder();
   }
 

@@ -21,7 +21,7 @@
  * and the rows already drawn keep the objects they were.
  */
 
-import { get, writable, type Readable } from 'svelte/store';
+import { writable, type Readable } from 'svelte/store';
 
 import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
@@ -484,7 +484,32 @@ const RETRY_MS = 2_000;
 export class Chat {
   private readonly connection: Connection;
   private readonly slot: SessionSlot;
-  private readonly inner = writable<Conversation>(NOTHING);
+  /** How many readers draw this conversation, which is when a redraw is waited for. */
+  private readers = 0;
+  /**
+   * The conversation as folded, which every frame moves at once.
+   *
+   * **The fold is immediate and only the draw waits.** A frame is applied the
+   * moment it arrives - the fold is cheap, and the record it leaves is what
+   * the next fold reads - while `inner`, what a page draws, is written once
+   * per painted frame. So the burst a return delivers - every frame that
+   * arrived while the page was away - is one draw of the latest rather than a
+   * replay of the whole queue, and nothing is dropped: the held record is
+   * exact throughout. That is the same split the seat's own record runs, and
+   * for the same reason (`session/live.ts`).
+   */
+  private held: Conversation = NOTHING;
+  /** The frame a publish is waiting for, or `null`. */
+  private queued: number | null = null;
+  private readonly inner = writable<Conversation>(NOTHING, () => {
+    this.readers += 1;
+    return () => {
+      this.readers -= 1;
+      // The last reader has gone, so nothing left is owed a paint: the record
+      // waiting for one is written now, which is what a return draws.
+      if (this.readers === 0) this.flush();
+    };
+  });
   /**
    * The page being waited on, which is both the guard against a second ask
    * queueing behind it and the direction the answer goes: a page asked for by
@@ -503,7 +528,7 @@ export class Chat {
   private abandoned = 0;
   /** Record that an ask which was in flight is now answered by nothing. */
   private forgot(): void {
-    this.inner.update((held) => ({ ...held, dropped: held.dropped + 1 }));
+    this.fold((held) => ({ ...held, dropped: held.dropped + 1 }));
   }
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
@@ -533,6 +558,48 @@ export class Chat {
     this.key = subjectKey({ session: slot });
   }
 
+  /** Write the fold as it stands, dropping the paint it was waiting for. */
+  private flush(): void {
+    if (this.queued !== null) {
+      cancelAnimationFrame(this.queued);
+      this.queued = null;
+    }
+    this.inner.set(this.held);
+  }
+
+  /**
+   * Publish the fold on the next painted frame, or at once while nobody draws
+   * it. The record has already moved by the time this is called: this is only
+   * the draw.
+   */
+  private soon(): void {
+    if (this.queued !== null) return;
+    if (this.readers === 0) {
+      this.flush();
+      return;
+    }
+    this.queued = requestAnimationFrame(() => this.flush());
+  }
+
+  /**
+   * Apply `fn` to the fold and draw it now.
+   *
+   * For what is not a frame in a stream - a page's answer, a refusal, the
+   * reader's own follow decision, the swap: each is a state rather than one
+   * step of one, so it is written at once, the way the seat's own record
+   * writes a read's answer (`session/live.ts`).
+   */
+  private fold(fn: (held: Conversation) => Conversation): void {
+    this.held = fn(this.held);
+    this.flush();
+  }
+
+  /** Apply one STREAM frame, whose draw lands on the next painted frame. */
+  private stream(fn: (held: Conversation) => Conversation): void {
+    this.held = fn(this.held);
+    this.soon();
+  }
+
   /**
    * The core's answer moved, so the newest row may have.
    *
@@ -544,7 +611,7 @@ export class Chat {
   private heard(running: boolean): void {
     if (running === this.turnRunning) return;
     this.turnRunning = running;
-    this.inner.update((held) => this.answered(held));
+    this.fold((held) => this.answered(held));
   }
 
   /**
@@ -573,7 +640,17 @@ export class Chat {
 
   /** The conversation, for a component to draw. */
   get value(): Readable<Conversation> {
-    return { subscribe: this.inner.subscribe };
+    return {
+      subscribe: (fn) => {
+        // **Every reader arrives on the fold as it stands**, not on the last
+        // painted state: a frame's draw may still be waiting for its paint,
+        // and whoever attaches now must be handed the newest. This flushes
+        // for the second reader as much as the first, which the writable's
+        // own start hook cannot do.
+        this.flush();
+        return this.inner.subscribe(fn);
+      },
+    };
   }
 
   /**
@@ -661,13 +738,11 @@ export class Chat {
    * move under them. A threshold here would pull them down mid-sentence.
    */
   following(follows: boolean): void {
-    this.inner.update((held) =>
-      held.following === follows ? held : { ...held, following: follows },
-    );
+    this.fold((held) => (held.following === follows ? held : { ...held, following: follows }));
   }
 
   private read(): Conversation {
-    return get(this.inner);
+    return this.held;
   }
 
   private ask(before: string | null): boolean {
@@ -735,7 +810,7 @@ export class Chat {
         // spent on pages that are never coming.
         this.inFlight = null;
         this.abandoned = 0;
-        this.inner.update((held) => ({
+        this.fold((held) => ({
           ...held,
           refused: message.why,
           loaded: true,
@@ -779,7 +854,7 @@ export class Chat {
     // A landed page is the refusal's ask answered: the timer that would ask
     // again is owed nothing, and the page's cursor is what the walk uses.
     this.clearRetry();
-    this.inner.update((held) => {
+    this.fold((held) => {
       const known = new Map(held.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
       // which is what the next page repeats it under.
@@ -991,7 +1066,10 @@ export class Chat {
     // The occupant that left took its answer with it, and nothing about the new
     // one is known until its own record or frames say.
     this.turnRunning = false;
-    this.inner.set(NOTHING);
+    // A swap is not a frame's draw: the reset lands now, whatever any paint
+    // was waiting for.
+    this.held = NOTHING;
+    this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
     // an ask keeps holding it - the drain never fires, `shift` stays armed for
@@ -1088,7 +1166,7 @@ export class Chat {
    * window is a round trip rather than a turn.
    */
   private append(message: unknown): void {
-    this.inner.update((held) => {
+    this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
       // What a row of its own would hold, asked of the fold rather than of the
       // frame's shape: a frame it draws nothing out of is never a row, whatever
