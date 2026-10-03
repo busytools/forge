@@ -817,6 +817,7 @@ describe('one turn folded into the units a view draws', () => {
     // reader's own turn: the orange panel with a raw header on screen.
     const question = heard([
       text(
+        // replay-only: agents__tell
         "[Question id=q-1 from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis the cron issue filed?",
       ),
     ]);
@@ -1037,6 +1038,84 @@ describe('one turn folded into the units a view draws', () => {
     expect(units[1]?.kind === 'notice' ? units[1].notice.text : '').toContain('ENOENT');
   });
 
+  it('names only the seat being read as this session, and every other row by what it is', () => {
+    // **The fold is where this is decided, and the label is half the address.**
+    // A worker reading `agents__list` sees its own project's lead, its own row
+    // and its siblings - and comparing on org and project alone would call all
+    // of them `this session`. Only the seat the page draws names itself; its
+    // project's own agent says whose agent it is, another project says that,
+    // and a worker carries the phrase of its charter with its own activity.
+    const listed = [
+      {
+        label: 'lead',
+        project: 'forge',
+        path: '/tmp/forge',
+        status: 'running',
+        slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      },
+      {
+        label: 'reviewer',
+        project: 'forge',
+        charter: 'review the diff',
+        status: 'Running',
+        activity: 'Idle',
+        slot: { org: 'Busytools', project: 'forge', label: 'reviewer' },
+      },
+      {
+        label: 'client-dev',
+        project: 'forge',
+        charter:
+          'Hold the client loop for this stretch of work, from the fold through to the page.\nMore.',
+        status: 'Running',
+        activity: 'Running',
+        slot: { org: 'Busytools', project: 'forge', label: 'client-dev' },
+      },
+      {
+        label: 'lead',
+        project: 'companies',
+        path: '/tmp/companies',
+        status: 'sleeping',
+        slot: { org: 'Busytools', project: 'companies', label: 'lead' },
+      },
+    ];
+    const call = said([
+      { type: 'tool_use', id: 'toolu_list', name: 'mcp__forge__agents__list', input: {} },
+    ]);
+    const answer = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_list',
+        content: JSON.stringify(listed),
+        is_error: false,
+      },
+    ]);
+
+    const [group] = fold([call, answer], {
+      org: 'Busytools',
+      project: 'forge',
+      label: 'reviewer',
+    });
+    const seats = traffic(group)[0]?.cards[0]?.seats ?? [];
+
+    expect(
+      seats.map((seat) => seat.label),
+      'every row drew',
+    ).toEqual(['lead', 'reviewer', 'client-dev', 'lead']);
+    expect(
+      seats.map((seat) => seat.what),
+      'the reader own seat alone names itself',
+    ).toEqual([
+      "the project's own agent",
+      'this session',
+      'Hold the client loop for this stretch of work, from the fold\u{2026}',
+      'another project',
+    ]);
+    expect(
+      seats.map((seat) => seat.liveness),
+      'a worker carries its activity, lowercased; an agent carries none',
+    ).toEqual(['', 'idle', 'running', '']);
+  });
+
   it('shows the refusal a failed send came back with, not the message that was sent', () => {
     // The row's words read `failed to deliver: <reason>`, so the reason has to
     // be the refusal: a send that never reached anybody drawn with the sender's
@@ -1066,6 +1145,22 @@ describe('one turn folded into the units a view draws', () => {
       "no project 'companies' is configured",
     );
     expect(card?.body, 'and not the words that were sent').not.toContain('picking it up');
+
+    // A refusal that carried no words leaves the tail off rather than falling
+    // back to the message: the row says `failed to deliver:` and nothing else,
+    // where the sender's own text under it would read as the reason.
+    const wordless = fold([
+      said([
+        {
+          type: 'tool_use',
+          id: 'toolu_y',
+          name: 'mcp__forge__agents__send_message',
+          input: { org: 'Gateway', project: 'companies', message: 'picking it up' },
+        },
+      ]),
+      heard([{ type: 'tool_result', tool_use_id: 'toolu_y', content: '', is_error: true }]),
+    ]);
+    expect(traffic(wordless[0])[0]?.cards[0]?.body, 'a wordless refusal adds nothing').toBe('');
   });
 
   it('keys two failures from one seat apart, which the fold does by frame and block', () => {

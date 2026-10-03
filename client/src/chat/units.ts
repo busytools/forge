@@ -119,10 +119,17 @@ export interface Notice {
  */
 export type PeerRow = 'sent' | 'arrived' | 'failed' | 'whoami' | 'list';
 
-/** The reader's own seat: the org a counterparty's tag is compared against. */
+/**
+ * The reader's own SEAT, which is the slot the page is drawing: the label is
+ * part of it, because a worker and its own lead are two seats of one project.
+ *
+ * The org is what a counterparty's tag is compared against; the whole slot is
+ * what tells a row whether it is the seat being read.
+ */
 export interface Self {
   org: string;
   project: string;
+  label: string;
 }
 
 /** Where this session sits, as `agents__whoami` answers it. */
@@ -1022,11 +1029,17 @@ function seatFacts(result: Block | undefined): SeatFacts | null {
  * anything else is a worker and carries the charter it was spawned with. A row
  * whose slot will not read is dropped rather than drawn as a nameless row.
  *
- * **Three of the four facts a row carries depend on the shape.** A project's
- * agent has no activity to report, so its liveness is empty; a worker's comes
- * from `activity`, which is the axis that keeps moving, not from the spawn
- * outcome `status` freezes at `Running`. And the seat the reader is holding
- * says so, as does a project that is not the reader's.
+ * **What a row says it is for is the reader's own address, read three ways.**
+ * Only the seat the page is DRAWING names itself - the whole slot, so a worker
+ * reading its own project's list does not call its siblings `this session`. A
+ * project's own agent is the reader's if it is the seat being read, the
+ * reader's own project's if only the project matches, and another project's
+ * otherwise; every other row is a worker and carries the phrase of its charter.
+ *
+ * **Two of the four facts depend on the shape.** A project's agent has no
+ * activity to report, so its liveness is empty; a worker's comes from
+ * `activity`, which is the axis that keeps moving, not from the spawn outcome
+ * `status` freezes at `Running`.
  */
 function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
   const answer = resultJson(result);
@@ -1038,13 +1051,23 @@ function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
     const label = str(slot, 'label');
     const project = str(slot, 'project');
     if (label === null || project === null) continue;
-    const own = self !== null && slot['org'] === self.org && project === self.project;
+    const org = str(slot, 'org') ?? '';
+    // The reader's own address, read twice: the whole slot is the seat the
+    // page is drawing, and the org and project alone are the one it sits in.
+    const inMyProject = self !== null && org === self.org && project === self.project;
+    const mySeat = inMyProject && self !== null && self.label === label;
     const agent = label === 'lead';
     rows.push({
-      org: str(slot, 'org') ?? '',
+      org,
       label,
       project,
-      what: own ? 'this session' : agent ? 'another project' : phrase(str(one, 'charter') ?? ''),
+      what: mySeat
+        ? 'this session'
+        : agent
+          ? inMyProject
+            ? "the project's own agent"
+            : 'another project'
+          : phrase(str(one, 'charter') ?? ''),
       liveness: agent ? '' : lower(str(one, 'activity') ?? str(one, 'status') ?? ''),
     });
   }
@@ -1113,9 +1136,10 @@ function outbound(
       peer,
       // **A failure says what went wrong, not what was sent.** The row's own
       // words read `failed to deliver: <reason>`, and the reason is the
-      // refusal the call came back with; the message the reader typed is in
-      // the input either way.
-      body: (failed ? resultText(result) : null) ?? str(fields, send.body) ?? '',
+      // refusal the call came back with. A refusal with no words leaves the
+      // tail off rather than putting the message under it, which would say the
+      // words arrived.
+      body: failed ? (resultText(result) ?? '') : (str(fields, send.body) ?? ''),
       org: null,
       self,
       status,

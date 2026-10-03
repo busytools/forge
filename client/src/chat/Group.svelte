@@ -27,9 +27,9 @@
   type DrawnTitle = { lead: string; name: string; tail: string };
 
   /**
-   * A stretch of the turn's work: a lane per tool family, one peer lane, and
-   * the thinking, with every call, message or thought on its own row behind a
-   * rail.
+   * A stretch of the turn's work: a lane per tool family, one peer lane, the
+   * thinking, one for a hook's runs and one per external delivery kind, with
+   * every call, message or thought on its own row behind a rail.
    *
    * **No disclosure around the group.** The count and the roll-up are not
    * drawn: a stretch of work is not a thing to hide, the lane rows say what
