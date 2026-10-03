@@ -78,6 +78,9 @@ notify = "8"
 pulldown-cmark = "0.13"
 similar = "3"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Pinned exactly, not caret: it renders what a chat block draws (tables,
+# alerts, math), so a bump changes the TUI's output and goes in its own
+# change rather than riding a sweep.
 tui-markdown = "=0.3.9"
 tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
