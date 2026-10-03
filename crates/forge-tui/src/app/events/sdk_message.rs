@@ -463,8 +463,6 @@ impl EnvelopeKind {
             // Spelled out, not `_`: a new inbound kind must not silently
             // inherit peer traffic's unlabelled treatment and merge into it.
             forge_server::envelope::PeerInboundKind::Message { .. }
-            | forge_server::envelope::PeerInboundKind::Question { .. }
-            | forge_server::envelope::PeerInboundKind::Reply { .. }
             | forge_server::envelope::PeerInboundKind::DeliveryFailure { .. }
             | forge_server::envelope::PeerInboundKind::WorkerSpawnFailed { .. } => Self::Peer,
         }

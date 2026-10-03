@@ -53,9 +53,10 @@ these changed before it landed. Each is now drawn:
 - **`forge_version` and `forge_version_short` are new**, and the header
   draws them rather than its own package version: the header states which
   forge is RUNNING, and the client is a different program.
-- Also: `agents[]` gained `peer` and `peer_failure_at`, `dictate` gained
-  `enabled` and `device`, and `usage.json` is a third subject that no page
-  in this slice draws.
+- Also: `agents[]` briefly gained `peer` and `peer_failure_at` for the peer
+  inflight counters, and both are gone again with them - the badge they fed
+  is not drawn any more - while `dictate` gained `enabled` and `device`, and
+  `usage.json` is a third subject that no page in this slice draws.
 - **A seat's own working tree crosses on its row.** `agents[]` gained
   `work`, the read of that seat's OWN directory - the worktree for a git
   worker, the project's path for a lead - so a worker's row draws its own

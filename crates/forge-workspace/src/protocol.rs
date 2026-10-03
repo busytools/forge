@@ -40,7 +40,7 @@ use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, PeerInflightStats, SessionId, SessionListEntry,
+    Message, SessionId, SessionListEntry,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -162,7 +162,7 @@ pub enum SessionChoice {
 #[serde(rename_all = "snake_case")]
 pub enum DespawnResult {
     /// The worker was torn down (subprocess killed, dropped from
-    /// `live_workers`, inflight asks expired). `worktree_cleanup_warning`
+    /// `live_workers`). `worktree_cleanup_warning`
     /// is `Some` when the post-teardown `git worktree remove` failed -
     /// the worker is still gone; only the worktree directory lingers.
     /// Teardown and worktree cleanup are independent: a cleanup failure
@@ -378,20 +378,18 @@ pub enum Command {
         launch_settings: SessionLaunchSettings,
     },
     /// Cross-project delivery (#114 v1). Dispatched by the
-    /// `mcp__forge__agents__tell` / `agents__ask` tool impls via
+    /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
     /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
     /// `target_project` to a `SessionSlot`; (b) if target is running,
     /// dispatches a plain `Command::Prompt` carrying the wrapper
     /// prose; (c) if sleeping, parks `wrapped` for target's owner and
-    /// dispatches `Command::SpawnProject`;
-    /// (d) on `target_project` not in forge.toml, fires the dual-path
-    /// `PeerAskFailed` notification back to caller.
+    /// dispatches `Command::SpawnProject`.
     ///
     /// App-level command (`key()` returns `None`); workspace routes
     /// to the App-level handler in `spawn.rs`. The `caller` field is
-    /// the source session's key for routing failure notifications and
-    /// for in_reply_to validation lookups.
+    /// the source session's key, carried so a parking that never lands
+    /// can route its delivery notice back.
     DeliverPeerPrompt {
         caller: SessionSlot,
         target_project: String,
@@ -465,8 +463,8 @@ pub enum Command {
         url: String,
     },
     /// Despawn the worker identified by `label` in `project_key`:
-    /// terminate its agent, drop it from `live_workers`, expire its
-    /// inflight asks, AND clean up its git worktree. Dispatched by the
+    /// terminate its agent, drop it from `live_workers`, AND clean up
+    /// its git worktree. Dispatched by the
     /// `agents__despawn` MCP tool (lead-only). Unlike `CloseWorker`
     /// (the TUI X-button), this also removes the worker's git worktree:
     /// a clean worktree is removed; a dirty one (uncommitted/untracked
@@ -489,7 +487,7 @@ pub enum Command {
         wrapped: WrappedPrompt,
     },
     /// Deliver a wrapped prompt from a worker back to its lead.
-    /// Dispatched by the `agents__tell` / `agents__ask` Tool impls
+    /// Dispatched by the `agents__send_message` Tool impl
     /// when the caller addresses `label="lead"`. The target
     /// `SessionSlot` is resolved at Tool dispatch time from the
     /// worker's `spawned_by_session_id` so the handler can deliver
@@ -1195,15 +1193,6 @@ pub enum SessionUpdate {
         /// verify, so the pane still reflects the real state.
         snapshot: Option<PluginsInventorySnapshot>,
     },
-    /// Peer-coordination ask in-flight stats changed for `key`. Fired
-    /// whenever `bump_inflight_stats` mutates the session's
-    /// `PeerInflightStats` (ask sent, reply received, timeout, delivery
-    /// failure). TUI reducer arm updates the sidebar peer-activity
-    /// badge in the Projects pane.
-    PeerInflightStatsChanged {
-        key: SessionSlot,
-        stats: PeerInflightStats,
-    },
     /// Workspace pushed a change to `live_workers[project_key]`. The
     /// TUI reducer updates the projects pane's tree-children based on
     /// `action`. `status` is the snapshot at the moment of the change
@@ -1375,7 +1364,6 @@ impl SessionUpdate {
             | Self::DictateDevicePin { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
-            | Self::PeerInflightStatsChanged { key, .. }
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
             | Self::DictateTranscribing { key }
@@ -1555,11 +1543,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("cwd_raw", cwd_raw)
                 .field("plugin_id", plugin_id)
                 .finish_non_exhaustive(),
-            Self::PeerInflightStatsChanged { key, stats } => f
-                .debug_struct("PeerInflightStatsChanged")
-                .field("key", key)
-                .field("stats", stats)
-                .finish(),
             Self::WorkerStatusChanged { project_key, action, status, worktree } => f
                 .debug_struct("WorkerStatusChanged")
                 .field("project_key", project_key)
@@ -1570,7 +1553,7 @@ impl std::fmt::Debug for SessionUpdate {
             Self::PeerEnvelopeAppended { key, wrapped } => f
                 .debug_struct("PeerEnvelopeAppended")
                 .field("key", key)
-                .field("correlation_id", &wrapped.correlation_id)
+                .field("id", &wrapped.id)
                 .field("kind", &wrapped.kind)
                 .finish_non_exhaustive(),
             Self::GotifyNotificationAppended { key, notification } => f

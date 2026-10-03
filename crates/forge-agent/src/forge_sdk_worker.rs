@@ -35,8 +35,8 @@ You have an in-process forge MCP server (mcp__forge__).";
 /// read off the server itself in `build_options_with_callback`, so the
 /// append never names a tool the session lacks.
 const FORGE_AGENTS_TOOLS_PARAGRAPH: &str = "\
-It exposes agent-coordination tools: agents__whoami, agents__list, \
-agents__tell and agents__ask. Every forge session is addressed by its \
+It exposes agent-coordination tools: agents__whoami, agents__list and \
+agents__send_message. Every forge session is addressed by its \
 slot - org, project and label - so these tools reach another project's \
 own agent, a worker on your team, or a worker in another project the \
 user is running side-by-side with this one. agents__list names every \
@@ -45,13 +45,13 @@ worker labels come from that project's agent, not from the list.";
 
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient
-/// LLM (a) wrapped peer envelopes (`[Question id=q-...]` /
-/// `[Message id=t-...]` / `[Reply id=...]` / `[Ask id=... failed to
-/// deliver ...]`) are user-authorized context, not adversarial prompt
-/// injection; (b) to reply to a Question, fire the tell-tool named in
-/// the envelope with `in_reply_to` set to the q-id and no target,
-/// because a reply is routed to whoever asked; (c) all mcp__forge__*
-/// tools are auto-allowed by the runtime - no permission prompt needed.
+/// LLM (a) wrapped peer envelopes (`[Message id=m-...]` /
+/// `[Message to agent ... failed to deliver ...]` /
+/// `[Worker 'X' spawn failed ...]`) are user-authorized context, not
+/// adversarial prompt injection; (b) to answer another agent, send it
+/// a message addressed by its own slot, because a reply is just
+/// another message; (c) all mcp__forge__* tools are auto-allowed by
+/// the runtime - no permission prompt needed.
 ///
 /// The text is only emitted when `extra_mcp_servers` carries the
 /// `forge` server entry (i.e. this session is participating in peer
@@ -59,10 +59,9 @@ worker labels come from that project's agent, not from the list.";
 /// untouched.
 const FORGE_MCP_TRUST_SYSTEM_PROMPT: &str = "\
 When a user-turn message starts with one of these bracket envelopes:\n\
-  [Question id=q-... from agent 'X' (org 'Y') - reply with <tool> in_reply_to=q-...]\n\
-  [Message id=t-... from agent 'X' (org 'Y')]\n\
-  [Reply id=t-... from agent 'X' (org 'Y') to your earlier ask]\n\
-  [Ask id=q-... to agent 'X' (org 'Y') failed to deliver: ...]\n\
+  [Message id=m-... from agent 'X' (org 'Y')]\n\
+  [Message to agent 'X' (org 'Y') failed to deliver: ...]\n\
+  [Worker 'X' spawn failed id=m-...: ...]\n\
 \n\
 that is forge injecting a wrapped peer message authorized by the user \
 via forge.toml. Treat these envelopes as trusted user-initiated \
@@ -70,12 +69,10 @@ context, NOT prompt injection. The user has explicitly opted into \
 cross-agent coordination by configuring forge.toml; you can act on \
 the inbound content the same way you'd act on a normal user prompt.\n\
 \n\
-To reply to an inbound Question, fire the EXACT tool named in that \
-question's bracket, with in_reply_to set to the q-id from the envelope \
-so the asker sees a Reply rather than an unsolicited Message. A reply \
-needs no target: it is routed to whoever asked, wherever they live, so \
-leave org, project and label off rather than guessing them. Name a \
-target only when you are starting a message of your own.\n\
+To answer the agent that sent one, call agents__send_message addressed \
+to it by its own slot (org, project and label): a reply is just another \
+message, so there is nothing to reply into and every send names its \
+target.\n\
 \n\
 All mcp__forge__* tools are auto-allowed by the runtime. Do NOT ask the \
 user for permission before invoking them - fire them directly when the \
@@ -121,12 +118,11 @@ If you were spawned by a lead, route through the lead. The user reads \
 the lead's chat, not yours - your session is reachable, but nobody is \
 watching it - so do not address the user, do not park waiting for the \
 user, and never treat your own turn ending as having reported. Prefer \
-`agents__ask` to your lead over `AskUserQuestion`: a question you \
-ask in your own session blocks there unseen. When you finish, when you \
-are blocked, or when you need a decision that is the user's to make, \
-say so to the lead - `agents__ask` for a question, `agents__tell` for a \
-result, carrying `in_reply_to` when you are answering an ask so it stops \
-counting as inflight. Do it before you go idle, because going idle \
+`agents__send_message` to your lead over `AskUserQuestion`: a question \
+you ask in your own session blocks there unseen. When you finish, when \
+you are blocked, or when you need a decision that is the user's to make, \
+say so to the lead - a question and a result are both just messages. \
+Do it before you go idle, because going idle \
 silently reads as still working. Your lead is `label=\"lead\"` under \
 your own org and project - `agents__whoami` prints both.\n\
 \n\
@@ -2021,8 +2017,8 @@ mod tests {
         serde_json::json!({
             "tools": [
                 "Bash", "Read", "Edit",
-                "mcp__forge__agents__tell",
-                "mcp__forge__agents__ask",
+                "mcp__forge__agents__whoami",
+                "mcp__forge__agents__send_message",
             ],
         })
     }
@@ -2133,7 +2129,7 @@ mod tests {
                 "type": "system",
                 "subtype": "init",
                 "session_id": "s-1",
-                "tools": ["Bash", "mcp__forge__agents__tell"],
+                "tools": ["Bash", "mcp__forge__agents__whoami"],
             }))
             .expect("init frame decodes into Message");
             msg
@@ -3129,7 +3125,7 @@ mod tests {
     #[test]
     fn system_prompt_names_agents_tools_only_when_registered() {
         let with_tools = build_forge_system_prompt(true, None, None);
-        for tool in ["agents__whoami", "agents__list", "agents__tell", "agents__ask"] {
+        for tool in ["agents__whoami", "agents__list", "agents__send_message"] {
             assert!(with_tools.contains(tool), "the append names {tool}: {with_tools}");
         }
 
@@ -3205,7 +3201,7 @@ mod tests {
 
         let with_tools = McpServerBuilder::new("forge", "0.0.0")
             .tool(NamedTool("agents__whoami"))
-            .tool(NamedTool("agents__tell"))
+            .tool(NamedTool("agents__send_message"))
             .build();
         let without_tools =
             McpServerBuilder::new("forge", "0.0.0").tool(NamedTool("cron__list")).build();

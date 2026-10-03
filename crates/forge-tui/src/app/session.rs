@@ -2,7 +2,6 @@
 //!
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::time::Instant;
 
 use forge_workspace::SessionSlot;
 
@@ -22,7 +21,7 @@ use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TurnNoticeRef};
 pub use forge_primitives::runtime::SessionLifecycleState;
 use forge_primitives::runtime::{RuntimeSessionState, SessionTurnState};
-use forge_primitives::{AccountInfo, PeerInflightStats, SessionId};
+use forge_primitives::{AccountInfo, SessionId};
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
@@ -84,16 +83,6 @@ pub struct UiSession {
     /// Latest SDK runtime liveness state (`Idle` / `Running` /
     /// `RequiresAction`).
     pub runtime_session_state: Option<RuntimeSessionState>,
-    /// Peer-coordination in-flight counters (#114). Mirrors
-    /// `Workspace.peer_stats[key]`; updated by the reducer arm for
-    /// `SessionUpdate::PeerInflightStatsChanged`. Drives the
-    /// sidebar peer-activity badges in [`crate::ui::projects_pane`].
-    pub peer_badges: PeerInflightStats,
-    /// Last instant at which `peer_badges.timed_out` or
-    /// `peer_badges.delivery_failed` incremented. Used to fade the
-    /// transient failure indicators 60 s after they fire so the
-    /// sidebar doesn't stay red forever.
-    pub peer_badges_last_failure_at: Option<Instant>,
     /// Chat history buffer for this session. Welcome message at
     /// index 0; user/assistant turns appended.
     pub messages: Vec<ChatMessage>,
@@ -831,8 +820,6 @@ impl UiSession {
             account_info: Option::default(),
             active_account_display_name: Option::default(),
             runtime_session_state: Option::default(),
-            peer_badges: PeerInflightStats::default(),
-            peer_badges_last_failure_at: Option::default(),
             messages: Vec::default(),
             message_retained_bytes: Vec::default(),
             retained_history_bytes: usize::default(),

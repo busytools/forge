@@ -10,11 +10,9 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
-use forge_primitives::{
-    AvailableAgent, AvailableCommand, Message, PeerInflightStats, SDKSessionInfo,
-};
+use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo};
 
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -102,11 +100,11 @@ You can delegate work to worker sessions via the \
 mcp__forge__agents__ tools. Spawn one with \
 agents__spawn(label=\"<name>\", charter=\"<its mission>\") - the charter \
 is required and is what defines that worker; talk to it with \
-agents__tell / agents__ask; list your live workers with agents__list; \
+agents__send_message; list your live workers with agents__list; \
 revise a worker's stored charter or kicks with agents__update, which \
 takes effect on its next restart. agents__spawn always creates the \
 worker in YOUR project. The same family reaches other projects' \
-agents: tell and ask take an org and project, plus a label to name a \
+agents: a message takes an org and project, plus a label to name a \
 worker rather than that project's own agent. At most one live worker \
 exists per label - if it already exists, message it instead of \
 spawning again. \
@@ -287,34 +285,6 @@ pub struct Workspace {
     /// `pub(crate)` so crate-internal spawn and delivery paths can
     /// reach a session's `DomainSession` directly.
     pub(crate) domain_handles: Mutex<HashMap<SessionSlot, Arc<Mutex<DomainSession>>>>,
-    /// Wire-shape state for in-flight agent asks
-    /// (`mcp__forge__agents__ask`). One entry per outstanding ask
-    /// keyed by [`CorrelationId`]. Registered by
-    /// [`crate::mcp::workers::facade::WorkerFacade::register_inflight_ask`]
-    /// when a caller's ask tool fires; removed on successful reply
-    /// (`complete_inflight_ask`) or target-failure
-    /// (`expire_inflight_ask_failed`).
-    ///
-    /// There is no timeout machinery - asks live until reply or
-    /// crash. The peer-mcp v1 brainstorm had a 30-min timer + late-
-    /// reply tagging but the user opted to drop both: peers are
-    /// expected to respond promptly, and a forever-pending entry is
-    /// cheaper than a stale-notification bug class.
-    pub(crate) inflight_asks: Mutex<HashMap<CorrelationId, InflightAsk>>,
-    /// Per-session counters of peer-message activity. Mutated by
-    /// [`crate::mcp::peers::facade::WorkspaceFacade::bump_inflight_stats`]
-    /// whenever a peer ask is registered / replied / timed out /
-    /// delivery-failed. Read by `list_peers` and `whoami`. Drives
-    /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
-    /// reducer turns into sidebar peer-activity badges.
-    pub(crate) peer_stats: Mutex<HashMap<SessionSlot, PeerInflightStats>>,
-    /// When each seat's `delivery_failed` counter last moved.
-    ///
-    /// The count is cumulative and carries no time, and the mark it draws is
-    /// transient: a view fades that badge out a minute after the failure. A
-    /// view that attached later reads this to age it out itself, rather than
-    /// drawing a red mark the terminal has already dropped.
-    pub(crate) peer_failure_at: Mutex<HashMap<SessionSlot, SystemTime>>,
     /// The session that submitted the reviews on a `(project, branch)` -
     /// the target for a worker's review-activity notice. Set by
     /// [`Self::submit_review`]; latest submit wins (the reviewer is one
@@ -1471,9 +1441,6 @@ impl Workspace {
             live_workers: Mutex::new(HashMap::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
-            inflight_asks: Mutex::new(HashMap::new()),
-            peer_stats: Mutex::new(HashMap::new()),
-            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -4079,10 +4046,10 @@ impl Workspace {
                     let span = tracing::info_span!(
                         "deliver_peer_prompt",
                         target = %target_project,
-                        correlation_id = %wrapped.correlation_id,
+                        message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
-                    spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
+                    spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
                 }
                 Command::SpawnWorker {
                     project_key,
@@ -4144,12 +4111,12 @@ impl Workspace {
                         "deliver_worker_prompt",
                         project = %project_key.as_str(),
                         label = %target_label,
-                        correlation_id = %wrapped.correlation_id,
+                        message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
                     spawn::handle_deliver_worker_prompt(
                         self,
-                        caller,
+                        &caller,
                         &project_key,
                         &target_label,
                         wrapped,
@@ -4159,12 +4126,12 @@ impl Workspace {
                     let span = tracing::info_span!(
                         "deliver_worker_prompt_to_lead",
                         slot = %target_lead_key.display(),
-                        correlation_id = %wrapped.correlation_id,
+                        message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
                     spawn::handle_deliver_worker_prompt_to_lead(
                         self,
-                        caller,
+                        &caller,
                         &target_lead_key,
                         wrapped,
                     );
@@ -4739,25 +4706,6 @@ impl Workspace {
     /// every view.
     pub fn has_background_work(&self, slot: &SessionSlot) -> bool {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
-    }
-
-    /// `slot`'s peer-coordination counters, which a view draws a seat's
-    /// activity badge from. Zeroes for a seat with no traffic.
-    ///
-    /// A fact about the seat rather than about a viewer, so the core holds one
-    /// answer. They also ride `SessionUpdate::PeerInflightStatsChanged`, which
-    /// is why a view that attached after the last ask needs this read.
-    pub fn peer_stats_for(&self, slot: &SessionSlot) -> PeerInflightStats {
-        self.peer_stats.lock().get(slot).cloned().unwrap_or_default()
-    }
-
-    /// When `slot`'s `delivery_failed` counter last moved, or `None` if it
-    /// never has.
-    ///
-    /// The mark a failure draws is transient - a minute after it, views drop
-    /// it - so the count alone cannot say whether a red badge is current.
-    pub fn peer_failure_at_for(&self, slot: &SessionSlot) -> Option<SystemTime> {
-        self.peer_failure_at.lock().get(slot).copied()
     }
 
     /// What the session at `slot` is waiting on a person for, or `None`
@@ -5922,10 +5870,12 @@ impl Workspace {
         }) else {
             return false;
         };
-        // Any ask already routed at this worker dies with the spawn -
-        // buffered asks were never delivered, so the target_session
-        // predicate in expire_target_inflight can't catch them.
-        self.expire_inflight_for_closed_worker(&project_key, &entry.label);
+        // A payload parked for this worker's label has no session left to
+        // drain it, so its bucket goes with the spawn.
+        self.expire_parked_for_slot(
+            &entry.slot,
+            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+        );
         // Classify against the entry's recorded is_git_repo_at_spawn
         // flag - same heuristic the sync agents__spawn path uses.
         let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
@@ -5963,7 +5913,7 @@ impl Workspace {
             let pool_has_lead = self.pool.lock().contains_key(&lead_slot);
             if pool_has_lead {
                 let wrapped = WrappedPrompt {
-                    correlation_id: CorrelationId::new_tell(),
+                    id: MessageId::mint(),
                     kind: WrappedKind::WorkerSpawnFailedNotice,
                     sender_name: entry.label.clone(),
                     sender_org: String::new(),
@@ -6631,203 +6581,42 @@ impl Workspace {
         domain
     }
 
-    /// Stamp the session that received an ask's `IncomingPlus1` onto
-    /// its `InflightAsk`, paired with every Question delivery so a
-    /// later `expire_inflight_ask_failed` can clear that session's
-    /// incoming badge (no-op once the ask completes).
-    pub(crate) fn stamp_inflight_target(&self, id: &CorrelationId, target: &SessionSlot) {
-        if let Some(ask) = self.inflight_asks.lock().get_mut(id) {
-            ask.target_session = Some(target.clone());
-        }
-    }
-
-    /// Expire every in-flight ask whose target session is the one
-    /// closing. Called when:
-    /// - `AgentEvent::ConnectionFailed` arrives for a target's bridge
-    ///   (target's claude subprocess crashed or failed to spawn)
-    /// - A `SessionTask::drop` fires (target's session was closed by
-    ///   any reason - user close, lifecycle terminate, panic)
+    /// Tell a sender its message never landed.
     ///
-    /// Walks `inflight_asks` for entries stamped with the closing
-    /// session (`target_session`, set at delivery - covers workers,
-    /// whose composite `target_project` never matches a plain project
-    /// name) or whose `target_project` matches the closing session's
-    /// project, and dispatches the failure dual-path notification for
-    /// each (PeerAskFailed UI state + Command::Prompt with
-    /// DeliveryFailureNotice wrapper to caller).
-    ///
-    /// Idempotent. Safe to call from a Drop impl via `Weak<Workspace>`.
-    pub(crate) fn expire_target_inflight(
+    /// The one delivery-ack path, and it is NOT outstanding state coming
+    /// back: nothing is tracked between the send and this notice. A message
+    /// parked for a sleeping project is dropped when the spawn it waited on
+    /// fails, and the parked entry itself carries the sender, so the sender
+    /// is told rather than left believing the words arrived.
+    pub(crate) fn notice_undelivered_message(
         self: &Arc<Self>,
-        closing_key: &SessionSlot,
+        sender: &SessionSlot,
+        target: &SessionSlot,
         reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
-        // The project the closing session belongs to, named by its slot
-        // rather than looked up: a worker never enters the catalog
-        // mirror, and the target_session predicate below still catches
-        // its delivered asks.
-        let project_name = self
-            .list_projects()
-            .into_iter()
-            .find(|v| v.org == closing_key.org() && v.name == closing_key.project())
-            .map(|v| v.name);
-
-        // Snapshot the IDs to expire. Holding the inflight_asks lock
-        // across the dispatch loop below would risk re-entrancy via
-        // bump_inflight_stats. Take a copy + release the lock.
-        let ids_to_expire: Vec<CorrelationId> = {
-            let asks = self.inflight_asks.lock();
-            asks.iter()
-                .filter(|(_, ask)| {
-                    ask.target_session.as_ref() == Some(closing_key)
-                        || project_name.as_ref().is_some_and(|name| ask.target_project == *name)
-                })
-                .map(|(id, _)| id.clone())
-                .collect()
-        };
-
-        for id in ids_to_expire {
-            self.expire_inflight_ask_failed(&id, reason);
-        }
-    }
-
-    /// Expire an in-flight ask because the target session crashed
-    /// or was closed while the ask was open. Dispatches a
-    /// `DeliveryFailureNotice` wrapper to the caller so its LLM
-    /// learns the ask died. Idempotent.
-    pub(crate) fn expire_inflight_ask_failed(
-        self: &Arc<Self>,
-        id: &CorrelationId,
-        reason: crate::mcp::peers::types::PeerFailureReason,
-    ) {
-        let ask = {
-            let mut asks = self.inflight_asks.lock();
-            asks.remove(id)
-        };
-        let Some(ask) = ask else {
-            tracing::trace!(
-                target: "forge_workspace::workspace",
-                correlation_id = %id,
-                "expire_inflight_ask_failed: entry already gone"
-            );
-            return;
-        };
-
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
-        facade.bump_inflight_stats(
-            &ask.caller,
-            crate::mcp::peers::facade::PeerStatsDelta::DeliveryFailedPlus1,
-        );
-        facade.bump_inflight_stats(
-            &ask.caller,
-            crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
-        );
-        // If the ask reached a target (its incoming was bumped at
-        // delivery), clear that side too - otherwise the target's `N↓`
-        // stays lit for an ask that will never be answered.
-        if let Some(target) = &ask.target_session {
-            facade.bump_inflight_stats(
-                target,
-                crate::mcp::peers::facade::PeerStatsDelta::IncomingMinus1,
-            );
-        }
-
-        let target_org = self
-            .list_projects()
-            .into_iter()
-            .find(|p| p.name == ask.target_project)
-            .map_or_else(|| "?".to_owned(), |p| p.org);
-
-        // Body carries the human-readable failure reason - caller
+        // Body carries the human-readable failure reason - the sender's
         // chat block surfaces it underneath the bracket header.
-        let body = match &reason {
+        let body = match reason {
             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed => {
                 "target session connection lost".to_owned()
             }
         };
-
-        let caller_notice = WrappedPrompt {
-            correlation_id: id.clone(),
+        let notice = WrappedPrompt {
+            id: MessageId::mint(),
             kind: WrappedKind::DeliveryFailureNotice,
-            sender_name: ask.target_project.clone(),
-            sender_org: target_org,
+            sender_name: crate::mcp::peers::types::seat_name(target),
+            sender_org: target.org().to_owned(),
             body,
         };
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
-        crate::spawn::push_peer_user_turn_into_chat(self, &ask.caller, &caller_notice);
-        if let Err(err) = self.dispatch_workspace_prompt(&ask.caller, caller_notice.to_prose()) {
+        crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice);
+        if let Err(err) = self.dispatch_workspace_prompt(sender, notice.to_prose()) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
-                correlation_id = %id,
+                slot = %sender.display(),
                 error = ?err,
-                "expire_inflight_ask_failed: caller notice dispatch failed (caller closed?)"
-            );
-        }
-    }
-
-    /// Deliver a Reply straight to the asker's session, bypassing
-    /// name/label resolution. The asker is identified by `SessionSlot`
-    /// (a worker asker has no addressable project name), so this
-    /// by-session path is load-bearing for closing a cross-agent ask.
-    /// Confirms the caller session is still live before dispatching.
-    /// Reached through the in-project facade.
-    pub(crate) fn deliver_reply_to_caller(
-        self: &Arc<Self>,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), crate::mcp::peers::facade::ReplyDeliverError> {
-        use crate::mcp::peers::facade::ReplyDeliverError;
-        if !self.pool.lock().contains_key(caller) {
-            return Err(ReplyDeliverError::CallerSessionGone);
-        }
-        // The CLI never echoes stdin-injected prompts back, so paint the
-        // visible reply block ourselves before the LLM-side dispatch.
-        crate::spawn::push_peer_user_turn_into_chat(self, caller, reply);
-        if let Err(err) = self.dispatch_workspace_prompt(caller, reply.to_prose()) {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                correlation_id = %reply.correlation_id,
-                error = ?err,
-                "deliver_reply_to_caller: dispatch failed (caller closed?)"
-            );
-            return Err(ReplyDeliverError::CallerSessionGone);
-        }
-        Ok(())
-    }
-
-    /// Expire every in-flight ask whose `target_project` matches the
-    /// `<project_key>::<label>` composite for a closed worker.
-    ///
-    /// Worker-bound asks stamp this composite onto `InflightAsk.target_project`
-    /// (see `crate::mcp::workers::worker_target_project_key`); when a
-    /// worker is closed via `handle_close_worker`, the per-session
-    /// connection-failed expiry (`expire_target_inflight`) would never
-    /// match because that path looks up the project by session-key
-    /// presence in the catalog and matches on the project's plain
-    /// name. The composite key path covers worker-bound traffic
-    /// specifically.
-    ///
-    /// Each matching ask is rolled through `expire_inflight_ask_failed`
-    /// so the caller's LLM receives the same `DeliveryFailureNotice`
-    /// turn it would for any other target loss.
-    pub(crate) fn expire_inflight_for_closed_worker(
-        self: &Arc<Self>,
-        project_key: &crate::ProjectKey,
-        label: &str,
-    ) {
-        let composite = crate::mcp::workers::worker_target_project_key(project_key.as_str(), label);
-        let ids_to_expire: Vec<CorrelationId> = {
-            let asks = self.inflight_asks.lock();
-            asks.iter()
-                .filter(|(_, ask)| ask.target_project == composite)
-                .map(|(id, _)| id.clone())
-                .collect()
-        };
-        for id in ids_to_expire {
-            self.expire_inflight_ask_failed(
-                &id,
-                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                "notice_undelivered_message: notice dispatch failed (sender closed?)"
             );
         }
     }
@@ -10805,389 +10594,6 @@ provider = "anthropic"
     // I3 - peer-MCP lifecycle tests
     // ─────────────────────────────────────────────────────────────────
 
-    fn forge_toml_with_two_projects() -> tempfile::TempDir {
-        let dir = tempdir().expect("tempdir");
-        fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Stargate"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[orgs.projects]]
-name = "gateway-backend"
-path = "~/Projects/gateway-backend"
-auto_start = false
-
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        dir
-    }
-
-    /// expire_inflight_ask_failed removes the entry from inflight_asks,
-    /// fires the DeliveryFailed stat bump, and dispatches a
-    /// DeliveryFailureNotice wrapper. Idempotent - a second call on the
-    /// same id is a no-op.
-    #[tokio::test]
-    async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-        let caller = SessionSlot::from_str_for_test("caller-1");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: caller.clone(),
-                target_project: "gateway-backend".to_owned(),
-                target_session: None,
-            },
-        );
-        assert!(workspace.inflight_asks.lock().contains_key(&id));
-
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-        assert!(!workspace.inflight_asks.lock().contains_key(&id), "entry removed after expire");
-
-        // Idempotent - second call on the same id is a no-op.
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-        assert!(!workspace.inflight_asks.lock().contains_key(&id));
-    }
-
-    /// expire_inflight_ask_failed dispatches `PeerInflightStatsChanged`
-    /// for the delivery-failed bookkeeping and removes the entry.
-    /// expire_target_inflight is a thin loop over this per-id path
-    /// (its predicate is pinned separately by
-    /// `expire_target_inflight_matches_worker_asks_by_target_session`).
-    #[tokio::test]
-    async fn expire_inflight_ask_failed_dispatches_failure_notice() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
-
-        let caller = SessionSlot::from_str_for_test("caller-notice");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: caller.clone(),
-                target_project: "gateway-backend".to_owned(),
-                target_session: None,
-            },
-        );
-
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-
-        let mut saw_stats = false;
-        while let Ok(update) = rx.try_recv() {
-            if matches!(update, SessionUpdate::PeerInflightStatsChanged { .. }) {
-                saw_stats = true;
-            }
-        }
-        assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
-        assert!(!workspace.inflight_asks.lock().contains_key(&id));
-    }
-
-    /// expire_inflight_ask_failed paints the delivery-failure notice as
-    /// a visible chat block: it emits a `PeerEnvelopeAppended` carrying
-    /// the `DeliveryFailureNotice` for the caller's session, so a
-    /// dead-target ask surfaces in the caller's chat, not just to its LLM.
-    #[tokio::test]
-    async fn expire_inflight_ask_failed_emits_peer_envelope_echo() {
-        use crate::mcp::peers::types::{
-            CorrelationId, InflightAsk, PeerFailureReason, WrappedKind,
-        };
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
-
-        let caller = SessionSlot::from_str_for_test("caller-notice-echo");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: caller.clone(),
-                target_project: "gateway-backend".to_owned(),
-                target_session: None,
-            },
-        );
-
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-
-        let mut echo = None;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
-                echo = Some((key, wrapped));
-            }
-        }
-        let (key, wrapped) = echo.expect("PeerEnvelopeAppended painted for the caller");
-        assert_eq!(key, caller, "notice echo targets the caller's slot");
-        assert_eq!(wrapped.correlation_id, id, "notice echo carries the ask id");
-        assert!(
-            matches!(wrapped.kind, WrappedKind::DeliveryFailureNotice),
-            "notice echo carries the DeliveryFailureNotice kind",
-        );
-    }
-
-    /// expire_target_inflight expires asks stamped with the closing
-    /// session key even when the closing session resolves to no
-    /// catalog project and target_project is a worker composite -
-    /// the crash path for a worker that dies mid-ask.
-    #[tokio::test]
-    async fn expire_target_inflight_matches_worker_asks_by_target_session() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-        let worker_key = SessionSlot::from_str_for_test("worker-sess-1");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: SessionSlot::from_str_for_test("lead-1"),
-                target_project: crate::mcp::workers::worker_target_project_key("forge", "builder"),
-                target_session: Some(worker_key.clone()),
-            },
-        );
-
-        workspace.expire_target_inflight(&worker_key, PeerFailureReason::TargetConnectionFailed);
-        assert!(
-            !workspace.inflight_asks.lock().contains_key(&id),
-            "worker-bound ask expired via target_session match"
-        );
-    }
-
-    /// A failed/expired ask must clear the TARGET's incoming badge, not
-    /// just the caller's outgoing. Pre-fix `expire_inflight_ask_failed`
-    /// only decremented the caller's outgoing, stranding the target's
-    /// `N↓`; the `target_session` stamp lets expiry clear both sides.
-    #[tokio::test]
-    async fn expire_inflight_ask_failed_clears_target_incoming() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-
-        let caller = SessionSlot::from_str_for_test("asker");
-        let target = SessionSlot::from_str_for_test("replier");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: caller.clone(),
-                target_project: "gateway-backend".to_owned(),
-                target_session: Some(target.clone()),
-            },
-        );
-        // Mirror the runtime bumps: ask registered (caller outgoing +1),
-        // then delivered (target incoming +1).
-        {
-            let mut stats = workspace.peer_stats.lock();
-            stats.entry(caller.clone()).or_default().outgoing = 1;
-            stats.entry(target.clone()).or_default().incoming = 1;
-        }
-
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-
-        let stats = workspace.peer_stats.lock();
-        assert_eq!(stats.get(&caller).map(|s| s.outgoing), Some(0), "caller outgoing cleared");
-        assert_eq!(
-            stats.get(&caller).map(|s| s.delivery_failed),
-            Some(1),
-            "caller delivery_failed bumped",
-        );
-        assert_eq!(
-            stats.get(&target).map(|s| s.incoming),
-            Some(0),
-            "target incoming cleared on expiry (was stranded before the fix)",
-        );
-    }
-
-    /// `stamp_inflight_target` records which session received an ask's
-    /// `IncomingPlus1` so a later expiry can decrement that same key.
-    #[test]
-    fn stamp_inflight_target_records_target_session() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
-        let (workspace, _rx) = Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
-        let target = SessionSlot::from_str_for_test("replier");
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: SessionSlot::from_str_for_test("asker"),
-                target_project: "gateway-backend".to_owned(),
-                target_session: None,
-            },
-        );
-
-        workspace.stamp_inflight_target(&id, &target);
-
-        assert_eq!(
-            workspace.inflight_asks.lock().get(&id).and_then(|a| a.target_session.clone()),
-            Some(target),
-            "target_session stamped for a later expiry to clear",
-        );
-    }
-
-    /// When the failure counter last moved, so a view can age the badge out.
-    ///
-    /// The counts do not drift, but the mark they draw does: the terminal
-    /// drops a `delivery_failed` badge sixty seconds after it saw the
-    /// increment, and a cumulative count with no time gives a view that
-    /// attached later no way to know the failure is old.
-    #[tokio::test]
-    async fn a_delivery_failure_stamps_when_it_happened() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let caller = SessionSlot::from_str_for_test("asker");
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: caller.clone(),
-                target_project: "gateway-backend".to_owned(),
-                target_session: None,
-            },
-        );
-
-        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
-
-        let stamped = workspace.peer_failure_at_for(&caller);
-        assert!(stamped.is_some(), "the instant of the increment is held, not only the count");
-        let age = stamped.expect("stamped").elapsed().expect("a stamp from before now");
-        assert!(age.as_secs() < 60, "and it is the moment it happened, not a placeholder: {age:?}");
-    }
-
-    /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
-    /// command channel without panicking. The full spawn-path handling
-    /// is exercised in the spawn::handle_deliver_peer_prompt test.
-    #[tokio::test]
-    async fn deliver_reply_to_caller_routes_by_session_and_guards() {
-        use crate::mcp::peers::facade::ReplyDeliverError;
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
-        let (ws, _rx) = Workspace::testing_stub();
-        ws.enable_test_dispatch_intercept();
-
-        let caller = SessionSlot::from_str_for_test("asker");
-        let reply = WrappedPrompt {
-            correlation_id: CorrelationId::new_tell(),
-            kind: WrappedKind::Reply,
-            sender_name: "worker".to_owned(),
-            sender_org: "worker in forge".to_owned(),
-            body: "here's the answer".to_owned(),
-        };
-
-        // Happy path: caller live in the pool -> Ok
-        // plus exactly one Command::Prompt to the caller carrying the prose.
-        let (handle, _hrx) = Workspace::testing_stub_handle();
-        ws.pool.lock().insert(
-            caller.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                account: AccountKey("acct".to_owned()),
-                permission_mode: None,
-                registration: None,
-                session_id: "pooled-session".to_owned(),
-            },
-        );
-        assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
-        let dispatched = ws.drain_test_dispatch_buffer();
-        assert_eq!(dispatched.len(), 1, "exactly one command dispatched");
-        match &dispatched[0] {
-            Command::Prompt { key, text, .. } => {
-                assert_eq!(*key, caller, "prompt routed to the asker's session");
-                assert_eq!(*text, reply.to_prose(), "prompt carries the reply prose");
-            }
-            other => panic!("expected Command::Prompt, got {other:?}"),
-        }
-
-        // Pool-miss: unknown caller -> CallerSessionGone, nothing dispatched.
-        let ghost = SessionSlot::from_str_for_test("ghost");
-        assert_eq!(
-            ws.deliver_reply_to_caller(&ghost, &reply),
-            Err(ReplyDeliverError::CallerSessionGone),
-        );
-        assert!(ws.drain_test_dispatch_buffer().is_empty(), "no dispatch on pool-miss");
-    }
-
-    /// deliver_reply_to_caller paints the visible peer block: it emits
-    /// a `PeerEnvelopeAppended` for the caller's session carrying the
-    /// reply, not merely the LLM-side `Command::Prompt`. The CLI never
-    /// echoes stdin-injected prompts back, so this echo is the only
-    /// signal that renders the inbound `[Reply ...]` chat block.
-    #[tokio::test]
-    async fn deliver_reply_to_caller_emits_peer_envelope_echo() {
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
-        let (ws, mut rx) = Workspace::testing_stub();
-        ws.enable_test_dispatch_intercept();
-
-        let caller = SessionSlot::from_str_for_test("asker");
-        let reply = WrappedPrompt {
-            correlation_id: CorrelationId::new_tell(),
-            kind: WrappedKind::Reply,
-            sender_name: "worker".to_owned(),
-            sender_org: "worker in forge".to_owned(),
-            body: "here's the answer".to_owned(),
-        };
-
-        let (handle, _hrx) = Workspace::testing_stub_handle();
-        ws.pool.lock().insert(
-            caller.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                account: AccountKey("acct".to_owned()),
-                permission_mode: None,
-                registration: None,
-                session_id: "pooled-session".to_owned(),
-            },
-        );
-        assert_eq!(ws.deliver_reply_to_caller(&caller, &reply), Ok(()));
-
-        let mut echo = None;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
-                echo = Some((key, wrapped));
-            }
-        }
-        let (key, wrapped) = echo.expect("PeerEnvelopeAppended painted for the caller");
-        assert_eq!(key, caller, "echo targets the caller's slot");
-        assert_eq!(wrapped.correlation_id, reply.correlation_id, "echo carries the reply id");
-        assert_eq!(wrapped.kind, reply.kind, "echo carries the Reply kind");
-        assert_eq!(wrapped.body, reply.body, "echo carries the reply body");
-    }
-
-    /// Disk-backed workspace fixture shared by the per-project loop
-    /// tests below. Returns the `Arc<Workspace>` plus the `TempDir`
-    /// that holds the on-disk `forge.toml`; the caller must keep the
-    /// `TempDir` alive (drop deletes the directory). Required because
-    /// `expire_target_inflight` resolves the closing key's project via
-    /// `list_projects()` (catalog-backed), so a fully-in-memory
-    /// workspace would early-return.
-    fn peer_mcp_workspace_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        (workspace, dir)
-    }
-
     /// Resolve a project's expanded path from the workspace's view.
     /// Catalog keys derive from `project_key_for_directory(expanded_path)`,
     /// not the literal `~/`-prefixed forge.toml string, so callers that
@@ -11200,101 +10606,52 @@ provider = "anthropic"
         )
     }
 
-    /// `expire_target_inflight` walks `inflight_asks`, finds entries
-    /// whose `target_project` matches the closing key's project, and
-    /// expires each via `expire_inflight_ask_failed`. Asks scoped to
-    /// other projects' targets stay untouched.
+    /// A message parked for a seat that never came up is acknowledged to
+    /// its sender: the notice lands on the sender's slot and names the
+    /// seat that did not take it.
     ///
-    /// Covers the per-project loop wrapper that the per-id unit
-    /// (`expire_inflight_ask_failed_dispatches_failure_notice`) sits
-    /// underneath. The on-disk fixture is required because the loop
-    /// resolves the closing session's project via `list_projects()`,
-    /// which reads `forge.toml`; a fully-in-memory test would
-    /// early-return.
+    /// This is the delivery-ack path, and the parked entry's sender is the
+    /// only thing that knows where the notice goes - the ask registry that
+    /// used to carry it is gone.
     #[tokio::test]
-    async fn expire_target_inflight_drains_only_targeted_asks() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+    async fn notice_undelivered_message_names_the_target_and_reaches_the_sender() {
+        use crate::mcp::peers::types::PeerFailureReason;
 
-        let (workspace, _dir) = peer_mcp_workspace_fixture();
+        let (ws, mut rx) = Workspace::testing_stub();
+        ws.enable_test_dispatch_intercept();
 
-        // Three inflight asks: two targeting gateway-backend (must
-        // expire), one targeting forge (must survive).
-        let caller_a = SessionSlot::from_str_for_test("caller-a");
-        let caller_b = SessionSlot::from_str_for_test("caller-b");
-        let caller_c = SessionSlot::from_str_for_test("caller-c");
-        let id_a = CorrelationId::new_ask();
-        let id_b = CorrelationId::new_ask();
-        let id_c = CorrelationId::new_ask();
-        {
-            let mut asks = workspace.inflight_asks.lock();
-            asks.insert(
-                id_a.clone(),
-                InflightAsk {
-                    correlation_id: id_a.clone(),
-                    caller: caller_a.clone(),
-                    target_project: "gateway-backend".to_owned(),
-                    target_session: None,
-                },
-            );
-            asks.insert(
-                id_b.clone(),
-                InflightAsk {
-                    correlation_id: id_b.clone(),
-                    caller: caller_b.clone(),
-                    target_project: "gateway-backend".to_owned(),
-                    target_session: None,
-                },
-            );
-            asks.insert(
-                id_c.clone(),
-                InflightAsk {
-                    correlation_id: id_c.clone(),
-                    caller: caller_c.clone(),
-                    target_project: "forge".to_owned(),
-                    target_session: None,
-                },
-            );
+        let sender = SessionSlot::from_str_for_test("sender-proj");
+        let target = SessionSlot::lead("Default", "gateway-backend");
+        ws.notice_undelivered_message(&sender, &target, PeerFailureReason::TargetConnectionFailed);
+
+        let mut echo = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+                echo = Some((key, wrapped));
+            }
         }
-
-        // Arm intercept so we can assert the per-id path fired a
-        // Command::Prompt (DeliveryFailureNotice) for each targeted
-        // ask without spinning up real caller session tasks.
-        workspace.enable_test_dispatch_intercept();
-        let closing_key = SessionSlot::lead("Default", "gateway-backend");
-        workspace.expire_target_inflight(&closing_key, PeerFailureReason::TargetConnectionFailed);
-
-        // Targeted asks are gone; the orthogonally-targeted ask survives.
-        let asks = workspace.inflight_asks.lock();
-        assert!(!asks.contains_key(&id_a), "ask targeting gateway-backend removed");
-        assert!(!asks.contains_key(&id_b), "ask targeting gateway-backend removed");
-        assert!(
-            asks.contains_key(&id_c),
-            "ask targeting forge survives, only the closing project's asks expire"
-        );
-        drop(asks);
-
-        // One DeliveryFailureNotice Command::Prompt per expired ask,
-        // routed back to each ask's caller. Sort by caller key before
-        // comparing; HashMap iteration order isn't pinned.
-        let buffered = workspace.drain_test_dispatch_buffer();
-        let mut notice_callers: Vec<SessionSlot> = buffered
-            .into_iter()
-            .filter_map(|cmd| match cmd {
-                crate::protocol::Command::Prompt { key, text, .. }
-                    if text.contains("failed to deliver") =>
-                {
-                    Some(key)
-                }
-                _ => None,
-            })
-            .collect();
-        notice_callers.sort_by_key(forge_primitives::SessionSlot::display);
-        let mut expected_callers = vec![caller_a.clone(), caller_b.clone()];
-        expected_callers.sort_by_key(forge_primitives::SessionSlot::display);
+        let (key, notice) = echo.expect("the notice is painted for the sender");
+        assert_eq!(key, sender, "the notice lands on the sender, not the target");
         assert_eq!(
-            notice_callers, expected_callers,
-            "DeliveryFailureNotice fired for exactly the two gateway-backend-targeted callers"
+            notice.sender_name, "gateway-backend",
+            "and names the seat that did not take it"
         );
+        assert_eq!(notice.sender_org, "Default", "with that seat's org");
+        assert!(
+            notice.body.contains("connection lost"),
+            "the reason reaches the reader: {}",
+            notice.body
+        );
+
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 1, "the notice is also dispatched as a turn");
+        match &dispatched[0] {
+            Command::Prompt { key, text, .. } => {
+                assert_eq!(*key, sender, "the dispatched turn goes to the sender");
+                assert!(text.contains("failed to deliver"), "carrying the failure prose: {text}");
+            }
+            other => panic!("expected Command::Prompt, got {other:?}"),
+        }
     }
 }
 
@@ -14948,28 +14305,31 @@ mod async_worker_spawn_failure_tests {
         assert_eq!(entries[0].diagnostic.as_deref(), Some("more specific reason"));
     }
 
-    /// handle_async_worker_spawn_failure expires worker-bound inflight
-    /// asks: an ask buffered against a worker whose spawn dies was
-    /// never delivered, so no target_session stamp exists and nothing
-    /// else clears it - the caller would wait forever.
+    /// handle_async_worker_spawn_failure drops whatever was parked for the
+    /// worker whose spawn died, and the message in it is acknowledged back
+    /// to its sender: a spawn that never connected has no session left to
+    /// deliver it to, and nothing re-delivers it later.
     #[tokio::test]
-    async fn async_worker_spawn_failure_expires_worker_bound_asks() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
-        let (workspace, _update_rx) = Workspace::testing_stub();
+    async fn async_worker_spawn_failure_acknowledges_the_parked_message() {
+        use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
+        let (workspace, mut update_rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
         let worker_key = "builder-uuid";
         let session_key = SessionSlot::from_str_for_test(worker_key);
         workspace
             .insert_live_worker(&project_key, fake_worker("builder", worker_key, "lead", true));
+        workspace.enable_test_dispatch_intercept();
 
-        let id = CorrelationId::new_ask();
-        workspace.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: SessionSlot::from_str_for_test("lead-1"),
-                target_project: crate::mcp::workers::worker_target_project_key("proj-x", "builder"),
-                target_session: None,
+        let sender = SessionSlot::from_str_for_test("sender-proj");
+        workspace.park_peer_prompt(
+            &session_key,
+            &sender,
+            WrappedPrompt {
+                id: MessageId::mint(),
+                kind: WrappedKind::Message,
+                sender_name: "forge".to_owned(),
+                sender_org: "Default".to_owned(),
+                body: "ready?".to_owned(),
             },
         );
 
@@ -14978,9 +14338,22 @@ mod async_worker_spawn_failure_tests {
             "resume failed: boom",
             SpawnFailureKind::Unclassified,
         );
+
+        let mut echo = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+                echo = Some((key, wrapped));
+            }
+        }
+        let (key, notice) = echo.expect("the parked message is acknowledged to its sender");
+        assert_eq!(key, sender, "on the sender's slot");
         assert!(
-            !workspace.inflight_asks.lock().contains_key(&id),
-            "buffered worker ask expired on spawn failure"
+            matches!(notice.kind, WrappedKind::DeliveryFailureNotice),
+            "as a delivery failure, not a peer message"
+        );
+        assert!(
+            workspace.take_parked_for_slot(&session_key).peer.is_empty(),
+            "and the bucket is gone, so nothing re-delivers it"
         );
     }
 

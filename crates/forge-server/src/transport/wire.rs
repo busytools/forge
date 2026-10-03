@@ -168,8 +168,6 @@ pub struct AgentWire {
     pub pending_depth: usize,
     pub last_activity: Option<std::time::SystemTime>,
     pub reason: Option<String>,
-    pub peer: forge_primitives::PeerInflightStats,
-    pub peer_failure_at: Option<std::time::SystemTime>,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
     /// Read through the same shared cache the project rows use, so a lead's
@@ -188,8 +186,6 @@ impl From<&AgentRow> for AgentWire {
             pending_depth: row.pending_depth,
             last_activity: row.last_activity,
             reason: row.reason.clone(),
-            peer: row.peer.clone(),
-            peer_failure_at: row.peer_failure_at,
             work: None,
         }
     }
@@ -1567,13 +1563,6 @@ mod tests {
     /// fixture does not pin one machine's temp directory.
     const FIXTURE_ROOT: &str = "/tmp/forge-wire-fixture";
 
-    /// The instant a seeded failure counter moved. Fixed rather than taken
-    /// from the clock: a fixture pins shape, and a wall-clock stamp would pin
-    /// the moment the fixture was generated.
-    fn fixture_failure_at() -> std::time::SystemTime {
-        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)
-    }
-
     /// The surface the fixtures are produced from, and both halves of the
     /// reason are deliberate.
     ///
@@ -1590,11 +1579,6 @@ mod tests {
         fleet.start("TestOrg", "proj").expect("the project starts");
         fleet.set_cli_version(Some("1.0.0"), Some("1.1.0"));
         fleet.set_user_preferences(serde_json::json!({}));
-        fleet.seed_peer_stats(
-            &fixture_seat(),
-            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 3 },
-        );
-        fleet.seed_peer_failure_at(&fixture_seat(), fixture_failure_at());
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker is added");
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet
@@ -1746,22 +1730,17 @@ mod tests {
         }
     }
 
-    /// A row's peer-activity badge: the counters the terminal draws per seat.
+    /// A seat's own working tree crosses on its row, which is what lets a
+    /// worker's row draw its own branch rather than its project's.
     ///
-    /// They reach a subscriber as an update, so the home's snapshot is what a
-    /// client that attached after the last ask reads them from - and a
-    /// subscriber that hears the update and not the snapshot draws the badge
-    /// from nothing.
+    /// Read through the same shared cache the project rows use, so this is one
+    /// read drawn twice rather than two reads - and it is a read a page cannot
+    /// derive from the project's, because the two name different directories.
     #[tokio::test]
-    async fn a_home_agents_row_carries_its_peer_counters() {
+    async fn a_home_agents_row_carries_its_own_tree() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
-        fleet.seed_peer_stats(
-            &fixture_seat(),
-            forge_primitives::PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 1 },
-        );
-        fleet.seed_peer_failure_at(&fixture_seat(), fixture_failure_at());
         let state = TransportState {
             surface: fleet.surface(),
             work: Arc::new(WorkCache::new()),
@@ -1778,14 +1757,9 @@ mod tests {
             .find(|row| row["slot"]["label"] == "lead")
             .expect("the started project's lead is a row");
 
-        assert_eq!(
-            row["peer"]["outgoing"], 2,
-            "the counters the badge draws cross on the row: {row}"
-        );
-        assert_eq!(
-            row["peer_failure_at"]["secs_since_epoch"], 1_700_000_000,
-            "and with them the instant the failure counter moved, which is what lets a view age \
-             the mark out rather than drawing one the terminal dropped: {row}"
+        assert!(
+            row.get("work").is_some(),
+            "the seat's own tree crosses on the row, not the project's read: {row}"
         );
     }
 

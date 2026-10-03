@@ -539,9 +539,16 @@
      lane's dim rather than the ok tone a check wears. */
   details.leaf > summary .st.sk { color: var(--dim); }
 
-  /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
+  /* peer traffic, drawn as tool rows: the mark says which way it went, the words
+     say it first, and the label names the seat the row is about */
   details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
   details.leaf > summary .k { color: var(--text); font-weight: 700; }
+  /* The direction word that leads a message row, muted so the seat stays the
+     subject, and the row's own word for a verb card. */
+  details.leaf > summary .tn .dir { color: var(--dim); margin-right: 5px; flex: none; }
+  /* A failure keeps the outgoing row and takes the warning tone. */
+  details.leaf > summary .tn.warn { color: var(--warn); }
+  details.leaf > summary .tn.warn .k { color: var(--warn); }
   details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
     border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
   .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
@@ -970,6 +977,10 @@
   <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></symbol>
   <symbol id="i-lightbulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-plane" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-badge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M13 10h5M13 14h5M6.5 17a3 3 0 0 1 5 0"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
 </svg>
 
@@ -1454,20 +1465,35 @@ docs: Render the message body into rows.</div>
           <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">forge</span></div>
             <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">agents__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">15 projects &#183; 1 live worker on forge</div></div>
-            </details>
-            <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">2 tasks in flight</div></div>
             </details>
             <details class="leaf">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">agents__ask &#183; cli-version</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">q-7f3a92e0 &#183; inflight</div></div>
-            </details>
-            <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+            </details>
+          </div>
+
+          <div class="lane">
+            <div class="knd"><svg class="ic gl"><use href="#i-bot"/></svg><span class="nm">peer</span></div>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn"><span class="dir">sent to</span><span class="k">forge/steward</span> &#183; picking it up</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody"><p>picking it up</p><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
+            </details>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-inbox"/></svg><span class="tn"><span class="dir">from</span><span class="k">gateway-backend</span> &#183; the gate is green, shipping</span><span class="org">Granite</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody"><p>the gate is green, shipping</p></div></div>
+            </details>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn warn"><span class="k">companies</span> &#183; failed to deliver: channel closed</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            </details>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-badge"/></svg><span class="tn"><span class="k">whoami</span> &#183; where this session sits</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody"><div class="kv"><span class="k">org</span><span class="v">Busytools</span></div><div class="kv"><span class="k">project</span><span class="v">forge</span></div><div class="kv"><span class="k">label</span><span class="v">lead</span></div><div class="kv"><span class="k">path</span><span class="v">~/Projects/forge</span></div><div class="kv"><span class="k">status</span><span class="v">running</span></div></div></div>
+            </details>
+            <details class="leaf">
+              <summary><svg class="ic mk"><use href="#i-users"/></svg><span class="tn"><span class="k">list</span> &#183; who you can send to</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="pbody"><div class="kv"><span class="k">lead</span><span class="v">forge &#183; this session</span></div><div class="kv"><span class="k">steward</span><span class="v">forge &#183; picking up the render half &#183; running</span></div><div class="kv"><span class="k">lead</span><span class="v">companies &#183; another project</span></div></div></div>
             </details>
           </div>
 

@@ -62,7 +62,6 @@ pub mod image;
 pub mod mcp_ui_sync;
 pub mod messages;
 pub mod options;
-pub mod peers;
 pub mod permission;
 pub mod permission_interaction;
 pub mod permissions;
@@ -108,7 +107,6 @@ pub use messages::{
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
 pub use options::{SdkPluginConfig, SystemPromptKind};
-pub use peers::PeerInflightStats;
 pub use permission::PermissionMode;
 pub use permission_interaction::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,

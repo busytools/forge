@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::SessionSlot;
 use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
-use crate::mcp::peers::facade::{TargetStatus, WorkspaceFacade};
+use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerLeadDeliverError};
 
@@ -36,9 +36,9 @@ impl AgentDispatcher {
         &self.workers
     }
 
-    /// Deliver `wrapped` to `target` and report what the delivering
-    /// engine decided: `delivered`, or `queued_for_spawn` when the
-    /// target is another project's sleeping agent.
+    /// Hand `wrapped` to `target`'s seat. The engine's own answer is
+    /// whether the message was accepted, not whether it was read, so a
+    /// success says nothing more than that.
     ///
     /// Three of the four paths are the ones the two families already
     /// had, unchanged. The fourth is the reach the merge adds: a
@@ -50,15 +50,14 @@ impl AgentDispatcher {
         caller: &SessionSlot,
         target: &AgentTarget,
         wrapped: WrappedPrompt,
-    ) -> Result<&'static str, String> {
+    ) -> Result<(), String> {
         let own_project = target.org() == caller.org() && target.project() == caller.project();
         if own_project {
             return self.deliver_within_own_project(caller, target, wrapped);
         }
         if target.label() == LEAD_LABEL {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
-                Ok(TargetStatus::Delivered) => Ok("delivered"),
-                Ok(TargetStatus::QueuedForSpawn) => Ok("queued_for_spawn"),
+                Ok(()) => Ok(()),
                 Err(err) => Err(format!(
                     "project '{}' is no longer reachable ({err:?}); call agents__list to see \
                      who you can reach.",
@@ -73,7 +72,7 @@ impl AgentDispatcher {
             target.label(),
             wrapped,
         ) {
-            Ok(_) => Ok("delivered"),
+            Ok(_) => Ok(()),
             Err(err) => Err(unknown_label_message(target, &err)),
         }
     }
@@ -83,15 +82,15 @@ impl AgentDispatcher {
         caller: &SessionSlot,
         target: &AgentTarget,
         wrapped: WrappedPrompt,
-    ) -> Result<&'static str, String> {
+    ) -> Result<(), String> {
         if target.label() == LEAD_LABEL {
             return match self.workers.deliver_prompt_to_lead(caller, wrapped) {
-                Ok(_) => Ok("delivered"),
+                Ok(_) => Ok(()),
                 Err(err) => Err(lead_deliver_message(&err)),
             };
         }
         match self.workers.deliver_worker_prompt(caller, target.label(), wrapped) {
-            Ok(_) => Ok("delivered"),
+            Ok(_) => Ok(()),
             Err(err) => Err(unknown_label_message(target, &err)),
         }
     }
@@ -134,7 +133,7 @@ mod tests {
     use super::*;
     use crate::ProjectKey;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
-    use crate::mcp::peers::types::{CorrelationId, PeerLiveness, PeerStatus, WrappedKind};
+    use crate::mcp::peers::types::{MessageId, PeerLiveness, PeerStatus, WrappedKind};
     use crate::mcp::workers::facade::{CallerProject, MockWorkerFacade};
     use forge_primitives::{WorkerLiveness, WorkerStatus};
 
@@ -162,10 +161,9 @@ mod tests {
         // that comparison on its own rather than a state forge can reach.
         let (peers, _workers, dispatcher) = host();
         let caller = SessionSlot::lead("acme", "core");
-        let status = dispatcher
+        dispatcher
             .deliver(&caller, &target("other", "core", None), message())
             .expect("core is configured under other");
-        assert_eq!(status, "delivered");
         assert_eq!(peers.deliver_calls.lock().len(), 1, "the peers engine carried it");
     }
 
@@ -175,8 +173,6 @@ mod tests {
             org: org.to_owned(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             status: PeerLiveness::Running,
-            in_flight_incoming: 0,
-            in_flight_outgoing: 0,
             spawned_at: None,
         }
     }
@@ -207,7 +203,7 @@ mod tests {
 
     fn message() -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: CorrelationId::new_tell(),
+            id: MessageId::mint(),
             kind: WrappedKind::Message,
             sender_name: "lead".to_owned(),
             sender_org: "Personal".to_owned(),
@@ -228,11 +224,10 @@ mod tests {
     fn a_worker_in_the_callers_own_project_goes_through_the_workers_engine() {
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
-        let status = dispatcher
+        dispatcher
             .deliver(&caller, &target("acme", "core", Some("w1")), message())
             .expect("w1 is live in the caller's project");
 
-        assert_eq!(status, "delivered");
         assert_eq!(workers.deliver_calls.lock().len(), 1, "the workers engine carried it");
         assert!(peers.deliver_calls.lock().is_empty(), "the peers engine was not used");
     }
@@ -241,11 +236,10 @@ mod tests {
     fn another_projects_agent_goes_through_the_peers_engine() {
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
-        let status = dispatcher
+        dispatcher
             .deliver(&caller, &target("other", "proj", None), message())
             .expect("proj is a configured project");
 
-        assert_eq!(status, "delivered");
         assert_eq!(peers.deliver_calls.lock().len(), 1, "the peers engine carried it");
         assert!(workers.deliver_calls.lock().is_empty(), "the workers engine was not used");
     }
@@ -256,11 +250,10 @@ mod tests {
         // the target from anywhere.
         let (peers, workers, dispatcher) = host();
         let caller = caller_in_own_project(&workers);
-        let status = dispatcher
+        dispatcher
             .deliver(&caller, &target("other", "proj", Some("w1")), message())
             .expect("w1 is live in proj");
 
-        assert_eq!(status, "delivered");
         let calls = workers.deliver_to_project_calls.lock();
         assert_eq!(calls.len(), 1, "the workers engine carried it, keyed to the target project");
         assert_eq!(calls[0].org, "other", "addressed by the target's org");

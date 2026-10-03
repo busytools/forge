@@ -1,6 +1,6 @@
-//! Outbound peer coordination: one `mcp__forge__agents__ask` or
-//! `agents__tell` tool_use card, parsed into the seat it addresses and the
-//! body it carries.
+//! Outbound peer coordination: one `mcp__forge__agents__send_message`
+//! tool_use card, parsed into the seat it addresses and the body it
+//! carries.
 //!
 //! The inbound half of the same protocol is [`crate::envelope`], which parses
 //! the bracket-wrapped prose the workspace injects into user-turn text. This
@@ -11,13 +11,13 @@
 //! call and not cached (the arguments are small, and render frames don't call
 //! this hot enough to need a cache).
 
-/// One outbound agent block parsed from a `mcp__forge__agents__ask` or
-/// `mcp__forge__agents__tell` tool_use card. Both render with the same
+/// One outbound agent block parsed from a
+/// `mcp__forge__agents__send_message` tool_use card, rendered with the
 /// `▶ Verb name` shape; `target` is the addressed seat.
 #[derive(Debug)]
-pub enum PeerOutboundKind {
-    Ask { target: String, body: String },
-    Tell { target: String, body: String },
+pub struct PeerOutboundKind {
+    pub target: String,
+    pub body: String,
 }
 
 /// Detect an agent outbound tool_use card. Returns `None` for every
@@ -25,7 +25,9 @@ pub enum PeerOutboundKind {
 /// tool-card rendering - including `agents__spawn`, `agents__despawn`,
 /// `agents__update`, `agents__capacity` and `agents__list`: those are
 /// lifecycle and roster calls that render as standard tool cards
-/// rather than as agent comms.
+/// rather than as agent comms. A send with no target is a malformed
+/// call rather than a reply - every send names one - so it falls
+/// through the same way.
 pub fn detect_outbound(tc: &crate::model::ToolCallInfo) -> Option<PeerOutboundKind> {
     detect_outbound_call(&tc.sdk_tool_name, tc.raw_input.as_ref()?)
 }
@@ -38,45 +40,52 @@ pub fn detect_outbound_call(
     raw: &serde_json::Value,
 ) -> Option<PeerOutboundKind> {
     match sdk_tool_name {
+        "mcp__forge__agents__send_message" => {
+            let target = address(raw)?;
+            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind { target, body })
+        }
+        // The six arms below read transcripts, not calls. A session
+        // recorded before the agents family folded its verbs still holds
+        // these cards, and resuming feeds that history through this same
+        // walker - so matching them keeps those rows rendering as agent
+        // blocks instead of degrading to generic tool cards. Nothing can
+        // call them; they are registered nowhere.
+        // replay-only: agents__ask
         "mcp__forge__agents__ask" => {
             let target = address(raw)?;
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
+            Some(PeerOutboundKind { target, body })
         }
+        // replay-only: agents__tell
         "mcp__forge__agents__tell" => {
             let target = address(raw)?;
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
+            Some(PeerOutboundKind { target, body })
         }
-        // The four arms below read transcripts, not calls. A session
-        // recorded before the agents family replaced the two it used to
-        // have still holds these cards, and resuming feeds that history
-        // through this same walker - so matching them keeps those rows
-        // rendering as agent blocks instead of degrading to generic tool
-        // cards. Nothing can call them; they are registered nowhere.
         // replay-only: peers__ask_agent
         "mcp__forge__peers__ask_agent" => {
             let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
+            Some(PeerOutboundKind { target, body })
         }
         // replay-only: workers__ask
         "mcp__forge__workers__ask" => {
             let target = raw.get("label")?.as_str()?.to_owned();
             let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body })
+            Some(PeerOutboundKind { target, body })
         }
         // replay-only: peers__tell_agent
         "mcp__forge__peers__tell_agent" => {
             let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
+            Some(PeerOutboundKind { target, body })
         }
         // replay-only: workers__tell
         "mcp__forge__workers__tell" => {
             let target = raw.get("label")?.as_str()?.to_owned();
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body })
+            Some(PeerOutboundKind { target, body })
         }
         _ => None,
     }
@@ -84,8 +93,7 @@ pub fn detect_outbound_call(
 
 /// The `${project}` / `${project}/${label}` a header shows for a
 /// call's target. `None` when the call carries no target at all, which
-/// is a reply: it goes to whoever asked, and the header says so by
-/// falling through to the default tool card.
+/// is not a send this renderer knows: every message names its target.
 fn address(raw: &serde_json::Value) -> Option<String> {
     let project = raw.get("project")?.as_str()?;
     match raw.get("label").and_then(|v| v.as_str()) {
@@ -127,74 +135,58 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_recognises_an_agents_ask_at_another_projects_agent() {
+    fn detect_outbound_recognises_a_send_to_another_projects_agent() {
         let tc = make_tc(
-            "mcp__forge__agents__ask",
-            serde_json::json!({ "org": "Gateway", "project": "gateway-backend", "prompt": "?" }),
+            "mcp__forge__agents__send_message",
+            serde_json::json!({
+                "org": "Gateway",
+                "project": "gateway-backend",
+                "message": "landed?",
+            }),
         );
         match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
+            Some(PeerOutboundKind { target, body }) => {
                 assert_eq!(target, "gateway-backend");
-                assert_eq!(body, "?");
+                assert_eq!(body, "landed?");
             }
-            other => panic!("expected Ask, got {other:?}"),
+            other => panic!("expected a peer card, got {other:?}"),
         }
     }
 
     #[test]
     fn detect_outbound_shows_a_worker_target_as_a_seat_in_its_project() {
         let tc = make_tc(
-            "mcp__forge__agents__ask",
+            "mcp__forge__agents__send_message",
             serde_json::json!({
                 "org": "Personal",
                 "project": "forge",
                 "label": "planner",
-                "prompt": "ready?",
+                "message": "ready?",
             }),
         );
         match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
+            Some(PeerOutboundKind { target, body }) => {
                 assert_eq!(target, "forge/planner");
                 assert_eq!(body, "ready?");
             }
-            other => panic!("expected Ask, got {other:?}"),
+            other => panic!("expected a peer card, got {other:?}"),
         }
     }
 
     #[test]
-    fn detect_outbound_recognises_an_agents_tell() {
-        let tc = make_tc(
-            "mcp__forge__agents__tell",
-            serde_json::json!({
-                "org": "Personal",
-                "project": "forge",
-                "label": "implementer",
-                "message": "PR #199 ready",
-            }),
-        );
-        match detect_outbound(&tc) {
-            Some(PeerOutboundKind::Tell { target, body }) => {
-                assert_eq!(target, "forge/implementer");
-                assert_eq!(body, "PR #199 ready");
-            }
-            other => panic!("expected Tell, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_outbound_ignores_the_lifecycle_verbs_and_a_reply() {
+    fn detect_outbound_ignores_the_lifecycle_verbs_and_a_targetless_call() {
         for name in ["mcp__forge__agents__spawn", "mcp__forge__agents__list"] {
             let tc = make_tc(name, serde_json::json!({ "label": "planner", "charter": "..." }));
             assert!(detect_outbound(&tc).is_none(), "{name} falls through to a standard tool card");
         }
 
-        // A reply names no target: it is routed to whoever asked, so
-        // there is no seat for the header to show.
-        let reply = make_tc(
-            "mcp__forge__agents__tell",
-            serde_json::json!({ "message": "answer", "in_reply_to": "q-7f3a92e0" }),
+        // Every send names its target, so a call without one is not a
+        // peer card this renderer can draw.
+        let targetless = make_tc(
+            "mcp__forge__agents__send_message",
+            serde_json::json!({ "message": "whoever" }),
         );
-        assert!(detect_outbound(&reply).is_none(), "a reply falls through to a standard tool card");
+        assert!(detect_outbound(&targetless).is_none(), "a targetless call falls through");
     }
 
     #[test]
@@ -208,17 +200,48 @@ mod tests {
         // Resume feeds recorded history through this same walker, so a
         // pre-rename card has to keep rendering as an agent block rather
         // than degrade to a generic tool card.
+        let agents_tell = make_tc(
+            // replay-only: agents__tell
+            "mcp__forge__agents__tell",
+            serde_json::json!({
+                "org": "Personal",
+                "project": "forge",
+                "label": "implementer",
+                "message": "PR #199 ready",
+            }),
+        );
+        match detect_outbound(&agents_tell) {
+            Some(PeerOutboundKind { target, body }) => {
+                assert_eq!(target, "forge/implementer");
+                assert_eq!(body, "PR #199 ready");
+            }
+            other => panic!("a pre-rename tell card must still read, got {other:?}"),
+        }
+
+        let agents_ask = make_tc(
+            // replay-only: agents__ask
+            "mcp__forge__agents__ask",
+            serde_json::json!({ "org": "Gateway", "project": "gateway-backend", "prompt": "?" }),
+        );
+        match detect_outbound(&agents_ask) {
+            Some(PeerOutboundKind { target, body }) => {
+                assert_eq!(target, "gateway-backend");
+                assert_eq!(body, "?");
+            }
+            other => panic!("a pre-rename ask card must still read, got {other:?}"),
+        }
+
         let peer = make_tc(
             // replay-only: peers__tell_agent
             "mcp__forge__peers__tell_agent",
             serde_json::json!({ "target": "gateway-backend", "message": "landed" }),
         );
         match detect_outbound(&peer) {
-            Some(PeerOutboundKind::Tell { target, body }) => {
+            Some(PeerOutboundKind { target, body }) => {
                 assert_eq!(target, "gateway-backend");
                 assert_eq!(body, "landed");
             }
-            other => panic!("a pre-rename tell card must still read as a Tell, got {other:?}"),
+            other => panic!("a pre-rename tell card must still read, got {other:?}"),
         }
 
         let worker = make_tc(
@@ -227,11 +250,11 @@ mod tests {
             serde_json::json!({ "label": "planner", "question": "ready?" }),
         );
         match detect_outbound(&worker) {
-            Some(PeerOutboundKind::Ask { target, body }) => {
+            Some(PeerOutboundKind { target, body }) => {
                 assert_eq!(target, "planner");
                 assert_eq!(body, "ready?");
             }
-            other => panic!("a pre-rename ask card must still read as an Ask, got {other:?}"),
+            other => panic!("a pre-rename ask card must still read, got {other:?}"),
         }
     }
 }

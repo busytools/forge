@@ -261,7 +261,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "[Message id=t-1 from agent 'steward' (org 'Busytools')]\n\nIT IMPORTED. The window is lost"
+                "text": "[Message id=m-1 from agent 'steward' (org 'Busytools')]\n\nIT IMPORTED. The window is lost"
               }
             ]
           }
@@ -274,7 +274,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "[Reply id=t-2 from agent 'planner' (org 'Busytools') to your earlier ask]\n\ntaking the render half"
+                "text": "[Message id=m-2 from agent 'planner' (org 'Busytools')]\n\ntaking the render half"
               }
             ]
           }

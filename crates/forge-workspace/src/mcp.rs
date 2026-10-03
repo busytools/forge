@@ -167,10 +167,15 @@ mod tests {
         registered_names(kind).into_iter().filter(|name| name.starts_with("agents__")).collect()
     }
 
-    /// The eleven names the agents family replaces. None may survive:
-    /// an alias would leave two names for one verb in the shipped text,
+    /// The names the agents family has retired. None may survive: an
+    /// alias would leave two names for one verb in the shipped text,
     /// which is the confusion the merge exists to remove.
-    const OLD_NAMES: [&str; 11] = [
+    ///
+    /// Two waves. The eleven `peers__*` / `workers__*` verbs the family
+    /// replaced, and the two the family then folded into
+    /// `agents__send_message` - a reply is another message, so the split
+    /// between them was never a thing a message had to be.
+    const OLD_NAMES: [&str; 13] = [
         "peers__whoami",
         "peers__list_agents",
         "peers__tell_agent",
@@ -182,6 +187,8 @@ mod tests {
         "workers__ask",
         "workers__despawn",
         "workers__update",
+        "agents__tell",
+        "agents__ask",
     ];
 
     /// Every group that is any-caller: both session kinds manage their
@@ -217,16 +224,15 @@ mod tests {
     ];
 
     #[test]
-    fn a_lead_sees_all_eight() {
+    fn a_lead_sees_all_seven() {
         assert_eq!(
             agents_tools(SessionKind::Lead),
             [
-                "agents__ask",
                 "agents__capacity",
                 "agents__despawn",
                 "agents__list",
+                "agents__send_message",
                 "agents__spawn",
-                "agents__tell",
                 "agents__update",
                 "agents__whoami",
             ],
@@ -234,17 +240,17 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_sees_only_the_shared_four() {
+    fn a_worker_sees_only_the_shared_three() {
         // The role gate: a worker gains the cross-project reach the
         // merge adds, and must NOT gain a lead-only verb with it.
         assert_eq!(
             agents_tools(SessionKind::Worker),
-            ["agents__ask", "agents__list", "agents__tell", "agents__whoami"],
+            ["agents__list", "agents__send_message", "agents__whoami"],
         );
     }
 
     #[test]
-    fn the_eleven_old_names_are_gone() {
+    fn the_retired_names_are_gone() {
         for kind in [SessionKind::Lead, SessionKind::Worker] {
             let names = registered_names(kind);
             for old in OLD_NAMES {
@@ -286,16 +292,21 @@ mod tests {
     /// tool, so the marker cannot be an alias.
     const REPLAY_ONLY: &str = "replay-only:";
 
-    /// A line that IS one of `OLD_NAMES`' own entries. The list has to
-    /// name the retired tools in order to assert them away, and this
-    /// recognises exactly those lines rather than exempting the file that
-    /// holds them - so a stale name added anywhere else here still fails.
-    fn is_old_name_entry(line: &str) -> bool {
-        let entry = line.trim().trim_end_matches(',');
-        entry.len() > 1
-            && entry.starts_with('"')
-            && entry.ends_with('"')
-            && OLD_NAMES.contains(&entry.trim_matches('"'))
+    /// The span of the `OLD_NAMES` declaration itself, which is the only
+    /// place a bare quoted retired name is allowed to sit.
+    ///
+    /// **Scoped to the declaration rather than to a line's shape.** The list
+    /// has to name the retired tools in order to assert them away, and a line
+    /// that merely LOOKS like an entry is not the list: a retired name
+    /// re-registered in a tool list has exactly that shape, and it is the
+    /// alias this scan exists to refuse. `None` when the span will
+    /// not read, which fails the scan loudly rather than exempting every
+    /// entry.
+    fn old_names_declaration(text: &str) -> Option<std::ops::RangeInclusive<usize>> {
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.iter().position(|line| line.contains("const OLD_NAMES"))?;
+        let end = start + lines[start..].iter().position(|line| line.trim() == "];")?;
+        Some(start..=end)
     }
 
     /// The retired names a marker on, above or below line `at` exempts.
@@ -312,8 +323,8 @@ mod tests {
         out
     }
 
-    /// The tracked `.rs` and `.md` files, read from the working tree, paired
-    /// with how many were listed.
+    /// The tracked source files, read from the working tree, paired with how
+    /// many were listed.
     ///
     /// Tracked content, not a filesystem walk. A surface forge ships is a
     /// file in the repository, and a walk descends into everything git
@@ -322,6 +333,12 @@ mod tests {
     /// depending on who else is using the machine. The recorded baselines
     /// are `.jsonl`, so the extension filter leaves them out: a capture
     /// holds whatever the capture machine printed.
+    ///
+    /// **The client's own files count, and they are the ones this most
+    /// rewrote.** A rename that reached `client/src/` and stopped there leaves
+    /// the page calling a tool nothing registers, which is the failure the scan
+    /// exists to catch - so `.ts` and `.svelte` are in, and the exemption is
+    /// line-based like everything else.
     fn tracked_source_files(root: &std::path::Path) -> (usize, Vec<(String, String)>) {
         let listed = std::process::Command::new("git")
             .arg("-C")
@@ -336,7 +353,7 @@ mod tests {
             .filter(|rel| {
                 matches!(
                     std::path::Path::new(rel).extension().and_then(|ext| ext.to_str()),
-                    Some("rs" | "md")
+                    Some("rs" | "md" | "ts" | "svelte")
                 )
             })
             .collect();
@@ -363,7 +380,7 @@ mod tests {
         // cannot pass; the second is a floor, so an empty listing cannot.
         assert!(
             !files.is_empty() && files.len() == listed,
-            "read {} of {listed} tracked .rs/.md files, so the scan is not the tree it claims",
+            "read {} of {listed} tracked source files, so the scan is not the tree it claims",
             files.len(),
         );
         assert!(
@@ -374,6 +391,7 @@ mod tests {
         let mut offenders = Vec::new();
         for (path, text) in files {
             let lines: Vec<&str> = text.lines().collect();
+            let declaration = old_names_declaration(&text);
             for (number, line) in lines.iter().enumerate() {
                 let exempt = exempted_names(&lines, number);
                 let unexempted: Vec<&str> = OLD_NAMES
@@ -381,7 +399,8 @@ mod tests {
                     .copied()
                     .filter(|old| line.contains(old) && !exempt.contains(old))
                     .collect();
-                if !unexempted.is_empty() && !is_old_name_entry(line) {
+                let declared = declaration.as_ref().is_some_and(|span| span.contains(&number));
+                if !unexempted.is_empty() && !declared {
                     offenders.push(format!("{path}:{} names {unexempted:?}", number + 1));
                 }
             }
@@ -433,6 +452,38 @@ mod tests {
         assert!(
             exempted_names(&[use_wrapped.as_str(), "// nothing here"], 0).is_empty(),
             "an unmarked line is exempt from nothing",
+        );
+    }
+
+    /// **The entry exemption is scoped to the declaration, not to a line's
+    /// shape.** A retired name registered as an alias has exactly the shape of
+    /// an entry - a bare quoted string on a line of its own - so exempting by
+    /// shape is how a re-created alias would pass this scan while being the
+    /// thing the scan exists to refuse. The fixture is built from the list
+    /// rather than from a literal, which is what keeps this file's own text
+    /// from tripping the scan it tests.
+    #[test]
+    fn a_bare_quoted_name_is_exempt_only_inside_the_declaration() {
+        let listing = format!("let tools = [\n    \"{}\",\n];\n", OLD_NAMES[0]);
+        assert!(
+            old_names_declaration(&listing).is_none(),
+            "a text that declares no list exempts nothing at all",
+        );
+
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp.rs"),
+        )
+        .expect("this file reads");
+        let span = old_names_declaration(&source).expect("this file declares OLD_NAMES");
+        let lines: Vec<&str> = source.lines().collect();
+        assert_eq!(
+            lines[span.start() + 1].trim().trim_end_matches(',').trim_matches('"'),
+            OLD_NAMES[0],
+            "the span opens on the first entry",
+        );
+        assert!(
+            !span.contains(&(span.end() + 1)),
+            "and a line past the declaration's close is not exempt",
         );
     }
 

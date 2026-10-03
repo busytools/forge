@@ -70,7 +70,6 @@ const REDRAWS = new Set([
   'question_request',
   'pending_interaction_resolved',
   'worker_status_changed',
-  'peer_inflight_stats_changed',
 ]);
 
 /** Whether a `Result` frame is a turn that finished well. */
