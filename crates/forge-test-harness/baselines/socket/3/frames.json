@@ -48,6 +48,7 @@
     "PluginsRollbackSucceeded": "plugins_rollback_succeeded",
     "PluginsUpdateRunFinished": "plugins_update_run_finished",
     "PluginsUpdateRunProgress": "plugins_update_run_progress",
+    "ProcessesChanged": "processes_changed",
     "PromptCancelResolved": "prompt_cancel_resolved",
     "PromptLifecycle": "prompt_lifecycle",
     "PromptQueued": "prompt_queued",

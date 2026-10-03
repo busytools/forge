@@ -33,7 +33,11 @@ export type Family =
  * comparing words.
  */
 export type KindRow =
-  { kind: 'family'; family: Family } | { kind: 'mcp' } | { kind: 'inbound' } | { kind: 'outbound' };
+  | { kind: 'family'; family: Family }
+  | { kind: 'mcp' }
+  | { kind: 'systemone' }
+  | { kind: 'inbound' }
+  | { kind: 'outbound' };
 
 /** A call's status, as the wire writes it. */
 export type CallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
@@ -44,6 +48,23 @@ const MUTATIONS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 /** Whether a call is a mutation. */
 export function isEdit(name: string): boolean {
   return MUTATIONS.has(name);
+}
+
+/**
+ * The System One decisions, which draw as a family of their own rather than
+ * under the `forge` server every other MCP tool of forge's shares: a reader
+ * scanning for what the session decided must not find the three mixed among
+ * its cron and peer calls.
+ */
+const DECISION_TOOLS = new Set([
+  'mcp__forge__systemone__ask_noul',
+  'mcp__forge__systemone__ask_choice',
+  'mcp__forge__systemone__ask_score',
+]);
+
+/** Whether a call is one of the System One decisions. */
+export function isDecisionTool(name: string): boolean {
+  return DECISION_TOOLS.has(name);
 }
 
 /** A server-side tool's own parts, for a name shaped `mcp__<server>__<tool>`. */
@@ -86,6 +107,7 @@ export function familyOf(name: string): Family {
 
 /** The row a call is summarised under. */
 export function rowOf(name: string): KindRow {
+  if (isDecisionTool(name)) return { kind: 'systemone' };
   if (mcpParts(name) !== null) return { kind: 'mcp' };
   return { kind: 'family', family: familyOf(name) };
 }
@@ -98,6 +120,7 @@ export function rowOf(name: string): KindRow {
  * two lanes, and the lane a call sits in says which one ran it.
  */
 export function labelOf(name: string): string {
+  if (isDecisionTool(name)) return 'systemone';
   const mcp = mcpParts(name);
   if (mcp !== null) return mcp.server;
   if (isEdit(name)) return 'edit';
@@ -109,6 +132,8 @@ export function iconOf(row: KindRow): string {
   switch (row.kind) {
     case 'mcp':
       return 'mcp';
+    case 'systemone':
+      return 'decide';
     case 'inbound':
     case 'outbound':
       return 'in';

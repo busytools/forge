@@ -1187,6 +1187,40 @@ describe('one turn folded into the units a view draws', () => {
     expect(traffic(wordless[0])[0]?.cards[0]?.body, 'a wordless refusal adds nothing').toBe('');
   });
 
+  it('reads the reason out of the CLI envelope a wrapped refusal arrives in', () => {
+    // **The MCP shape wraps the refusal** in the CLI's own envelope, and with
+    // only text pieces read the card drew `failed to deliver:` and nothing
+    // else - the reason reached the page nowhere, which is the drop rule 25
+    // forbids. The fold reads the envelope off failed results, so the card's
+    // body has to read the piece that comes out of it.
+    const [group] = fold([
+      said([
+        {
+          type: 'tool_use',
+          id: 'toolu_z',
+          name: 'mcp__forge__agents__send_message',
+          input: { org: 'Gateway', project: 'companies', message: 'picking it up' },
+        },
+      ]),
+      heard([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_z',
+          content:
+            "<tool_use_error>no project 'companies' is configured under org 'Gateway'</tool_use_error>",
+          is_error: true,
+        },
+      ]),
+    ]);
+    const card = traffic(group)[0]?.cards[0];
+
+    expect(card?.row, 'the send draws its failure row').toBe('failed');
+    expect(card?.body, 'the reason crosses the envelope').toContain(
+      "no project 'companies' is configured",
+    );
+    expect(card?.body, 'and the tags do not').not.toContain('tool_use_error');
+  });
+
   it('keys two failures from one seat apart, which the fold does by frame and block', () => {
     // **Two notices from one seat in a turn are ordinary**: a bucket of parked
     // messages is acked one notice per message, and a resumed transcript

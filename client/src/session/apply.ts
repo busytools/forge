@@ -18,7 +18,12 @@ import { fold } from '../chat/units';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
+  issuesFrom,
+  monitorFrom,
   overridesFrom,
+  prFrom,
+  processesFrom,
+  workFrom,
   type ComposerState,
   type Conversation,
   type Effort,
@@ -103,6 +108,38 @@ export const HANDLERS: Record<string, Apply> = {
   mcp_snapshot: (held, payload) => {
     const mcp = mcpFrom(payload);
     return mcp === null ? held : { ...held, mcp };
+  },
+
+  /**
+   * The sets a seat pushes whole, each replacing its field(s) with the frame's
+   * own.
+   *
+   * They are narrowed by the very functions the record's read uses, so a
+   * field cannot come out one way from a read and another from a frame.
+   */
+  work_changed: (held, payload) => ({
+    ...held,
+    work: workFrom(payload['work']),
+    pr: prFrom(payload['pr']),
+    closes: issuesFrom(payload['closes']),
+  }),
+
+  monitors_changed: (held, payload) => ({
+    ...held,
+    monitors: list(payload['monitors']).map(monitorFrom),
+  }),
+
+  // The frame names its set `tasks` and the record's field is
+  // `background_tasks`, so the payload is read by the frame's own name.
+  background_tasks_changed: (held, payload) => ({
+    ...held,
+    background_tasks: list(payload['tasks']),
+  }),
+
+  // The frame names its set `snapshot` and the record's field is `processes`.
+  processes_changed: (held, payload) => {
+    const processes = processesFrom(payload['snapshot']);
+    return processes === null ? held : { ...held, processes };
   },
 
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
@@ -281,9 +318,9 @@ export const HANDLERS: Record<string, Apply> = {
 /**
  * The variants that replace the seat's whole record rather than patching it: a
  * new occupant under the slot, or the first connect. What they carry is a
- * payload of their own and not a record - the transcript in the folded turns a
- * page reads, the process walk, the working tree - so a page answers them with
- * a read.
+ * payload of their own and not a record - the seat's own session facts and the
+ * transcript in the folded turns a page reads - so a page answers them with a
+ * read.
  */
 export const REPLACES: readonly string[] = [
   'spawning',
@@ -342,41 +379,27 @@ export const IGNORED: readonly string[] = [
   'notice',
   'slack_message_appended',
   'status_snapshot',
-  /**
-   * The seat's three pushed sets - its monitors, the CLI's background
-   * registry and its working tree - which this build reads from the read it
-   * already makes rather than from the frames: the fields they carry are
-   * merged from the poll, so handlers would be replaced by the next read
-   * anyway. They arrive with the read that stops carrying them.
-   */
-  'background_tasks_changed',
-  'monitors_changed',
-  'work_changed',
   'worker_status_changed',
 ];
 
 /**
- * The fields the merge read carries, because this build applies no update to
- * them.
+ * The fields the merge takes from a poll's answer, because no update this
+ * build handles carries them.
  *
- * Three of them are pushed now - `work`, `pr` and `closes` arrive on
- * `work_changed` - and they stay listed: a handler for it comes with the
- * change that stops this read carrying them, and until then the read is what
- * keeps the pane honest. **`queue` is listed for the clears no frame
- * carries**: rows are pushed per prompt, but the core empties the whole pile
- * when the process holding it goes, and the read is what stops a dead CLI's
- * cards being drawn forever. The rest are the slowest-moving part of the
- * record, where a git scan and a process walk do not change between one frame
- * and the next.
+ * **The read still answers every field** - `sessionFrom` narrows the whole
+ * record - and what is narrow is the MERGE: an answer is applied by taking
+ * only these from it. That is what keeps a poll from reverting a pushed row,
+ * since an answer is encoded before a frame lands and applied after it.
+ *
+ * **`queue` is listed for the clears no frame carries**: rows are pushed per
+ * prompt, but the core empties the whole pile when the process holding it
+ * goes, and the read is what stops a dead CLI's cards being drawn forever.
+ * The rest are the CLI's catalogue pair, the composer's file list and the
+ * record's own dispatch answer. Each pushed set left this list as its handler
+ * landed, and this list is what retires the tick once nothing is on it.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
   'has_dispatches',
-  'processes',
-  'work',
-  'pr',
-  'closes',
-  'monitors',
-  'background_tasks',
   'queue',
   'slash_commands',
   'subagents',

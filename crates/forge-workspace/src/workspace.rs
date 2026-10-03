@@ -201,6 +201,23 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 pub(crate) type ParkedSlackDraft =
     (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
 
+/// What the last spawn handed `Agent::spawn` as its listing.
+///
+/// Three cases, because a lead's listing and a spawn that never ran are
+/// different answers and one option would merge them. Test-only: a
+/// stand-in replaces the spawn call outright, so this is the only way a
+/// test sees what the real spawn was given.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone)]
+pub enum RecordedListing {
+    /// No spawn has run since the workspace was built.
+    None,
+    /// A spawn ran and handed no listing: a lead's own case.
+    NoListing,
+    /// A spawn ran and handed this worker's listing.
+    Listed(forge_agent::WorkerListing),
+}
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -243,6 +260,12 @@ pub struct Workspace {
     /// spawn runs always.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
+    /// The worker listing the last spawn handed `Agent::spawn`, written by
+    /// the spawn and read by a test that cannot see the call: a stand-in
+    /// replaces `Agent::spawn` entirely, so its argument is otherwise
+    /// unobservable.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_listing: Mutex<RecordedListing>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -517,6 +540,11 @@ pub struct Workspace {
     /// the read goes to the file.
     #[cfg(any(test, feature = "testing"))]
     test_user_preferences: Mutex<Option<serde_json::Value>>,
+    /// Test-only stand-in for a seat's live `claude` pid, so a fixture seat's
+    /// held loop walks a real process tree with no CLI behind it. A seat with
+    /// no entry reads the pid off its own handle, as production does.
+    #[cfg(any(test, feature = "testing"))]
+    test_claude_pid: Mutex<std::collections::HashMap<SessionSlot, u32>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
@@ -795,7 +823,7 @@ async fn run_background_catalog_scan(
         None, // every project in the catalog
         None, // no limit
         0,
-        false, // hide worker-tagged sessions from default catalog
+        forge_agent::userdata::catalog::scan::Workers::Hidden,
         Some(&tag_cache),
     )
     .await;
@@ -1443,6 +1471,8 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_listing: Mutex::new(RecordedListing::None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -1500,6 +1530,8 @@ impl Workspace {
             test_extra_projects: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "testing"))]
             test_user_preferences: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_claude_pid: Mutex::new(std::collections::HashMap::new()),
         };
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
@@ -1989,26 +2021,46 @@ impl Workspace {
                 crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
                     .into_arc()
             });
+            let families = match role {
+                crate::protocol::SpawnRole::Lead => crate::mcp::McpFamily::all(),
+                crate::protocol::SpawnRole::Worker { mcp_families, .. } => {
+                    crate::mcp::resolve_mcp_families(mcp_families.as_deref())
+                }
+            };
             crate::mcp::build_forge_server(
-                workspace_facade,
-                worker_facade,
-                review_facade,
-                cron_facade,
-                gotify_facade,
-                slack_facade,
-                tasks_facade,
-                systemone_facade,
+                crate::mcp::ForgeServerFacades {
+                    workspace: workspace_facade,
+                    worker: worker_facade,
+                    review: review_facade,
+                    cron: cron_facade,
+                    gotify: gotify_facade,
+                    slack: slack_facade,
+                    tasks: tasks_facade,
+                    systemone: systemone_facade,
+                },
+                &families,
                 session_slot.clone(),
                 session_kind,
             )
         };
 
+        // Derived once, so what a test records is the very value the spawn is
+        // handed rather than a second reading of the slot.
+        let worker_listing = self.worker_listing_for(&session_slot);
+        #[cfg(any(test, feature = "testing"))]
+        {
+            *self.test_spawn_listing.lock() = match &worker_listing {
+                Some(listing) => RecordedListing::Listed(listing.clone()),
+                None => RecordedListing::NoListing,
+            };
+        }
         let spawn_agent = || {
             forge_agent::Agent::spawn(
                 account_dir.clone(),
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
+                worker_listing,
             )
         };
         // A test that installed a stand-in reads the settings this spawn
@@ -3223,6 +3275,7 @@ impl Workspace {
             resume_kick: existing.as_ref().and_then(|row| row.resume_kick.clone()),
             interactive: existing.as_ref().and_then(|row| row.interactive),
             is_git_repo: existing.as_ref().and_then(|row| row.is_git_repo),
+            mcp_families: existing.as_ref().and_then(|row| row.mcp_families.clone()),
         };
         if let Err(error) = crate::store::sessions::put(db, &row) {
             tracing::warn!(
@@ -4142,6 +4195,7 @@ impl Workspace {
                     kick,
                     resume_kick,
                     interactive,
+                    mcp_families,
                     from_boot_respawn,
                     return_to,
                 } => {
@@ -4156,7 +4210,14 @@ impl Workspace {
                     spawn::handle_spawn_worker(
                         self,
                         project_key,
-                        spawn::WorkerSpawnArgs { label, charter, kick, resume_kick, interactive },
+                        spawn::WorkerSpawnArgs {
+                            label,
+                            charter,
+                            kick,
+                            resume_kick,
+                            interactive,
+                            mcp_families,
+                        },
                         spawned_by,
                         resume_existing.as_deref(),
                         from_boot_respawn,
@@ -4434,6 +4495,9 @@ impl Workspace {
                 kick,
                 // The row this re-spawn is replaying already holds it.
                 resume_kick: None,
+                // And its family selection rides the same row; the spawn
+                // reads it back rather than restating it here.
+                mcp_families: worker.mcp_families.clone(),
                 interactive: worker.interactive.unwrap_or(false),
                 from_boot_respawn: true,
                 return_to: Some(tx),
@@ -5057,6 +5121,7 @@ impl Workspace {
         resume_kick: Option<&str>,
         interactive: bool,
         is_git_repo: bool,
+        mcp_families: Option<&[String]>,
     ) -> anyhow::Result<()> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -5080,6 +5145,13 @@ impl Workspace {
                 label: label.to_owned(),
                 session_id: Some(id.to_owned()),
                 charter: Some(charter.to_owned()),
+                mcp_families: match mcp_families {
+                    Some(names) if !names.is_empty() => Some(names.to_vec()),
+                    // Empty resolves to every family, stored as absence;
+                    // a resume states none and carries the stored value.
+                    Some(_) => None,
+                    None => existing.as_ref().and_then(|row| row.mcp_families.clone()),
+                },
                 kick: kick
                     .map(str::to_owned)
                     .or_else(|| existing.as_ref().and_then(|row| row.kick.clone())),
@@ -5116,6 +5188,26 @@ impl Workspace {
             anyhow::bail!("the session store is unavailable this session");
         };
         Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.is_git_repo))
+    }
+
+    /// The MCP-family selection the worker's row records, or `Ok(None)`
+    /// when there is no row or its row names none (which resolves to
+    /// every family). Same failure contract as
+    /// [`Self::recorded_worker_is_git_repo`]: an unreadable row is an
+    /// `Err`, not an absence.
+    pub(crate) fn recorded_worker_mcp_families(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        let Some((org, project)) = self.project_identity_for_key(project_key) else {
+            return Ok(None);
+        };
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the session store is unavailable this session");
+        };
+        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.mcp_families))
     }
 
     /// Delete a worker's persisted row so it never re-spawns. The row is
@@ -5282,6 +5374,7 @@ impl Workspace {
         charter: Option<String>,
         kick: Option<String>,
         resume_kick: Option<String>,
+        mcp_families: Option<Vec<String>>,
     ) -> anyhow::Result<bool> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -5304,6 +5397,9 @@ impl Workspace {
                 // `update` leaves an absent field alone; the gitness is
                 // fixed at spawn and never re-decided here.
                 is_git_repo: None,
+                // Absent leaves the stored selection alone; `Some(empty)`
+                // resets it to every family.
+                mcp_families,
             },
         )
     }
@@ -5745,6 +5841,23 @@ impl Workspace {
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+
+    /// Where a worker seat lists its own sessions from, or `None` for a
+    /// lead.
+    ///
+    /// The directory is [`Self::cwd_for_session`]'s: a worker's worktree,
+    /// composed from the live registry. The launching cwd is the wrong
+    /// answer for a fresh git worker - it launches in the project root
+    /// with `--worktree <label>`, so its transcripts land in the
+    /// worktree's project dir and a listing read from the root finds none
+    /// of them.
+    fn worker_listing_for(&self, slot: &SessionSlot) -> Option<forge_agent::WorkerListing> {
+        if slot.is_lead() {
+            return None;
+        }
+        let dir = self.cwd_for_session(slot)?;
+        Some(forge_agent::WorkerListing { label: slot.label().to_owned(), dir: dir.into() })
     }
 
     /// The cwd to pass `claude --resume` for the session at
@@ -6530,6 +6643,12 @@ impl Workspace {
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
     pub fn claude_pid(&self, key: &SessionSlot) -> Option<u32> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            if let Some(seeded) = self.test_claude_pid.lock().get(key) {
+                return Some(*seeded);
+            }
+        }
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
     }
 
@@ -7874,7 +7993,7 @@ mod tests {
         let key = ws.project_key_for_name("proj").expect("seeded project");
         // A git worker whose worktree is not there, so the wave would skip
         // it and no fire can land.
-        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true)
+        ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None)
             .expect("seed the stranded row");
 
         // A whole minute, so the recurring's next `*/5` slot is at least a
@@ -8128,6 +8247,7 @@ provider = "anthropic"
             Some("original resume"),
             false,
             false,
+            None,
         )
         .expect("seed the row this test then updates");
         let stored = |ws: &Arc<Workspace>| {
@@ -8138,8 +8258,15 @@ provider = "anthropic"
         };
 
         assert!(
-            ws.update_worker_row(&project, "steward", Some("new charter".to_owned()), None, None)
-                .expect("update succeeds"),
+            ws.update_worker_row(
+                &project,
+                "steward",
+                Some("new charter".to_owned()),
+                None,
+                None,
+                None
+            )
+            .expect("update succeeds"),
             "an existing row reports updated",
         );
         let row = stored(&ws);
@@ -8160,6 +8287,7 @@ provider = "anthropic"
                 None,
                 Some("new kick".to_owned()),
                 Some("new resume".to_owned()),
+                None,
             )
             .expect("second update succeeds"),
         );
@@ -8168,8 +8296,33 @@ provider = "anthropic"
         assert_eq!(row.kick.as_deref(), Some("new kick"));
         assert_eq!(row.resume_kick.as_deref(), Some("new resume"));
 
+        // The family selection follows the same contract: supplied
+        // replaces, absent keeps, empty resets to every family.
         assert!(
-            !ws.update_worker_row(&project, "ghost", Some("c".to_owned()), None, None)
+            ws.update_worker_row(
+                &project,
+                "steward",
+                None,
+                None,
+                None,
+                Some(vec!["cron".to_owned()])
+            )
+            .expect("families update succeeds"),
+        );
+        assert_eq!(stored(&ws).mcp_families, Some(vec!["cron".to_owned()]));
+        assert!(
+            ws.update_worker_row(&project, "steward", None, None, None, None)
+                .expect("absent families update succeeds"),
+        );
+        assert_eq!(stored(&ws).mcp_families, Some(vec!["cron".to_owned()]), "absent keeps");
+        assert!(
+            ws.update_worker_row(&project, "steward", None, None, None, Some(Vec::new()))
+                .expect("reset succeeds"),
+        );
+        assert_eq!(stored(&ws).mcp_families, None, "an empty list resets to every family");
+
+        assert!(
+            !ws.update_worker_row(&project, "ghost", Some("c".to_owned()), None, None, None)
                 .expect("absent row is not an error"),
             "no row means not updated",
         );
@@ -8345,7 +8498,9 @@ provider = "anthropic"
         let project = ws.project_key_for_name("forge").expect("seeded project");
         // No install_db_for_test: the store is closed for this session.
         let error = ws
-            .record_worker_row(&project, "reviewer", "id", "charter", None, None, false, false)
+            .record_worker_row(
+                &project, "reviewer", "id", "charter", None, None, false, false, None,
+            )
             .expect_err("a closed store must surface a durability failure, not a silent no-op");
         assert!(
             error.to_string().contains("store is unavailable"),
@@ -9291,6 +9446,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the lead row a spawn writes");
@@ -9306,6 +9462,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the steward's own row, as the released build leaves it");
@@ -9524,6 +9681,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the row");
@@ -11694,6 +11852,7 @@ mod tag_retry_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row this arm must keep");
 
@@ -11792,6 +11951,7 @@ mod tag_retry_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row the rollback judges");
 
@@ -12272,19 +12432,22 @@ mod worker_respawn_tests {
         kind: crate::mcp::SessionKind,
     ) -> Vec<String> {
         let server = crate::mcp::build_forge_server(
-            crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
-            crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
-            crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
-            crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
-            crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
-            crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
-            crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
-            workspace.systemone.as_ref().map(|client| {
-                crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
-                    client,
-                ))
-                .into_arc()
-            }),
+            crate::mcp::ForgeServerFacades {
+                workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
+                worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
+                review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
+                cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
+                gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
+                slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+                tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
+                systemone: workspace.systemone.as_ref().map(|client| {
+                    crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
+                        client,
+                    ))
+                    .into_arc()
+                }),
+            },
+            &crate::mcp::McpFamily::all(),
             SessionSlot::from_str_for_test("caller"),
             kind,
         );
@@ -12370,8 +12533,11 @@ mod worker_respawn_tests {
     fn a_worker_spawn_carries_its_label_and_a_worker_tool_surface() {
         let (ws, _rx) = Workspace::testing_stub();
         let project = seed_project_and_return(&ws, "forge", "/tmp/role-worker");
-        let role =
-            crate::protocol::SpawnRole::Worker { label: "implementer".to_owned(), wrote_row: true };
+        let role = crate::protocol::SpawnRole::Worker {
+            label: "implementer".to_owned(),
+            wrote_row: true,
+            mcp_families: None,
+        };
 
         let slot = Workspace::slot_for_spawn(&role, &project);
         assert_eq!(slot.label(), "implementer", "the slot names the worker");
@@ -12476,6 +12642,7 @@ mod worker_respawn_tests {
             resume_kick: None,
             interactive: Some(false),
             is_git_repo: None,
+            mcp_families: None,
         }
     }
 
@@ -12522,6 +12689,7 @@ mod worker_respawn_tests {
                     None,
                     false,
                     is_git,
+                    None,
                 )
                 .expect("seed the row this wave re-spawns");
         }
@@ -12542,6 +12710,7 @@ mod worker_respawn_tests {
                 resume_kick: None,
                 interactive: Some(false),
                 is_git_repo: Some(true),
+                mcp_families: None,
             },
         )
         .expect("seed the id-less row");
@@ -12650,7 +12819,8 @@ mod worker_respawn_tests {
     /// The interactive flag rides the subprocess CLI args, so a
     /// re-spawn that dropped it would take `AskUserQuestion` away from
     /// a worker mid-conversation on the first forge restart - and give
-    /// it to one that was never meant to have it.
+    /// it to one that was never meant to have it. The family selection
+    /// rides the same row for the same reason.
     #[test]
     fn dispatch_worker_respawns_carries_interactive_from_the_row() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -12659,6 +12829,7 @@ mod worker_respawn_tests {
         let project_key = workspace.project_key_for_name("proj-x").expect("seeded project");
         let mut talkative = worker_row("talkative", None);
         talkative.interactive = Some(true);
+        talkative.mcp_families = Some(vec!["cron".to_owned()]);
         let dynamic = vec![talkative, worker_row("quiet", None)];
 
         workspace.dispatch_worker_respawns(
@@ -12669,7 +12840,10 @@ mod worker_respawn_tests {
         );
 
         for cmd in workspace.drain_test_dispatch_buffer() {
-            let Command::SpawnWorker { label, interactive, from_boot_respawn, .. } = cmd else {
+            let Command::SpawnWorker {
+                label, interactive, from_boot_respawn, mcp_families, ..
+            } = cmd
+            else {
                 panic!("expected SpawnWorker");
             };
             assert!(
@@ -12680,9 +12854,15 @@ mod worker_respawn_tests {
             match label.as_str() {
                 "talkative" => {
                     assert!(interactive, "an interactive row re-spawns interactive");
+                    assert_eq!(
+                        mcp_families,
+                        Some(vec!["cron".to_owned()]),
+                        "the row's family selection rides the re-spawn",
+                    );
                 }
                 "quiet" => {
                     assert!(!interactive, "a non-interactive row re-spawns non-interactive");
+                    assert_eq!(mcp_families, None, "a row naming none re-spawns unnarrowed");
                 }
                 other => panic!("unexpected label {other}"),
             }
@@ -12828,6 +13008,7 @@ mod worker_respawn_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the persisted worker this test re-spawns");
         workspace.enable_test_dispatch_intercept();
@@ -12873,6 +13054,7 @@ mod worker_respawn_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("write the row this test then deletes");
         workspace.delete_worker_row(&project_key, "scratch").expect("delete the row");
@@ -12956,6 +13138,7 @@ provider = "anthropic"
             // `demo` is not a git repo, so the worker runs in the project
             // root and has no worktree the wave must find.
             false,
+            None,
         )
         .expect("the row the re-spawn wave resumes onto");
         write_tagged_transcript(cfg, &view.path, TRANSCRIPT_ONLY_ID, "steward");
@@ -13049,6 +13232,7 @@ provider = "anthropic"
                     None,
                     false,
                     false,
+                    None,
                 )
                 .await;
         });
@@ -13093,6 +13277,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13137,6 +13322,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13357,6 +13543,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
             ),
         )
         .await
@@ -13413,6 +13600,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
             )
             .await
             .expect_err("the label is already live");
@@ -13453,6 +13641,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
             )
             .await
             .expect_err("git cannot check the branch out in a second worktree");
@@ -13563,6 +13752,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13594,8 +13784,10 @@ provider = "anthropic"
         let session_id = "550e8400-e29b-41d4-a716-446655440099";
         let dir = tempfile::tempdir().expect("tempdir");
         ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
-        ws.record_worker_row(&key, "steward", session_id, "charter", None, None, false, false)
-            .expect("seed the row that disagrees with the disk");
+        ws.record_worker_row(
+            &key, "steward", session_id, "charter", None, None, false, false, None,
+        )
+        .expect("seed the row that disagrees with the disk");
         ws.enable_test_dispatch_intercept();
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
 
@@ -13609,6 +13801,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13660,10 +13853,11 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
-        let Command::SpawnWorker { resume_existing, return_to, .. } =
+        let Command::SpawnWorker { resume_existing, mcp_families, return_to, .. } =
             take_dispatched_spawn_worker(&ws).await
         else {
             panic!("expected the resume to dispatch a SpawnWorker");
@@ -13673,6 +13867,9 @@ provider = "anthropic"
             Some(session_id),
             "the label resumes the session its transcript still names",
         );
+        // The row is gone (that is what the despawn did), so the spawn
+        // legitimately carries no selection: every family.
+        assert_eq!(mcp_families, None, "no row means no narrowing");
         // Answer the way `handle_spawn_worker` does for a resume; what
         // the assertion below reads is the facade's own mapping of it,
         // which reports a fallback for a resume that found nothing.
@@ -13681,6 +13878,7 @@ provider = "anthropic"
             .send(Ok(WorkerSpawnReply {
                 session_id: session_id.to_owned(),
                 tag: forge_primitives::worker_tag("steward"),
+                mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
                 session_choice: SessionChoice::Resumed,
@@ -13737,6 +13935,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13778,6 +13977,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
         });
@@ -13796,6 +13996,7 @@ provider = "anthropic"
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),
+                mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
                 session_choice: SessionChoice::Fresh,
@@ -13832,6 +14033,7 @@ provider = "anthropic"
                     None,
                     false,
                     false,
+                    None,
                 )
                 .await
         });
@@ -13846,6 +14048,7 @@ provider = "anthropic"
             .send(Ok(WorkerSpawnReply {
                 session_id: "fresh-session-uuid".into(),
                 tag: forge_primitives::worker_tag("ghost"),
+                mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
                 session_choice: SessionChoice::Fresh,
@@ -14682,6 +14885,80 @@ mod git_scan_cwd_tests {
     // process cwd and derives the JSONL location against the wrong
     // git root (the bug documented in #245).
     // ---------------------------------------------------------------
+
+    /// A worker's listing is read from its worktree, and a lead has none of
+    /// its own. A fresh git worker launches in the project root while its
+    /// transcripts land in the worktree's project dir, so a listing read
+    /// from the launching cwd finds none of the worker's own sessions.
+    ///
+    /// **The project is loaded from a forge.toml fixture, not the test
+    /// overlay**, which is what makes the lead half bite: the overlay is
+    /// consulted by `project_for_key` and not by the cwd lookup, so a lead
+    /// seeded there resolves to nothing and the `is_lead` guard could be
+    /// deleted with the assertion still passing. Loaded, the lead resolves
+    /// to its project root and only the guard answers `None`.
+    #[test]
+    fn worker_listing_is_the_workers_worktree_and_a_lead_has_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("listing-proj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "listing-proj"
+path = "{}"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let view = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "listing-proj")
+            .expect("fixture project");
+        let lead = SessionSlot::lead(&view.org, &view.name);
+        assert_eq!(
+            ws.cwd_for_session(&lead).as_deref(),
+            view.path.to_str(),
+            "the fixture's lead must resolve, or its half of this test proves nothing",
+        );
+        assert!(
+            ws.worker_listing_for(&lead).is_none(),
+            "a lead lists from the cwd it launches in, so it has no listing to carry",
+        );
+
+        // The slot's label is the worker's label, which is what its tag
+        // carries: the two are one string in production.
+        let worker = SessionSlot::worker(&view.org, &view.name, "reviewer");
+        ws.insert_live_worker(&view.key, worker_entry("reviewer", &worker, true));
+
+        let listing = ws.worker_listing_for(&worker).expect("a worker has a listing of its own");
+        assert_eq!(
+            listing.label, "reviewer",
+            "the listing carries the label the worker's transcripts do",
+        );
+        assert_eq!(
+            listing.dir,
+            view.path.join(".claude/worktrees/reviewer"),
+            "the listing must be read from the worker's worktree, not the cwd it launches in",
+        );
+    }
 
     #[test]
     fn resume_cwd_for_slot_returns_worktree_for_git_worker_with_no_catalog_cwd() {

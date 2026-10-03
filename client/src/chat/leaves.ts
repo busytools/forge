@@ -11,12 +11,15 @@
  */
 
 import { languageOf } from './code';
+import { decisionOf, decisionWord, type Decision } from './decisions';
 import { isEdit, type CallStatus, type KindRow, rowOf } from './families';
-import { headline, stripEscapes, toolName } from './text';
+import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
   | { kind: 'text'; text: string }
+  /** A failed call's own words, the CLI's envelope read off in the fold. */
+  | { kind: 'error'; message: string; detail: string }
   | { kind: 'diff'; old: string; new: string }
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
   | { kind: 'image'; mime: string | null; uri: string | null };
@@ -110,6 +113,12 @@ export interface ToolLeaf {
    */
   mutation: MutationMarks | null;
   /**
+   * The System One decision the result carried, or `null` for every other
+   * call and for a result the page could not read - which draws as the raw
+   * text it is, never dropped.
+   */
+  decision: Decision | null;
+  /**
    * The skill's own markdown, for a `Skill` call, or null for every other
    * call.
    *
@@ -139,8 +148,8 @@ export interface ToolLeaf {
 }
 
 /**
- * Whether a call's body is drawn without being asked for: a mutation's diff,
- * while it is small enough to draw.
+ * Whether a call's body is drawn without being asked for: a decision's block,
+ * or a mutation's diff while it is small enough to draw.
  *
  * **A very large diff is not drawn open.** Laying one out costs WebKit a full
  * pass over it on every dirty, which pins the renderer on the seat holding it
@@ -148,8 +157,12 @@ export interface ToolLeaf {
  * included. A row over the bound starts closed; one click still opens it, and
  * nothing is dropped.
  */
-export function opensByDefault(name: string, body: CallBody[]): boolean {
-  return isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES;
+export function opensByDefault(name: string, body: CallBody[], decision: Decision | null): boolean {
+  // A decision opens for the same reason a small edit does: the answer is the
+  // point of the call, and a closed row would say only that something was
+  // asked. The distribution's own bound keeps it safe - a choice tops out at
+  // 255 options, far under the diff bound above.
+  return decision !== null || (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES);
 }
 
 /** The most diff rows a mutation's row draws without being asked. */
@@ -223,22 +236,60 @@ export function blocksOf(content: unknown): Block[] {
 }
 
 /**
+ * The CLI's own envelope off a FAILED tool result, read in the fold.
+ *
+ * **The tag is addressed to the model, not to a reader**: it is how a failed
+ * tool's message crosses the wire, and drawn raw it is a wall under the diff.
+ * Read off only where the call failed - the terminal's own gate (Failed |
+ * Killed): a completed result that merely quotes the tags (a Read of the
+ * source that emits them) draws verbatim, and unwrapping it would rewrite what
+ * the tool actually said. The extraction matches the terminal's
+ * `extract_tool_use_error_message` - the tag search is ASCII-lowercased the
+ * way its own scanner is, because JS `toLowerCase()` is length-changing on
+ * some non-ASCII letters and the index arithmetic would then slice the
+ * original at shifted offsets (`trim()`'s whitespace sets diverge on U+0085
+ * and U+FEFF, which no real payload carries). The first line is the message;
+ * the rest is the detail under it.
+ */
+function toolUseError(text: string): { message: string; detail: string } | null {
+  const lower = text.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+  const open = '<tool_use_error>';
+  const start = lower.indexOf(open);
+  if (start === -1) return null;
+  const end = lower.indexOf('</tool_use_error>', start + open.length);
+  if (end === -1) return null;
+  const inner = text.slice(start + open.length, end).trim();
+  if (inner === '') return null;
+  const at = inner.indexOf('\n');
+  return at === -1
+    ? { message: inner, detail: '' }
+    : { message: inner.slice(0, at).trim(), detail: inner.slice(at + 1).trim() };
+}
+
+/**
  * What a call's result recorded, from the shapes a tool result arrives in.
  *
  * The content is a string for most tools and a block array for a few, and both
  * are read here: a result drawn as nothing is a row that expands to an empty
- * box.
+ * box. `failed` is the call's own settle: only there is the CLI's error
+ * envelope read off (see `toolUseError`), and a completed result draws
+ * verbatim, tags and all.
  */
-export function bodyOf(content: unknown): CallBody[] {
+export function bodyOf(content: unknown, failed = false): CallBody[] {
   if (typeof content === 'string') {
     const text = stripEscapes(content);
-    return text.trim() === '' ? [] : [{ kind: 'text', text }];
+    if (text.trim() === '') return [];
+    const said = failed ? toolUseError(text) : null;
+    return [said === null ? { kind: 'text', text } : { kind: 'error', ...said }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
       const text = stripEscapes(block.text);
-      if (text.trim() !== '') out.push({ kind: 'text', text });
+      if (text.trim() !== '') {
+        const said = failed ? toolUseError(text) : null;
+        out.push(said === null ? { kind: 'text', text } : { kind: 'error', ...said });
+      }
     }
     if (block.type === 'image') {
       // The wire nests both under `source`, which is the shape a user turn's
@@ -458,6 +509,15 @@ function hunk(old: string, added: string): CallBody[] {
  * this follows.
  */
 export function titleOf(name: string, input: unknown): string {
+  // A decision's row leads with the tool word and the question it was asked:
+  // the tool's raw name reads as plumbing, and the question is the one thing
+  // on the row a reader scans for.
+  const word = decisionWord(name);
+  if (word !== null) {
+    const instructions = field(input, 'instructions');
+    const first = instructions === null ? '' : firstLine(instructions).trim();
+    return first === '' ? word : `${word} - ${first}`;
+  }
   const said = headline(name, input);
   return said === name ? toolName(name) : said;
 }
@@ -503,8 +563,9 @@ export function leafOf(
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
-    body: drawnBody(name, body, result),
+    body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
     mutation: marksOf(name, input, body, record),
+    decision: decisionOf(name, input, result),
     skill: null,
     image: imageOf(result),
     imageNote: null,
@@ -541,9 +602,14 @@ function imageOf(result: Block | undefined): { mime: string; data: string } | nu
  * never say why. Where there is no diff the text is all there is, and either
  * way the call still settles on its result.
  */
-function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
+function drawnBody(
+  name: string,
+  body: CallBody[],
+  result: Block | undefined,
+  failed: boolean,
+): CallBody[] {
   if (result === undefined) return body;
-  const answered = bodyOf(result.content);
+  const answered = bodyOf(result.content, failed);
   if (result.is_error !== true && isEdit(name) && body.some((part) => part.kind !== 'text')) {
     return body;
   }

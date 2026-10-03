@@ -385,9 +385,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     has_dispatches: held['has_dispatches'] === true,
     work: workFrom(held['work']),
     pr: prFrom(held['pr']),
-    closes: list(held['closes'])
-      .map(prFrom)
-      .filter((issue): issue is { number: number; url: string } => issue !== null),
+    closes: issuesFrom(held['closes']),
   };
 }
 
@@ -421,7 +419,7 @@ function mcpFrom(value: unknown): McpServers | null {
   };
 }
 
-function processesFrom(value: unknown): ProcessSnapshot | null {
+export function processesFrom(value: unknown): ProcessSnapshot | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   return {
@@ -449,7 +447,7 @@ function composerFrom(value: unknown): ComposerState {
   };
 }
 
-function monitorFrom(value: unknown): MonitorRecord {
+export function monitorFrom(value: unknown): MonitorRecord {
   const held = record(value);
   return {
     tool_use_id: text(held['tool_use_id']) ?? '',
@@ -464,7 +462,21 @@ function monitorFrom(value: unknown): MonitorRecord {
   };
 }
 
-function prFrom(value: unknown): { number: number; url: string } | null {
+/**
+ * The issues a pull request closes, as the record holds them.
+ *
+ * **Exported with the field narrowers beside it, because a pushed frame and a
+ * read carry the same three fields**: `work_changed` is narrowed by these very
+ * functions, so a field cannot come out one way from a read and another from a
+ * frame.
+ */
+export function issuesFrom(value: unknown): { number: number; url: string }[] {
+  return list(value)
+    .map(prFrom)
+    .filter((issue): issue is { number: number; url: string } => issue !== null);
+}
+
+export function prFrom(value: unknown): { number: number; url: string } | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   const count = number(held['number']);
@@ -473,7 +485,7 @@ function prFrom(value: unknown): { number: number; url: string } | null {
 
 const GATES: WorkState['gate'][] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
 
-function workFrom(value: unknown): WorkState {
+export function workFrom(value: unknown): WorkState {
   const held = record(value);
   return {
     branch: text(held['branch']),

@@ -1,6 +1,7 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { hrefFor, hrefForSlot, parseRoute } from './routes';
+import { goTo, hrefFor, hrefForSlot, parseRoute } from './routes';
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
@@ -63,5 +64,27 @@ describe('the URLs the server serves', () => {
       name: 'session',
       slot: { org: 'O', project: 'P', label: '100%' },
     });
+  });
+});
+
+describe('moving the app in place', () => {
+  /**
+   * The event is what the shell re-reads the route from, so a `goTo` that
+   * only pushed would move the URL and leave the page on the seat it was
+   * showing - the reader looking at a page the address no longer names.
+   */
+  it('fires the event the shell re-reads the route from', () => {
+    const seen: string[] = [];
+    const listener = (): void => {
+      seen.push(location.pathname);
+    };
+    addEventListener('popstate', listener);
+    goTo({ name: 'session', slot: { org: 'TestOrg', project: 'proj', label: 'w1' } });
+    removeEventListener('popstate', listener);
+
+    expect(seen, 'the shell was given no event to re-read the route from').toEqual([
+      '/session/TestOrg/proj/w1',
+    ]);
+    expect(location.pathname).toBe('/session/TestOrg/proj/w1');
   });
 });

@@ -16,7 +16,7 @@ use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
+use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::{Command, DispatchError, SessionUpdate};
@@ -253,6 +253,7 @@ async fn handle_client(
             ServerMessage::Error {
                 what: "client_message".to_owned(),
                 why: "that is not a message this server knows".to_owned(),
+                seat: None,
             },
         )
         .await;
@@ -312,6 +313,7 @@ async fn handle_client(
                         ServerMessage::Error {
                             what: "subscribe".to_owned(),
                             why: refusal.to_string(),
+                            seat: None,
                         },
                     )
                     .await
@@ -337,6 +339,7 @@ async fn handle_client(
                         ServerMessage::Error {
                             what: "reply_to".to_owned(),
                             why: "this command answers through `reply_to` and no update carries its outcome, so that field is required: without it a client cannot tell a refusal from success".to_owned(),
+                            seat: None,
                         },
                     )
                     .await
@@ -350,6 +353,7 @@ async fn handle_client(
                         ServerMessage::Error {
                             what: "reply_to".to_owned(),
                             why: "this command's outcome rides the subscription rather than a reply, so it is sent without `reply_to`: there is no message a reply for it would carry".to_owned(),
+                            seat: None,
                         },
                     )
                     .await
@@ -362,6 +366,7 @@ async fn handle_client(
                             ServerMessage::Error {
                                 what: refusal_tag(&refusal).to_owned(),
                                 why: refusal.to_string(),
+                                seat: None,
                             },
                         )
                         .await
@@ -380,19 +385,17 @@ async fn handle_client(
                     ServerMessage::Error {
                         what: "more".to_owned(),
                         why: format!("forge holds no session for {conversation:?}"),
+                        // **Named, so a client holding several seats' asks
+                        // drains only its own**: the connection is shared and an
+                        // error carries no other seat.
+                        seat: Some(conversation.clone()),
                     },
                 )
                 .await;
             }
-            // Reading a seat is watching it, so paging refreshes the walk the
-            // same way subscribing does. The window in the walk is what keeps
-            // a client paging a long conversation from walking on every page.
-            walk_processes_if_stale(
-                &state.surface,
-                &conversation,
-                roster.claude_pid(&conversation),
-            )
-            .await;
+            // Paging walks nothing: the walk belongs to the seat's hold and
+            // its loop now, so a page reads the store the way every other read
+            // does - and a seat nobody held is a seat nothing walks.
             // The window slices the boundaries the fold reported, so a turn
             // crosses whole. Slicing on a count of messages instead is what
             // would hand a client half a turn.
@@ -417,6 +420,7 @@ async fn handle_client(
                             "the conversation for {conversation:?} is not held yet, so this page \
                              cannot be answered; asking again may find it"
                         ),
+                        seat: Some(conversation.clone()),
                     },
                 )
                 .await;
@@ -449,6 +453,7 @@ async fn handle_client(
                                 "the fold over {seat:?} did not finish, so this page cannot be \
                                  answered; asking again may find it"
                             ),
+                            seat: Some(seat.clone()),
                         },
                     )
                     .await;
@@ -534,6 +539,7 @@ async fn dispatch_answering(
             kick,
             resume_kick,
             interactive,
+            mcp_families,
             from_boot_respawn,
             ..
         } => {
@@ -547,6 +553,7 @@ async fn dispatch_answering(
                 kick,
                 resume_kick,
                 interactive,
+                mcp_families,
                 from_boot_respawn,
                 return_to: Some(tx),
             };
@@ -586,6 +593,7 @@ async fn dispatch_answering(
                     ServerMessage::Error {
                         what: refusal_tag(&refusal).to_owned(),
                         why: refusal.to_string(),
+                        seat: None,
                     },
                 )
                 .await
@@ -610,7 +618,7 @@ fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>
                 .collect(),
             configured: catalog.configured,
         },
-        Err(why) => ServerMessage::Error { what: "devices".to_owned(), why },
+        Err(why) => ServerMessage::Error { what: "devices".to_owned(), why, seat: None },
     }
 }
 
@@ -761,7 +769,7 @@ mod tests {
         assert_eq!(configured.as_deref(), Some("b-mic"), "and the configured pin beside them");
 
         let refused = devices_answer(Err("no audio host".to_owned()));
-        let ServerMessage::Error { what, why } = refused else {
+        let ServerMessage::Error { what, why, .. } = refused else {
             panic!("a failed walk is refused rather than answered with an empty list")
         };
         assert_eq!(what, "devices", "the refusal names what was asked for");

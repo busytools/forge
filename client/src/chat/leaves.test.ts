@@ -142,6 +142,129 @@ describe('what a call body draws', () => {
     ).toBe(true);
     expect(failed.status, 'and the row still settles on the failure').toBe('failed');
   });
+
+  it("reads the CLI's own envelope off a failed result, keeping the words it wrapped", () => {
+    // **The wrapper is addressed to the model, not to a reader.** It was drawn
+    // raw under the diff (measured on Ved's 2026-10-03 screenshot), and the
+    // fold is the one point every result's text enters - so it is read off
+    // once here, the same reading the terminal's `extract_tool_use_error_message`
+    // gives the same payload. The first line is the message; the rest is detail
+    // the note path would drop.
+    const wrapped =
+      '<tool_use_error>String to replace not found in file.\n' +
+      'String:   fn outcome(answer: Answer) {\n' +
+      '    AskOutcome { model: "test-model".to_owned() }</tool_use_error>';
+    const failed = leafOf(
+      't5',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: 'one', new_string: 'two' },
+      { type: 'tool_result', content: wrapped, is_error: true },
+    );
+
+    expect(failed.body.at(-1), 'the failure draws as its own piece, wrapper gone').toEqual({
+      kind: 'error',
+      message: 'String to replace not found in file.',
+      detail:
+        'String:   fn outcome(answer: Answer) {\n    AskOutcome { model: "test-model".to_owned() }',
+    });
+    expect(JSON.stringify(failed.body), 'and the tag never reaches the page').not.toContain(
+      'tool_use_error',
+    );
+
+    // The single-line payload, which is the other shape the envelope arrives
+    // in: a message with nothing under it.
+    const quiet = leafOf(
+      't6',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: 'one', new_string: 'two' },
+      {
+        type: 'tool_result',
+        content: '<tool_use_error>File has not been read yet.</tool_use_error>',
+        is_error: true,
+      },
+    );
+    expect(quiet.body.at(-1), 'a one-line envelope carries no detail').toEqual({
+      kind: 'error',
+      message: 'File has not been read yet.',
+      detail: '',
+    });
+  });
+
+  it('draws a completed result verbatim even when it quotes both tags', () => {
+    // **The failure direction is the only one the envelope belongs to.** Ten
+    // real completed results on this machine carry both tags - Reads of forge
+    // source, a diff, a grep for the string - and unwrapping those rewrites
+    // what the tool actually said (a 23,305-character Read collapsing to a
+    // bogus hint). The terminal gates the same question on Failed|Killed; a
+    // completed run shows its output verbatim, tags and all.
+    const quoting = leafOf(
+      't7',
+      'Read',
+      { file_path: '/x/a.rs' },
+      {
+        type: 'tool_result',
+        content: 'the error path writes <tool_use_error> and </tool_use_error> around it',
+      },
+    );
+
+    expect(quoting.body.at(-1), 'a completed result keeps its own words').toEqual({
+      kind: 'text',
+      text: 'the error path writes <tool_use_error> and </tool_use_error> around it',
+    });
+  });
+
+  it('reads the envelope off a failed result whose content is a block array', () => {
+    // The MCP-result shape: an array of blocks rather than a string, which is
+    // where the wrapped refusals of the forge tools arrive.
+    const failed = leafOf(
+      't8',
+      // replay-only: agents__tell
+      'mcp__forge__agents__tell',
+      { label: 'companies', message: 'picking it up' },
+      {
+        type: 'tool_result',
+        content: [
+          {
+            type: 'text',
+            text: '<tool_use_error>no label companies under this project</tool_use_error>',
+          },
+        ],
+        is_error: true,
+      },
+    );
+
+    expect(failed.body.at(-1), 'the array branch reads the envelope too').toEqual({
+      kind: 'error',
+      message: 'no label companies under this project',
+      detail: '',
+    });
+  });
+
+  it('reads the tag without letting a non-ASCII letter shift it', () => {
+    // **`toLowerCase()` is not a safe scan.** U+0130 lowercases to two code
+    // units, so indices taken off a lowercased copy slice the original at
+    // shifted offsets - the terminal's scanner is ASCII-lowercasing for
+    // exactly this reason. Measured against the old form this payload reads
+    // `sg<` (the İ before the tag pulls every index one to the right and the
+    // close marker leaks into the words); the length-preserving scan reads
+    // `msg`, which is what the payload says.
+    const dotted = leafOf(
+      't9',
+      'Bash',
+      { command: 'run it' },
+      {
+        type: 'tool_result',
+        content: 'İ<tool_use_error>msg</tool_use_error>',
+        is_error: true,
+      },
+    );
+
+    expect(dotted.body.at(-1), 'the tag is read where it actually sits').toEqual({
+      kind: 'error',
+      message: 'msg',
+      detail: '',
+    });
+  });
 });
 
 describe('what opens without being asked', () => {
@@ -163,13 +286,13 @@ describe('what opens without being asked', () => {
     // unbounded. Dropping the size term re-opens every giant diff silently.
     const small = edit(10);
     expect(
-      opensByDefault(small.name, small.body),
+      opensByDefault(small.name, small.body, null),
       'an ordinary mutation draws its diff without being asked',
     ).toBe(true);
 
     const huge = edit(1500);
     expect(
-      opensByDefault(huge.name, huge.body),
+      opensByDefault(huge.name, huge.body, null),
       'a mutation over the bound starts closed, and one click still opens it',
     ).toBe(false);
 
@@ -183,14 +306,60 @@ describe('what opens without being asked', () => {
       answered('The file /x/gen.rs has been updated.'),
     );
     expect(
-      opensByDefault(oneLongLine.name, oneLongLine.body),
+      opensByDefault(oneLongLine.name, oneLongLine.body, null),
       'a few enormous lines are rows in the hundreds of thousands, and stay closed',
     ).toBe(false);
 
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
-    expect(opensByDefault(bash.name, bash.body), 'a call with no diff never opens itself').toBe(
-      false,
+    expect(
+      opensByDefault(bash.name, bash.body, null),
+      'a call with no diff never opens itself',
+    ).toBe(false);
+  });
+});
+
+describe('a systemone decision on its row', () => {
+  const NOUL = JSON.stringify({
+    model: 'jev-1.13.0',
+    answer: { type: 'noul', noul: 0.93 },
+    usage: { input_tokens: 392, output_tokens: 20 },
+  });
+  const asked = {
+    state: 'a one-line import fix',
+    instructions: 'Is this mechanical and reversible?\nAnd nothing else.',
+  };
+
+  it('names the row with the tool word and the question', () => {
+    const leaf = leafOf('t1', 'mcp__forge__systemone__ask_noul', asked, answered(NOUL));
+    expect(leaf.title, 'the tool word, then the first line of the question').toBe(
+      'ask noul - Is this mechanical and reversible?',
     );
+    expect(leaf.decision !== null, 'and the result parses onto the row').toBe(true);
+  });
+
+  it('draws the word alone where the call carried no question', () => {
+    const leaf = leafOf('t2', 'mcp__forge__systemone__ask_choice', {}, answered(NOUL));
+    expect(leaf.title).toBe('ask choice');
+  });
+
+  it('opens a decided row without being asked, and leaves a raw fallback closed', () => {
+    const decided = leafOf('t1', 'mcp__forge__systemone__ask_noul', asked, answered(NOUL));
+    expect(
+      opensByDefault(decided.name, decided.body, decided.decision),
+      'a decided row opens like a small edit',
+    ).toBe(true);
+
+    const unreadable = leafOf(
+      't2',
+      'mcp__forge__systemone__ask_noul',
+      asked,
+      answered('not the JSON this page reads'),
+    );
+    expect(unreadable.decision, 'an unreadable result is not dressed').toBeNull();
+    expect(
+      opensByDefault(unreadable.name, unreadable.body, unreadable.decision),
+      'and stays closed like every other call',
+    ).toBe(false);
   });
 });
 

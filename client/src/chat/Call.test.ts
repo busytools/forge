@@ -15,6 +15,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
+  decision: null,
   skill: null,
   image: null,
   imageNote: null,
@@ -25,12 +26,24 @@ const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
 describe('the row one call draws', () => {
+  /**
+   * **The row carries the fold's own name, not the wire id.** Two id-less
+   * `tool_use` calls leave the wire id empty, so the lane hands the fold's key
+   * down and the row draws that: keys stay unique, which is what the column's
+   * anchor would need of them.
+   */
+  it("carries the fold's key on the row", () => {
+    const named = render(Call, { props: { call: backgrounded(null), k: 'f7' } }).body;
+    expect(named, "the fold's own name for the row").toContain('data-k="call-f7"');
+  });
+
   it("opens onto the skill a Skill call loaded, which is the row's right data", () => {
     // The call's own result is the CLI's "Launching skill: ..." line, which
     // says nothing; the fold hangs the skill's body on the call, and the row
     // opens onto that instead.
     const drawn = render(Call, {
       props: {
+        k: 'toolu_skill',
         call: {
           id: 'toolu_skill',
           row: { kind: 'family', family: 'skill' },
@@ -41,6 +54,7 @@ describe('the row one call draws', () => {
           note: null,
           body: [{ kind: 'text', text: 'Launching skill: unslop' }],
           mutation: null,
+          decision: null,
           skill: '# Unslop\n\nEdit text to remove AI patterns.',
           image: null,
           imageNote: null,
@@ -59,6 +73,7 @@ describe('the row one call draws', () => {
     // refuses to draw.
     const drawn = render(Call, {
       props: {
+        k: 'toolu_shot',
         call: {
           id: 'toolu_shot',
           row: { kind: 'family', family: 'read' },
@@ -69,6 +84,7 @@ describe('the row one call draws', () => {
           note: null,
           body: [],
           mutation: null,
+          decision: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -87,6 +103,7 @@ describe('the row one call draws', () => {
     const drawn = render(Call, {
       props: {
         open: true,
+        k: 'toolu_shot_text',
         call: {
           id: 'toolu_shot_text',
           row: { kind: 'family', family: 'read' },
@@ -100,6 +117,7 @@ describe('the row one call draws', () => {
             { kind: 'image', mime: 'image/png', uri: null },
           ],
           mutation: null,
+          decision: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -117,6 +135,7 @@ describe('the row one call draws', () => {
     const drawn = boxes(
       render(Call, {
         props: {
+          k: 'bg-notice',
           call: backgrounded({
             text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
             tone: 'sum',
@@ -141,6 +160,7 @@ describe('the row one call draws', () => {
     const drawn = boxes(
       render(Call, {
         props: {
+          k: 'bg-two',
           call: {
             ...call,
             body: [
@@ -161,13 +181,53 @@ describe('the row one call draws', () => {
     // The one thing a backgrounded call's own launch result cannot say: that
     // result is a clean one.
     const running = render(Call, {
-      props: { call: { ...backgrounded(null), status: 'in_progress' } },
+      props: { k: 'bg-running', call: { ...backgrounded(null), status: 'in_progress' } },
     }).body;
 
     expect(running, 'the row carries the running class').toContain('class="leaf running"');
     expect(
-      render(Call, { props: { call: backgrounded(null) } }).body,
+      render(Call, { props: { k: 'bg-clean', call: backgrounded(null) } }).body,
       'and a settled call does not',
     ).not.toContain('class="leaf running"');
+  });
+
+  it('draws a parsed decision as its block, in place of the raw result', () => {
+    // The result's JSON and the block carry the same facts; the row draws the
+    // block. The fold's tests pin that an unreadable result keeps drawing its
+    // text, which is this same branch not taken.
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_decide',
+        open: true,
+        call: {
+          id: 'toolu_decide',
+          row: { kind: 'systemone' },
+          name: 'mcp__forge__systemone__ask_noul',
+          title: 'ask noul - Is this mechanical?',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [
+            {
+              kind: 'text',
+              text: '{"model":"jev-1.13.0","answer":{"type":"noul","noul":0.93},"usage":{"input_tokens":392,"output_tokens":20}}',
+            },
+          ],
+          mutation: null,
+          decision: {
+            model: 'jev-1.13.0',
+            usage: { input_tokens: 392, output_tokens: 20, cost: null },
+            answer: { kind: 'noul', noul: 0.93 },
+          },
+          skill: null,
+          image: null,
+          imageNote: null,
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the block draws').toContain('class="dec"');
+    expect(drawn, 'with the answer as its number').toContain('0.93');
+    expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
   });
 });

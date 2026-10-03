@@ -220,6 +220,17 @@
     flex-wrap: nowrap; min-width: 0; }
   .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  /* The wordmark in the header, the way home: the home's own brand a size
+     down so the session's name still leads, in a real anchor so the keyboard
+     reaches it, the URL stays real and the router follows it in place. The
+     hairline is what separates the app's brand from the seat's own. */
+  .sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
+    color: inherit; text-decoration: none; }
+  .sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+  .sess .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
+  .sess .brand:hover .word { text-decoration: underline; }
+  .sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
   .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
   .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
     min-width: 0; overflow: hidden;
@@ -398,14 +409,14 @@
      draws 1.25em. The rule under the header comes with it: it sat clear of the
      row below because that padding was holding it there. */
   .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
-  /* A data cell breaks a long token rather than widening the table past the
-     column: the terminal stacks a table its grid cannot hold, and wrapping keeps
-     the table the shape it is - while a header that may break anywhere has a
-     one-character minimum and is sliced by a neighbouring column's demand for
-     width, so the header resets what it would otherwise inherit. A table whose
-     own header words do not fit the column still exceeds it; stacking is the
-     terminal's answer to that and not this one. */
-  .prose td { overflow-wrap: anywhere; }
+  /* A data cell keeps its longest word, so no column is sliced below one:
+     `anywhere` gives the cell a one-character minimum, and wherever the table
+     outgrows the column the auto layout takes a short column down to it
+     (measured: the five-character `#1662` drew on three lines at a 500px
+     window). The price is a token wider than the column can hold sending the
+     table past the column instead of breaking inside a cell - the stance the
+     header rule already takes. */
+  .prose td { overflow-wrap: break-word; }
   .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
     border-bottom: 1px solid var(--line); }
   .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
@@ -468,6 +479,29 @@
   .term .sum { color: var(--ok); }
   /* A task that ended badly is the same line in the bad tone. */
   .term .fail { color: var(--bad); }
+  /* A systemone decision's block: the answer, its distribution, and what it
+     cost. The winner's fill is the shipped teal, which no other rule uses. */
+  .dec { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
+  .dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
+  .dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+  .dec .num.sure { color: var(--ok); }
+  .dec .num.unsure { color: var(--warn); }
+  .dec .read { font-size: var(--fs-label); color: var(--muted); }
+  .dec .read b { color: var(--text); font-weight: 500; }
+  .dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
+  .dec .opt { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
+    gap: 10px; align-items: center; font-size: var(--fs-label); }
+  .dec .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dec .opt.win .name { color: var(--text); }
+  .dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  .dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
+  .dec .fill.win { background: var(--teal); }
+  .dec .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dec .opt.win .p { color: var(--text); }
+  .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
+    border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+  .dec .foot .sep { opacity: .5; }
   .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
     margin: 4px 0; border-left: 1px solid var(--line); }
   .searchhit .ln { color: var(--accent); }
@@ -512,6 +546,16 @@
   .patchline { display: flex; align-items: center; padding: 4px 0 0;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .patchsize { margin-right: 8px; }
+  /* A failed call's own words, in the same caption chrome rather than the error
+     box's: the CLI's envelope is read off in the fold (`leaves.ts`), and what is
+     left is a line for a reader - what happened first, the detail under it. The
+     terminal keeps its error tone on the same payload; this draws the caption it
+     reads as. */
+  .errhint { padding: 4px 0 0; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); overflow-wrap: anywhere; }
+  /* The detail is the excerpt as the CLI wrote it, indentation and all, so it
+     keeps its line breaks where the message above is one line. */
+  .errhint .d { margin-top: 2px; white-space: pre-wrap; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   /* The number each side holds the line at, which is what makes two hunks in one
      file readable: the old file's on the left, the new file's beside it, and a
@@ -523,6 +567,11 @@
      every line of a new file. */
   .dif.added { grid-template-columns: 34px 22px 1fr; }
   .dif.added .on { display: none; }
+  /* The two sides a call's own input carries, which have no position in the file:
+     there are no numbers to draw, so the columns for them follow the numbers off
+     the row rather than sitting empty. Declared after `.dif.added` so a
+     position-less create takes this template, not that one's. */
+  .dif.bare { grid-template-columns: 22px 1fr; }
   .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
   .dif .ln.d .l { background: var(--del-bg); }
@@ -622,8 +671,11 @@
   details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
-  details.inboundrow > summary .ev { color: var(--muted); }
+  details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.inboundrow > summary .ev.warn { color: var(--warn); }
+  details.inboundrow > summary .ev strong, details.inboundrow > summary .ev code {
+    color: var(--text); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -982,6 +1034,7 @@
   <symbol id="i-badge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M13 10h5M13 14h5M6.5 17a3 3 0 0 1 5 0"/></symbol>
   <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
+  <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
 </svg>
 
 <input type="checkbox" id="l" hidden>
@@ -1101,7 +1154,10 @@
         <div class="fr"><span class="k">cap</span><span class="v none">not set</span></div>
       </div>
       <div class="vers">
+        <!-- The socket protocol the client and server must agree on, shown
+             with the two builds it binds. -->
         <div class="v">forge v1.0.105</div>
+        <div class="v">socket v3</div>
         <div class="v">claude v2.1.280 <span class="up">&#8594; v2.1.286</span></div>
       </div>
     </div>
@@ -1110,6 +1166,14 @@
   <!-- ============ CHAT ============ -->
   <main class="chat">
     <div class="sess">
+      <!-- The wordmark in the header, the way home: the home's own brand, a
+           size down so the session's name still leads, on the band's own left
+           edge. -->
+      <a class="brand" href="/" title="home">
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="word">forge</span>
+      </a>
+      <span class="mastsep" aria-hidden="true"></span>
       <label class="pane-tog tog-l" for="l" title="projects">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
@@ -1386,6 +1450,25 @@ Consecutive tool calls between two user messages fold into one group.</div>
                 <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
               </div>
             </details>
+            <!-- A failed edit: the diff it meant to make, and the CLI's own
+                 reason under it in the caption chrome - the envelope's tags
+                 are read off in the fold and never reach the page. -->
+            <details class="leaf" open>
+              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif bare">
+                  <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+                </div>
+                <div class="errhint">
+                  <div class="m">String to replace not found in file.</div>
+                  <div class="d">String:   fn outcome(answer: Answer) -&gt; AskOutcome {
+    AskOutcome { model: "test-model".to_owned(), answer, usage: Usage { input_tokens: 10, output_tokens: 3, cost: None } }
+  }</div>
+                </div>
+                <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span></div>
+              </div>
+            </details>
           </div>
 
           <div class="lane">
@@ -1475,14 +1558,71 @@ docs: Render the message body into rows.</div>
           </div>
 
           <div class="lane">
+            <div class="knd"><svg class="ic gl"><use href="#i-decide"/></svg><span class="nm">systemone</span></div>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Is this one-line import fix mechanical and reversible?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num sure">0.93</span><span class="read">yes</span></div>
+                  <div class="dist">
+                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:93%"></span></span><span class="p">0.93</span></div>
+                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:7%"></span></span><span class="p">0.07</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>392 in - 20 out</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask choice - Which team should handle this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="read">pick: <b>payments</b> - confidence 0.72</span></div>
+                  <div class="dist">
+                    <div class="opt"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div>
+                    <div class="opt win"><span class="name">payments</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask score - How urgent is this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num">1.79</span><span class="read">of 2 - between Soon and Urgent</span></div>
+                  <div class="dist">
+                    <div class="opt"><span class="name">Routine</span><span class="track"><span class="fill" style="width:8%"></span></span><span class="p">0.08</span></div>
+                    <div class="opt win"><span class="name">Soon</span><span class="track"><span class="fill win" style="width:31%"></span></span><span class="p">0.31</span></div>
+                    <div class="opt win"><span class="name">Urgent</span><span class="track"><span class="fill win" style="width:61%"></span></span><span class="p">0.61</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>410 in - 24 out</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Should the rename touch the shared module now?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num unsure">0.52</span><span class="read">yes</span></div>
+                  <div class="dist">
+                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:52%"></span></span><span class="p">0.52</span></div>
+                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-bot"/></svg><span class="nm">peer</span></div>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn"><span class="dir">sent to</span><span class="k">forge/steward</span> &#183; picking it up</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><p>picking it up</p><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
+              <div class="body"><div class="pbody"><div class="prose"><p>picking it up</p></div><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-inbox"/></svg><span class="tn"><span class="dir">from</span><span class="k">gateway-backend</span> &#183; the gate is green, shipping</span><span class="org">Granite</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><p>the gate is green, shipping</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose"><p>the gate is green, shipping</p></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn warn"><span class="k">companies</span> &#183; failed to deliver: channel closed</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1546,23 +1686,23 @@ docs: Render the message body into rows.</div>
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
                 <span class="tn"><span class="k">forge/steward</span> &#183; is the cron issue filed?</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody">
-                <p>is the cron issue filed? the wake dies on the 2nd.</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose">
+                <p>is the cron issue filed? the <strong>wake</strong> dies on the 2nd.</p></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
                 <span class="tn"><span class="k">forge/steward</span> &#183; IT IMPORTED. The window is lost</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody">
-                <p>IT IMPORTED. The window is lost, so the report has to come from the capture.</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose">
+                <p>IT IMPORTED. The window is lost, so the report has to come from the capture.</p></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-away"/></svg>
                 <span class="tn"><span class="k">companies</span> &#183; picking up the migration now</span>
                 <span class="org">Gateway</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody">
-                <p>picking up the migration now. Nothing blocked on your side.</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose">
+                <p>picking up the migration now. Nothing blocked on your side.</p></div></div></div>
             </details>
           </div>
           <div class="lane">
@@ -1571,8 +1711,8 @@ docs: Render the message body into rows.</div>
               <summary><svg class="ic mk"><use href="#i-bot"/></svg>
                 <span class="tn"><span class="k">forge/tester</span> &#183; take the render half, I&#39;ll take the partition</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody">
-                <p>take the render half, I&#39;ll take the partition.</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose">
+                <p>take the render half, I&#39;ll take the partition.</p></div></div></div>
             </details>
           </div>
         </div>
@@ -1760,9 +1900,12 @@ docs: Render the message body into rows.</div>
           <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-schedules"/></svg><span class="nm">cron</span></div>
             <details class="leaf inboundrow">
+              <!-- A cron fire's title IS its body's first line, so no tail is
+                   drawn: a tail that repeats the title is not a tail. -->
               <summary><span class="tn">morning sweep</span>
-                <span class="ev">morning sweep</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="prose">
+                <p>morning sweep</p></div></div>
             </details>
           </div>
           <div class="lane">
@@ -1771,7 +1914,8 @@ docs: Render the message body into rows.</div>
               <summary><span class="tn">Trust Machines &#183; #alerts &#183; ved</span>
                 <span class="ev">disk almost full on srv2</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">disk almost full on srv2 - 92% on /var</div></div>
+              <div class="body"><div class="prose">
+                <p>disk almost full on <code>srv2</code> - 92% on /var</p></div></div>
             </details>
             <details class="leaf inboundrow">
               <summary><span class="tn">Trust Machines &#183; #general &#183; priya</span>

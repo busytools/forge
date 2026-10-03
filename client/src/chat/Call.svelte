@@ -4,6 +4,7 @@
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
+  import Decision from './Decision.svelte';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
@@ -21,7 +22,28 @@
    * without being asked, while it is small enough to draw - and the reader's
    * own toggling takes it from there.
    */
-  let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
+  let {
+    call,
+    open = false,
+    k,
+  }: {
+    call: ToolLeaf;
+    open?: boolean;
+    /**
+     * The fold's own name for this row, which the row draws in `data-k`.
+     *
+     * **Required, and the wire id would not do**: an id-less `tool_use` leaves
+     * it empty, and two such rows would carry one key. The lane hands the
+     * fold's key down.
+     *
+     * **The column's anchor does not look this far down today**: its scan
+     * takes the first row whose box crosses the viewport's top, and the unit
+     * row enclosing this one always comes first in document order - so this
+     * key is for a finer hold than the unit's, not the one in force, and
+     * nothing is spent on it while the scan stops at the unit.
+     */
+    k: string;
+  } = $props();
 
   /**
    * Whether the row is open, held HERE rather than drawn from the prop.
@@ -31,15 +53,28 @@
    * state from then on: a row is re-rendered whenever the turn is, and an
    * `open` attribute written from a prop on every update closes a row the
    * reader has just opened.
+   *
+   * **A late opener is the one exception, and only its edge.** A decision's
+   * block arrives with the result, after the row has mounted closed, so a
+   * snapshot alone would draw the live and re-read paths differently; the row
+   * opens on the false -> true edge of the prop and never again, so a reader
+   * who closed it stays closed. An edit's diff is in the call at mount, so
+   * that edge only ever fires for a block that arrived late.
    */
   let opened = $state(untrack(() => open));
+
+  $effect(() => {
+    if (open && !untrack(() => opened)) opened = true;
+  });
 
   /** The tools whose body is a list of hits rather than prose or a command's output. */
   const SEARCHES = new Set(['Grep', 'Glob', 'LS']);
 
   /** The hits a search call came back with, or `null` when this is not one. */
   const hits = $derived(
-    SEARCHES.has(call.name)
+    // A failed search carries no hits: its reason must draw through the
+    // pieces, not be swallowed by a hits path that has nothing to list.
+    SEARCHES.has(call.name) && !call.body.some((piece) => piece.kind === 'error')
       ? searchHits(call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'))
       : null,
   );
@@ -130,7 +165,7 @@
   class="leaf"
   class:running={call.status === 'in_progress'}
   bind:open={opened}
-  data-k={`call-${call.id}`}
+  data-k={`call-${k}`}
 >
   <summary>
     {#if call.status === 'completed'}
@@ -166,6 +201,12 @@
          onto the skill itself, which is what anyone opening it wants to read. -->
     <div class="body">
       <Prose text={call.skill} />
+    </div>
+  {:else if call.decision !== null}
+    <!-- The result's own JSON is the same facts undressed; the block is how
+         they read, and an unreadable result never reaches this branch. -->
+    <div class="body">
+      <Decision decision={call.decision} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">
@@ -253,6 +294,18 @@
     {#if piece.kind === 'image'}
       <div class="term">
         image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
+      </div>
+    {:else if piece.kind === 'error'}
+      <!-- A failed call's reason, in the caption chrome rather than a box of
+           its own: what happened first, the detail under it. The CLI's
+           envelope was read off in the fold, so only the words arrive here -
+           and the command leads its own failure the way it leads a settled
+           one, or the reason says nothing about what failed. -->
+      <div class="errhint">
+        {#if call.command !== null}<span class="pfx">$</span>
+          {call.command}<br />{/if}
+        <div class="m">{piece.message}</div>
+        {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />

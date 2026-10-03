@@ -4,6 +4,8 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
+import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import Rail from './Rail.svelte';
 
@@ -22,8 +24,41 @@ const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8'
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
+/**
+ * A connection this sheet never reaches.
+ *
+ * A row's close chip only acts when it is pressed, and every assertion here
+ * is over rendered markup - so this satisfies the prop and throws on any
+ * use, which would mean the render had started acting rather than drawing.
+ */
+function untouched(): Connection {
+  const refuse = (): never => {
+    throw new Error('the render reached the connection');
+  };
+  return {
+    subscribe: refuse,
+    unsubscribe: refuse,
+    refresh: refuse,
+    dispatch: refuse,
+    more: refuse,
+    devices: refuse,
+    onMessage: refuse,
+    onStatus: refuse,
+    store: refuse,
+    settings: refuse,
+    status: refuse,
+    close: refuse,
+  };
+}
+
 const footer = render(Rail, {
-  props: { home: homeWire, current: LEAD, now: Date.now(), onclose: () => undefined },
+  props: {
+    home: homeWire,
+    current: LEAD,
+    now: Date.now(),
+    connection: untouched(),
+    onclose: () => undefined,
+  },
 }).body;
 
 /** One rule's declarations, from its selector to the brace that closes it. */
@@ -35,6 +70,19 @@ function rule(selector: string): string {
 }
 
 describe('the rail footer', () => {
+  it('names the socket protocol with the two builds it binds', () => {
+    // **The client and a server that disagrees on the protocol refuse each
+    // other** (`socket.ts` checks the greeting), so the number reads beside
+    // the builds rather than only inside a refusal's own words.
+    expect(footer, 'the protocol this app speaks').toContain(`>socket v${PROTOCOL_VERSION}<`);
+    expect(footer.indexOf('socket v'), 'after the build serving the socket').toBeGreaterThan(
+      footer.indexOf('forge v'),
+    );
+    expect(footer.indexOf('socket v'), 'and before the CLI it binds').toBeLessThan(
+      footer.indexOf('claude v'),
+    );
+  });
+
   it('separates the installed version from the one it moves to', () => {
     // The fixture answers 1.0.0 installed against 1.1.0 published, so the row
     // draws both halves and the separator between them is the whole subject.

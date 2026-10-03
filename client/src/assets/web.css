@@ -439,6 +439,16 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   flex-wrap: nowrap; min-width: 0; }
 .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The wordmark in the header, the way home: the home's own brand a size down
+   so the session's name still leads, in a real anchor so the keyboard reaches
+   it, the URL stays real and the router follows it in place. The hairline is
+   what separates the app's brand from the seat's own. */
+.sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
+  color: inherit; text-decoration: none; }
+.sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+.sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
+.sess .brand:hover .word { text-decoration: underline; }
+.sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   min-width: 0; overflow: hidden;
@@ -521,11 +531,6 @@ details.sfold > summary::-webkit-details-marker { display: none; }
 details.sfold > summary .nm { color: var(--dim); }
 details.sfold > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
 details.sfold[open] > summary .arw { color: var(--accent); }
-
-/* A chip that cannot be clicked yet says so rather than turning red under
-   the pointer, which would promise the click. */
-.pj:hover .pr .x:disabled, .wk:hover .x:disabled { color: var(--muted); background: none; }
-.x:disabled { opacity: .4; cursor: default; }
 
 /* a line whose work is in flight, the ring in front of it */
 .hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
@@ -745,14 +750,14 @@ details.sec[open] > summary .arw { color: var(--accent); }
    its own. The rule under the header comes with it: it sat clear of the row
    below because that padding was holding it there. */
 .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
-/* A data cell breaks a long token rather than widening the table past the
-   column: the terminal stacks a table its grid cannot hold, and wrapping keeps
-   the table the shape it is - while a header that may break anywhere has a
-   one-character minimum and is sliced by a neighbouring column's demand for
-   width, so the header resets what it would otherwise inherit. A table whose
-   own header words do not fit the column still exceeds it; stacking is the
-   terminal's answer to that and not this one. */
-.prose td { overflow-wrap: anywhere; }
+/* A data cell keeps its longest word, so no column is sliced below one:
+   `anywhere` gives the cell a one-character minimum, and wherever the table
+   outgrows the column the auto layout takes a short column down to it
+   (measured: the five-character `#1662` drew on three lines at a 500px
+   window). The price is a token wider than the column can hold sending the
+   table past the column instead of breaking inside a cell - the stance the
+   header rule already takes. */
+.prose td { overflow-wrap: break-word; }
 .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
   border-bottom: 1px solid var(--line); }
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
@@ -800,6 +805,29 @@ details.leaf.running > summary { color: var(--text); }
    summary half, and a task that ended badly is the same line in the bad tone. */
 .term .sum { color: var(--ok); }
 .term .fail { color: var(--bad); }
+/* A systemone decision's block: the answer, its distribution, and what it
+   cost. The winner's fill is the shipped teal, which no other rule uses. */
+.dec { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
+.dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
+.dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+.dec .num.sure { color: var(--ok); }
+.dec .num.unsure { color: var(--warn); }
+.dec .read { font-size: var(--fs-label); color: var(--muted); }
+.dec .read b { color: var(--text); font-weight: 500; }
+.dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
+.dec .opt { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
+  gap: 10px; align-items: center; font-size: var(--fs-label); }
+.dec .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dec .opt.win .name { color: var(--text); }
+.dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+.dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
+.dec .fill.win { background: var(--teal); }
+.dec .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dec .opt.win .p { color: var(--text); }
+.dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
+  border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+.dec .foot .sep { opacity: .5; }
 /* A source file a call read or wrote. Its token classes are the
    highlighter's own (`hljs-*`), coloured by the theme that ships beside the
    module: the `.k` / `.s` / `.f` rules that stood here read three tokens the
@@ -856,6 +884,16 @@ details.leaf.running > summary { color: var(--text); }
    already take. */
 .patchline { display: flex; align-items: center; padding: 4px 0 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+/* A failed call's own words, in the same caption chrome rather than the error
+   box's: the CLI's envelope is read off in the fold (`leaves.ts`), and what is
+   left is a line for a reader - what happened first, the detail under it. The
+   terminal keeps its error tone on the same payload; this draws the caption it
+   reads as. */
+.errhint { padding: 4px 0 0; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); overflow-wrap: anywhere; }
+/* The detail is the excerpt as the CLI wrote it, indentation and all, so it
+   keeps its line breaks where the message above is one line. */
+.errhint .d { margin-top: 2px; white-space: pre-wrap; }
 /* The figures the marks follow, which are the line's own words rather than a
    mark. Bare for the same reason `.patchmark` is. */
 .patchsize { margin-right: 8px; }
@@ -925,12 +963,13 @@ details.leaf > summary .tn.warn { color: var(--warn); }
 details.leaf > summary .tn.warn .k { color: var(--warn); }
 details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+/* A peer row's body: the message as prose, then the facts its own result
+   carried. The lane rule is what a reader's own turn is drawn against. */
 .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
   border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
 .pbody p + p { margin-top: 9px; }
 .pbody code { font-family: var(--mono); font-size: .88em; color: var(--text);
   background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
-
 /* an answered question survives the dock clearing */
 .card { margin: 8px 0; padding: 2px 0; }
 .card .q { display: flex; align-items: baseline; gap: 9px; padding-left: 12px;
@@ -1001,9 +1040,15 @@ details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
    take the prose tone the name's marks do, rather than the tail's muting. */
 details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
-   where the wire said the delivery is elevated. */
-details.inboundrow > summary .ev { color: var(--muted); }
+   where the wire said the delivery is elevated - clamped to its one line and
+   taking the width the name leaves, the way the hook row's tail does. */
+details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.inboundrow > summary .ev.warn { color: var(--warn); }
+/* The tail's own inline marks take the prose tone, the hook row's twin rule:
+   a mark reads as a mark in both rows, not as the muting around it. */
+details.inboundrow > summary .ev strong, details.inboundrow > summary .ev code {
+  color: var(--text); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.

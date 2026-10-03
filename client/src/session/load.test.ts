@@ -143,6 +143,9 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
      */
     update: (msg: unknown = block()) =>
       emit({ kind: 'update', update: { chat_appended: { key: LEAD, msg } } }),
+    /** One pushed process walk for this seat, the frame a held seat's own loop sends. */
+    walk: (snapshot: unknown) =>
+      emit({ kind: 'update', update: { processes_changed: { key: LEAD, snapshot } } }),
     /** One frame for a seat this page is not looking at. */
     other: () => emit({ kind: 'update', update: { chat_appended: { key: OTHER, msg: block() } } }),
     /** One frame that names no seat at all. */
@@ -175,21 +178,6 @@ function dispatched(): Record<string, unknown> {
     },
     session_id: 's',
     parent_tool_use_id: null,
-  };
-}
-
-/** A Monitor the record carries: no frame feeds it, so only a read can move it. */
-function monitor(): Record<string, unknown> {
-  return {
-    tool_use_id: 'm1',
-    task_id: null,
-    description: 'ci-watch',
-    command: 'gh run watch',
-    persistent: false,
-    timeout_ms: 0,
-    status: 'running',
-    output_file: null,
-    ended_at: null,
   };
 }
 
@@ -403,23 +391,41 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **A poll's answer is a MERGE, and it takes only the slices no frame
-   * carries** - so a poll has to be shown moving one, or the case below cannot
-   * tell "the poll never ran" from "the field is not taken from the poll".
+   * **The process walk reaches the section as a pushed row, and a poll's
+   * answer cannot put it back.** The walk was one of the slices the merge took
+   * from a poll's answer; now the seat's own hold sends it, so the section
+   * appearing on a frame is this slice's user-visible claim - and the poll
+   * still carrying the empty walk, landing after the frame, is the revert a
+   * merge that still took `processes` would allow.
    */
-  it('takes a field no frame feeds from what the poll answered with', () => {
-    const fields: Record<string, unknown> = { monitors: [] };
+  it('draws a section from a pushed walk and keeps it through a poll', () => {
+    const fields: Record<string, unknown> = {
+      processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
+    };
     const server = open([], fields);
-    expect(drawn().map((section) => section.key)).not.toContain('sec-monitors');
+    expect(drawn().map((section) => section.key)).not.toContain('sec-processes');
 
-    fields['monitors'] = [monitor()];
+    arrive(() =>
+      server.walk({
+        processes: [
+          { pid: 4, parent_pid: 1, name: 'claude', command: 'claude', memory_bytes: 1024 },
+        ],
+        scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
+      }),
+    );
+
+    const keys = drawn().map((section) => section.key);
+    expect(keys, `a pushed walk drew no section: ${JSON.stringify(keys)}`).toContain(
+      'sec-processes',
+    );
+
     vi.advanceTimersByTime(POLL_MS + 1);
     flushSync();
 
-    const keys = drawn().map((section) => section.key);
+    const after = drawn().map((section) => section.key);
     expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
-    expect(keys, `a poll's answer did not reach the record: ${JSON.stringify(keys)}`).toContain(
-      'sec-monitors',
+    expect(after, `a poll put the pushed walk back: ${JSON.stringify(after)}`).toContain(
+      'sec-processes',
     );
   });
 
@@ -429,7 +435,8 @@ describe('what one arriving frame costs the inspector', () => {
    * carries it, so the poll is the only path that moves it - and a merge that
    * dropped it would leave the section absent for a seat that dispatched with
    * the page in front of the reader, which is the mistake the section exists to
-   * avoid. The case above is this one's control: it shows a poll that ran.
+   * avoid. The poll this case waits on is asserted to have asked, so a section
+   * that never drew is not the poll having stayed quiet.
    */
   it("takes the record's own dispatch answer from what the poll answered with", () => {
     const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };

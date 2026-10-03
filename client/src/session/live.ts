@@ -33,12 +33,13 @@ import { applyUpdate, REPLACES, UNFED, variantOf } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /**
- * How often the slices no update carries are read.
+ * How often the fields still unfed are read.
  *
- * A read is a whole encode, and the slices a poll takes from it are the
- * slowest-moving part of the record - a git scan and a process walk do not
- * change between one frame and the next - so this is the coarsest read that
- * keeps a page honest rather than the cheapest that keeps it moving.
+ * A read is a whole encode, and the fields a poll takes from it are the
+ * slowest-moving part of the record - a file list, a catalogue - so this is
+ * the coarsest read that keeps a page honest rather than the
+ * cheapest that keeps it moving. The list itself is `UNFED`, and the tick is
+ * retired when the last field leaves it.
  */
 export const POLL_MS = 5_000;
 
@@ -437,8 +438,8 @@ function createSeat(
 
       // The three variants that REPLACE the record rather than patching it: a
       // seat waking up, connecting, or taking a new occupant. What they carry
-      // is not a record - the folded transcript, the process walk, the working
-      // tree - so only a read answers them.
+      // is not a record - the seat's own session facts and the folded
+      // transcript - so only a read answers them.
       const [name] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
         seat.replaceWanted = true;
@@ -498,11 +499,11 @@ function createSeat(
 }
 
 /**
- * A poll's answer, keeping only the fields the read is asked for.
+ * A poll's answer, keeping only the fields on `UNFED`'s list.
  *
- * Which fields those are is `UNFED`'s list, and it is not the same question
- * as whether any update carries them: a field can be pushed and still be read
- * here, because this build applies no update to it yet.
+ * **A field leaves that list when a handler for its frame lands**, and the
+ * list is the whole of what this takes: a field that has a handler and stayed
+ * on the list would be a pushed row an older answer reverts.
  *
  * **The conversation is the one to watch here.** A poll is asked for while
  * frames are arriving, and its answer was encoded after some of them and

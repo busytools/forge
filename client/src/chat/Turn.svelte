@@ -153,7 +153,7 @@
 {#each layout as block, at (blockKey(block))}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
-    <div class="mine">
+    <div class="mine" data-k={`${turn.key}:${blockKey(block)}`}>
       <Prose text={block.unit.text} preserveLines />
       {#each block.unit.files as file, index (`att-${index}`)}
         <div class="attrow">
@@ -174,28 +174,37 @@
         {#if compacting && at === layout.length - 1 && index === block.footer}
           <Compacting />
         {/if}
-        {#if unit.kind === 'text'}
-          <Prose text={unit.text} />
-        {:else if unit.kind === 'group'}
-          <Group lanes={unit.lanes} />
-        {:else if unit.kind === 'question'}
-          <Card asked={unit.asked} />
-        {:else if unit.kind === 'notice'}
-          <Notice notice={unit.notice} />
-        {:else if unit.kind === 'skill'}
-          <Skill name={unit.name} body={unit.body} />
-        {:else if unit.kind === 'hooks'}
-          <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
-        {:else if unit.kind === 'compaction'}
-          <CompactionPoint
-            trigger={unit.trigger}
-            preTokens={unit.preTokens}
-            postTokens={unit.postTokens}
-            summary={unit.summary}
-          />
-        {:else if unit.kind === 'report'}
-          <Report info={unit.info} />
-        {/if}
+        <!-- The unit's own key, in the DOM, for the one reader that has to
+             find the row again after the layout moves: the column's anchor
+             (`chat/anchor.ts`). **Prefixed with the turn's key** because the
+             fold names an id-less frame within its own turn (`f2`), so two
+             turns can carry the same unit key and an unprefixed lookup could
+             hold a row of the wrong one. A plain block, so nothing the sheet
+             draws changes. -->
+        <div class="unit" data-k={`${turn.key}:${unit.key}`}>
+          {#if unit.kind === 'text'}
+            <Prose text={unit.text} />
+          {:else if unit.kind === 'group'}
+            <Group lanes={unit.lanes} />
+          {:else if unit.kind === 'question'}
+            <Card asked={unit.asked} />
+          {:else if unit.kind === 'notice'}
+            <Notice notice={unit.notice} />
+          {:else if unit.kind === 'skill'}
+            <Skill name={unit.name} body={unit.body} />
+          {:else if unit.kind === 'hooks'}
+            <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
+          {:else if unit.kind === 'compaction'}
+            <CompactionPoint
+              trigger={unit.trigger}
+              preTokens={unit.preTokens}
+              postTokens={unit.postTokens}
+              summary={unit.summary}
+            />
+          {:else if unit.kind === 'report'}
+            <Report info={unit.info} />
+          {/if}
+        </div>
       {/each}
       {#if compacting && at === layout.length - 1 && block.trailing}
         <Compacting />

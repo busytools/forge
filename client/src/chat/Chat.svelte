@@ -8,6 +8,7 @@
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
   import Compacting from './Compacting.svelte';
   import { latestCompaction } from './compaction-jump';
   import {
@@ -82,6 +83,17 @@
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
   let placedFor: string | null = null;
+  /**
+   * The row the reader's own eye is on, held while they are away from the foot.
+   *
+   * **Measured in rows rather than pixels** (the terminal's rule, and
+   * `anchor.ts` carries the reasoning): the layout moves under a reader who is
+   * not at the foot - a lane re-sorts to whichever took the latest row, a row
+   * measures taller once drawn - and an offset that stays put reads as the page
+   * sliding under them (Ved, 2026-10-03). It goes the moment the follow is back
+   * on, because the foot is where that reader wants to be.
+   */
+  let anchor: Anchor | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -212,6 +224,8 @@
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
   let accounted = 0;
+  /** The dropped-ask count this component has already drained against. */
+  let drained = 0;
   /** The content height at the last scroll event, which tells a reader moving from a layout moving. */
   let shaped = 0;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
@@ -242,8 +256,17 @@
     viewport = node;
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (holdsEverything()) working?.following(true);
+      if (holdsEverything()) {
+        working?.following(true);
+        anchor = null;
+      }
       if (held.following) land();
+      // A reader away from the foot has a place of their own, and a size change
+      // is one of the two ways it moves under them. **Not while the prepend
+      // compensation is on**, same as the effect's own pass: that path holds
+      // the reader by the list's own shift as older turns arrive above them,
+      // and two hands on the scroll is one too many.
+      else if (!shift) restoreAnchor();
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
@@ -251,6 +274,44 @@
       watcher.disconnect();
       viewport = null;
     };
+  }
+
+  /** The drawn rows' boxes, measured one at a time as the scan asks for them. */
+  function* drawnRows(): Generator<RowBox> {
+    if (viewport === null) return;
+    for (const row of viewport.querySelectorAll('[data-k]')) {
+      const box = row.getBoundingClientRect();
+      yield { key: row.getAttribute('data-k') ?? '', top: box.top, bottom: box.bottom };
+    }
+  }
+
+  /** Hold the row the reader's top edge is on, which is what their place means. */
+  function captureAnchor(): void {
+    if (viewport === null) return;
+    const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
+    if (landed !== null) anchor = landed;
+  }
+
+  /**
+   * Put the reader back on the row the anchor holds, wherever the layout moved
+   * it to - and nowhere at all when the row is out of the drawn window, since
+   * the column cannot measure where it went. The anchor stays for a pass that
+   * can, and the row coming back into the window is a size change like any
+   * other.
+   *
+   * **The key is the turn's own plus the unit's**, which `Turn` writes, so the
+   * lookup cannot land on a row of another turn: the fold names an id-less
+   * frame `f<index>` within its own turn, and two turns can each carry one.
+   */
+  function restoreAnchor(): void {
+    const held = anchor;
+    if (held === null || viewport === null) return;
+    const row = viewport.querySelector(`[data-k="${CSS.escape(held.key)}"]`);
+    if (row === null) return;
+    const box = viewport.getBoundingClientRect();
+    const top = row.getBoundingClientRect().top - box.top + viewport.scrollTop;
+    const want = anchoredScroll(held, top);
+    if (Math.abs(want - viewport.scrollTop) >= 1) viewport.scrollTop = want;
   }
 
   /**
@@ -338,7 +399,23 @@
     // list unmounts and the new landing re-pins before any event can read the
     // old value. A swap that kept the list mounted across it would make this
     // stale.
-    if (fresh || which !== placedFor) placed = null;
+    if (fresh || which !== placedFor) {
+      placed = null;
+      // The place a reader held was a row of the conversation that is going.
+      anchor = null;
+      // **And so is the follow, which is why the entry re-arms it** (#1673):
+      // a seat's conversation is kept, and its follow flag was kept with it -
+      // so a seat left scrolled up came back with the pass returning early
+      // and the reader landing wherever the old offset fell. A place belongs
+      // to the visit; every entry lands at the latest.
+      working?.following(true);
+      // **And so were the asks this column is holding.** They belong to the
+      // conversation that is going, and their pages are not coming here: left
+      // standing they hold `shift` on, which is the guard that keeps the
+      // restore out of a prepend's way and would keep it out for good.
+      outstanding = 0;
+      settling = false;
+    }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
@@ -368,6 +445,7 @@
     accounted = now;
     outstanding = Math.max(0, outstanding - 1);
     settling = true;
+
     // Held in a variable rather than returned as this effect's cleanup: the
     // effect re-runs on EVERY update - `held` is a store read, so each one
     // hands over a new object - and a returned cleanup is run before each
@@ -379,6 +457,26 @@
     }, 0);
   });
 
+  // **A forgotten ask drains the same count**, and no page is coming to do it:
+  // a dropped socket takes the page in flight with it and a refusal answers
+  // with none. Without this the count outlives the ask it was armed for, and
+  // `shift` - the guard that keeps the restore out of a prepend's way - stays
+  // on for the life of the seat, which is the parked reader's hold quietly
+  // turning itself off (measured: the offset left at 50 where the row above the
+  // reader had moved it to 250, still 50 after the reconnect's own page).
+  $effect(() => {
+    const now = held.dropped;
+    if (now === drained) return;
+    drained = now;
+    outstanding = 0;
+    accounted = held.prepends;
+    settling = false;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  });
+
   // The timer goes with the column, which is the one thing the effect above
   // cannot do for itself.
   $effect(() => () => {
@@ -386,7 +484,8 @@
   });
 
   /**
-   * What the follow watches: the newest row, and the line that grows it.
+   * What the follow pass runs on: the seat, the newest turn, and the line that
+   * grows it.
    *
    * **The compaction line is part of the last row and arrives as a PROP**, not
    * as a frame, so a flip alone grows that row by its height with no scroll
@@ -394,8 +493,17 @@
    * happens to land, which on a session with no hooks is never. The line then
    * draws with its baseline below the fold for the whole compaction. Keyed
    * here so the follow re-sticks when the line appears.
+   *
+   * **And the seat travels in the key as consistency, not as the mechanism**:
+   * what re-runs the pass on a switch is the arriving conversation's own
+   * record being published to the column, which the effect watches (measured:
+   * six constructions tried, none where the key decides) - so the seat is in
+   * the key so two seats with the same number of turns cannot collide, belt
+   * and braces beside the publish that does the work (#1673).
    */
-  const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+  const follows = $derived(
+    held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,
+  );
 
   /**
    * The newest turn's own report row - the unit, and the figures in it -
@@ -566,6 +674,28 @@
     return () => cancelAnimationFrame(settled);
   });
 
+  /**
+   * The place a reader away from the foot is holding, put back whenever the
+   * conversation changes around them.
+   *
+   * **The other half of the follow's own pass.** That one pins the foot for a
+   * reader who is at it; this one holds the row for a reader who is not, and
+   * it runs on the same signal - a conversation change - with the same
+   * once-more-after-this-frame's-layout pass, because the row that moved was
+   * laid out after this column's effects ran.
+   *
+   * **Skipped while the prepend compensation is on**: that path holds the
+   * reader by the list's own shift as older turns arrive above them, and two
+   * hands on the scroll is one too many.
+   */
+  $effect(() => {
+    const park = held;
+    const moving = shift;
+    if (anchor === null || park.following || !park.loaded || moving) return;
+    const settled = requestAnimationFrame(() => restoreAnchor());
+    return () => cancelAnimationFrame(settled);
+  });
+
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
     // **The very end, with no reading threshold.** A reader a few pixels short
@@ -604,8 +734,14 @@
     const height = viewport?.scrollHeight ?? 0;
     const shrank = height < shaped;
     shaped = height;
+    const foot = atFoot();
     if (!shrank) {
-      if (atFoot()) working?.following(true);
+      if (foot) {
+        working?.following(true);
+        // The foot is where a following reader wants to be, so the place they
+        // held on the way there is done with.
+        anchor = null;
+      }
       // `placed` is where the last pin left the reader; before any pin has
       // run it is unknown, and a reader above the foot is above it whatever
       // that number is - so the comparison falls back to any upward move
@@ -613,6 +749,15 @@
       // column that had not pinned yet (Ved, 2026-10-03).
       else if (offset < (placed ?? Infinity)) working?.following(false);
     }
+    // **A reader away from the foot has a place, and this is where it is read.**
+    // Their own scroll is the one moment the page is where they put it, so the
+    // row under their top edge is what the column holds their place by from
+    // here on. Read off this event's own arithmetic rather than the record:
+    // the record's follow flag is the fold's, this disarm publishes at once,
+    // and a STREAM fold that engages the follow - a prompt frame - lands a
+    // painted frame later - so a capture that read the record would depend on
+    // which side of that timing it caught.
+    if (!foot) captureAnchor();
     if (offset < REACH) loadOlder();
   }
 
@@ -740,6 +885,7 @@
       title="back to the latest"
       onclick={() => {
         working?.following(true);
+        anchor = null;
         land();
       }}
     >

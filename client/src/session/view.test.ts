@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
@@ -722,6 +723,7 @@ describe('the rail footer', () => {
   it('names the versions, and the newer CLI only when npm has one', () => {
     const footer = railFooter(withPool(null), LEAD);
     expect(footer.versions.forge).toBe(homeWire.forge_version_short);
+    expect(footer.versions.socket, 'the protocol this app speaks').toBe(PROTOCOL_VERSION);
     expect(footer.versions.claude).toBe('1.0.0');
     expect(footer.versions.update, 'a newer claude went unstated').toBe('1.1.0');
 

@@ -9,7 +9,7 @@
   import { opensByDefault, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
-  import { firstLine, joinedLine, paragraphs } from './text';
+  import { firstLine, joinedLine } from './text';
   import type {
     CallLeaf,
     HookLeaf,
@@ -173,9 +173,9 @@
     }
   }
 
-  /** Whether a call's body is drawn without being asked for: a mutation's diff, while it is small enough to draw. */
+  /** Whether a call's body is drawn without being asked for: the leaf's own rule. */
   function opens(call: ToolLeaf): boolean {
-    return opensByDefault(call.name, call.body);
+    return opensByDefault(call.name, call.body, call.decision);
   }
 </script>
 
@@ -187,7 +187,7 @@
         <span class="nm">{lane.label}</span>
       </div>
       {#each lane.calls as call (call.key)}
-        <Call call={call.leaf} open={opens(call.leaf)} />
+        <Call call={call.leaf} k={call.key} open={opens(call.leaf)} />
       {/each}
       {#each lane.cards as card (card.id)}
         {@const title = titleOf(card)}
@@ -198,16 +198,21 @@
               {#if title.lead !== ''}<span class="dir">{title.lead}</span>{/if}<span class="k"
                 >{title.name}</span
               >
-              &#183; {title.tail}
+              <!-- The row's line is the preview with its inline marks rendered,
+                   as the thought row's own line is: a preview shows emphasis
+                   and code, and cannot draw a heading. -->
+              &#183;
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              {@html renderInlineProse(joinedLine(title.tail))}
             </span>
             {#if card.org !== null}<span class="org">{card.org}</span>{/if}
             <Chevron />
           </summary>
           <div class="body">
             <div class="pbody">
-              {#each paragraphs(card.body) as paragraph, at (at)}
-                <p>{paragraph}</p>
-              {/each}
+              <!-- A peer message is prose from another session, so it reads the
+                   way every other message does: marks rendered, not shown. -->
+              <Prose text={card.body} />
               {#if card.ack !== null}
                 <div class="kv"><span class="k">sent</span><span class="v">{card.ack}</span></div>
               {/if}

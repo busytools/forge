@@ -333,6 +333,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
+            test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),
             accounts,
             gateway,
             // A stub workspace pretends the listener is bound: the
@@ -393,6 +394,7 @@ impl Workspace {
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
+            test_claude_pid: Mutex::new(HashMap::new()),
         };
         (Arc::new(workspace), update_rx)
     }
@@ -403,6 +405,13 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_user_preferences(&self, preferences: serde_json::Value) {
         *self.test_user_preferences.lock() = Some(preferences);
+    }
+
+    /// Give a fixture seat a live `claude` pid, so its held loop walks a real
+    /// process tree with no CLI behind it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_claude_pid(&self, key: &SessionSlot, pid: u32) {
+        self.test_claude_pid.lock().insert(key.clone(), pid);
     }
 }
 
@@ -489,6 +498,14 @@ impl Workspace {
     /// The installed stand-in, taken so one spawn cannot use it twice.
     pub(crate) fn take_test_spawn_handle(&self) -> Option<forge_agent::AgentHandle> {
         self.test_spawn_handle.lock().take()
+    }
+
+    /// The worker listing the last spawn handed `Agent::spawn`. Test-only: a
+    /// stand-in replaces the call, so this is the only way a test sees what
+    /// the real spawn was given.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_spawn_listing(&self) -> crate::workspace::RecordedListing {
+        self.test_spawn_listing.lock().clone()
     }
 
     pub fn seed_test_gateway_ready(&self, ready: bool) {
@@ -686,6 +703,7 @@ impl Workspace {
             // Non-git: the seeded row nests under its project in the
             // launchpad without needing a worktree on disk.
             false,
+            None,
         );
     }
 
@@ -705,6 +723,7 @@ impl Workspace {
             None,
             false,
             true,
+            None,
         );
     }
 
@@ -729,6 +748,7 @@ impl Workspace {
                 resume_kick: None,
                 interactive: Some(interactive),
                 is_git_repo: None,
+                mcp_families: None,
             },
         );
     }

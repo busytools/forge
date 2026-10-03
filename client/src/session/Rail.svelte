@@ -1,9 +1,11 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { hrefForSlot } from '../routes';
+  import type { Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
+  import { closeSeat } from './close';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
@@ -19,12 +21,15 @@
     home,
     current,
     now,
+    connection,
     onclose,
   }: {
     home: HomeWire;
     /** The seat the page is showing, which is the one row the rail marks. */
     current: SessionSlot;
     now: number;
+    /** What a row's close chip acts through, and what moves the reader after it. */
+    connection: Connection;
     /** Brings the header's handle back, which the collapsed rail has covered. */
     onclose: () => void;
   } = $props();
@@ -35,6 +40,15 @@
    * the projects scroll behind them.
    */
   const foot = $derived(railFooter(home, current));
+
+  /**
+   * Close one row's seat. The command the row sends and where the reader
+   * lands are `session/close.ts`'s, which knows the terminal's own two
+   * gestures apart.
+   */
+  function close(slot: SessionSlot): void {
+    closeSeat(connection, home, slot, current, now);
+  }
 </script>
 
 <!--
@@ -70,7 +84,7 @@
           {#if project.asleep}
             <span class="age">{project.age}</span>
           {:else}
-            <CloseChip />
+            <CloseChip name={project.name} onclose={() => close(project.row.slot)} />
           {/if}
         </div>
         {#if project.why !== null}
@@ -80,7 +94,7 @@
           <div class="wk" class:on={project.shown === worker.slot.label}>
             <span class="dot {railMark(worker.state)}"></span>
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
-            <CloseChip />
+            <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
         {/each}
         <!-- The seats this project has asleep, behind one row that counts
@@ -143,6 +157,7 @@
     {/if}
     <div class="vers">
       <div class="v">forge v{foot.versions.forge}</div>
+      <div class="v">socket v{foot.versions.socket}</div>
       {#if foot.versions.claude !== null}
         <div class="v">
           <!-- The space between the version and the arrow is part of the row,

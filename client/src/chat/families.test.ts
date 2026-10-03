@@ -28,6 +28,30 @@ describe('the row a call is summarised under', () => {
     expect(labelOf('mcp__forge__agents__list')).toBe('forge');
   });
 
+  it('gives the systemone decisions their own lane, word and fork', () => {
+    // The three decisions are the one MCP group with a lane of its own: a
+    // reader scanning for what the session decided must not find them mixed
+    // among the cron and peer calls that share the forge server.
+    for (const name of [
+      'mcp__forge__systemone__ask_noul',
+      'mcp__forge__systemone__ask_choice',
+      'mcp__forge__systemone__ask_score',
+    ]) {
+      expect(rowOf(name), `${name} is a decision call`).toEqual({ kind: 'systemone' });
+      expect(labelOf(name), `${name} draws the family word`).toBe('systemone');
+      expect(iconOf(rowOf(name)), `${name} draws the fork`).toBe('decide');
+    }
+  });
+
+  it('keeps every other forge tool in the forge lane', () => {
+    expect(rowOf('mcp__forge__cron__create')).toEqual({ kind: 'mcp' });
+    expect(labelOf('mcp__forge__cron__create')).toBe('forge');
+    expect(iconOf(rowOf('mcp__forge__cron__create'))).toBe('mcp');
+    // The family is the three names, not the server prefix: a future
+    // `systemone__*` tool that is not one of the decisions stays a forge row.
+    expect(rowOf('mcp__forge__systemone__something_else')).toEqual({ kind: 'mcp' });
+  });
+
   it('draws a tool the table has no row for as the generic one', () => {
     expect(rowOf('brand_new_tool')).toEqual({ kind: 'family', family: 'tool' });
     expect(labelOf('brand_new_tool')).toBe('tool');

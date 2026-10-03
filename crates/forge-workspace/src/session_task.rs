@@ -206,6 +206,17 @@ impl SessionTask {
                     tasks: guard.background_tasks.clone(),
                 });
             }
+            if moved.processes {
+                self.emit(SessionUpdate::ProcessesChanged {
+                    key: self.key.clone(),
+                    // The walk the store now holds, which the clear left
+                    // empty: the shape a client draws no section from.
+                    snapshot: forge_agent::env::processes::ProcessSnapshot {
+                        processes: Vec::new(),
+                        scanned_at: std::time::SystemTime::now(),
+                    },
+                });
+            }
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -1521,15 +1532,20 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
 /// literal.
 const API_RETRY_SUBTYPE: &str = "api_retry";
 
-/// What one event MOVED in the domain's two whole sets.
+/// What one event MOVED in the domain's whole sets.
 ///
-/// **A set that did not change is not news.** Both move whole and on discrete
+/// **A set that did not change is not news.** Each moves whole and on discrete
 /// frames, and every frame of a busy seat reaches this fold - so a viewer
 /// redrawing on each one would pay for nothing, and the answer is taken by
 /// comparing the sets the fold was handed with the ones it left.
+///
+/// The walk joins them on the death only: nothing else in this fold writes it
+/// (the seat's own loop and the terminal's scanner do), so the flag is the one
+/// transition this fold makes - a snapshot that was held and is now gone.
 pub(crate) struct Moved {
     pub monitors: bool,
     pub background_tasks: bool,
+    pub processes: bool,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1546,6 +1562,7 @@ pub(crate) struct Moved {
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) -> Moved {
     let held_monitors = domain.monitors.clone();
     let held_tasks = domain.background_tasks.clone();
+    let held_walk = domain.process_snapshot.is_some();
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1556,6 +1573,10 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // so the last snapshot would stand forever - and the registry with
         // it, spinning rows over tasks a dead process never finished.
         domain.drop_background_tasks();
+        // The walk describes the subprocess's tree, so it goes with the
+        // process: left standing it draws rows for processes that are not
+        // there, and nothing follows a dead session that would replace it.
+        domain.process_snapshot = None;
     }
     // The snapshot carries the whole set, so mirroring it is an
     // assignment and an empty one clears.
@@ -1776,6 +1797,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     Moved {
         monitors: domain.monitors != held_monitors,
         background_tasks: domain.background_tasks != held_tasks,
+        processes: held_walk && domain.process_snapshot.is_none(),
     }
 }
 
@@ -1786,8 +1808,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
 /// This mirrors the view's own reset on the same events, so what it holds
 /// is what a view draws. Two facts are deliberately not here, because the
 /// view's reset does not touch them either: the sub-agent attribution
-/// outlives the run it came from, and the process walk is cleared where a
-/// view learns the cwd moved, which is its own path rather than this one.
+/// outlives the run it came from, and the process walk is cleared on the
+/// death alone - where the tree it describes goes with the subprocess -
+/// rather than on every identity this clears.
 fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.observed_permission_mode = None;
     domain.observed_effort = None;
@@ -2235,6 +2258,7 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row the rollback judges");
 
@@ -3623,6 +3647,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: None,
                     is_git_repo: None,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row");
@@ -3843,6 +3868,68 @@ provider = "anthropic"
         let cleared = announced_tasks(&mut updates);
         assert_eq!(cleared.len(), 1, "and the clear is announced");
         assert!(cleared[0].is_empty(), "with the empty set the core now holds");
+    }
+
+    /// The walks these updates announced, in the order they went out.
+    fn announced_walks(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<forge_agent::env::processes::ProcessSnapshot> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::ProcessesChanged { snapshot, .. } = update {
+                announced.push(snapshot);
+            }
+        }
+        announced
+    }
+
+    /// **A walk that outlives its process draws a tree that is not there.** The
+    /// walk describes the subprocess's descendants, and nothing follows a dead
+    /// session that would replace it - so the clear is announced on the death
+    /// frame like the registry's, rather than left for the next reader to
+    /// notice and the next session to overwrite.
+    #[test]
+    fn a_dead_sessions_walk_is_cleared_and_announced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        let walk = || forge_agent::env::processes::ProcessSnapshot {
+            processes: vec![forge_agent::env::processes::ProcessEntry {
+                pid: 4242,
+                parent_pid: 1,
+                name: "claude".to_owned(),
+                command: "claude".to_owned(),
+                memory_bytes: 1,
+            }],
+            scanned_at: std::time::SystemTime::now(),
+        };
+        task.domain.lock().process_snapshot = Some(walk());
+
+        // A frame that does not end the run leaves the walk exactly where the
+        // seat's own loop put it.
+        task.translate_event(sdk_message(background_tasks(one_live_task())));
+        assert!(
+            announced_walks(&mut updates).is_empty(),
+            "a frame that did not end the run announces no walk",
+        );
+        assert!(task.domain.lock().process_snapshot.is_some(), "and clears none");
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "reader died".to_owned(),
+            kind: SpawnFailureKind::Unclassified,
+        });
+
+        let cleared = announced_walks(&mut updates);
+        assert_eq!(cleared.len(), 1, "the death announces the walk's clear");
+        assert!(cleared[0].processes.is_empty(), "with the empty walk the core now holds");
+        assert!(
+            task.domain.lock().process_snapshot.is_none(),
+            "and the store is cleared, so a read answers null rather than a dead tree",
+        );
     }
 
     /// A monitor still running when the connection dies can never be settled,
@@ -5160,12 +5247,17 @@ provider = "anthropic"
         assert_eq!(domain.mcp_servers, None, "{why} leaves no server snapshot standing");
     }
 
-    /// The process walk is not a fact of the run that ended: a view goes on
-    /// painting the last tree it was given after a failed connection, so
-    /// the read has to go on serving it. It is cleared where a view learns
-    /// the cwd moved, which is that path's job and not this one's.
+    /// The walk describes a subprocess tree, so it goes with the process: left
+    /// standing it paints rows for programs that are not there, and nothing
+    /// following a dead session would ever replace it. The clear reaches the
+    /// stream as an empty walk, which is what the monitors and the background
+    /// registry already do on the same event.
+    ///
+    /// **This reverses an earlier call** that kept the walk readable after a
+    /// failure, on the view going on painting it - the ageing note said the
+    /// tree was old, never that it was gone.
     #[test]
-    fn a_dead_connection_keeps_the_process_walk() {
+    fn a_dead_connection_clears_the_process_walk() {
         let mut domain = empty_domain();
         domain.process_snapshot = Some(forge_agent::env::processes::ProcessSnapshot {
             processes: Vec::new(),
@@ -5181,8 +5273,8 @@ provider = "anthropic"
         );
 
         assert!(
-            domain.process_snapshot.is_some(),
-            "the walk describes a tree a view is still painting, so it stays readable",
+            domain.process_snapshot.is_none(),
+            "the tree went with the subprocess, so the read has nothing to serve",
         );
     }
 
@@ -5568,6 +5660,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
             )
             .expect("seed the worker's row");
 
@@ -6140,6 +6233,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the worker row");
         dir
@@ -6216,6 +6310,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the worker row");
         workspace.enable_test_dispatch_intercept();
