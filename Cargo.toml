@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-web", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-web", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.0.109"
