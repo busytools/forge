@@ -206,13 +206,21 @@ describe('a long line in the conversation', () => {
     expect(applied, 'so the result box is not a scroller').not.toContain('overflow-x');
   });
 
-  it('breaks a token in a table cell so the table fits the column', () => {
+  it('keeps a table column at its longest word, so a short column is never sliced', () => {
+    // **`anywhere` reads as the wrap this file is about and is the bug instead:**
+    // it gives the cell a one-character minimum, and wherever the table outgrows
+    // the column the auto layout takes a short column down to it - measured in a
+    // browser, the five-character `#1662` drew on three lines at a 500px window.
+    // `break-word` holds the column's floor at its longest word; a token wider
+    // than the column can hold sends the table past it rather than breaking
+    // inside a cell, which is the stance the header rule already takes.
     const applied = declarationsFor(PROSE, '.prose td');
 
     expect(applied, 'the cell has a rule at all').not.toBe('');
-    expect(valuesOf(applied, 'overflow-wrap'), 'a cell with one long token still fits').toEqual([
-      'anywhere',
-    ]);
+    expect(
+      valuesOf(applied, 'overflow-wrap'),
+      'the column keeps its longest word rather than shrinking past it',
+    ).toEqual(['break-word']);
   });
 
   it('breaks a long token in prose, which is what carries a paragraph', () => {
