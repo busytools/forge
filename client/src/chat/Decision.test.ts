@@ -84,6 +84,26 @@ describe('the block one decision draws', () => {
     ).toHaveLength(2);
   });
 
+  it('draws a level the result left without a probability, which the verdict still names', () => {
+    // One row per level: skipping the value-less one made the verdict say
+    // "between Soon and Urgent" while Soon drew nowhere.
+    const body = drawn({
+      answer: {
+        kind: 'score',
+        score: 1.5,
+        levels: [
+          { name: 'Routine', value: 0.5 },
+          { name: 'Soon', value: null },
+          { name: 'Urgent', value: 0.4 },
+        ],
+        confidence: null,
+      },
+    });
+    expect(body, 'the level still draws its row').toContain('>Soon<');
+    expect([...body.matchAll(/class="opt/g)], 'one row per level').toHaveLength(3);
+    expect(body, 'with no value text where none was reported').not.toContain('>null<');
+  });
+
   it('draws a score with no levels as its number alone', () => {
     const body = drawn({ answer: { kind: 'score', score: 1.79, levels: null, confidence: null } });
     expect(body).toContain('1.79');

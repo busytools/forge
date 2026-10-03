@@ -26,9 +26,9 @@
     return String(Math.round(value * 100) / 100);
   }
 
-  /** The width a bar fills, as a percentage at the same grain. */
-  function width(value: number): string {
-    return `${Math.round(value * 10_000) / 100}%`;
+  /** The width a bar fills, as a percentage at the same grain; none, none. */
+  function width(value: number | null): string {
+    return value === null ? '0%' : `${Math.round(value * 10_000) / 100}%`;
   }
 
   /** How sure a noul is: the winning side's share, whichever side won. */
@@ -60,9 +60,11 @@
 
   /**
    * The distribution's rows: a name, its value, and whether the answer marks
-   * it. A score level the result left without a probability draws no bar.
+   * it. A score level the result left without a probability keeps its row
+   * with an empty track - the verdict above still names it, and skipping it
+   * made the two disagree.
    */
-  const rows = $derived.by((): { name: string; value: number; win: boolean }[] => {
+  const rows = $derived.by((): { name: string; value: number | null; win: boolean }[] => {
     const answer = decision.answer;
     if (answer.kind === 'noul') {
       const yes = answer.noul >= YES;
@@ -82,11 +84,11 @@
     // exactly on a level has one.
     const floor = Math.floor(answer.score);
     const ceil = Math.ceil(answer.score);
-    return answer.levels.flatMap((held, at) =>
-      held.value === null
-        ? []
-        : [{ name: held.name, value: held.value, win: at === floor || at === ceil }],
-    );
+    return answer.levels.map((held, at) => ({
+      name: held.name,
+      value: held.value,
+      win: at === floor || at === ceil,
+    }));
   });
 
   /** Where a score sits among its levels, or null when the levels are absent. */
@@ -127,7 +129,7 @@
             ><span class="fill" class:win={row.win} style={`width:${width(row.value)}`}
             ></span></span
           >
-          <span class="p">{num(row.value)}</span>
+          <span class="p">{row.value === null ? '' : num(row.value)}</span>
         </div>
       {/each}
     </div>
