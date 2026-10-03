@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
+import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import Rail from './Rail.svelte';
 
@@ -23,8 +24,41 @@ const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8'
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
+/**
+ * A connection this sheet never reaches.
+ *
+ * A row's close chip only acts when it is pressed, and every assertion here
+ * is over rendered markup - so this satisfies the prop and throws on any
+ * use, which would mean the render had started acting rather than drawing.
+ */
+function untouched(): Connection {
+  const refuse = (): never => {
+    throw new Error('the render reached the connection');
+  };
+  return {
+    subscribe: refuse,
+    unsubscribe: refuse,
+    refresh: refuse,
+    dispatch: refuse,
+    more: refuse,
+    devices: refuse,
+    onMessage: refuse,
+    onStatus: refuse,
+    store: refuse,
+    settings: refuse,
+    status: refuse,
+    close: refuse,
+  };
+}
+
 const footer = render(Rail, {
-  props: { home: homeWire, current: LEAD, now: Date.now(), onclose: () => undefined },
+  props: {
+    home: homeWire,
+    current: LEAD,
+    now: Date.now(),
+    connection: untouched(),
+    onclose: () => undefined,
+  },
 }).body;
 
 /** One rule's declarations, from its selector to the brace that closes it. */

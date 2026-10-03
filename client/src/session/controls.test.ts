@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentRow, HomeWire } from '../wire/home';
 import { homeWire } from '../dev/fixture.data';
+import type { Connection } from '../socket';
+import type { SessionSlot } from '../wire/types';
 import GroupFold from './GroupFold.svelte';
+import Rail from './Rail.svelte';
 import SessionId from './SessionId.svelte';
 import SleeperFold from './SleeperFold.svelte';
 import { boxed } from './testing/props.svelte';
@@ -215,5 +218,107 @@ describe('a fold that holds the seat being shown', () => {
     props.holds = true;
     flushSync();
     expect(foldOpen(), 'the group fold stayed shut over the seat being shown').toBe(true);
+  });
+});
+
+/** A connection that records what a control asked it to send. */
+function recording(commands: unknown[]): Connection {
+  return {
+    dispatch: (command: unknown) => {
+      commands.push(command);
+      return null;
+    },
+  } as unknown as Connection;
+}
+
+describe("a rail row's close chip", () => {
+  const WORKER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+  const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+  /** The fixture's home with the worker mounted under its lead. */
+  const withWorker: HomeWire = {
+    ...homeWire,
+    agents: [row('lead', 'Running'), row('w1', 'Running')],
+  };
+
+  /** The chip in the row drawn by `selector`. */
+  function chip(selector: string): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>(`${selector} .x`);
+    if (button === null) throw new Error(`the ${selector} row drew no close chip`);
+    return button;
+  }
+
+  /**
+   * The two commands, and why they are not interchangeable: the lead's
+   * command on a worker's slot only releases the session, so the row would
+   * keep reading Running with nothing behind it.
+   */
+  it('closes a worker through close_worker and lands the reader on its lead', () => {
+    history.replaceState(null, '', '/session/TestOrg/proj/w1');
+    const commands: unknown[] = [];
+    app = mount(Rail, {
+      target: document.body,
+      props: {
+        home: withWorker,
+        current: WORKER,
+        now: 0,
+        connection: recording(commands),
+        onclose: () => undefined,
+      },
+    });
+
+    chip('.wk').click();
+    flushSync();
+
+    expect(commands, 'a worker row must close through close_worker').toEqual([
+      { close_worker: { project_key: '<fixture>-proj', label: 'w1' } },
+    ]);
+    expect(location.pathname, 'the reader was left on the seat that closed').toBe(
+      '/session/TestOrg/proj/lead',
+    );
+  });
+
+  it("closes a project's row through close_session, on the lead's own slot", () => {
+    history.replaceState(null, '', '/session/TestOrg/proj/lead');
+    const commands: unknown[] = [];
+    app = mount(Rail, {
+      target: document.body,
+      props: {
+        home: homeWire,
+        current: LEAD,
+        now: 0,
+        connection: recording(commands),
+        onclose: () => undefined,
+      },
+    });
+
+    chip('.pr').click();
+    flushSync();
+
+    expect(commands).toEqual([{ close_session: { session_key: LEAD } }]);
+  });
+
+  /**
+   * A sleeping seat has no session to close, so it carries no chip: the
+   * terminal draws those rows as information, and a control that took the
+   * click and closed nothing would promise work it cannot do.
+   */
+  it('draws no close chip on a sleeping seat', () => {
+    const home: HomeWire = {
+      ...homeWire,
+      agents: [row('lead', 'Running'), row('slept', 'Sleeping')],
+    };
+    app = mount(Rail, {
+      target: document.body,
+      props: {
+        home,
+        current: LEAD,
+        now: 0,
+        connection: recording([]),
+        onclose: () => undefined,
+      },
+    });
+
+    expect(document.querySelector('details .x'), 'a sleeping row drew a close chip').toBeNull();
   });
 });

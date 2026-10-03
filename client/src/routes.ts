@@ -60,6 +60,19 @@ export function hrefForSlot(slot: SessionSlot): string {
   return `/session/${encode(slot.org)}/${encode(slot.project)}/${encode(slot.label)}`;
 }
 
+/**
+ * Move the app to `route` in place.
+ *
+ * A push plus the event the shell listens for, which is the path a link
+ * click already takes: a component that moves the reader (a close that
+ * cannot leave them on the seat it closed) reaches the one route state
+ * without owning it.
+ */
+export function goTo(route: Route): void {
+  history.pushState(null, '', hrefFor(route));
+  dispatchEvent(new PopStateEvent('popstate'));
+}
+
 function encode(segment: string): string {
   return encodeURIComponent(segment);
 }
