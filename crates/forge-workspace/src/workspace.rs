@@ -990,6 +990,23 @@ fn catalog_scan_root(config_dir: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
+/// A forge command's answer: what the reader is told, and how loudly.
+///
+/// **Returned rather than emitted where the command is handled**, because the
+/// answer has to land AFTER the words that asked for it: the dispatcher echoes
+/// those once the command has landed, and a notice sent from the handler
+/// arrived first, which every client that draws the stream in order put above
+/// the prompt it answers.
+type ForgeAnswer = (NoticeSeverity, String);
+
+/// The line a forge name invoked wrongly is answered with.
+///
+/// Answered rather than acted on, and never left to fall through as a prompt:
+/// a mistyped command reaching the model reads as a question.
+fn forge_misuse(usage: &str) -> ForgeAnswer {
+    (NoticeSeverity::Error, usage.to_owned())
+}
+
 impl Workspace {
     /// Builds a Workspace, kicks off the background catalog scan and the
     /// claude version probe, and loads `<config_dir>/forge.toml`. Errors if
@@ -3612,29 +3629,37 @@ impl Workspace {
         // commands only by taking the same path, and some of these names the
         // CLI answers differently or not at all - `/new` is its own `/clear`,
         // which rotates a conversation forge never records.
-        let outcome = match &cmd {
+        //
+        // A forge command's answer comes back with the outcome rather than
+        // being emitted where it is decided: it has to land after the echo
+        // below, because a client draws this stream in arrival order and one
+        // sent first drew the answer above the prompt it answers.
+        let (outcome, answer) = match &cmd {
             Command::Prompt { key, text, .. } => match crate::prompt::forge_invocation(text) {
                 Some(crate::prompt::Invocation::Command(prompt)) => {
                     self.run_forge_prompt(key, &prompt)
                 }
                 Some(crate::prompt::Invocation::Misuse(usage)) => {
-                    self.answer_forge_misuse(key, usage)
+                    (Ok(()), Some(forge_misuse(usage)))
                 }
                 None => match self.unrunnable_slash_name(key, text) {
-                    Some(refusal) => self.answer_forge_misuse(key, &refusal),
-                    None => self.route(cmd),
+                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
+                    None => (self.route(cmd), None),
                 },
             },
-            _ => self.route(cmd),
+            _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
             && let Some((key, text)) = prompt
         {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
-                key,
+                key: key.clone(),
                 msg: Message::display_only_user(text),
                 origin: Some(origin),
             });
+            if let Some((severity, answer)) = answer {
+                self.notice(&key, severity, &answer);
+            }
         }
         outcome
     }
@@ -3644,11 +3669,14 @@ impl Workspace {
     /// The launch settings are built here rather than taken from the caller:
     /// a view that supplied its own would spawn a session with what its own
     /// snapshot happened to hold, and a client has no snapshot to supply.
+    ///
+    /// The answer is returned rather than emitted, so the dispatcher can land
+    /// it after the echo of the reader's own words.
     fn run_forge_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
         prompt: &crate::prompt::ForgePrompt,
-    ) -> Result<(), DispatchError> {
+    ) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
         use crate::prompt::ForgePrompt;
         // A mode the CLI has no name for is answered rather than sent: the
         // command carries the enum, so an unparsed one cannot be dispatched
@@ -3670,7 +3698,7 @@ impl Workspace {
             ForgePrompt::SetMode { mode } => {
                 let Some(mode) = forge_primitives::permission::PermissionMode::from_wire(mode)
                 else {
-                    return self.answer_forge_misuse(key, &format!("Unknown mode: {mode}"));
+                    return (Ok(()), Some(forge_misuse(&format!("Unknown mode: {mode}"))));
                 };
                 Command::SetMode { key: key.clone(), mode }
             }
@@ -3679,7 +3707,7 @@ impl Workspace {
             }
             ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
         };
-        self.route(command)
+        (self.route(command), None)
     }
 
     /// The cwd and settings a re-spawn on `key` carries.
@@ -3731,9 +3759,13 @@ impl Workspace {
     /// A settings write rather than a session command - the CLI carries no
     /// control request for effort - so it lands in the same document the
     /// launch builder reads and takes effect when the session next starts.
-    fn set_effort(self: &Arc<Self>, key: &SessionSlot, level: &str) -> Result<(), DispatchError> {
+    fn set_effort(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        level: &str,
+    ) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
         let Some(level) = forge_primitives::EffortLevel::from_stored(level) else {
-            return self.answer_forge_misuse(key, &format!("Unknown effort level: {level}"));
+            return (Ok(()), Some(forge_misuse(&format!("Unknown effort level: {level}"))));
         };
         // The seat's own config dir where there is one, and the one forge runs
         // under otherwise: effort is a user-level setting, so it does not
@@ -3751,15 +3783,14 @@ impl Workspace {
             if held.is_object() { held } else { serde_json::Value::Object(serde_json::Map::new()) };
         document["effortLevel"] = serde_json::Value::String(level.as_stored().to_owned());
         match forge_agent::userdata::settings::save_document(&path, &document) {
-            Ok(()) => {
-                self.notice(
-                    key,
+            Ok(()) => (
+                Ok(()),
+                Some((
                     NoticeSeverity::Info,
-                    &format!("Effort: {} (takes effect next session)", level.label()),
-                );
-                Ok(())
-            }
-            Err(err) => self.answer_forge_misuse(key, &format!("Failed to save effort: {err}")),
+                    format!("Effort: {} (takes effect next session)", level.label()),
+                )),
+            ),
+            Err(err) => (Ok(()), Some(forge_misuse(&format!("Failed to save effort: {err}")))),
         }
     }
 
@@ -3786,15 +3817,6 @@ impl Workspace {
             return None;
         }
         Some(format!("{name} is not yet supported"))
-    }
-
-    /// Answer a forge-name invocation the command does not take.
-    ///
-    /// Answered rather than acted on, and never left to fall through as a
-    /// prompt: a mistyped command reaching the model reads as a question.
-    fn answer_forge_misuse(&self, key: &SessionSlot, usage: &str) -> Result<(), DispatchError> {
-        self.notice(key, NoticeSeverity::Error, usage);
-        Ok(())
     }
 
     /// Emit one line the core has for a view about `key`.
@@ -16792,15 +16814,56 @@ mod prompt_frame_origin_tests {
         });
 
         assert!(dispatched.is_ok(), "{dispatched:?}");
+        // The echo of the reader's own words is one of these; the answer is
+        // what this case is about (its ORDER is the case above, which does not
+        // need the words' text).
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. })
-                    if text == "Unknown mode: sideways"
+                notices.as_slice(),
+                [(NoticeSeverity::Error, text)] if text == "Unknown mode: sideways"
             ),
-            "the reader is told the mode is not one the CLI has",
+            "the reader is told the mode is not one the CLI has: {notices:?}",
         );
         assert!(ws.drain_test_dispatch_buffer().is_empty(), "and nothing is dispatched");
+    }
+
+    /// A forge command's answer draws under the words that asked for it.
+    ///
+    /// The echo and the answer are two updates on one stream, and a client
+    /// draws them in arrival order: an answer emitted where the command was
+    /// handled arrived before the reader's own words, so every socket client
+    /// drew "Unknown mode: sideways" ABOVE the prompt it answers.
+    #[test]
+    fn a_forge_commands_answer_follows_the_words_it_answers() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: "/mode sideways".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("the core takes it");
+
+        let first = rx.try_recv().expect("the echo is the first update on the stream");
+        assert!(
+            matches!(&first, SessionUpdate::ChatAppended { key, .. } if key == &seat),
+            "the reader's own words are echoed before the answer: {first:?}",
+        );
+        let second = rx.try_recv().expect("the answer follows the echo");
+        assert!(
+            matches!(
+                &second,
+                SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
+                    if text == "Unknown mode: sideways"
+            ),
+            "and the answer lands under them, where a client draws it: {second:?}",
+        );
     }
 
     /// `/effort <level>` writes the document the next launch reads, rather
@@ -16827,13 +16890,18 @@ mod prompt_frame_origin_tests {
         )
         .expect("the document parses");
         assert_eq!(written["effortLevel"], serde_json::json!("high"));
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Info, text, .. })
-                    if text.contains("Effort: High")
+                notices.as_slice(),
+                [(NoticeSeverity::Info, text)] if text.contains("Effort: High")
             ),
-            "and the reader is told it took",
+            "and the reader is told it took: {notices:?}",
         );
         assert!(ws.drain_test_dispatch_buffer().is_empty(), "nothing is dispatched");
 
@@ -16861,16 +16929,20 @@ mod prompt_frame_origin_tests {
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        let notices: Vec<(SessionSlot, NoticeSeverity, String)> =
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|update| match update {
+                    SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
+                    _ => None,
+                })
+                .collect();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(SessionUpdate::Notice {
-                    severity: NoticeSeverity::Error,
-                    text,
-                    key,
-                }) if key == seat && text == "Usage: /resume <session_id>"
+                notices.as_slice(),
+                [(key, NoticeSeverity::Error, text)]
+                    if key == &seat && text == "Usage: /resume <session_id>"
             ),
-            "the reader is told what the command wanted",
+            "the reader is told what the command wanted: {notices:?}",
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
@@ -16896,13 +16968,20 @@ mod prompt_frame_origin_tests {
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
+        // The refusal is answered after the echo of the words, so the two are
+        // read off the stream together (the order is the case above).
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. })
-                    if text == "/spinner is not yet supported"
+                notices.as_slice(),
+                [(NoticeSeverity::Error, text)] if text == "/spinner is not yet supported"
             ),
-            "the reader is told the name is not one this session has",
+            "the reader is told the name is not one this session has: {notices:?}",
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing reaches the model: {commands:?}");
@@ -16943,14 +17022,22 @@ mod prompt_frame_origin_tests {
             });
             assert!(dispatched.is_ok(), "{text}: {dispatched:?}");
             if let Some(expected) = refusal {
-                let received = rx.try_recv();
+                // The echo of the words is on the stream too, after the fix
+                // that put the answer under them; the refusal is what this row
+                // is about.
+                let notices: Vec<(NoticeSeverity, String)> =
+                    std::iter::from_fn(|| rx.try_recv().ok())
+                        .filter_map(|update| match update {
+                            SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                            _ => None,
+                        })
+                        .collect();
                 assert!(
                     matches!(
-                        received,
-                        Ok(SessionUpdate::Notice { severity: NoticeSeverity::Error, ref text, .. })
-                            if text == expected
+                        notices.as_slice(),
+                        [(NoticeSeverity::Error, text)] if text == expected
                     ),
-                    "{text} is refused with {expected:?}, got {received:?}",
+                    "{text} is refused with {expected:?}, got {notices:?}",
                 );
                 assert!(ws.drain_test_dispatch_buffer().is_empty(), "{text} reaches nothing");
             } else {
@@ -16984,12 +17071,15 @@ mod prompt_frame_origin_tests {
             .expect("the document is written");
         let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
         assert_eq!(document["effortLevel"], serde_json::json!("low"));
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
         assert!(
-            matches!(
-                rx.try_recv(),
-                Ok(SessionUpdate::Notice { severity: NoticeSeverity::Info, .. })
-            ),
-            "and the reader is told it took",
+            matches!(notices.as_slice(), [(NoticeSeverity::Info, _)]),
+            "and the reader is told it took: {notices:?}",
         );
     }
 
