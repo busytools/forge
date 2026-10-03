@@ -53,7 +53,7 @@ The spawn gate needs settled accounts and does not need the dictation weights, s
 | `ready` | `●` green | probe returned |
 | `auth failed` | `⚠` red | rejected or expired credentials |
 | `unreachable`, `fetch error`, `rate limited` | `⚠` yellow | transient failures the pollers heal (`fetch error` is a classed-but-unrecognised failure: a 5xx proxy, a body that will not decode, a 200 mapping to nothing) |
-| Model states | | `queued`, `downloading`, `resuming` (picked up a `.part`), `verifying`, `ready`, `loading`, then `ready`; a failure reads `bad hash` or `cancelled`; a row nothing will now start reads `not started` |
+| Model states | | `queued`, `downloading`, `resuming` (picked up a `.part`), `verifying`, `ready`, `loading`, then `ready`; a file whose size and mtime still match the digest forge recorded skips `verifying` and goes straight from `queued` to `ready`; a failure reads `bad hash` or `cancelled`; a row nothing will now start reads `not started` |
 | Gateway states | | `binding` while the listener task runs, `bound :<port>` once ready, `failed :<port>` with the error on a dim continuation line beneath when the bind failed. A failed row follows the account bail's grammar: the name bolds and the state carries the red. |
 
 - The gateway row shows the inference listener's bind state, rendered whenever forge runs. A failure is the legible form of the boot gate: no session spawns while the listener cannot bind its port, and this row - not a log file - is where that refusal explains itself.
@@ -253,7 +253,7 @@ A fresh fetch carries the note saying what it is about to move and where it keep
 <details>
 <summary>Dictation config, costs, and cancel mechanics</summary>
 
-- 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. Every later run re-hashes both files (about 2.7 s for the pair, concurrent) then loads the weights: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is held for the run.
+- 3.07 GB on a first run, resumable via `.part` and SHA-256 verified. A later run re-hashes a file (about 2.7 s for the pair, concurrent) only when its size or mtime has moved since forge recorded its digest; otherwise the check is a stat. Then the weights load: 1.0 s warm, 7 s on a cold page cache. About 1.8 GB of physical footprint is held for the run.
 - `[dictate]` in `forge.toml`, off unless asked for: `enabled`, `models_dir`, `device`, `language`, `normalizer` (a bool - off halves the download and skips a pass per utterance), `max_capture_minutes`. An unknown key fails the load rather than being ignored. The model specs and the normalizer's prompt axes stay internal.
 - Cancel: whatever reached `ready` stays installed and every in-flight `.part` is left where it is, so the next run resumes. Both models run at once, so a cancel can leave TWO partials while the screen's byte counts name only the transfer they are reported against; the other model's own row still carries its bar.
 - Cancel is not instant: verifying hashes with no progress callback, so a cancel is not seen until the hash it interrupted finishes - up to about 2.6 s on the shipped pair, during which the rows keep their last state and the footer still reads `esc  cancel and quit` ([#799](https://github.com/busytools/forge/issues/799)).

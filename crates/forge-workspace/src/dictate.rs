@@ -2,10 +2,13 @@
 //! preflight pass that makes the models usable before forge starts.
 //!
 //! The costs are what shape this. A first run fetches 3.07 GB; every
-//! later one re-hashes it, which is about 2.7 s for the pair now the
-//! two models are prepared concurrently; loading the weights is another
-//! second warm. None of that can happen while somebody is dictating, so
-//! all of it happens once, at boot, on the preflight screen.
+//! later one re-hashes what is on disk, about 2.7 s for the pair now the
+//! two models are prepared concurrently, then loads the weights, another
+//! second warm. The hash is skipped for a model whose size and
+//! modification time still match the digest recorded for it, which is
+//! every boot but the one after a file changed. None of that can happen
+//! while somebody is dictating, so all of it happens once, at boot, on
+//! the preflight screen.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -464,8 +467,14 @@ impl DictateState {
 fn preflight_config(settings: &DictateSettings) -> forge_dictate::Config {
     let mut cfg = settings.to_config();
     match forge_sdk::app_support_dir() {
-        Ok(dir) => cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics")),
-        Err(error) => tracing::warn!(%error, "dictate diagnostics off: no app-support dir"),
+        Ok(dir) => {
+            cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
+            cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "no app-support dir: dictate per-take diagnostics and the model-digest record are off"
+        ),
     }
     cfg
 }
@@ -1243,6 +1252,16 @@ mod tests {
         assert!(
             cfg.diagnostics_dir.is_some(),
             "on this machine an app-support dir resolves, so the store must be armed"
+        );
+        assert_eq!(
+            cfg.digest_cache_dir.as_deref(),
+            forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-digests")).as_deref(),
+            "the verified-digest record must sit beside forge's other machine-local state, or \
+             every boot re-hashes 3.07 GB"
+        );
+        assert!(
+            cfg.digest_cache_dir.is_some(),
+            "the record is what keeps a warm boot off the disk; nothing else arms it"
         );
     }
 

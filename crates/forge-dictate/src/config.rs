@@ -98,6 +98,14 @@ pub struct Config {
     /// `crate::diagnostics`. `None` writes nothing - diagnostics are
     /// the host's choice of directory, never a requirement.
     pub diagnostics_dir: Option<PathBuf>,
+    /// Directory the crate records verified model digests in, keyed on
+    /// each file's size and modification time, so a file unchanged
+    /// since it was last verified is not read end to end again.
+    ///
+    /// `None` disables the cache and hashes every time: a caller with no
+    /// machine-local directory of its own to put it in keeps the old
+    /// cost rather than having one invented for it.
+    pub digest_cache_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -112,6 +120,7 @@ impl Default for Config {
             max_capture: Duration::from_secs(30 * 60),
             silence_floor: -50.0,
             diagnostics_dir: None,
+            digest_cache_dir: None,
         }
     }
 }
@@ -186,6 +195,13 @@ impl ConfigBuilder {
         self
     }
 
+    /// Record verified model digests under a directory, so a file
+    /// unchanged since its last verification is not hashed again.
+    pub fn digest_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.inner.digest_cache_dir = Some(dir.into());
+        self
+    }
+
     /// Finalise and return the [`Config`].
     pub fn build(self) -> Config {
         self.inner
@@ -235,6 +251,7 @@ mod tests_config {
             .max_capture(Duration::from_secs(5))
             .silence_floor(-30.0)
             .diagnostics_dir("/diag")
+            .digest_cache_dir("/digests")
             .normalizer(ModelSpec::cohere_transcribe_q4_k_m())
             .normalize_options(NormalizeOptions {
                 styling: Styling::Casual,
@@ -271,6 +288,11 @@ mod tests_config {
             cfg.diagnostics_dir.as_deref(),
             Some(Path::new("/diag")),
             "diagnostics_dir must carry the caller's store location, not be dropped by the builder"
+        );
+        assert_eq!(
+            cfg.digest_cache_dir.as_deref(),
+            Some(Path::new("/digests")),
+            "digest_cache_dir must carry the caller's store location, or every boot re-hashes"
         );
         assert_eq!(
             cfg.normalizer.map(|n| n.file),

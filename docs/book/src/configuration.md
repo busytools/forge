@@ -330,8 +330,10 @@ wrong volume with nothing said about it.
 With `enabled = true`, forge fetches, verifies and loads the models on
 the preflight screen before forge hands over. A first run
 downloads 3.07 GB, resumable and SHA-256 verified; later runs re-hash
-what is on disk, which takes a few seconds, then load the weights.
-Pressing `esc` during a download keeps what has landed and quits.
+what is on disk, which takes a few seconds, unless the file's size and
+modification time still match the digest forge recorded for it, which
+makes the check one stat. Then the weights load. Pressing `esc` during
+a download keeps what has landed and quits.
 
 The model files themselves are not configurable. Each carries a URL, a
 byte length and a digest, and a hand-edited one is a file nothing can
