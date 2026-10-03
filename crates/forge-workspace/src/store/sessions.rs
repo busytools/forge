@@ -374,6 +374,11 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     if fields.is_git_repo.is_some() {
         row.is_git_repo = fields.is_git_repo;
     }
+    // An empty list is the reset: it means every family, which the row
+    // stores as absence.
+    if let Some(families) = &fields.mcp_families {
+        row.mcp_families = if families.is_empty() { None } else { Some(families.clone()) };
+    }
     put(db, &row)?;
     Ok(true)
 }
@@ -474,8 +479,12 @@ mod tests {
         );
 
         let legacy = br#"{"session_id":null}"#;
-        let decoded = decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
-        assert_eq!(decoded.mcp_families, None, "an absent field stays absent, never an invented set");
+        let decoded =
+            decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
+        assert_eq!(
+            decoded.mcp_families, None,
+            "an absent field stays absent, never an invented set"
+        );
     }
 
     /// The first boot after this table exists is the migration: every

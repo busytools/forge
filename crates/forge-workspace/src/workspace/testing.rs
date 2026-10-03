@@ -670,6 +670,7 @@ impl Workspace {
             // Non-git: the seeded row nests under its project in the
             // launchpad without needing a worktree on disk.
             false,
+            None,
         );
     }
 
@@ -689,6 +690,7 @@ impl Workspace {
             None,
             false,
             true,
+            None,
         );
     }
 

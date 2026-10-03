@@ -99,6 +99,78 @@ impl McpFamily {
     pub fn all() -> BTreeSet<McpFamily> {
         Self::ALL.into_iter().collect()
     }
+
+    /// The wire spelling, also the family segment its tool names carry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpFamily::Review => "review",
+            McpFamily::Cron => "cron",
+            McpFamily::Tasks => "tasks",
+            McpFamily::Gotify => "gotify",
+            McpFamily::Slack => "slack",
+            McpFamily::Systemone => "systemone",
+        }
+    }
+
+    /// Parse a spawn argument's spelling; `None` for anything else.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|family| family.as_str() == name)
+    }
+}
+
+/// A stored selection's resolved set: absent or empty means every
+/// family; names are canonicalised into wire order and de-duplicated.
+/// Unknown names cannot be written by either tool (both validate), but a
+/// hand-edited row could carry one - it is dropped loudly rather than
+/// widening or narrowing the surface silently.
+pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFamily> {
+    let Some(stored) = stored else {
+        return McpFamily::all();
+    };
+    if stored.is_empty() {
+        return McpFamily::all();
+    }
+    let requested: BTreeSet<McpFamily> = stored
+        .iter()
+        .filter_map(|name| {
+            let parsed = McpFamily::parse(name);
+            if parsed.is_none() {
+                tracing::warn!(
+                    target: "forge_workspace::mcp",
+                    event_name = "unknown_mcp_family_in_row",
+                    name = %name,
+                    "a stored mcp family name is not selectable; ignoring it",
+                );
+            }
+            parsed
+        })
+        .collect();
+    requested
+}
+
+/// The canonical stored form of a selection: names in wire order,
+/// de-duplicated; an empty list means every family, so it is stored as
+/// `None`.
+pub(crate) fn canonical_mcp_families(names: &[String]) -> Result<Option<Vec<String>>, String> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let mut selected: BTreeSet<McpFamily> = BTreeSet::new();
+    for name in names {
+        if name == "agents" {
+            return Err("`agents` is always on for every worker and cannot be listed".to_owned());
+        }
+        let Some(family) = McpFamily::parse(name) else {
+            let selectable: Vec<&str> =
+                McpFamily::ALL.iter().map(|family| family.as_str()).collect();
+            return Err(format!(
+                "unknown MCP family `{name}`; the selectable families are: {}",
+                selectable.join(", ")
+            ));
+        };
+        selected.insert(family);
+    }
+    Ok(Some(selected.into_iter().map(McpFamily::as_str).map(str::to_owned).collect()))
 }
 
 /// The facades one session's server is composed from: the agents pair
@@ -431,6 +503,30 @@ mod tests {
                 "cron__list",
             ],
             "{names:?}"
+        );
+    }
+
+    /// A stored selection resolves to the canonical set: absent and
+    /// empty both mean every family, known names land in wire order, and
+    /// a name no longer selectable is dropped rather than widening or
+    /// narrowing the surface silently.
+    #[test]
+    fn stored_family_names_resolve_to_the_canonical_set() {
+        assert_eq!(resolve_mcp_families(None), McpFamily::all(), "absent means every family");
+        assert_eq!(resolve_mcp_families(Some(&[])), McpFamily::all(), "empty means every family");
+
+        let stored = vec!["slack".to_owned(), "cron".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&stored)),
+            [McpFamily::Cron, McpFamily::Slack].into_iter().collect(),
+            "known names resolve into the set"
+        );
+
+        let with_unknown = vec!["bogus".to_owned(), "tasks".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&with_unknown)),
+            [McpFamily::Tasks].into_iter().collect(),
+            "an unknown name is dropped"
         );
     }
 

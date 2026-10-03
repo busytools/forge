@@ -1229,6 +1229,9 @@ pub(crate) struct WorkerSpawnArgs {
     pub kick: Option<String>,
     pub resume_kick: Option<String>,
     pub interactive: bool,
+    /// The validated MCP-family allowlist from `agents__spawn`; `None`
+    /// or empty means every family.
+    pub mcp_families: Option<Vec<String>>,
 }
 
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
@@ -1252,7 +1255,7 @@ pub(crate) fn handle_spawn_worker(
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive } = args;
+    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive, mcp_families } = args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
     // Verify the project exists before minting the worker's id. A worker
@@ -1441,6 +1444,9 @@ pub(crate) fn handle_spawn_worker(
     // `resume_kick`), and writing that here would make it the worker's
     // opening turn on every later `--new` re-spawn.
     let kick_field = if is_resume { None } else { entry.kick.as_deref() };
+    // A resume adopts what the row already stores, so it states none.
+    let families_field =
+        if is_resume || from_boot_respawn { None } else { mcp_families.as_deref() };
     let durability_warning = match workspace.record_worker_row(
         &project_key,
         label,
@@ -1450,6 +1456,7 @@ pub(crate) fn handle_spawn_worker(
         resume_kick,
         interactive,
         is_git,
+        families_field,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -1500,6 +1507,25 @@ pub(crate) fn handle_spawn_worker(
     } else {
         SessionTarget::FreshInProject { slot: slot.clone() }
     };
+    // The family selection this spawn composes its tool surface from: a
+    // resume or boot re-spawn reads what the row already carries; a
+    // first spawn writes the same value to the row just below.
+    let families = if is_resume || from_boot_respawn {
+        workspace.recorded_worker_mcp_families(&project_key, label).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                event_name = "worker_row_families_unreadable",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "reading the worker's recorded mcp families failed; \
+                 composing the full surface",
+            );
+            None
+        })
+    } else {
+        mcp_families.clone()
+    };
     match workspace.get_agent_handle_at_key(
         target,
         settings,
@@ -1511,6 +1537,7 @@ pub(crate) fn handle_spawn_worker(
             // already there, so only a spawn that minted this one may
             // take it away.
             wrote_row: !is_resume && !from_boot_respawn,
+            mcp_families: families.clone(),
         },
     ) {
         Ok(handle) => {
@@ -1534,6 +1561,9 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: session_id.as_str().to_owned(),
                 tag,
+                // The stored selection, canonicalised; `None` means every
+                // family. The lead sees exactly what this worker got.
+                mcp_families: families,
                 rate_limited_account,
                 // Set when the row could not be written above; the boot
                 // re-spawn paths drop the reply, so they read the warn
@@ -2811,6 +2841,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -2898,6 +2929,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             resume_existing,
@@ -2985,6 +3017,7 @@ provider = "anthropic"
             None,
             false,
             false,
+            None,
         )
         .expect("seed the row the resume re-writes");
 
@@ -2999,6 +3032,7 @@ provider = "anthropic"
                 kick: Some("This session was restarted by forge; continue.".to_owned()),
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             Some("tester-id"),
@@ -3053,6 +3087,7 @@ provider = "anthropic"
                 kick: Some("opening turn".to_owned()),
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3131,6 +3166,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3174,7 +3210,11 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             None,
-            &crate::protocol::SpawnRole::Worker { label: "reviewer".to_owned(), wrote_row: false },
+            &crate::protocol::SpawnRole::Worker {
+                label: "reviewer".to_owned(),
+                wrote_row: false,
+                mcp_families: None,
+            },
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");
@@ -3376,6 +3416,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3427,6 +3468,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: false,
+                    mcp_families: None,
                 },
                 SessionSlot::from_str_for_test("lead"),
                 None,
@@ -3515,6 +3557,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3718,6 +3761,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3747,6 +3791,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3789,6 +3834,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3817,6 +3863,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3842,6 +3889,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3877,6 +3925,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3924,6 +3973,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4023,6 +4073,7 @@ provider = "anthropic"
                         kick: None,
                         resume_kick: None,
                         interactive: false,
+                        mcp_families: None,
                     },
                     SessionSlot::from_str_for_test("lead"),
                     None,
@@ -4083,6 +4134,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4120,6 +4172,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4147,6 +4200,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4181,6 +4235,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4386,6 +4441,7 @@ provider = "anthropic"
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row whose live worker is gone");
 
@@ -4417,7 +4473,17 @@ provider = "anthropic"
     async fn despawn_clears_a_stranded_workers_subscriptions_and_crons() {
         let StoreBackedStub { workspace, project, .. } = store_backed_stub();
         workspace
-            .record_worker_row(&project, "stranded", "stranded-id", "c", None, None, false, false)
+            .record_worker_row(
+                &project,
+                "stranded",
+                "stranded-id",
+                "c",
+                None,
+                None,
+                false,
+                false,
+                None,
+            )
             .expect("seed the stranded row");
         let sub = forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
@@ -4477,6 +4543,7 @@ provider = "anthropic"
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the lead's row");
 
@@ -4516,7 +4583,7 @@ provider = "anthropic"
         // A sibling row, so "nothing was cleared" cannot pass because the
         // store was empty.
         workspace
-            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false)
+            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false, None)
             .expect("seed a row the despawn must leave alone");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -4788,6 +4855,7 @@ provider = "anthropic"
                 // The row is what says this worker runs in a worktree, so
                 // it is what the despawn has to read the gitness from.
                 true,
+                None,
             )
             .expect("seed the row that outlived its worker");
         (workspace, project_key, wt, repo, config)
@@ -5066,6 +5134,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead-uuid"),
             None,
