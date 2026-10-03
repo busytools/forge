@@ -497,6 +497,10 @@ mod tests {
             out.contains("▸ ✓ Allow once"),
             "expected ▸ ✓ Allow once on focused row; got:\n{out}"
         );
+        assert!(
+            out.contains("… Tell the agent something else"),
+            "the permission escape row draws the agent wording; got:\n{out}"
+        );
     }
 
     #[test]
