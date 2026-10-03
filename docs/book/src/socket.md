@@ -22,7 +22,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 1, "settings": {"mark": null, "theme": null, "font": null}}
+{"kind": "greeting", "version": 2, "settings": {"mark": null, "theme": null, "font": null}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than

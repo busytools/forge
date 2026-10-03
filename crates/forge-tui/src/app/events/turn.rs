@@ -161,7 +161,7 @@ pub(crate) mod test_capture {
 /// refused rather than applied. Under the `testing` Cargo feature, see
 /// [`dispatch_permission_outcome`] - same test-capture rule applies.
 pub(crate) fn dispatch_slack_post_outcome(
-    app: &App,
+    app: &mut App,
     session_key: &SessionSlot,
     id: uuid::Uuid,
     approved: bool,
@@ -182,15 +182,22 @@ pub(crate) fn dispatch_slack_post_outcome(
     if let Err(err) = workspace.dispatch(cmd) {
         // The same race the permission and question answers meet: another
         // view answered the draft (or it expired) before this click landed.
-        // Debug, not warn - the dock is already gone, so the reader has
-        // nothing to act on.
-        if matches!(err, forge_workspace::DispatchError::NoPromptWaiting { .. }) {
+        // The reader pressed a key on a dock that is already gone, so the
+        // session's own chat says so rather than the loss going only to the
+        // log - the dock popping looks like the answer landed.
+        if matches!(err, forge_workspace::DispatchError::NoDraftWaiting { .. }) {
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "slack_post_dispatch_prompt_gone",
                 slot = %session_key.display(),
                 draft_id = %id,
                 "slack post answer dropped: the draft is no longer waiting",
+            );
+            crate::app::events::push_system_message_to_session(
+                app,
+                session_key,
+                Some(crate::app::SystemSeverity::Info),
+                "The Slack draft is no longer waiting, so the answer was not applied.",
             );
             return;
         }
@@ -1010,6 +1017,28 @@ mod tests {
         let bucket = crate::app::session::UiSession::new(key.clone(), project);
         app.sessions.insert(key.clone(), bucket);
         key
+    }
+
+    /// A dock the reader answers that the core has already resolved - the
+    /// race with another view - leaves its reason in the session's chat: the
+    /// dock popping looks like the answer landed, so the loss cannot go only
+    /// to the log.
+    #[test]
+    fn a_refused_slack_answer_says_so_in_the_chat() {
+        let mut app = App::test_default();
+        let key = SessionSlot::from_str_for_test(App::TEST_SESSION_KEY);
+
+        dispatch_slack_post_outcome(&mut app, &key, uuid::Uuid::new_v4(), true);
+
+        assert!(
+            app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("no longer waiting"))
+                })
+            }),
+            "the refused answer must say why where the dock was",
+        );
     }
 
     /// A worker tab's own turn completion names its project + worker

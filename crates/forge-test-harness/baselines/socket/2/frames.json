@@ -57,7 +57,7 @@
     "SessionsListed": "sessions_listed",
     "SetModeFailed": "set_mode_failed",
     "SetModelFailed": "set_model_failed",
-    "SlackDraftExpired": "slack_draft_expired",
+    "SlackDraftResolved": "slack_draft_resolved",
     "SlackMessageAppended": "slack_message_appended",
     "SlackPostPending": "slack_post_pending",
     "SlashCommandError": "slash_command_error",

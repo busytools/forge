@@ -3,6 +3,8 @@
 
   import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
+  import { slotOf, subjectKey } from '../protocol';
+  import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
@@ -26,6 +28,7 @@
   import {
     blocked,
     composerState,
+    draftEndingLine,
     joined,
     noticeLine,
     pendingAsk,
@@ -169,8 +172,51 @@
    * turn to stop, and the core is the one that knows it is running.
    */
   const running = $derived(record.header.turn_in_flight);
-  const notice = $derived(owns ? noticeLine(composer.notice, box.sawTake) : null);
+  // The engine's notice, or what became of a draft that left this box - the
+  // dock's own stand-down, said in the row the dock leaves behind.
+  const notice = $derived(owns ? (noticeLine(composer.notice, box.sawTake) ?? box.ended) : null);
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
+
+  /**
+   * The draft this box is drawing, remembered so a stand-down can tell THIS
+   * draft from the next one: the record has already lost `pending_ask` by the
+   * time the update is read.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'slack_draft') {
+      box.shownDraft = held.request.id;
+      box.ended = null;
+      box.answerAwaits = null;
+    }
+  });
+
+  /**
+   * A held draft leaving the core, which no record field carries.
+   *
+   * Applying the update clears `pending_ask`; the ENDING rides the update
+   * alone, and it is what tells this reader what happened to a dock they did
+   * not answer. The update is read here for the same reason the conversation
+   * reads its own frames: nothing else draws it.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'slack_draft_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null || subjectKey({ session: at }) !== boxKey(slot)) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== box.shownDraft) return;
+      if (box.answered === id) {
+        // This reader's own answer is in flight for it: whether it landed is
+        // the refusal's to say, and it says it in the same row.
+        box.answerAwaits = id;
+        return;
+      }
+      box.ended = draftEndingLine(payload['ending']);
+    });
+  });
 
   /**
    * The lists a draft is matched against, pulled when a list is opened rather
@@ -336,6 +382,14 @@
   $effect(() => {
     return connection.onMessage((message) => {
       if (message.kind !== 'error' || message.what !== 'dispatch') return;
+      // The draft a click of this reader's was answering left the core under
+      // that click: the dock is already gone, so the reason is drawn where it
+      // stood rather than on a dock that no longer exists.
+      if (box.answerAwaits !== null) {
+        box.answerAwaits = null;
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
       if (box.answered !== null) {
         box.refusal = message.why;
         return;

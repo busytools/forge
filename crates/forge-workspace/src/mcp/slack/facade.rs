@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use forge_connectors::slack::{MENTION_CURSOR, SlackApi, SlackError};
 use forge_primitives::slack::{
-    SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
-    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackDraft, SlackDraftEnding, SlackPin, SlackSearchMatch,
+    SlackSubscription, SlackSubscriptionTarget, SlackUser, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -371,7 +371,9 @@ struct ResolveOnDrop {
 
 impl Drop for ResolveOnDrop {
     fn drop(&mut self) {
-        self.workspace.resolve_slack_draft(self.id, &self.caller, false);
+        // The waiter is gone rather than answering: the drop path is a
+        // session that died mid-wait, never a decision.
+        self.workspace.resolve_slack_draft(self.id, &self.caller, SlackDraftEnding::Abandoned);
     }
 }
 
@@ -436,7 +438,11 @@ impl ProdSlackFacade {
             Err(_elapsed) => GateDecision::Expired,
         };
         if resolved != GateDecision::Approved {
-            workspace.resolve_slack_draft(guard.id, caller, false);
+            let ending = match resolved {
+                GateDecision::Expired => SlackDraftEnding::Expired,
+                _ => SlackDraftEnding::Answered { approved: false },
+            };
+            workspace.resolve_slack_draft(guard.id, caller, ending);
         }
         drop(guard);
         resolved
@@ -1297,6 +1303,14 @@ mod tests {
         (facade, ws, api, rx)
     }
 
+    /// An answer as the registry takes it. Every call site here is a view
+    /// answering; the expiry is the facade's own window and the drop is a
+    /// dead waiter, and both go through the paths under test rather than
+    /// through this.
+    fn answered(approved: bool) -> SlackDraftEnding {
+        SlackDraftEnding::Answered { approved }
+    }
+
     /// Wait for the blocked post to register its draft, then hand back its
     /// id. The post is parked on a oneshot until this is resolved.
     async fn wait_for_draft(ws: &Arc<Workspace>) -> Uuid {
@@ -1512,7 +1526,7 @@ mod tests {
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -1528,7 +1542,7 @@ mod tests {
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = task.await.expect("the post task does not panic").expect("the post landed");
         assert_eq!(
@@ -1575,7 +1589,7 @@ mod tests {
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -1591,7 +1605,7 @@ mod tests {
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
 
         assert!(task.await.expect("no panic").is_err(), "a rejected upload must not send");
         assert_eq!(api.upload_url_count(), 0, "nothing is requested from Slack either");
@@ -1609,12 +1623,40 @@ mod tests {
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved upload sends");
 
         assert_eq!(api.upload_url_count(), 1, "the upload URL is requested once");
         assert_eq!(api.uploads().len(), 1, "and completed once");
         assert_eq!(api.uploads()[0].1, "C1", "into the conversation that was named");
+    }
+
+    /// The waiter going away is its own ending: nothing was answered, and a
+    /// view still holding the dock hears it rather than silence.
+    #[tokio::test]
+    async fn a_waiter_that_dies_is_reported_as_abandoned() {
+        let (facade, ws, _api, mut rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let _id = wait_for_draft(&ws).await;
+
+        task.abort();
+        let _ = task.await;
+
+        let mut resolved = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } = update {
+                resolved.push(ending);
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![SlackDraftEnding::Abandoned],
+            "a dropped waiter clears the registry and says which ending took the draft",
+        );
+        assert!(ws.slack_drafts.lock().is_empty(), "and leaves nothing registered");
     }
 
     #[tokio::test]
@@ -1625,7 +1667,7 @@ mod tests {
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
 
         let outcome = task.await.expect("no panic");
         assert_eq!(outcome, Err(SlackPostError::Rejected));
@@ -1661,7 +1703,7 @@ mod tests {
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
-        let _id = wait_for_draft(&ws).await;
+        let id = wait_for_draft(&ws).await;
 
         tokio::time::advance(APPROVAL_TIMEOUT + Duration::from_secs(1)).await;
         let outcome = task.await.expect("no panic");
@@ -1675,14 +1717,14 @@ mod tests {
 
         let mut resolved = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id } = update {
-                resolved.push((key, id));
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } = update {
+                resolved.push((key, id, ending));
             }
         }
         assert_eq!(
-            resolved.len(),
-            1,
-            "the expiry stands the views down once, whichever path resolved the draft",
+            resolved,
+            vec![(caller(), id, SlackDraftEnding::Expired)],
+            "the expiry stands the views down once, and says which ending it was",
         );
     }
 
@@ -1694,7 +1736,7 @@ mod tests {
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
 
         task.await.expect("no panic").expect("an approved draft posts");
         assert_eq!(api.posts().len(), 1, "exactly one message goes out");
@@ -1712,7 +1754,7 @@ mod tests {
             }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("posted");
 
         assert_eq!(api.posts()[0].2.as_deref(), Some("100.0"));
@@ -1732,7 +1774,7 @@ mod tests {
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -1751,7 +1793,7 @@ mod tests {
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved replacement is sent");
 
         assert_eq!(api.updates.lock().len(), 1);
@@ -1766,7 +1808,7 @@ mod tests {
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackEditError::Rejected));
         assert!(api.updates.lock().is_empty(), "a rejected replacement is never sent");
@@ -1781,7 +1823,7 @@ mod tests {
             async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), true);
+        ws.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved deletion is sent");
 
         assert_eq!(api.deletes.lock().len(), 1);
@@ -1796,7 +1838,7 @@ mod tests {
             async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackEditError::Rejected));
         assert!(api.deletes.lock().is_empty(), "a rejected deletion is never sent");
@@ -1820,9 +1862,9 @@ mod tests {
             }
         });
         let first = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(first, &caller(), true);
+        ws.resolve_slack_draft(first, &caller(), answered(true));
         let second = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(second, &caller(), true);
+        ws.resolve_slack_draft(second, &caller(), answered(true));
 
         task.await.expect("no panic").expect("both reactions applied");
 
@@ -1845,7 +1887,7 @@ mod tests {
             }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), false);
+        ws.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackReactError::Rejected));
         assert!(api.reactions.lock().is_empty(), "a rejected reaction is never applied");

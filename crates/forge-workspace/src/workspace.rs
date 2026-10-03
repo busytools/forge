@@ -3912,10 +3912,7 @@ impl Workspace {
             Command::RespondSlackPost { key, id, .. } => {
                 let waiting = self.slack_draft_waiting(*id, key);
                 if !waiting {
-                    return Err(DispatchError::NoPromptWaiting {
-                        key: key.clone(),
-                        tool_id: id.to_string(),
-                    });
+                    return Err(DispatchError::NoDraftWaiting { key: key.clone(), id: *id });
                 }
             }
             _ => {}
@@ -4188,7 +4185,17 @@ impl Workspace {
                     );
                 }
                 Command::RespondSlackPost { key, id, approved } => {
-                    self.resolve_slack_draft(id, &key, approved);
+                    // The guard above already refused a draft this one is not
+                    // waiting for, so a `false` here is a resolve that landed
+                    // between the two: the same refusal, not a silent drop.
+                    let answered = self.resolve_slack_draft(
+                        id,
+                        &key,
+                        forge_primitives::slack::SlackDraftEnding::Answered { approved },
+                    );
+                    if !answered {
+                        return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
+                    }
                 }
                 Command::OpenUrl { url } => {
                     let span = tracing::info_span!("open_url", url = %url);

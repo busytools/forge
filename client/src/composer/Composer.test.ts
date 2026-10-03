@@ -2683,7 +2683,7 @@ describe('the dock', () => {
     expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
   });
 
-  it('takes the dock away once the draft is answered, which no frame will do', () => {
+  it('takes the dock away once the draft is answered, before any frame says so', () => {
     const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
 
     options()[0]?.click();
@@ -2700,8 +2700,9 @@ describe('the dock', () => {
     options()[0]?.click();
     flushSync();
 
-    // The same draft as a fresh frame carries it: the seat is still parked on
-    // it server-side, and no update will ever say it is gone.
+    // A frame read before the resolution still carries the draft - the seat was
+    // parked on it when the read was taken - so the answer's own mark is what
+    // holds the dock down until the stand-down for it lands.
     harness.page.record = record({ pending_ask: slackDraftAsk() });
     flushSync();
     expect(document.querySelector('.dock'), 'a repaint does not raise it again').toBeNull();
@@ -2711,6 +2712,64 @@ describe('the dock', () => {
     });
     flushSync();
     expect(document.querySelector('.dock'), 'while the next draft is a new prompt').not.toBeNull();
+  });
+
+  it('says what became of a draft that left without this reader answering', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+    expect(document.querySelector('.dock'), 'the dock is up').not.toBeNull();
+
+    // Another view answered it: the stand-down carries the ending, and the
+    // record goes with it as the apply arm leaves it.
+    harness.say({
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: { answered: { approved: true } },
+        },
+      },
+    });
+    harness.page.record = record({ pending_ask: null });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
+    expect(drawn(), 'and the row says which ending took it').toContain('posted from another view');
+  });
+
+  it('says why an answer did not land when the draft left under the click', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+
+    // The core resolved it elsewhere, so the click's answer is refused: the
+    // dock is already gone, and the reason is drawn where it stood.
+    harness.say({
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: { answered: { approved: true } },
+        },
+      },
+    });
+    harness.page.record = record({ pending_ask: null });
+    flushSync();
+    expect(drawn(), 'nothing is said while the answer is unresolved').not.toContain(
+      'no longer waiting',
+    );
+
+    harness.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'that Slack draft is no longer waiting: it has been answered, or it expired',
+    });
+    flushSync();
+
+    expect(drawn(), 'the refusal lands where the dock stood').toContain('no longer waiting');
   });
 
   it('draws the next held draft as a fresh dock, rather than carrying the mark over', () => {

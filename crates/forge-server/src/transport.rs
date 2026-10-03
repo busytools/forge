@@ -33,7 +33,15 @@ pub mod wire;
 /// contract is filed under it: a bump looks for a record directory that is
 /// not there and fails, which is the honest answer for a client that would
 /// refuse the connection anyway.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// **Renaming an update is a bump.** A variant's name is the tag it crosses
+/// under, so a client that knows the old one narrows the frame to nothing and
+/// drops it silently - which is what a version the server bumps exists to
+/// prevent, since the skewed pair is real: the desktop client ships
+/// separately from the binary. `slack_draft_expired` became
+/// `slack_draft_resolved` (v1's record under `baselines/socket/1/` is the
+/// older tag, kept as what a v1 client really emitted).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations

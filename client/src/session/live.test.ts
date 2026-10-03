@@ -31,7 +31,7 @@ import { get, writable } from 'svelte/store';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
-import { subjectKey } from '../protocol';
+import { PROTOCOL_VERSION, subjectKey } from '../protocol';
 import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreState, StoreValue } from '../stores';
@@ -76,7 +76,7 @@ async function stubServer(session: unknown) {
     socket.on('close', () => sockets.delete(socket));
     const greeting: ServerMessage = {
       kind: 'greeting',
-      version: 1,
+      version: PROTOCOL_VERSION,
       settings: { mark: null, theme: null, font: null },
     };
     socket.send(JSON.stringify(greeting));

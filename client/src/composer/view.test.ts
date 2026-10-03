@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DictateWire } from '../wire/home';
-import { dictationOffered } from './view';
+import { dictationOffered, draftEndingLine } from './view';
 
 /** The home's dictate read, with whatever the test overrides. */
 function dictate(over: Partial<DictateWire> = {}): DictateWire {
@@ -62,5 +62,38 @@ describe('whether dictation is on offer', () => {
       ),
       'a failed load declares no model at all',
     ).toBe(false);
+  });
+});
+
+/**
+ * What one draft ending reads as, where the dock stood.
+ *
+ * The ending crosses as the core's own externally tagged enum, so a unit
+ * variant is a bare name and the answered one is a name around its field.
+ * Nothing else on the wire says what became of a draft this reader did not
+ * answer.
+ */
+describe('the line a resolved draft leaves', () => {
+  it('names the ending the update carried', () => {
+    expect(draftEndingLine('expired').text, 'the window').toContain('expired unanswered');
+    expect(draftEndingLine('abandoned').text, 'the asker').toContain('session went away');
+    expect(
+      draftEndingLine({ answered: { approved: true } }).text,
+      'and whether the message went out',
+    ).toContain('posted from another view');
+    expect(
+      draftEndingLine({ answered: { approved: false } }).text,
+      'declined is its own line',
+    ).toContain('declined in another view');
+  });
+
+  it('still says the draft is gone for an ending this client is older than', () => {
+    expect(
+      draftEndingLine({ something_new: null }).text,
+      'dropping the news would leave the disappearance unexplained',
+    ).toContain('no longer waiting');
+    expect(draftEndingLine(undefined).text, 'and a payload that carries none').toContain(
+      'no longer waiting',
+    );
   });
 });
