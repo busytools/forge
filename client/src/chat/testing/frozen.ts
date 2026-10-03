@@ -1,14 +1,17 @@
 /**
  * The conversation a column is HANDED, frozen, for the tests that drive one.
  *
- * **Every publish is frozen, at the boundary the class passes through** - the
- * record the column holds and the record the class keeps are the same object,
- * so a test that never reads `value` is covered too. That is the boundary that
- * matters because the column holds its record as a VALUE: `$state.raw` never
- * notifies on a publish of the same identity, so an in-place edit made where a
- * record should have been REPLACED is silent - the previous occupant's history
- * stays on screen through a `/new` - and freezing turns that silence into a
- * throw.
+ * **Every PUBLISH is frozen, at the boundary the class passes through.** Since
+ * the fold state and the published store were split (#1670), the boundary is
+ * the draw rather than the fold: a stream frame is folded at once and drawn on
+ * the next painted frame, so the record a reader - and the column - can hold
+ * is the published one, and that is the one frozen. An intermediate state two
+ * folds within one painted frame never reaches a reader, and is not frozen.
+ * The freeze still covers what matters: the column holds its record as a
+ * VALUE, and `$state.raw` never notifies on a publish of the same identity, so
+ * an in-place edit made where a record should have been REPLACED is silent -
+ * the previous occupant's history stays on screen through a `/new` - and
+ * freezing the published record turns that silence into a throw.
  */
 
 /** The conversation module with a `Chat` that freezes every record it publishes. */

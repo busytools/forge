@@ -718,8 +718,9 @@
     const height = viewport?.scrollHeight ?? 0;
     const shrank = height < shaped;
     shaped = height;
+    const foot = atFoot();
     if (!shrank) {
-      if (atFoot()) {
+      if (foot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
@@ -735,8 +736,10 @@
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the
     // row under their top edge is what the column holds their place by from
-    // here on.
-    if (!held.following) captureAnchor();
+    // here on. Read off this event's own arithmetic, not the record: the
+    // follow flag is the fold's to publish on a painted frame, so a scroll
+    // that has just disarmed it would read the stale side of that write.
+    if (!foot) captureAnchor();
     if (offset < REACH) loadOlder();
   }
 

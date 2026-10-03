@@ -213,6 +213,11 @@ function said(text: string): unknown {
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  // **Two painted frames, because the fold's draw lands on one.** A frame's
+  // update publishes the record on the painted frame after it arrives; the
+  // effects that respond run behind that publish; and the passes they defer -
+  // the pin's second measure, the observer's restore - are the next paint's.
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   flushSync();
 }
 
@@ -385,7 +390,19 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    expect(pinned(), 'the end the reader is at is the element, not the model').toEqual([PIN, PIN]);
+    // **The count is the passes, and the value is the property.** A frame's
+    // draw now lands on a painted frame rather than at the write (#1670), so
+    // the layout settles over one more pass and the observer pins once more
+    // than the effect's pair. What the test is about is WHICH foot every pin
+    // asks for - the element's numbers, never the model's longer ones - so
+    // that is what is asserted, and a pin asking for anything else fails
+    // whichever pass it came from.
+    const pins = pinned();
+    expect(pins.length, 'the column pinned, over its passes').toBeGreaterThanOrEqual(2);
+    expect(
+      [...new Set(pins.map((pin) => JSON.stringify(pin)))],
+      "and every pin asked for the element's foot, not the model's",
+    ).toEqual([JSON.stringify(PIN)]);
   });
 
   it('keeps following when its own pin lands before the list has measured', async () => {
