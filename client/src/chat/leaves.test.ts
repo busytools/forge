@@ -183,9 +183,58 @@ describe('what a call body draws', () => {
         is_error: true,
       },
     );
-    expect(quiet.body.at(-1)).toEqual({
+    expect(quiet.body.at(-1), 'a one-line envelope carries no detail').toEqual({
       kind: 'error',
       message: 'File has not been read yet.',
+      detail: '',
+    });
+  });
+
+  it('draws a completed result verbatim even when it quotes both tags', () => {
+    // **The failure direction is the only one the envelope belongs to.** Ten
+    // real completed results on this machine carry both tags - Reads of forge
+    // source, a diff, a grep for the string - and unwrapping those rewrites
+    // what the tool actually said (a 23,305-character Read collapsing to a
+    // bogus hint). The terminal gates the same question on Failed|Killed; a
+    // completed run shows its output verbatim, tags and all.
+    const quoting = leafOf(
+      't7',
+      'Read',
+      { file_path: '/x/a.rs' },
+      {
+        type: 'tool_result',
+        content: 'the error path writes <tool_use_error> and </tool_use_error> around it',
+      },
+    );
+
+    expect(quoting.body.at(-1), 'a completed result keeps its own words').toEqual({
+      kind: 'text',
+      text: 'the error path writes <tool_use_error> and </tool_use_error> around it',
+    });
+  });
+
+  it('reads the envelope off a failed result whose content is a block array', () => {
+    // The MCP-result shape: an array of blocks rather than a string, which is
+    // where the wrapped refusals of the forge tools arrive.
+    const failed = leafOf(
+      't8',
+      'mcp__forge__agents__tell',
+      { label: 'companies', message: 'picking it up' },
+      {
+        type: 'tool_result',
+        content: [
+          {
+            type: 'text',
+            text: '<tool_use_error>no label companies under this project</tool_use_error>',
+          },
+        ],
+        is_error: true,
+      },
+    );
+
+    expect(failed.body.at(-1), 'the array branch reads the envelope too').toEqual({
+      kind: 'error',
+      message: 'no label companies under this project',
       detail: '',
     });
   });

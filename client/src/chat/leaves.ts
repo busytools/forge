@@ -225,17 +225,21 @@ export function blocksOf(content: unknown): Block[] {
 }
 
 /**
- * The CLI's own envelope off a tool result, read in the fold.
+ * The CLI's own envelope off a FAILED tool result, read in the fold.
  *
  * **The tag is addressed to the model, not to a reader**: it is how a failed
  * tool's message crosses the wire, and drawn raw it is a wall under the diff.
- * So it is read off at the one point every result's text enters, keyed on the
- * envelope itself rather than on the status - the same reading the terminal's
- * `extract_tool_use_error_message` gives the same payload, case-insensitively
- * included. The first line is the message; the rest is the detail under it.
+ * Read off only where the call failed - the terminal's own gate (Failed |
+ * Killed): a completed result that merely quotes the tags (a Read of the
+ * source that emits them) draws verbatim, and unwrapping it would rewrite what
+ * the tool actually said. The reading is the terminal's
+ * `extract_tool_use_error_message`, ASCII-lowercased the way its own scanner
+ * is: JS `toLowerCase()` is length-changing on some non-ASCII letters, and the
+ * index arithmetic would then slice the original at shifted offsets. The first
+ * line is the message; the rest is the detail under it.
  */
 function toolUseError(text: string): { message: string; detail: string } | null {
-  const lower = text.toLowerCase();
+  const lower = text.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
   const open = '<tool_use_error>';
   const start = lower.indexOf(open);
   if (start === -1) return null;
@@ -254,22 +258,24 @@ function toolUseError(text: string): { message: string; detail: string } | null 
  *
  * The content is a string for most tools and a block array for a few, and both
  * are read here: a result drawn as nothing is a row that expands to an empty
- * box.
+ * box. `failed` is the call's own settle: only there is the CLI's error
+ * envelope read off (see `toolUseError`), and a completed result draws
+ * verbatim, tags and all.
  */
-export function bodyOf(content: unknown): CallBody[] {
+export function bodyOf(content: unknown, failed = false): CallBody[] {
   if (typeof content === 'string') {
     const text = stripEscapes(content);
     if (text.trim() === '') return [];
-    const failed = toolUseError(text);
-    return [failed === null ? { kind: 'text', text } : { kind: 'error', ...failed }];
+    const said = failed ? toolUseError(text) : null;
+    return [said === null ? { kind: 'text', text } : { kind: 'error', ...said }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
       const text = stripEscapes(block.text);
       if (text.trim() !== '') {
-        const failed = toolUseError(text);
-        out.push(failed === null ? { kind: 'text', text } : { kind: 'error', ...failed });
+        const said = failed ? toolUseError(text) : null;
+        out.push(said === null ? { kind: 'text', text } : { kind: 'error', ...said });
       }
     }
     if (block.type === 'image') {
@@ -535,7 +541,7 @@ export function leafOf(
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
-    body: drawnBody(name, body, result),
+    body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
     mutation: marksOf(name, input, body, record),
     skill: null,
     image: imageOf(result),
@@ -573,9 +579,14 @@ function imageOf(result: Block | undefined): { mime: string; data: string } | nu
  * never say why. Where there is no diff the text is all there is, and either
  * way the call still settles on its result.
  */
-function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
+function drawnBody(
+  name: string,
+  body: CallBody[],
+  result: Block | undefined,
+  failed: boolean,
+): CallBody[] {
   if (result === undefined) return body;
-  const answered = bodyOf(result.content);
+  const answered = bodyOf(result.content, failed);
   if (result.is_error !== true && isEdit(name) && body.some((part) => part.kind !== 'text')) {
     return body;
   }
