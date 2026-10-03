@@ -4,6 +4,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import Group from './Group.svelte';
+import { leafOf } from './leaves';
 import type { Lane, PeerCard } from './units';
 
 const card = (over: Partial<PeerCard> = {}): PeerCard => ({
@@ -279,6 +280,40 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     const drawn = draw([lane([card({ body: 'the **fold** joins, `cargo check` runs' })])]);
     expect(drawn, 'the marks render').toContain('<strong>fold</strong>');
     expect(drawn, 'rather than sitting on the page').not.toContain('**fold**');
+  });
+});
+
+describe('a lane of systemone decisions', () => {
+  /** One family lane holding a settled decision call. */
+  function decisionLane(): Lane {
+    const leaf = leafOf(
+      'tu-dec',
+      'mcp__forge__systemone__ask_noul',
+      { state: 'a one-line import fix', instructions: 'Is this mechanical?' },
+      {
+        type: 'tool_result',
+        content: '{"model":"jev-1.13.0","answer":{"type":"noul","noul":0.93}}',
+      },
+    );
+    return {
+      tag: 'family',
+      row: { kind: 'systemone' },
+      label: 'systemone',
+      calls: [{ key: 'c-tu-dec', leaf }],
+    };
+  }
+
+  it('opens the decided call, which holds only while the lane hands its decision down', () => {
+    // The opener is the LANE's call site: this row draws open because
+    // `Group.svelte` passes the leaf's decision into `opensByDefault`, and a
+    // lane handing `null` instead would silently revert to a closed row.
+    const drawn = draw([decisionLane()]);
+
+    expect(drawn, 'the lane carries its own word').toContain('>systemone<');
+    expect(drawn, 'and leads with the fork').toContain('href="#i-decide"');
+    const tag = /<details[^>]*>/.exec(drawn)?.[0] ?? '';
+    expect(tag, 'the row draws open').toContain('open');
+    expect(drawn, 'with the block inside it').toContain('class="dec"');
   });
 });
 
