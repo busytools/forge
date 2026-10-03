@@ -52,6 +52,7 @@ const inPage = (fragment: string, turn: 'work' | 'mine' = 'work'): string =>
 const CALL = inPage(
   render(Call, {
     props: {
+      k: 'toolu_01',
       call: {
         id: 'toolu_01',
         row: { kind: 'family', family: 'edit' },

@@ -173,7 +173,13 @@ export type ServerMessage =
   | { kind: 'devices'; devices: DictateDevice[]; configured: string | null }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }
-  | { kind: 'error'; what: string; why: string };
+  /**
+   * `seat` names the conversation a refusal belongs to where it belongs to
+   * one: a `more` the server could not answer names its seat, so a client
+   * holding several seats' asks drains only its own. Absent from a server that
+   * predates the field, and from refusals that are about nothing seat-shaped.
+   */
+  | { kind: 'error'; what: string; why: string; seat?: SessionSlot };
 
 /**
  * How many turns one `more` asks for.

@@ -418,7 +418,7 @@ async fn read_one(
                 arm.messages += messages;
                 return Ok(answer);
             }
-            ServerMessage::Error { what, why } => anyhow::bail!("{what} refused: {why}"),
+            ServerMessage::Error { what, why, .. } => anyhow::bail!("{what} refused: {why}"),
             // The greeting, and anything a live core pushes while this runs.
             // Skipped rather than returned: a caller waiting for its answer
             // would otherwise take the greeting as one and read every later

@@ -153,6 +153,12 @@ pub enum ServerMessage {
     Error {
         what: String,
         why: String,
+        /// The conversation the refusal belongs to, where it belongs to one: a
+        /// `more` for a seat the server could not answer names its seat, so a
+        /// client holding several seats' asks drains only its own. Optional and
+        /// additive - a client of either age reads it, and a refusal that names
+        /// no seat is read the way it always was.
+        seat: Option<SessionSlot>,
     },
 }
 

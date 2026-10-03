@@ -142,6 +142,23 @@ describe('the session shell as it draws', () => {
     expect(body).toContain('aria-expanded="true"');
   });
 
+  /**
+   * **The wordmark in the header is the way home.** A real anchor, so the
+   * keyboard reaches it, the URL stays real and the router follows it in place
+   * (it is the only way back to the home inside a desktop shell, which has no
+   * browser chrome); the hairline is what separates the app's brand from the
+   * seat's own, and the band leads with it.
+   */
+  it('draws the wordmark in the header as the way home', () => {
+    const body = draw();
+    expect(body, 'a real anchor to the home').toContain('<a class="brand" href="/"');
+    expect(body, "the home's own word").toContain('>forge</span>');
+    expect(body, 'and the hairline after it').toContain('class="mastsep"');
+    expect(body.indexOf('class="brand"'), 'the band leads with it').toBeLessThan(
+      body.indexOf('rail-tog'),
+    );
+  });
+
   it('draws the seat state rather than an empty column when nothing is running', () => {
     const body = draw({
       wire: { ...homeWire, agents: [] },
@@ -200,6 +217,42 @@ describe('the session shell as it draws', () => {
 });
 
 const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+
+/** One selector's declarations, whitespace-normalised, or '' where it has none. */
+function ruleText(source: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...source.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  return (found.at(-1)?.[1] ?? '').replace(/\s+/g, ' ').trim();
+}
+
+describe('the header brand as both sheets draw it', () => {
+  /**
+   * **The drawing is the visual truth, so a rule edited in one sheet alone is
+   * one surface described two ways.** The wordmark's size relative to the
+   * session's own name, and the hairline that separates them, are exactly the
+   * kind of numbers a later pass tweaks in one file - so they are read rule
+   * for rule, whitespace-normalised, the way the row rules are.
+   */
+  it('mirrors the brand and hairline rules in both sheets', () => {
+    const page = readFileSync(
+      new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
+      'utf8',
+    );
+    const book = /<style>([\s\S]*?)<\/style>/.exec(page)?.[1] ?? '';
+    for (const selector of [
+      '.sess .brand',
+      '.sess .brand .mark',
+      '.sess .brand .word',
+      '.sess .mastsep',
+    ]) {
+      const app = ruleText(sheet, selector);
+      // The denominator: a scan that reaches no rule reports both sheets
+      // agreeing on an empty string.
+      expect(app, `web.css spells ${selector}`).not.toBe('');
+      expect(ruleText(book, selector), `${selector} diverges between the sheets`).toBe(app);
+    }
+  });
+});
 
 /** The last rule body the sheet writes for this exact selector. */
 function body(selector: string): string {

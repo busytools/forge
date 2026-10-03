@@ -177,6 +177,18 @@ export interface Conversation {
    * row's height, which is the one thing this page must not do.
    */
   prepends: number;
+  /**
+   * How many asks this conversation was told to forget - a dropped socket or a
+   * refusal - and no page will ever answer.
+   *
+   * **The column keeps a count of the asks it is holding, and this is what
+   * drains it.** A page landing drains one; a forgotten ask drains nothing,
+   * because the page that would have is never coming - so without this the
+   * column's own count outlives the ask, and everything gated on it (the
+   * prepend compensation, and the anchor's restore standing out of its way)
+   * stays on for the life of the seat.
+   */
+  dropped: number;
 }
 
 /** A conversation nothing has answered yet. */
@@ -187,6 +199,7 @@ export const NOTHING: Conversation = {
   refused: null,
   following: true,
   prepends: 0,
+  dropped: 0,
 };
 
 /**
@@ -488,6 +501,10 @@ export class Chat {
    * `session_id` on the page is the real fix and is a wire change.
    */
   private abandoned = 0;
+  /** Record that an ask which was in flight is now answered by nothing. */
+  private forgot(): void {
+    this.inner.update((held) => ({ ...held, dropped: held.dropped + 1 }));
+  }
   /** What `start` has to undo, and `null` while the chat is stopped. */
   private running: (() => void) | null = null;
   /**
@@ -590,8 +607,14 @@ export class Chat {
       // answers with an ask of its own - so an ask this conversation was told
       // to forget is answered by nothing, and its count must not outlive it.
       if (status !== 'open') {
+        const held = this.inFlight !== null;
         this.inFlight = null;
         this.abandoned = 0;
+        // And the column is TOLD, not left counting: its own twin of this ask
+        // is what holds the prepend compensation on, and nothing else drains
+        // it. Only an ask actually in flight counts - a closed socket that was
+        // already idle has nothing to forget.
+        if (held) this.forgot();
       } else {
         this.clearRetry();
         this.ask(null);
@@ -698,12 +721,26 @@ export class Chat {
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
         if (message.what !== 'more') return;
+        // **And a refusal for ANOTHER seat is not this conversation's.** The
+        // connection is shared, so every chat hears every error: a background
+        // seat's refusal - the everyday no-session-yet state, re-asking every
+        // couple of seconds - would otherwise drain THIS seat's count of asks
+        // and let the restore run in the middle of a prepend it must leave
+        // alone. A seatless refusal, from a server that predates the field, is
+        // read the old way: it is this seat's.
+        if (message.seat !== undefined && subjectKey({ session: message.seat }) !== this.key)
+          return;
         // A refused ask is answered by no page at all, so the ask it belongs to
         // is over - and a count of asks this conversation was told to forget is
         // spent on pages that are never coming.
         this.inFlight = null;
         this.abandoned = 0;
-        this.inner.update((held) => ({ ...held, refused: message.why, loaded: true }));
+        this.inner.update((held) => ({
+          ...held,
+          refused: message.why,
+          loaded: true,
+          dropped: held.dropped + 1,
+        }));
         this.retryAsk();
         return;
       case 'snapshot':
@@ -948,12 +985,20 @@ export class Chat {
    * ask has to go out after the swap rather than before it.
    */
   private replaced(): void {
-    if (this.inFlight !== null) this.abandoned += 1;
+    const held = this.inFlight !== null;
+    if (held) this.abandoned += 1;
     this.inFlight = null;
     // The occupant that left took its answer with it, and nothing about the new
     // one is known until its own record or frames say.
     this.turnRunning = false;
     this.inner.set(NOTHING);
+    // **The swap forgot an ask too, and it has to say so.** The reset above
+    // zeroes the count the column drains against, so a column that was holding
+    // an ask keeps holding it - the drain never fires, `shift` stays armed for
+    // the life of the seat, and the observer's restore never runs for a parked
+    // reader (measured: the offset left at 50 where the row above them had
+    // moved it to 290).
+    if (held) this.forgot();
     this.clearRetry();
     this.ask(null);
   }

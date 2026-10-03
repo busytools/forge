@@ -53,7 +53,7 @@ describe("the lines a call's row draws", () => {
     // **Mounted rather than rendered to a string**: the marks and the figures
     // are what the row's own state decides, and the line sits in the same row
     // as them rather than in a box of its own.
-    app = mount(Call, { target: document.body, props: { call: edited() } });
+    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: edited() } });
     flushSync();
 
     const line = document.querySelector('.patchline');
@@ -64,7 +64,7 @@ describe("the lines a call's row draws", () => {
   });
 
   it('draws a position-less diff without the number columns, and the reason under it', () => {
-    app = mount(Call, { target: document.body, props: { call: refused() } });
+    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: refused() } });
     flushSync();
 
     const dif = document.querySelector('.dif');
@@ -76,7 +76,7 @@ describe("the lines a call's row draws", () => {
   });
 
   it('keeps the number columns on a diff that has a position', () => {
-    app = mount(Call, { target: document.body, props: { call: edited() } });
+    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: edited() } });
     flushSync();
 
     expect(

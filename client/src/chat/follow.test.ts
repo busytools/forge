@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, list, pinned, setElement, setMeasured } = await import('./testing/records');
+const { clear, element, list, pinned, setElement, setMeasured } = await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
 
@@ -46,6 +46,53 @@ const turn = (key: string): unknown => ({
   key,
   messages: [{ type: 'user', uuid: `u-${key}`, message: { role: 'user', content: [] } }],
 });
+
+/**
+ * One turn carrying words, which is what draws a row the anchor can hold.
+ *
+ * A user message with no content draws nothing at all, so the empty `turn`
+ * above has no `data-k` row to find.
+ */
+const spoken = (key: string): unknown => ({
+  key,
+  messages: [
+    {
+      type: 'user',
+      uuid: `u-${key}`,
+      message: { role: 'user', content: [{ type: 'text', text: `${key} said` }] },
+    },
+  ],
+});
+
+/**
+ * Lay the drawn rows out by hand, because jsdom performs no layout.
+ *
+ * Each row gets a box `height` tall from the column's own top, in the order the
+ * document holds them, less the reader's offset - which is what a rect is, and
+ * read LIVE off the element, because the offset moves after this is called and
+ * a browser's box is whatever it is at the moment it is asked. The first row can
+ * be given a different height, which is how one above the reader grows under
+ * them.
+ */
+function layOut(height: number, leader = height): void {
+  const root = document.querySelector('.conv');
+  if (root === null) return;
+  [...root.querySelectorAll('.turn [data-k]')].forEach((row, at) => {
+    const tall = at === 0 ? leader : height;
+    const top = at * height + (at === 0 ? 0 : leader - height);
+    row.getBoundingClientRect = () => ({
+      top: top - element.offset,
+      bottom: top + tall - element.offset,
+      height: tall,
+      width: 0,
+      left: 0,
+      right: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+  });
+}
 
 /**
  * A console a thousand pixels tall, so a reader can be anywhere in it.
@@ -68,6 +115,7 @@ const FITS = { asked: VIEWPORT, landed: 0 };
 
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
+  const watchers = new Set<(status: 'closed' | 'open') => void>();
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
     unsubscribe: () => undefined,
@@ -78,7 +126,10 @@ function stub() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onStatus: () => () => undefined,
+    onStatus: (fn: (status: 'closed' | 'open') => void) => {
+      watchers.add(fn);
+      return () => watchers.delete(fn);
+    },
     store: () => undefined,
     settings: () => null,
     status: () => 'open' as const,
@@ -92,8 +143,37 @@ function stub() {
 
   return {
     connection,
-    page(turns: unknown[], seat: SessionSlot = LEAD): void {
-      send({ kind: 'page', conversation: seat, turns, cursor: null });
+    /** The socket drops, the way it does mid-ask. */
+    drop(): void {
+      for (const fn of watchers) fn('closed');
+      flushSync();
+    },
+    /**
+     * A page landing. `cursor` says there are older turns above it, which is
+     * what lets the column ask for them at all - `null` is a page with nothing
+     * behind it, and no ask follows.
+     */
+    page(turns: unknown[], seat: SessionSlot = LEAD, cursor: string | null = null): void {
+      send({ kind: 'page', conversation: seat, turns, cursor });
+    },
+    /** The seat changes occupant under the column, the way `/new` lands. */
+    replaced(): void {
+      send({
+        kind: 'update',
+        update: { session_replaced: { key: LEAD, session_id: 'new-occupant' } },
+      });
+    },
+    /**
+     * A refusal of an ask. `seat` is what the server names where the refusal is
+     * about a seat; an older server names none.
+     */
+    refuse(seat?: SessionSlot): void {
+      send({
+        kind: 'error',
+        what: 'more',
+        why: 'forge holds no session for this seat',
+        ...(seat === undefined ? {} : { seat }),
+      });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
@@ -396,6 +476,213 @@ describe('whether the column follows the newest end', () => {
       { asked: ASKED + 400, landed: FOOT + 400 },
       { asked: ASKED + 400, landed: FOOT + 400 },
     ]);
+  });
+
+  /**
+   * **The place a parked reader holds is put back when the layout moves under
+   * them.** The boxes are synthetic, since jsdom performs no layout, but the
+   * relation is the whole of it: a row above the reader grows by 200 and the
+   * column's own scroll follows by 200, holding the row where their eye was.
+   *
+   * It is also the wiring's arm: with the restore's write disabled this case is
+   * the only one in the suite that notices - the math in `anchor.test.ts` pins
+   * the relation, but nothing else asks the column to use it.
+   */
+  it('puts a parked reader back on their row when the layout moves above them', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // No cursor: nothing above this page, so the reader's scroll asks for
+    // nothing and the compensation stays off - which is what makes this arm
+    // about the restore alone.
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    expect(list(), 'rows to hold').not.toBeNull();
+
+    // Rows 40px tall, the reader 50px down: inside the second row, 10px into it.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The first row grows by 200, so the reader's row starts 200 further down.
+    layOut(40, 240);
+    server.frame();
+    await settle();
+
+    expect(element.offset, "the reader's row carried them down with it").toBe(250);
+  });
+
+  /**
+   * **A size change with an ask in flight is the compensation's business.**
+   * Near the top a page of older turns is asked for, and while that ask is out
+   * the restore stands aside - the list is holding the reader by its own shift,
+   * and a row above them growing is not theirs to compensate. (Before the
+   * guard this path restored anyway: the offset would read 250 here.)
+   */
+  it('leaves a prepend in flight to the list, not to the restore', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    // 40px rows, the reader 50 down - inside the second row, near enough to the
+    // top that the column asks for the turns above.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The first row grows by 200 and the browser reports a size change: the
+    // observer's own path, while the ask is out.
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the compensation is still on').toBe(50);
+  });
+
+  /**
+   * **And when the ask is gone, the restores come back.** A dropped socket
+   * takes a page in flight with it and the reconnect asks again - so the
+   * conversation says it forgot the ask, and the column's own count drains.
+   * Without that drain the count outlives the ask, `shift` stays on for the
+   * life of the seat, and this PR's own hold quietly stops working: the offset
+   * left at 50 where the row above the reader had moved it to 250.
+   */
+  it('drains a dropped ask, and the row holds the reader again', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The socket drops with that ask in flight, and the reader stays put.
+    server.drop();
+    await settle();
+
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the row carried them down once the ask was drained').toBe(250);
+  });
+
+  /**
+   * **An occupant swap forgets an ask too, and has to say so.** The swap resets
+   * the conversation (a page for it can name no occupant), and that reset
+   * zeroes the count the column drains against - so without the swap reporting
+   * its forgotten ask, the column keeps holding one, `shift` stays armed for
+   * the life of the seat, and the observer's restore never runs for a parked
+   * reader (measured: the offset left at 50 where the row above them had moved
+   * it to 290).
+   */
+  it('reports the ask an occupant swap forgot, so the drain fires', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    // Parked near the top with an ask in flight, then the seat changes
+    // occupant under them and the new one's page lands.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    server.replaced();
+    await settle();
+    // **Two pages, because a swap is owed one it must drop**: a page carries
+    // neither an id nor an occupant, so the count of asks told to forget is
+    // what tells the old occupant's late answer from the new one's, and the
+    // first page after a swap is spent on it. No cursor on the new occupant's
+    // page: nothing above it, so the re-park below asks for nothing and only
+    // the swap's forgotten ask is in play.
+    server.page([spoken('stale1'), spoken('stale2')]);
+    await settle();
+    server.page([spoken('o1'), spoken('o2'), spoken('o3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    layOut(40, 280);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the row carried them down once the swap was drained').toBe(290);
+  });
+
+  /**
+   * **And a refusal for another seat is not this seat's.** Every chat on the
+   * shared connection hears every error, and a background seat's refusal is the
+   * everyday no-session-yet state, re-asked every couple of seconds - draining
+   * this seat's count on it would let the restore run in the middle of a
+   * prepend it must leave alone. Both directions: the other seat's refusal
+   * leaves this count armed, and this seat's own drains it.
+   */
+  it("keeps another seat's refusal out of this seat's count", async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // A background seat's refusal, then a row above the reader grows.
+    server.refuse(OTHER);
+    await settle();
+    layOut(40, 280);
+    resized();
+    await settle();
+    expect(element.offset, 'the ask this seat is holding is still armed').toBe(50);
+
+    // This seat's own refusal drains it, and the observer's path restores.
+    server.refuse(LEAD);
+    await settle();
+    resized();
+    await settle();
+    expect(element.offset, 'the row carried them down once their own refusal landed').toBe(290);
   });
 
   it('brings the reader back for their own prompt', async () => {

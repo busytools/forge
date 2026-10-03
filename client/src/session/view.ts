@@ -27,6 +27,7 @@ import {
   whenOf,
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
@@ -650,7 +651,7 @@ export interface RailFooter {
   figures: FooterFigure[];
   /** A window-billed account's windows, in the shape the chip already draws. */
   windows: AccountWindow[];
-  versions: { forge: string; claude: string | null; update: string | null };
+  versions: { forge: string; socket: number; claude: string | null; update: string | null };
 }
 
 /**
@@ -680,6 +681,11 @@ const UNPROBED = '$-';
 export function railFooter(home: HomeWire, slot: SessionSlot): RailFooter {
   const versions = {
     forge: home.forge_version_short,
+    // What this app speaks on the socket, beside the two builds it binds: the
+    // client and a server that disagrees on it refuse each other (socket.ts
+    // checks the greeting), so the number is worth reading before a mismatch
+    // does.
+    socket: PROTOCOL_VERSION,
     claude: home.cli_version?.installed ?? null,
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
   };

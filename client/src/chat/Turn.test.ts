@@ -100,6 +100,33 @@ const between = (body: string, from: string, to: string): string => {
 };
 
 describe('one turn, as the page draws it', () => {
+  /**
+   * **Every row carries the fold's own key**, which is what the column's anchor
+   * finds the reader's row by when the layout moves under them
+   * (`chat/anchor.ts`): a lane re-sorts, a row measures taller, and without a
+   * key on the row there is nothing to put the reader back on.
+   */
+  it("carries each unit's key on the row, for the column's anchor", () => {
+    const whose = {
+      type: 'user',
+      uuid: 'u1',
+      message: { role: 'user', content: [{ type: 'text', text: 'what is this' }] },
+    };
+    const body = draw(whose, said([{ type: 'text', text: 'one line of prose' }]));
+
+    // Both attributes on the same div, in whichever order the renderer writes
+    // them: the order is not this test's business, the pairing is.
+    const carrying = (name: string): RegExp =>
+      new RegExp(`<div\\b(?=[^>]*\\bclass="${name}")(?=[^>]*\\bdata-k="[^"]+")[^>]*>`);
+
+    expect(body, "the reader's own row carries its key").toMatch(carrying('mine'));
+    expect(body, 'and the work rows theirs').toMatch(carrying('unit'));
+    // **And each carries its turn's key too**: the fold names an id-less frame
+    // within its own turn, so two turns can carry the same unit key and an
+    // unprefixed lookup could hold a row of the wrong one.
+    expect(body, "the row's key is its turn's").toContain('data-k="t1:');
+  });
+
   it('draws what the reader said, and the work under it', () => {
     const body = draw(
       prompt('run the gate'),

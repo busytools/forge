@@ -1,6 +1,8 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
-  import { firstLine } from './text';
+  import Prose from './Prose.svelte';
+  import { renderInlineProse } from './prose';
+  import { firstLine, joinedLine } from './text';
   import type { InboundLeaf } from './units';
 
   /**
@@ -11,22 +13,44 @@
    * because a delivery IS something the session received, and anything else
    * makes it a second system inside the group.
    *
-   * It is never clipped: the whole of what arrived sits behind the row.
+   * It is never clipped: the whole of what arrived sits behind the row, drawn
+   * as prose - a delivery is a message meant to be read, so its marks render
+   * rather than sitting on the page as themselves.
    */
   let { row }: { row: InboundLeaf } = $props();
+
+  /**
+   * The tail line, or null where it would only repeat the title.
+   *
+   * **A cron fire's title IS its body's first line** (the fold reads it so),
+   * so the row drew the same sentence twice - the first copy cut by its
+   * one-line clamp, the second whole (Ved, 2026-10-03). A tail that adds
+   * nothing to the title is not a tail, and everything the delivery carried
+   * is still behind the row's own open.
+   */
+  const tail = $derived.by((): string | null => {
+    if (row.body === '') return null;
+    const line = firstLine(row.body);
+    if (line === row.title) return null;
+    // A preview shows its inline marks, the way the hook row's own line does.
+    return renderInlineProse(joinedLine(line));
+  });
 </script>
 
 <details class="leaf inboundrow">
   <summary>
     <span class="tn">{row.title}</span>
-    {#if row.body !== ''}
-      <span class="ev" class:warn={row.elevated}>{firstLine(row.body)}</span>
+    {#if tail !== null}
+      <!-- The row's rendered line, which the module produced from escaped
+           input: the same renderer the body and a thought's line use. -->
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      <span class="ev" class:warn={row.elevated}>{@html tail}</span>
     {/if}
     <Chevron />
   </summary>
   {#if row.body !== ''}
     <div class="body">
-      <div class="term">{row.body}</div>
+      <Prose text={row.body} />
     </div>
   {/if}
 </details>

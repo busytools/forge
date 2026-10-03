@@ -455,7 +455,14 @@ fn frames_record() -> Value {
         ServerMessage::Update { update: Box::new(SessionUpdate::CatalogLoaded) },
         ServerMessage::Page { conversation: seat.clone(), turns: Vec::new(), cursor: None },
         ServerMessage::Reply { reply_to: 1, body: Value::Null },
-        ServerMessage::Error { what: "what".to_owned(), why: "why".to_owned() },
+        ServerMessage::Error {
+            what: "what".to_owned(),
+            why: "why".to_owned(),
+            // Named, which is the shape a `more` refusal carries: the field is
+            // what lets a client holding several seats' asks drain only its
+            // own.
+            seat: Some(seat.clone()),
+        },
     ];
 
     for sample in &samples {

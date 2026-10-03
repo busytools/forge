@@ -4,6 +4,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import Rail from './Rail.svelte';
 
@@ -35,6 +36,19 @@ function rule(selector: string): string {
 }
 
 describe('the rail footer', () => {
+  it('names the socket protocol with the two builds it binds', () => {
+    // **The client and a server that disagrees on the protocol refuse each
+    // other** (`socket.ts` checks the greeting), so the number reads beside
+    // the builds rather than only inside a refusal's own words.
+    expect(footer, 'the protocol this app speaks').toContain(`>socket v${PROTOCOL_VERSION}<`);
+    expect(footer.indexOf('socket v'), 'after the build serving the socket').toBeGreaterThan(
+      footer.indexOf('forge v'),
+    );
+    expect(footer.indexOf('socket v'), 'and before the CLI it binds').toBeLessThan(
+      footer.indexOf('claude v'),
+    );
+  });
+
   it('separates the installed version from the one it moves to', () => {
     // The fixture answers 1.0.0 installed against 1.1.0 published, so the row
     // draws both halves and the separator between them is the whole subject.

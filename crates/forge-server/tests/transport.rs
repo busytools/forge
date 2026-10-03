@@ -991,7 +991,7 @@ async fn a_command_that_answers_through_a_reply_requires_reply_to() {
     )
     .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("a silent dispatch here is the client unable to tell it from success");
     };
     assert_eq!(what, "reply_to", "the refusal names the field that is missing");
@@ -1018,7 +1018,7 @@ async fn a_reply_to_on_a_command_that_has_no_reply_is_refused() {
     )
     .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("a client that asked for an answer has to hear one");
     };
     assert_eq!(what, "reply_to", "the refusal names the field: {why}");
@@ -1046,7 +1046,7 @@ async fn an_answer_to_a_prompt_that_is_gone_is_refused() {
     )
     .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("silence here is the click that did nothing");
     };
     assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
@@ -1073,7 +1073,7 @@ async fn a_refused_slack_answer_names_its_own_operation() {
     )
     .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("silence here is the click that did nothing");
     };
     assert_eq!(
@@ -1100,7 +1100,7 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
     )
     .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("expected an error")
     };
     // Which refusal, not merely that one arrived: an arm that echoed the whole message back
@@ -1181,13 +1181,19 @@ async fn a_more_that_cannot_be_answered_is_refused() {
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
         .await;
 
-    let ServerMessage::Error { what, why } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, seat } = next_server(&mut socket).await else {
         panic!("a page that cannot be answered is refused rather than answered empty")
     };
     assert_eq!(what, "more", "the refusal names what was asked for");
     assert!(
         why.contains("not held yet"),
         "and says why, so a client can tell a delay from an end: {why}",
+    );
+    assert_eq!(
+        seat,
+        Some(lead_seat()),
+        "**and names the seat it belongs to**: the connection is shared, so a client holding \
+         several seats' asks can only drain its own against a refusal that says which seat it is",
     );
 }
 
@@ -1212,7 +1218,7 @@ async fn a_devices_request_is_answered_with_the_list_or_its_refusal() {
                 "the fixture's config pins no device, so nothing is configured",
             );
         }
-        ServerMessage::Error { what, why } => {
+        ServerMessage::Error { what, why, .. } => {
             assert_eq!(what, "devices", "a refusal names what was asked for");
             assert!(!why.is_empty(), "and carries the walk's own reason");
         }

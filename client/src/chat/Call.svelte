@@ -21,7 +21,28 @@
    * without being asked, while it is small enough to draw - and the reader's
    * own toggling takes it from there.
    */
-  let { call, open = false }: { call: ToolLeaf; open?: boolean } = $props();
+  let {
+    call,
+    open = false,
+    k,
+  }: {
+    call: ToolLeaf;
+    open?: boolean;
+    /**
+     * The fold's own name for this row, which the row draws in `data-k`.
+     *
+     * **Required, and the wire id would not do**: an id-less `tool_use` leaves
+     * it empty, and two such rows would carry one key. The lane hands the
+     * fold's key down.
+     *
+     * **The column's anchor does not look this far down today**: its scan
+     * takes the first row whose box crosses the viewport's top, and the unit
+     * row enclosing this one always comes first in document order - so this
+     * key is for a finer hold than the unit's, not the one in force, and
+     * nothing is spent on it while the scan stops at the unit.
+     */
+    k: string;
+  } = $props();
 
   /**
    * Whether the row is open, held HERE rather than drawn from the prop.
@@ -130,7 +151,7 @@
   class="leaf"
   class:running={call.status === 'in_progress'}
   bind:open={opened}
-  data-k={`call-${call.id}`}
+  data-k={`call-${k}`}
 >
   <summary>
     {#if call.status === 'completed'}
