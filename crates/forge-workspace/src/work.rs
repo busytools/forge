@@ -292,7 +292,11 @@ impl Workspace {
     /// the registry the core holds: a backgrounded bash is `setsid`-detached
     /// and sits outside claude's tree, so without them the walk misses the
     /// very processes the feed leads with.
-    pub async fn walk_processes_if_stale(&self, slot: &SessionSlot, pid: Option<u32>) -> bool {
+    pub(crate) async fn walk_processes_if_stale(
+        &self,
+        slot: &SessionSlot,
+        pid: Option<u32>,
+    ) -> bool {
         let Some(pid) = pid else {
             return false;
         };
@@ -390,9 +394,13 @@ impl Workspace {
 /// against the ones this walk found.
 ///
 /// **`None` is "nothing ever announced", not "an empty tree"**, so the first
-/// walk of a seat that holds nothing still announces - and a second walk that
-/// found the same processes says nothing, which is what keeps a still tree
-/// from redrawing every viewer once a second.
+/// walk of a seat that holds nothing still announces.
+///
+/// **Equality is over the whole entry, so a merely running tree is news**:
+/// `memory_bytes` drifts as processes work, so a held seat with a live tree
+/// announces about once per poke rather than only when a process arrives.
+/// Narrowing the comparison to ignore the memory figure would freeze the
+/// number every viewer draws at whatever the first walk found.
 fn walk_moved(
     walked: Option<&Vec<forge_agent::env::processes::ProcessEntry>>,
     snapshot: &forge_agent::env::processes::ProcessSnapshot,
@@ -475,8 +483,13 @@ fn spawn_work_watch(
             // The walk, on its own rule: missing or older than the terminal's
             // own second, which is this poke's interval. It runs before the
             // tree's read and takes no part in that read's early exits.
-            if workspace.walk_processes_if_stale(&slot, workspace.claude_pid(&slot)).await
-                && let Some(walk) = workspace.process_snapshot(&slot)
+            workspace.walk_processes_if_stale(&slot, workspace.claude_pid(&slot)).await;
+            // **The compare runs whoever walked.** The terminal's scanner writes
+            // this same store, and while it is showing the seat the store is
+            // never stale - so a loop that read the store only when its own
+            // walk ran would leave every client's walk frozen for as long as
+            // the terminal held the seat.
+            if let Some(walk) = workspace.process_snapshot(&slot)
                 && walk_moved(walked.as_ref(), &walk)
             {
                 walked = Some(walk.processes.clone());
@@ -817,34 +830,148 @@ provider = "anthropic"
         );
     }
 
-    /// A walk carries news only when the tree moved, and the FIRST walk always
-    /// does - `None` is nothing ever announced, not an empty tree.
-    #[test]
-    fn a_walk_carries_news_only_when_the_tree_moved() {
-        let entry = |pid: u32| forge_agent::env::processes::ProcessEntry {
+    /// One process as a walk reports it, for a fixture that only needs an entry
+    /// that is there.
+    fn entry_at(pid: u32) -> forge_agent::env::processes::ProcessEntry {
+        forge_agent::env::processes::ProcessEntry {
             pid,
             parent_pid: 1,
             name: "claude".to_owned(),
             command: "claude".to_owned(),
             memory_bytes: 1,
-        };
-        let walk = |entries: Vec<forge_agent::env::processes::ProcessEntry>| {
-            forge_agent::env::processes::ProcessSnapshot {
-                processes: entries,
-                scanned_at: std::time::SystemTime::now(),
-            }
-        };
+        }
+    }
 
-        assert!(walk_moved(None, &walk(Vec::new())), "the first walk is news whatever it found");
-        assert!(walk_moved(None, &walk(vec![entry(1)])), "and so is a tree of one");
+    /// A walk of `entries`, taken now.
+    fn walk_of(
+        entries: Vec<forge_agent::env::processes::ProcessEntry>,
+    ) -> forge_agent::env::processes::ProcessSnapshot {
+        forge_agent::env::processes::ProcessSnapshot {
+            processes: entries,
+            scanned_at: std::time::SystemTime::now(),
+        }
+    }
 
-        let told = vec![entry(1)];
-        assert!(!walk_moved(Some(&told), &walk(vec![entry(1)])), "the same tree says nothing");
+    /// A child process that goes when the test does, however it ends - the
+    /// tree a walk is driven against in these cases.
+    struct Child(std::process::Child);
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A walk carries news only when the tree moved, and the FIRST walk always
+    /// does - `None` is nothing ever announced, not an empty tree.
+    #[test]
+    fn a_walk_carries_news_only_when_the_tree_moved() {
+        assert!(walk_moved(None, &walk_of(Vec::new())), "the first walk is news whatever it found");
+        assert!(walk_moved(None, &walk_of(vec![entry_at(1)])), "and so is a tree of one");
+
+        let told = vec![entry_at(1)];
         assert!(
-            walk_moved(Some(&told), &walk(vec![entry(1), entry(2)])),
+            !walk_moved(Some(&told), &walk_of(vec![entry_at(1)])),
+            "the same tree says nothing",
+        );
+        assert!(
+            walk_moved(Some(&told), &walk_of(vec![entry_at(1), entry_at(2)])),
             "a process arriving is news",
         );
-        assert!(walk_moved(Some(&told), &walk(Vec::new())), "and so is the tree emptying");
+        assert!(walk_moved(Some(&told), &walk_of(Vec::new())), "and so is the tree emptying");
+    }
+
+    /// **A walk somebody else moved reaches the seat's viewers.** The terminal's
+    /// scanner writes this same store, and while it is showing the seat the
+    /// store is never stale by the loop's own rule - so a loop that read the
+    /// store only when its own walk ran would leave every client's walk frozen
+    /// for as long as the terminal held the seat.
+    #[tokio::test]
+    async fn a_walk_another_writer_moved_is_announced() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+
+        // The terminal's scanner, writing the store the loop holds a baseline
+        // of - and with the clock inside the window, so the loop's own rule
+        // walks nothing this poke.
+        let moved_walk = walk_of(vec![entry_at(4242)]);
+        workspace.store_process_snapshot(&seat, Some(moved_walk));
+
+        let Ok(Some(moved)) = tokio::time::timeout(Duration::from_secs(3), updates.recv()).await
+        else {
+            panic!("a walk the terminal moved never reached the seat's viewers");
+        };
+        let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
+            panic!("a moved walk announces the walk, got {moved:?}");
+        };
+        assert_eq!(key, seat, "and it is addressed to the seat that was held");
+        assert_eq!(
+            snapshot.processes,
+            vec![entry_at(4242)],
+            "with the walk the store holds, not one this loop took",
+        );
+    }
+
+    /// **The seat's own tree reaches its viewers.** The walk is the loop's, so
+    /// a held seat whose tree gains a process must see it; the two ways that
+    /// breaks are the loop walking nothing and the announcement being dropped,
+    /// and either leaves every client's section stale for good.
+    #[tokio::test]
+    async fn a_process_arriving_under_a_held_seat_is_announced() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        // The pid the loop walks is this test's own, so a child spawned below
+        // is a process under the seat's tree.
+        workspace.seed_test_claude_pid(&seat, std::process::id());
+        workspace.hold_seat(&seat).await;
+
+        let child =
+            Child(std::process::Command::new("sleep").arg("30").spawn().expect("a child to find"));
+        let child_pid = child.0.id();
+
+        let told = tokio::time::timeout(Duration::from_secs(5), updates.recv()).await;
+        let Ok(Some(moved)) = told else {
+            panic!("a process arriving under the seat was never announced");
+        };
+        let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
+            panic!("an arriving process announces the walk, got {moved:?}");
+        };
+        assert_eq!(key, seat);
+        assert!(
+            snapshot.processes.iter().any(|entry| entry.pid == child_pid),
+            "the announced walk carries the child at {child_pid}",
+        );
+        drop(child);
+    }
+
+    /// **The hold's walk is what the seat's viewers were already handed.** The
+    /// subscription snapshot answers from the store the hold just wrote, so a
+    /// baseline read taken before that write would re-announce the tree the
+    /// page already holds at the loop's first compare.
+    #[tokio::test]
+    async fn the_holds_walk_is_not_announced_again() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.seed_test_claude_pid(&seat, std::process::id());
+        // A walk from before the hold, past the window so the hold's own walk
+        // replaces it - which is the baseline the loop must be seeded with.
+        let mut stale = walk_of(vec![entry_at(4242)]);
+        stale.scanned_at = std::time::SystemTime::now()
+            .checked_sub(Duration::from_secs(60))
+            .expect("a minute ago");
+        workspace.store_process_snapshot(&seat, Some(stale));
+
+        workspace.hold_seat(&seat).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),
+            "the hold's walk is what the seat's viewers already hold, so nothing is announced",
+        );
     }
 
     /// A refused hold is not a hold: the answer says so, and a caller that
