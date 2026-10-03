@@ -294,14 +294,15 @@ export const IGNORED: readonly string[] = [
 ];
 
 /**
- * The fields no update feeds, so only a read can move them.
+ * The fields the merge read carries, because this build applies no update to
+ * them.
  *
- * A walk of the process table, the working tree and the pull request on its
- * branch, a Monitor's status, the CLI's background-task registry, the
- * composer's three lists, and the record's own dispatch answer - none of them
- * is carried by any variant of `SessionUpdate`. They are the slowest-moving
- * part of the record: a git scan and a process walk do not change between one
- * frame and the next.
+ * Three of them are pushed now - `work`, `pr` and `closes` arrive on
+ * `work_changed` - and they stay listed: a handler for it comes with the
+ * change that stops this read carrying them, and until then the read is what
+ * keeps the pane honest. The rest are the slowest-moving part of the record,
+ * where a git scan and a process walk do not change between one frame and the
+ * next.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
   'has_dispatches',

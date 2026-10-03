@@ -1233,12 +1233,18 @@ async fn a_devices_request_is_answered_with_the_list_or_its_refusal() {
 #[tokio::test]
 async fn a_held_seats_moved_tree_reaches_the_client() {
     let (url, _fleet, state, _root) = a_repo_server().await;
-    let repo = state
-        .surface
-        .roster()
-        .cwd_for(&lead_seat())
-        .expect("the fixture seat has a directory");
-    let repo = std::path::PathBuf::from(repo);
+    let repo =
+        state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
+    // A scan the seat already holds, with the PR and the closing issues the
+    // tree itself cannot produce in a test: the same branch and the same
+    // (empty) pushed sha the real scan will report, and a fresh fetch stamp,
+    // so the scan that follows reuses this PR rather than asking `gh`.
+    let pr_number = 1249;
+    let closing = 1215;
+    state.surface.store_work_snapshot(
+        &lead_seat(),
+        a_scan(&repo, std::time::Instant::now(), "work", 0, Some((pr_number, closing))),
+    );
 
     let mut socket = connect(&url).await;
     send(
@@ -1252,18 +1258,59 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     // the watch arms on its own thread, so an early edit can land before
     // notify is listening - and a write read after 10s would pass on the
     // staleness rule instead, proving nothing about the watch.
+    let mut moved = None;
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
         if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
-            let SessionUpdate::WorkChanged { key, work, .. } = *update else {
+            let SessionUpdate::WorkChanged { key, work, pr, closes } = *update else {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
             assert_eq!(work.changed, Some(1), "and carries the count the edit made");
-            return;
+            moved = Some((work, pr, closes));
+            break;
         }
     }
-    panic!("a held seat's moved tree never reached the client");
+    let (work, pr, closes) = moved.expect("a held seat's moved tree reaches the client");
+
+    // The differential: what the update carried is what a read answers, for
+    // all three fields. A fresh page learns the tree from the read alone, so
+    // an update that disagreed with it would draw one row and then correct
+    // itself into another.
+    let mut reader = connect(&url).await;
+    send(
+        &mut reader,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut reader).await;
+    assert_eq!(
+        serde_json::to_value(&work).expect("encode"),
+        data["work"],
+        "the pushed row is the row the record answers",
+    );
+    assert_eq!(
+        serde_json::to_value(&pr).expect("encode"),
+        data["pr"],
+        "and so is the PR beside it",
+    );
+    assert_eq!(
+        serde_json::to_value(&closes).expect("encode"),
+        data["closes"],
+        "and the issues it closes",
+    );
+    // The populated half of the same claim: empty fields would satisfy the
+    // equalities above while carrying nothing.
+    assert_eq!(
+        data["pr"]["number"],
+        serde_json::json!(pr_number),
+        "with the PR the seat's scan found: {data}",
+    );
+    assert_eq!(
+        data["closes"][0]["number"],
+        serde_json::json!(closing),
+        "and the issue it closes: {data}",
+    );
 }
 
 /// A seat whose tree is a real repository, with its session started - the
@@ -1307,7 +1354,7 @@ fn a_scan(
     with_pr: Option<(u64, u64)>,
 ) -> forge_server::surface::inspector::WorkSnapshot {
     use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-    use forge_primitives::git_diff::{GitDiffStats, GitDiffSnapshot, LayerState, RepoGate};
+    use forge_primitives::git_diff::{GitDiffSnapshot, GitDiffStats, LayerState, RepoGate};
     let (pr, closes) = match with_pr {
         Some((number, closing)) => (
             Some(GitPrInfo { number, url: format!("https://example.test/pull/{number}") }),
@@ -1347,19 +1394,16 @@ fn a_scan(
 #[tokio::test]
 async fn a_snapshot_carries_the_row_the_hold_read() {
     let (url, _fleet, state, _root) = a_repo_server().await;
-    let repo = state
-        .surface
-        .roster()
-        .cwd_for(&lead_seat())
-        .expect("the fixture seat has a directory");
+    let repo =
+        state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
     // Stale, and saying what the tree cannot: a row the encode can only
     // answer from the store, which the hold's own read then replaces.
-    let stale = std::time::Instant::now()
+    let long_ago = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(60))
         .expect("an instant a minute ago");
     state.surface.store_work_snapshot(
         &lead_seat(),
-        a_scan(std::path::Path::new(&repo), stale, "not-this-tree", 99, None),
+        a_scan(std::path::Path::new(&repo), long_ago, "not-this-tree", 99, None),
     );
 
     let mut socket = connect(&url).await;
@@ -1374,10 +1418,7 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
         data["work"]["branch"], "work",
         "the snapshot carries the branch the hold read, not the one the store held: {data}",
     );
-    assert_eq!(
-        data["work"]["changed"], 0,
-        "and the count the hold read: {data}",
-    );
+    assert_eq!(data["work"]["changed"], 0, "and the count the hold read: {data}");
 }
 
 /// A repository with one commit, for a test that needs a tree git can read.
