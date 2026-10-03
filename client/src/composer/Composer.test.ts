@@ -146,6 +146,11 @@ function sendBox(): void {
   flushSync();
 }
 
+/** The frame a turn opens with, which is where the core says a turn is in flight. */
+function openTurn(): Record<string, unknown> {
+  return { type: 'system', subtype: 'init', session_id: 's' };
+}
+
 /** A take the box has seen, which is what arms the landing. */
 function seesTake(harness: { page: { record: ComposerRecord } }): void {
   harness.page.record = withNotice(null, take());
@@ -631,6 +636,33 @@ describe('the box', () => {
       words: 'run the gate again',
       why: 'the session is not running',
     });
+  });
+
+  /**
+   * **A send reads the seat's state as it is now, not as the page last drew
+   * it.** The record this box draws is written once per painted frame, so the
+   * frame that opened a turn can be on the seat and not yet in the record -
+   * and a send read off the record posts as "no turn was running", is taken by
+   * the very publish that carries the turn, and loses the refusal that comes
+   * for it, which a taken send can no longer be given.
+   */
+  it('keeps a send on its way for a turn applied but not drawn yet', () => {
+    const on = wire();
+    // The turn is on the seat already...
+    on.hold(SLOT, { chat_appended: { key: SLOT, msg: openTurn() } });
+    // ...while the record this box draws has not been written with it.
+    const harness = open({ record: record({ header: { turn_in_flight: false } }) }, on);
+    type('run the gate again');
+    sendBox();
+
+    // The paint that carries the turn arrives.
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+
+    expect(
+      echoAt(SLOT)?.state,
+      'a send into the turn already on the seat was taken by the paint carrying it',
+    ).toBe('sending');
   });
 
   /**

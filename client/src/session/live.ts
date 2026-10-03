@@ -68,6 +68,13 @@ interface Seat {
    * to compute from.
    */
   wire: SessionRecord | null;
+  /**
+   * The server's own words for turning the subscription down, or `null`.
+   *
+   * Beside the record because the store carries the two as one value, and a
+   * frame's publish states no refusal of its own.
+   */
+  refused: string | null;
   /** The connection's own store for the subject, which a read is read from. */
   held: Store | null;
   /** How many subscriptions this seat opened, to give back as many when it is let go. */
@@ -214,6 +221,7 @@ function createSeat(
    * flight already.
    */
   function showing(): () => void {
+    shown = true;
     if (seat.wire === null) read(true);
     seat.poll = setInterval(() => {
       reread();
@@ -226,6 +234,10 @@ function createSeat(
    * server encode per tick and nothing is drawing what it keeps honest.
    */
   function leaving(): void {
+    shown = false;
+    // No frame paints for a page that has gone, so a record still waiting for
+    // one is written now: it is what a return draws.
+    if (queued !== null) flush();
     if (seat.poll !== null) clearInterval(seat.poll);
     seat.poll = null;
     if (seat.held?.state().kind === 'refused') release();
@@ -234,6 +246,7 @@ function createSeat(
   const seat: Seat = {
     view: writable<SessionRead>(NOTHING, showing),
     wire: null,
+    refused: null,
     held: null,
     opened: 0,
     answering,
@@ -246,9 +259,71 @@ function createSeat(
     stopStatus: null,
   };
 
+  /**
+   * The frame a publish is waiting for, or `null`.
+   *
+   * **Applying an update is immediate and only the redraw waits.** A frame is
+   * folded the moment it arrives - the fold is cheap, and the record it leaves
+   * is what the next fold reads - while the store is written once per painted
+   * frame, carrying the record as it stands then. So a stream arriving faster
+   * than the display refreshes costs one redraw per painted frame rather than
+   * one per update: nothing dropped, the order kept, the held record exact
+   * throughout.
+   */
+  let queued: number | null = null;
+
+  /**
+   * Whether a page is showing the seat, which is when a frame is waited for.
+   *
+   * A seat the client holds and nobody is drawing has no paint to wait for, so
+   * it is written at once rather than scheduling a callback per frame for a
+   * store no reader hears - and the client holds every seat it has visited.
+   */
+  let shown = false;
+
+  /**
+   * Write the record as it stands, with the refusal that goes with it, to the
+   * store.
+   *
+   * A frame still waiting for its paint is dropped in the same breath: this
+   * write states the record as it is NOW, and the paint would only state it
+   * again.
+   */
+  function flush(): void {
+    if (queued !== null) {
+      cancelAnimationFrame(queued);
+      queued = null;
+    }
+    seat.view.set({ wire: seat.wire, refused: seat.refused });
+  }
+
+  /**
+   * Publish an applied update at the next painted frame, or at once when no
+   * page is drawing the seat.
+   *
+   * The record has already moved by the time this is called: this is only the
+   * redraw.
+   */
+  function soon(): void {
+    if (queued !== null) return;
+    if (!shown) {
+      flush();
+      return;
+    }
+    queued = requestAnimationFrame(flush);
+  }
+
+  /**
+   * Take a record - and the refusal that goes with it - and write it at once.
+   *
+   * A read's answer is already everything the seat reads as, and a refusal is
+   * the whole of it too: neither is a frame in a stream, so neither waits for
+   * a paint.
+   */
   function publish(next: SessionRecord | null, refused: string | null): void {
     seat.wire = next;
-    seat.view.set({ wire: next, refused });
+    seat.refused = refused;
+    flush();
   }
 
   function read(replace: boolean): void {
@@ -378,7 +453,8 @@ function createSeat(
       // An update this record has nothing to do with: publishing it would
       // redraw every reader of the page for no change at all.
       if (next === seat.wire) return;
-      publish(next, null);
+      seat.wire = next;
+      soon();
     });
     // A drop takes any read in flight with it, and the reconnect answers with a
     // snapshot of its own - so the pacing must not stay stuck waiting on an

@@ -91,13 +91,15 @@ export interface ComposerRecord {
  * snippet renders with.
  *
  * The connection is narrowed to what this component uses of one: it sends
- * commands and it hears the refusals that come back, and a page handing it a
- * whole `Connection` satisfies that structurally.
+ * commands, it hears the refusals that come back, and it reads a seat's own
+ * store where a decision needs the state as it is now rather than as the
+ * record last drew it. A page handing it a whole `Connection` satisfies that
+ * structurally.
  */
 export interface ComposerProps {
   record: ComposerRecord;
   slot: SessionSlot;
-  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
+  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
   seat: SeatRead;
   /**
    * The input a pick has moved the process to, which only the home knows.

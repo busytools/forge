@@ -12,7 +12,8 @@ const idle = {
   dispatch: () => null,
   devices: () => true,
   onMessage: () => () => {},
-} as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
+  store: () => undefined,
+} as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
 
 /**
  * The seam the session page hands the composer across.

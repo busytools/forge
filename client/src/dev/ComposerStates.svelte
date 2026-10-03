@@ -39,7 +39,8 @@
     },
     devices: () => true,
     onMessage: () => () => {},
-  } as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
+    store: () => undefined,
+  } as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
 
   function blank(): ComposerRecord {
     return {
