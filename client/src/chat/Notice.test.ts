@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 
+import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
+
+import Notice from './Notice.svelte';
 
 /**
  * The sheet, as text: what the chat's notice chrome is scoped to is a class
@@ -52,5 +55,24 @@ describe('the chat notice chrome, as the sheet scopes it', () => {
       expect(rulesFor(selector).length, `${selector} is written`).toBeGreaterThan(0);
     }
     expect(unscopedNotice(), 'and no selector names .notice without a scope').toEqual([]);
+  });
+
+  it("draws the retry line's chip and delay beside its words", () => {
+    const html = render(Notice, {
+      props: {
+        notice: {
+          severity: 'warning',
+          text: 'API retry after server_error HTTP 529',
+          chip: 'attempt 2 / 4',
+          sub: 'retrying in 1.5s',
+        },
+      },
+    }).body;
+
+    expect(html, 'the attempt tag').toContain('attempt 2 / 4');
+    expect(html, 'and the delay under the line').toContain('retrying in 1.5s');
+    expect(html, 'with the severity word an ordinary notice already leads with').toContain(
+      'Warning',
+    );
   });
 });

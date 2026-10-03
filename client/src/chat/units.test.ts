@@ -2148,3 +2148,66 @@ describe('one turn folded into the units a view draws', () => {
     expect(units[0]?.kind === 'user' ? units[0].text : null).toBe('run the gate');
   });
 });
+
+describe("the CLI's retry line", () => {
+  /** One `api_retry` frame, as the wire shapes it. */
+  const retry = (fields: Record<string, unknown>): unknown => ({
+    type: 'system',
+    subtype: 'api_retry',
+    attempt: 2,
+    max_retries: 4,
+    retry_delay_ms: 1500,
+    error_status: 529,
+    error: 'server_error',
+    uuid: 'r-retry',
+    ...fields,
+  });
+
+  const noticed = (units: Unit[]) => units.filter((unit) => unit.kind === 'notice');
+
+  it('draws one warning line for a retry, with the attempt and the delay', () => {
+    const units = fold([said([text('working')]), retry({})]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line, not one per frame').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a retry is a warning').toBe('warning');
+    expect(notice?.text, "the terminal's own words, so the two views agree").toBe(
+      'API retry after server_error HTTP 529',
+    );
+    expect(notice?.chip, 'which attempt of how many').toBe('attempt 2 / 4');
+    expect(notice?.sub, 'and how long it waits').toBe('retrying in 1.5s');
+  });
+
+  it('rewrites its own line as the attempts advance, rather than stacking them', () => {
+    // A storm is ONE row saying why, not fifty: a later frame replaces the
+    // run's line the way the terminal's deduped turn notice does.
+    const units = fold([
+      retry({ attempt: 1, retry_delay_ms: 4200, error: 'rate_limit', error_status: 429 }),
+      retry({ attempt: 2, retry_delay_ms: 8700, error: 'rate_limit', error_status: 429 }),
+      retry({ attempt: 3, retry_delay_ms: 16200, error: 'rate_limit', error_status: 429 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole run').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.chip, 'carrying the latest attempt').toBe('attempt 3 / 4');
+    expect(notice?.sub, 'and the latest delay').toBe('retrying in 16.2s');
+  });
+
+  it('names the unknown classification and omits a status the wire did not carry', () => {
+    const units = fold([
+      retry({ error: 'something_new', error_status: undefined, retry_delay_ms: 250 }),
+    ]);
+
+    const notice = noticed(units)[0];
+    expect(
+      notice?.kind === 'notice' ? notice.notice.text : null,
+      'no HTTP where none arrived',
+    ).toBe('API retry after connection error');
+    expect(
+      notice?.kind === 'notice' ? notice.notice.sub : null,
+      'milliseconds read as themselves',
+    ).toBe('retrying in 250ms');
+  });
+});

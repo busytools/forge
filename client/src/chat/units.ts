@@ -97,6 +97,13 @@ export type NoticeSeverity = 'info' | 'warning' | 'error';
 export interface Notice {
   severity: NoticeSeverity;
   text: string;
+  /**
+   * A right-floated progress tag, which only the retry line carries: which
+   * attempt of how many the CLI is on.
+   */
+  chip?: string;
+  /** A quieter tail under the line, which the retry line's delay rides in. */
+  sub?: string;
 }
 
 /** The lane a peer message draws on: the traffic's own three words. */
@@ -388,6 +395,11 @@ interface Frame {
   summary?: unknown;
   status?: unknown;
   estimated_tokens_delta?: unknown;
+  /** The CLI's retry report: which attempt, of how many, after what, waiting how long. */
+  attempt?: unknown;
+  max_retries?: unknown;
+  retry_delay_ms?: unknown;
+  error_status?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
@@ -977,6 +989,31 @@ function noticeSeverity(value: unknown): NoticeSeverity {
   return value === 'error' ? 'error' : 'info';
 }
 
+/**
+ * The terminal's own words for a retry classification, so the two views name
+ * the same failure the same way (`app/events/api_retry.rs`'s `error_label`).
+ */
+function retryLabel(value: unknown): string {
+  switch (value) {
+    case 'authentication_failed':
+    case 'billing_error':
+    case 'rate_limit':
+    case 'invalid_request':
+    case 'server_error':
+    case 'max_output_tokens':
+      return value;
+    default:
+      return 'connection error';
+  }
+}
+
+/** The delay as the terminal writes it: tenths of a second past 1s, else ms. */
+function retryDelay(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const tenths = Math.floor((ms + 50) / 100);
+  return `${Math.floor(tenths / 10)}.${tenths % 10}s`;
+}
+
 function turnFailure(frame: Frame): Notice | null {
   if (frame.is_error !== true) return null;
   const subtype = str(frame, 'subtype');
@@ -1314,6 +1351,23 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   };
 
   /**
+   * Rewrite the retry line this turn already drew, or open it.
+   *
+   * A retry run reports every attempt it makes and the row is the RUN, so a
+   * later frame replaces its own line - the shape the terminal's deduped turn
+   * notice draws, and why a storm is one row rather than fifty.
+   */
+  const upsertNotice = (key: string, notice: Notice): void => {
+    for (let at = units.length - 1; at >= 0; at -= 1) {
+      const unit = units[at];
+      if (unit?.kind !== 'notice' || unit.key !== key) continue;
+      units[at] = { kind: 'notice', key, notice };
+      return;
+    }
+    push({ kind: 'notice', key, notice });
+  };
+
+  /**
    * Hang the harness's line about an image on the call that read it.
    *
    * The note arrives as a user frame right after the result, while the call
@@ -1488,6 +1542,25 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           key: keyOf(at, frame, 'notice'),
           notice: { severity: noticeSeverity(frame.severity), text: str(frame, 'text') ?? '' },
         });
+        continue;
+      }
+      // The CLI's own retry report, after a call it refused. One row per run
+      // - a later attempt rewrites this line rather than drawing beside it -
+      // and the words are the terminal's own, so a 429 storm reads as a line
+      // saying why rather than as a stall.
+      if (frame.subtype === 'api_retry') {
+        const attempt = typeof frame.attempt === 'number' ? frame.attempt : null;
+        const cap = typeof frame.max_retries === 'number' ? frame.max_retries : null;
+        const delay = typeof frame.retry_delay_ms === 'number' ? frame.retry_delay_ms : null;
+        if (attempt !== null && cap !== null && delay !== null) {
+          const status = typeof frame.error_status === 'number' ? frame.error_status : null;
+          upsertNotice('api-retry', {
+            severity: 'warning',
+            text: `API retry after ${retryLabel(frame.error)}${status === null ? '' : ` HTTP ${status}`}`,
+            chip: `attempt ${attempt} / ${cap}`,
+            sub: `retrying in ${retryDelay(delay)}`,
+          });
+        }
         continue;
       }
       // The counter arrives as a subtype of its own, and the wire's running

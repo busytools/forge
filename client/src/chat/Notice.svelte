@@ -20,6 +20,12 @@
 </script>
 
 <div class="notice {tone}">
+  {#if notice.chip !== undefined}
+    <span class="chip">{notice.chip}</span>
+  {/if}
   <span class="sev">{word}</span>
   {notice.text}
+  {#if notice.sub !== undefined}
+    <span class="sub2">{notice.sub}</span>
+  {/if}
 </div>
