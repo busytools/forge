@@ -4212,7 +4212,8 @@ fn tool_call(id: &str, title: &str, input: &serde_json::Value) -> serde_json::Va
     })
 }
 
-/// A permission prompt, as the core offers one.
+/// A permission prompt for the dock, hand-written: the option ids are
+/// this test's, not the core's synthesized ones.
 fn permission() -> forge_primitives::permission_interaction::PermissionRequest {
     wire(serde_json::json!({
         "tool_call": tool_call("tu-1", "Bash", &serde_json::json!({
