@@ -31,14 +31,34 @@ const edited = (): ToolLeaf => ({
   imageNote: null,
 });
 
-/** A failed edit: the two sides its own input carries, and the CLI's reason under them. */
+/** A failed edit: the two sides its own input carries, and the CLI's own reason under them. */
 const refused = (): ToolLeaf => ({
   ...edited(),
   status: 'failed',
   body: [
     { kind: 'diff', old: 'a = 1;', new: 'a = 2;' },
-    { kind: 'text', text: 'String to replace not found in file.' },
+    {
+      kind: 'error',
+      message: 'String to replace not found in file.',
+      detail: 'String:   a = 3;',
+    },
   ],
+});
+
+/** A failed command: what it ran, and the reason it came back with. */
+const refusedBash = (): ToolLeaf => ({
+  id: 'toolu_bash',
+  row: { kind: 'family', family: 'bash' },
+  name: 'Bash',
+  title: 'run the gate against the wrong tree',
+  command: 'just check --nope',
+  status: 'failed',
+  note: null,
+  body: [{ kind: 'error', message: 'Command failed with exit code 2', detail: '' }],
+  mutation: null,
+  skill: null,
+  image: null,
+  imageNote: null,
 });
 
 let app: Record<string, unknown> | null = null;
@@ -71,8 +91,34 @@ describe("the lines a call's row draws", () => {
     const dif = document.querySelector('.dif');
     expect(dif?.classList.contains('bare'), 'a diff with no position says so').toBe(true);
     expect(dif?.querySelectorAll('.on, .nn').length, 'and draws no number columns').toBe(0);
-    expect(document.body.textContent, "the CLI's reason draws on the row").toContain(
+
+    // The reason draws in the hint chrome rather than as a box of its own:
+    // the message first, its detail under it, the CLI's envelope read off in
+    // the fold (Ved's shape, 2026-10-03).
+    const hint = document.querySelector('.errhint');
+    expect(hint, 'the reason draws in the hint chrome').not.toBeNull();
+    expect(hint?.textContent, 'the message says what happened').toContain(
       'String to replace not found in file.',
+    );
+    expect(hint?.textContent, 'and the detail under it is not dropped').toContain(
+      'String:   a = 3;',
+    );
+  });
+
+  it('draws a failed command line above its reason, the way a settled one draws it', () => {
+    // The command leads its own output on a settled row, and a failed one is
+    // the same row: the reason under it says nothing about WHAT failed if the
+    // line that names the command goes missing.
+    app = mount(Call, { target: document.body, props: { k: 'toolu_bash', call: refusedBash() } });
+    flushSync();
+
+    const hint = document.querySelector('.errhint');
+    expect(hint, 'the reason draws in the hint chrome').not.toBeNull();
+    expect(hint?.textContent, 'the command that was run leads its own failure').toContain(
+      'just check --nope',
+    );
+    expect(hint?.textContent, 'and the reason follows it').toContain(
+      'Command failed with exit code 2',
     );
   });
 

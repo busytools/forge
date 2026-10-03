@@ -318,6 +318,7 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
+            test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),
             accounts,
             gateway,
             // A stub workspace pretends the listener is bound: the
@@ -474,6 +475,14 @@ impl Workspace {
     /// The installed stand-in, taken so one spawn cannot use it twice.
     pub(crate) fn take_test_spawn_handle(&self) -> Option<forge_agent::AgentHandle> {
         self.test_spawn_handle.lock().take()
+    }
+
+    /// The worker listing the last spawn handed `Agent::spawn`. Test-only: a
+    /// stand-in replaces the call, so this is the only way a test sees what
+    /// the real spawn was given.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_spawn_listing(&self) -> crate::workspace::RecordedListing {
+        self.test_spawn_listing.lock().clone()
     }
 
     pub fn seed_test_gateway_ready(&self, ready: bool) {

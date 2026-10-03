@@ -37,7 +37,7 @@ pub mod translate;
 pub mod user_interaction;
 pub mod userdata;
 
-pub use agent::{Agent, AgentError, AgentHandle};
+pub use agent::{Agent, AgentError, AgentHandle, WorkerListing};
 pub use client::{AgentEvent, SessionLaunchSettings};
 pub use forge_primitives::permission::PermissionMode;
 

@@ -889,6 +889,16 @@ details.leaf.running > summary { color: var(--text); }
    already take. */
 .patchline { display: flex; align-items: center; padding: 4px 0 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+/* A failed call's own words, in the same caption chrome rather than the error
+   box's: the CLI's envelope is read off in the fold (`leaves.ts`), and what is
+   left is a line for a reader - what happened first, the detail under it. The
+   terminal keeps its error tone on the same payload; this draws the caption it
+   reads as. */
+.errhint { padding: 4px 0 0; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); overflow-wrap: anywhere; }
+/* The detail is the excerpt as the CLI wrote it, indentation and all, so it
+   keeps its line breaks where the message above is one line. */
+.errhint .d { margin-top: 2px; white-space: pre-wrap; }
 /* The figures the marks follow, which are the line's own words rather than a
    mark. Bare for the same reason `.patchmark` is. */
 .patchsize { margin-right: 8px; }

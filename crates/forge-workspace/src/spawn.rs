@@ -3468,6 +3468,76 @@ provider = "anthropic"
         );
     }
 
+    /// What a spawn hands `Agent::spawn` as the seat's listing. A stand-in
+    /// replaces that call outright, so the argument is otherwise
+    /// unobservable - the derivation is pinned on its own and the listing's
+    /// effect on the far side, and this is the wiring between them. Catches a
+    /// call site that hands every spawn a lead's listing (every worker's
+    /// resume list empty, which is the world-visible defect) and one that
+    /// hands a lead a worker's.
+    #[tokio::test]
+    async fn a_spawn_hands_the_agent_the_seats_own_listing() {
+        let dir = tempdir().expect("tempdir");
+        let repo = tempdir().expect("git project dir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "fixture precondition: git init");
+        write_forge_toml(dir.path(), &repo.path().to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let project = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("fixture project");
+
+        // A worker's spawn carries its own worktree and label.
+        let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(stand_in);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            project.key.clone(),
+            WorkerSpawnArgs {
+                label: "reviewer".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                // Every family: this test is about the listing, not the surface.
+                mcp_families: None,
+            },
+            SessionSlot::lead(&project.org, &project.name),
+            None,
+            false,
+            tx,
+        );
+        assert!(rx.await.expect("reply").is_ok(), "fixture precondition: the spawn is admitted");
+
+        let crate::workspace::RecordedListing::Listed(listing) = ws.test_spawn_listing() else {
+            panic!("a worker's spawn must hand a listing; it handed none or never ran")
+        };
+        assert_eq!(listing.label, "reviewer", "the listing names the worker's own label");
+        assert_eq!(
+            listing.dir,
+            project.path.join(".claude/worktrees/reviewer"),
+            "the listing must be the worker's worktree, not the cwd it launches in",
+        );
+
+        // A project's lead has no listing of its own.
+        let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(stand_in);
+        handle_spawn_project(&ws, &project.name, SessionLaunchSettings::default());
+        assert!(
+            matches!(ws.test_spawn_listing(), crate::workspace::RecordedListing::NoListing),
+            "a lead's spawn must hand no listing, or its resume list would be a worker's",
+        );
+    }
+
     /// A spawn refused before it reaches the project leaves the caller's
     /// parked payload where it is, so the caller's own expiry still reaches
     /// it rather than the workspace having consumed it on the way past.
