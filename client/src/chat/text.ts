@@ -152,14 +152,6 @@ export function joinedLine(text: string): string {
     .trim();
 }
 
-/** A body's paragraphs, which are the blank-line breaks it arrives with. */
-export function paragraphs(body: string): string[] {
-  return body
-    .split('\n\n')
-    .map((one) => one.trim())
-    .filter((one) => one !== '');
-}
-
 /**
  * What names a call on its own row.
  *

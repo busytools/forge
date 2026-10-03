@@ -69,7 +69,7 @@ describe('the home page as it draws', () => {
    * greeting), so the number belongs where a mismatch would be looked for.
    */
   it('names the socket protocol in the header', () => {
-    expect(draw(), 'the protocol this app speaks').toContain(`socket ${PROTOCOL_VERSION}`);
+    expect(draw(), 'the protocol this app speaks').toContain(`socket v${PROTOCOL_VERSION}`);
   });
 
   it('announces an update only when the published version is newer', () => {

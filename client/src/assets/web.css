@@ -1017,6 +1017,10 @@ details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color
 details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.inboundrow > summary .ev.warn { color: var(--warn); }
+/* The tail's own inline marks take the prose tone, the hook row's twin rule:
+   a mark reads as a mark in both rows, not as the muting around it. */
+details.inboundrow > summary .ev strong, details.inboundrow > summary .ev code {
+  color: var(--text); }
 details.turninfo > summary .arw { color: var(--dim); }
 details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The body's two columns, each FACT a wrapper holding a label and its figure.
