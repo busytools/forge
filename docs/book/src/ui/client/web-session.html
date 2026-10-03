@@ -544,6 +544,11 @@
      every line of a new file. */
   .dif.added { grid-template-columns: 34px 22px 1fr; }
   .dif.added .on { display: none; }
+  /* The two sides a call's own input carries, which have no position in the file:
+     there are no numbers to draw, so the columns for them follow the numbers off
+     the row rather than sitting empty. Declared after `.dif.added` so a
+     position-less create takes this template, not that one's. */
+  .dif.bare { grid-template-columns: 22px 1fr; }
   .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
   .dif .ln.a .l { background: var(--add-bg); }
   .dif .ln.d .l { background: var(--del-bg); }
@@ -1427,10 +1432,9 @@ Consecutive tool calls between two user messages fold into one group.</div>
             <details class="leaf" open>
               <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body">
-                <div class="dif">
-                  <div class="h">@@ -30,2 +30,2 @@</div>
-                  <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">31</span><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+                <div class="dif bare">
+                  <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
+                  <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
                 </div>
                 <div class="errhint">
                   <div class="m">String to replace not found in file.</div>
