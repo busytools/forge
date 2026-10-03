@@ -16,7 +16,7 @@ use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
-use super::{NormalizeError, Session};
+use super::{NormalizeError, Session, decode_piece};
 
 /// Match width. Two beats one decisively; three gains nothing.
 pub const NGRAM: usize = 2;
@@ -66,6 +66,7 @@ pub fn generate(
     let Session { ctx, batch, start, budget } = session;
     let (start, budget) = (*start, *budget);
     let mut sampler = LlamaSampler::greedy();
+    let vocab = model.vocab();
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut out = String::new();
     let mut emitted: Vec<LlamaToken> = Vec::new();
@@ -73,11 +74,11 @@ pub fn generate(
     let mut current = sampler.sample(ctx, batch.n_tokens() - 1);
 
     while emitted.len() < budget {
-        if model.is_eog_token(current) {
+        if vocab.is_eog(current) {
             break;
         }
         sampler.accept(current);
-        out.push_str(&model.token_to_piece(current, &mut decoder, false, None)?);
+        out.push_str(&decode_piece(&mut decoder, &vocab.token_to_piece(current, false, None)));
         emitted.push(current);
 
         let guess = draft(source, &emitted, ngram, k);
@@ -97,15 +98,15 @@ pub fn generate(
         let mut next = sampler.sample(ctx, 0);
         // Tokenizing parses special tokens, so a transcript containing a
         // literal end-of-turn marker puts a real EOG token in the draft.
-        // Accepting one would detokenize a control token, which asks for no
-        // bytes and fails the call with `UnknownTokenType`.
+        // Accepting one decodes to no bytes and keeps the loop running, so
+        // whatever the model emits next lands in the output.
         while taken < guess.len()
             && next == guess[taken]
-            && !model.is_eog_token(next)
+            && !vocab.is_eog(next)
             && emitted.len() < budget
         {
             sampler.accept(next);
-            out.push_str(&model.token_to_piece(next, &mut decoder, false, None)?);
+            out.push_str(&decode_piece(&mut decoder, &vocab.token_to_piece(next, false, None)));
             emitted.push(next);
             taken += 1;
             next = sampler.sample(ctx, i32::try_from(taken).unwrap_or(i32::MAX));
