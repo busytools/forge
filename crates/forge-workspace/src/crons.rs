@@ -715,7 +715,8 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, text, .. } if key == &lead_key && text == "morning"
+                c, Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. }
+                    if key == &lead_key && text == "morning"
             )),
             "the running lead receives the fired cron prompt verbatim",
         );
@@ -752,7 +753,7 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, text, .. }
+                c, Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. }
                     if key == &worker_key && text == "review the diff"
             )),
             "a live worker's cron fires straight into the worker",
@@ -821,7 +822,8 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             !dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, .. } if key == &worker_key
+                c, Command::Prompt { key, .. } | Command::PromptUnder { key, .. }
+                    if key == &worker_key
             )),
             "no bare Prompt to the still-spawning worker (would be dropped)",
         );
@@ -1224,7 +1226,9 @@ provider = "anthropic"
         let texts: Vec<String> = dispatched
             .iter()
             .filter_map(|c| match c {
-                Command::Prompt { text, .. } => Some(text.clone()),
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -1280,7 +1284,9 @@ provider = "anthropic"
             .drain_test_dispatch_buffer()
             .iter()
             .filter_map(|c| match c {
-                Command::Prompt { text, .. } => Some(text.clone()),
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
                 _ => None,
             })
             .collect();

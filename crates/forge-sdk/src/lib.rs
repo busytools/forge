@@ -55,7 +55,7 @@ pub mod mcp;
 mod options;
 pub mod paths;
 pub(crate) mod permissions;
-pub(crate) mod request_id;
+pub mod request_id;
 pub mod subagents;
 pub mod transport;
 

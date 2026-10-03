@@ -20,7 +20,7 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::domain_session::DomainSession;
-use crate::protocol::{Command, PendingInteractionSlot, SessionUpdate};
+use crate::protocol::{Command, PendingInteractionSlot, PromptSource, SessionUpdate};
 use crate::update_fanout::UpdateFanout;
 
 pub(crate) struct SessionTask {
@@ -591,6 +591,20 @@ impl SessionTask {
             AgentEvent::McpOperationError { error, .. } => {
                 self.emit(SessionUpdate::McpOperationError { key: self.key.clone(), error });
             }
+            AgentEvent::PromptCancelResolved { uuid, cancelled } => {
+                // A confirmed cancel drops the row here as well as at the
+                // client: the CLI's own terminal frame for the prompt may be
+                // the only other word, and a reader that asked to drop it must
+                // not be left guessing.
+                if cancelled {
+                    self.domain.lock().drop_queued_prompt(&uuid);
+                }
+                self.emit(SessionUpdate::PromptCancelResolved {
+                    key: self.key.clone(),
+                    uuid,
+                    cancelled,
+                });
+            }
             AgentEvent::RuntimeReloadCompleted { .. } => {
                 self.emit(SessionUpdate::RuntimeReloadCompleted { key: self.key.clone() });
             }
@@ -683,16 +697,47 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
-                // The frame joins the conversation this task is carrying,
-                // BEFORE it is emitted: the replay answers with that
-                // conversation, so a frame missing from it is a frame a
-                // consumer joining later never sees - and a compaction is the
-                // case that makes it plain, because the boundary drops the
-                // transport's copy and the replay is what rebuilds it.
-                self.retain(&msg);
-                // `None`: a frame off the wire is the CLI's own, and carries
-                // no prompt origin.
-                self.emit(SessionUpdate::ChatAppended { key: self.key.clone(), msg, origin: None });
+                // A prompt's queue state is state, not conversation: the
+                // prompt's own presence in the record is the transcript's
+                // enqueue row and the `queued_command` attachment, and
+                // retaining three frames per prompt would put three rows for
+                // it into every view's transcript under rule 25. It advances
+                // the pile and is emitted, then the conversation path below is
+                // skipped entirely.
+                if let forge_primitives::Message::CommandLifecycle { command_uuid, state, .. } =
+                    &msg
+                {
+                    let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
+                    if !known {
+                        tracing::debug!(
+                            target: "forge_workspace::session_task",
+                            slot = %self.key.display(),
+                            uuid = %command_uuid,
+                            state = %state,
+                            "lifecycle frame for a prompt this session never recorded",
+                        );
+                    }
+                    self.emit(SessionUpdate::PromptLifecycle {
+                        key: self.key.clone(),
+                        uuid: command_uuid.clone(),
+                        state: state.clone(),
+                    });
+                } else {
+                    // The frame joins the conversation this task is carrying,
+                    // BEFORE it is emitted: the replay answers with that
+                    // conversation, so a frame missing from it is a frame a
+                    // consumer joining later never sees - and a compaction is
+                    // the case that makes it plain, because the boundary drops
+                    // the transport's copy and the replay is what rebuilds it.
+                    self.retain(&msg);
+                    // `None`: a frame off the wire is the CLI's own, and
+                    // carries no prompt origin.
+                    self.emit(SessionUpdate::ChatAppended {
+                        key: self.key.clone(),
+                        msg,
+                        origin: None,
+                    });
+                }
             }
             AgentEvent::HookObservation {
                 tool_use_id,
@@ -716,6 +761,28 @@ impl SessionTask {
     }
 
     fn execute_command(&self, cmd: Command) {
+        // A prompt's queued row is recorded here, where its id is minted (or
+        // is already the caller's) and its source is known: the lifecycle
+        // frames that follow name only the id and the state, so this is the
+        // one moment that can say what is waiting and who sent it.
+        let cmd = match cmd {
+            Command::Prompt { key, text, attachments } => {
+                let uuid = forge_sdk::request_id::next_prompt_id();
+                {
+                    let mut guard = self.domain.lock();
+                    guard.record_queued_prompt(&uuid, PromptSource::You, &text);
+                }
+                Command::PromptUnder { key, text, attachments, uuid, source: PromptSource::You }
+            }
+            Command::PromptUnder { key, text, attachments, uuid, source } => {
+                {
+                    let mut guard = self.domain.lock();
+                    guard.record_queued_prompt(&uuid, source, &text);
+                }
+                Command::PromptUnder { key, text, attachments, uuid, source }
+            }
+            other => other,
+        };
         match cmd {
             Command::RespondPermission { key: _, tool_id, outcome } => {
                 // Peek the slot kind first; only remove on a kind
@@ -997,7 +1064,9 @@ impl SessionTask {
             let crate::parked::ParkedPeer { wrapped, .. } = entry;
             crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped);
             let text = wrapped.to_prose();
-            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
+            if let Err(err) =
+                workspace.dispatch_workspace_prompt_from(&self.key, text, PromptSource::Peer)
+            {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     slot = %self.key.display(),
@@ -1024,7 +1093,9 @@ impl SessionTask {
         for cron in pending {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
             crate::spawn::push_cron_prompt_into_chat(workspace, &self.key, &text);
-            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
+            if let Err(err) =
+                workspace.dispatch_workspace_prompt_from(&self.key, text, PromptSource::Cron)
+            {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     slot = %self.key.display(),
@@ -1054,9 +1125,11 @@ impl SessionTask {
             // plain user turn (mirrors the running-target path in
             // spawn::deliver_gotify_message).
             crate::spawn::push_gotify_notification_into_chat(workspace, &self.key, &notification);
-            if let Err(err) =
-                workspace.dispatch_workspace_prompt(&self.key, notification.to_prose())
-            {
+            if let Err(err) = workspace.dispatch_workspace_prompt_from(
+                &self.key,
+                notification.to_prose(),
+                PromptSource::Gotify,
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     slot = %self.key.display(),
@@ -1090,7 +1163,9 @@ impl SessionTask {
         for messages in by_conversation.into_values() {
             let prose = crate::spawn::slack_bundle_to_prose(&messages);
             crate::spawn::push_slack_message_into_chat(workspace, &self.key, &prose);
-            if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, prose) {
+            if let Err(err) =
+                workspace.dispatch_workspace_prompt_from(&self.key, prose, PromptSource::Slack)
+            {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
                     slot = %self.key.display(),
@@ -1264,13 +1339,30 @@ pub(crate) fn execute_command_via_handle(
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
             };
-            handle.prompt_with_images(sid.to_owned(), text, attachments)
+            // The live path rewrites `Prompt` into `PromptUnder` before it gets
+            // here, so this arm is the test fallback's alone: it mints without
+            // recording, because the fallback holds no session state to record
+            // into.
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            handle.prompt_with_images(sid.to_owned(), text, attachments, uuid)
+        }
+        Command::PromptUnder { key: _, text, attachments, uuid, source: _ } => {
+            let Some(sid) = session_id else {
+                return Err(warn_no_session(key, "PromptUnder"));
+            };
+            handle.prompt_with_images(sid.to_owned(), text, attachments, uuid)
         }
         Command::Cancel { key: _ } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Cancel"));
             };
             handle.cancel(sid.to_owned())
+        }
+        Command::CancelQueuedPrompt { key: _, uuid } => {
+            let Some(sid) = session_id else {
+                return Err(warn_no_session(key, "CancelQueuedPrompt"));
+            };
+            handle.cancel_queued(sid.to_owned(), uuid)
         }
         Command::SetMode { key: _, mode } => {
             let Some(sid) = session_id else {
@@ -2628,6 +2720,7 @@ mod tests {
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
+                    | crate::protocol::Command::PromptUnder { key, text, .. }
                     if *key == session_key && text.contains("the buffered text")
             )),
             "the buffered message arrives as the session's own prompt: {dispatched:?}",
@@ -2686,6 +2779,7 @@ mod tests {
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
+                    | crate::protocol::Command::PromptUnder { key, text, .. }
                     if *key == slot && text.contains("buffered while asleep")
             )),
             "the drained prompt rides the task's own slot: {dispatched:?}",
@@ -3933,7 +4027,8 @@ provider = "anthropic"
         let drained_bodies: Vec<String> = buffered
             .into_iter()
             .filter_map(|cmd| match cmd {
-                crate::protocol::Command::Prompt { text, .. } => Some(text),
+                crate::protocol::Command::Prompt { text, .. }
+                | crate::protocol::Command::PromptUnder { text, .. } => Some(text),
                 _ => None,
             })
             .collect();
@@ -4053,7 +4148,9 @@ provider = "anthropic"
         let buffered = workspace.drain_test_dispatch_buffer();
         assert!(
             buffered.iter().any(|c| matches!(
-                c, crate::protocol::Command::Prompt { text, .. } if text == "morning reminder"
+                c, crate::protocol::Command::Prompt { text, .. }
+                    | crate::protocol::Command::PromptUnder { text, .. }
+                    if text == "morning reminder"
             )),
             "the buffered cron prompt is dispatched on first-Connected",
         );
@@ -4121,6 +4218,7 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
+                    | crate::protocol::Command::PromptUnder { key, text, .. }
                     if *key == session_key && text == "[missed cron] worker work"
             )),
             "the worker drains its own missed cron with the marker applied",
@@ -6046,10 +6144,14 @@ mod connected_hook_tests {
         tokio::task::yield_now().await;
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "inline-kick worker gets exactly one kick");
-        if let Command::Prompt { key, text, .. } = prompts[0] {
+        if let Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } =
+            prompts[0]
+        {
             assert_eq!(key, &synth, "kick targets the worker's own slot");
             assert_eq!(
                 text, "Begin: triage the failing test now.",
@@ -6078,10 +6180,12 @@ mod connected_hook_tests {
         tokio::task::yield_now().await;
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "an underscore-labelled worker gets its kick");
-        if let Command::Prompt { text, .. } = prompts[0] {
+        if let Command::Prompt { text, .. } | Command::PromptUnder { text, .. } = prompts[0] {
             assert_eq!(text, "Begin: review the open diff.", "the kick arrives verbatim");
         }
     }
@@ -6100,8 +6204,10 @@ mod connected_hook_tests {
         tokio::task::yield_now().await;
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert!(prompts.is_empty(), "a live entry carrying no kick gets none");
     }
 
@@ -6127,7 +6233,9 @@ mod connected_hook_tests {
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
-            dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
+            dispatched
+                .iter()
+                .all(|c| !matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. })),
             "a label with no entry of its own must not be handed another worker's kick",
         );
     }
@@ -6149,7 +6257,8 @@ mod connected_hook_tests {
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { text, .. } if text == "go"
+                c, Command::Prompt { text, .. } | Command::PromptUnder { text, .. }
+                    if text == "go"
             )),
             "an underscore in the label must not cost the kick: {dispatched:?}",
         );

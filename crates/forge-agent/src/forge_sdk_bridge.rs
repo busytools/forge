@@ -372,8 +372,13 @@ impl ForgeSdkBridge {
         self.inner.events_rx.lock().take()
     }
 
-    pub(crate) fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
-        self.prompt_with_images(session_id, text, Vec::new())
+    pub(crate) fn prompt_text(
+        &self,
+        session_id: String,
+        text: String,
+        uuid: String,
+    ) -> anyhow::Result<()> {
+        self.prompt_with_images(session_id, text, Vec::new(), uuid)
     }
 
     pub(crate) fn prompt_with_images(
@@ -381,6 +386,7 @@ impl ForgeSdkBridge {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
+        uuid: String,
     ) -> anyhow::Result<()> {
         // No `check_session_id` here - the TUI commits to
         // `AppStatus::Thinking` BEFORE this call, and a silent
@@ -414,8 +420,45 @@ impl ForgeSdkBridge {
         });
         self.dispatch_with_failure(
             "prompt",
-            move |client| async move { forge_sdk_worker::send_prompt(&client, chunks).await },
+            move |client| async move { forge_sdk_worker::send_prompt(&client, chunks, &uuid).await },
             move |err| Some(turn_error(session_id.clone(), err.to_string())),
+        )
+    }
+
+    /// Drop one prompt still in the CLI's queue. The answer rides
+    /// [`AgentEvent::PromptCancelResolved`] rather than the call's return: the
+    /// dispatcher channel is fire-and-forget, and a caller that reads `false`
+    /// has to tell the reader the prompt was already taken.
+    pub(crate) fn cancel_queued(&self, session_id: String, uuid: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "cancel_queued") {
+            return Ok(());
+        }
+        let event_tx = self.inner.event_tx.clone();
+        let err_session_id = session_id.clone();
+        let answered = uuid.clone();
+        self.dispatch_with_failure(
+            "cancel_queued",
+            move |client| async move {
+                let cancelled = tokio::time::timeout(
+                    Self::CONTROL_RESPONSE_TIMEOUT,
+                    client.cancel_queued_message(&uuid),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("cancel_async_message not acknowledged by the CLI")
+                })??;
+                if event_tx
+                    .send(AgentEvent::PromptCancelResolved { uuid: answered, cancelled })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        "event channel closed; PromptCancelResolved dropped",
+                    );
+                }
+                Ok(())
+            },
+            move |err| Some(turn_error(err_session_id.clone(), err.to_string())),
         )
     }
 

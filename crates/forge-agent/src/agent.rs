@@ -168,8 +168,13 @@ impl AgentHandle {
         })
     }
 
-    pub fn prompt_text(&self, session_id: String, text: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::Prompt { session_id: session_id.into(), text })
+    pub fn prompt_text(
+        &self,
+        session_id: String,
+        text: String,
+        uuid: String,
+    ) -> Result<(), AgentError> {
+        self.send(AgentCommand::Prompt { session_id: session_id.into(), text, uuid })
     }
 
     pub fn prompt_with_images(
@@ -177,12 +182,22 @@ impl AgentHandle {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
+        uuid: String,
     ) -> Result<(), AgentError> {
-        self.send(AgentCommand::PromptWithImages { session_id: session_id.into(), text, images })
+        self.send(AgentCommand::PromptWithImages {
+            session_id: session_id.into(),
+            text,
+            images,
+            uuid,
+        })
     }
 
     pub fn cancel(&self, session_id: String) -> Result<(), AgentError> {
         self.send(AgentCommand::Cancel { session_id: session_id.into() })
+    }
+
+    pub fn cancel_queued(&self, session_id: String, uuid: String) -> Result<(), AgentError> {
+        self.send(AgentCommand::CancelQueuedPrompt { session_id: session_id.into(), uuid })
     }
 
     pub fn set_mode(&self, session_id: String, mode: PermissionMode) -> Result<(), AgentError> {
@@ -395,11 +410,16 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             cwd,
             decode_launch_settings(launch_settings),
         ),
-        C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
-        C::PromptWithImages { session_id, text, images } => {
-            bridge.prompt_with_images(session_id.into_string(), text, images)
+        C::Prompt { session_id, text, uuid } => {
+            bridge.prompt_text(session_id.into_string(), text, uuid)
+        }
+        C::PromptWithImages { session_id, text, images, uuid } => {
+            bridge.prompt_with_images(session_id.into_string(), text, images, uuid)
         }
         C::Cancel { session_id } => bridge.cancel(session_id.into_string()),
+        C::CancelQueuedPrompt { session_id, uuid } => {
+            bridge.cancel_queued(session_id.into_string(), uuid)
+        }
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
         C::SetModel { session_id, model } => bridge.set_model(session_id.into_string(), model),
         C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),

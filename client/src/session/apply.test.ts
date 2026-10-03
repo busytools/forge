@@ -709,6 +709,8 @@ const EVERY_VARIANT = [
   'slack_post_pending',
   'slack_draft_resolved',
   'prompt_queued_while_busy',
+  'prompt_lifecycle',
+  'prompt_cancel_resolved',
   'review_activity_notice',
   'dictate_availability',
   'dictate_started',
@@ -748,9 +750,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (60 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (62 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(60);
+    ).toBe(62);
   });
 
   it('classifies every variant the core can send', () => {

@@ -774,9 +774,12 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
 
         assert!(
-            dispatched.iter().any(
-                |c| matches!(c, crate::protocol::Command::Prompt { key, .. } if key == &worker_key)
-            ),
+            dispatched.iter().any(|c| matches!(
+                c,
+                crate::protocol::Command::Prompt { key, .. }
+                    | crate::protocol::Command::PromptUnder { key, .. }
+                    if key == &worker_key
+            )),
             "a running team worker receives the notification directly",
         );
         assert!(

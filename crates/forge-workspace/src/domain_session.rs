@@ -106,6 +106,14 @@ pub struct DomainSession {
     /// whole on each `background_tasks_changed`, and a view that attached
     /// afterwards would otherwise see the flag and not one row.
     pub background_tasks: Vec<crate::BackgroundTask>,
+    /// Prompts in the CLI's queue for this occupant: what a view draws as
+    /// waiting, and what the pile read answers with.
+    ///
+    /// Appended where the prompt is sent - the only place that knows its
+    /// source and words - and advanced by the CLI's own lifecycle frames,
+    /// which are the only writer of a prompt's state. Belongs to the
+    /// occupant, so it is dropped with the background registry.
+    pub prompt_queue: Vec<crate::protocol::QueuedPrompt>,
     /// The command a tool call's card carried, by tool-use id.
     ///
     /// Held rather than resolved on the spot because the card arrives BEFORE
@@ -268,6 +276,43 @@ impl DomainSession {
         self.background_commands.clear();
         self.staged_commands.clear();
         self.task_tool_use.clear();
+        // The queue died with the CLI process the prompts were written to.
+        self.prompt_queue.clear();
+    }
+
+    /// Record a prompt as waiting, at the dispatch site.
+    pub(crate) fn record_queued_prompt(
+        &mut self,
+        uuid: &str,
+        source: crate::protocol::PromptSource,
+        text: &str,
+    ) {
+        self.prompt_queue.push(crate::protocol::QueuedPrompt {
+            uuid: uuid.to_owned(),
+            source,
+            text: text.to_owned(),
+        });
+    }
+
+    /// Advance a prompt's state from one of the CLI's lifecycle frames.
+    ///
+    /// Returns whether the id was known; an entry that left `queued` is
+    /// dropped, so the pile holds only prompts still waiting. An unknown id is
+    /// not an error - a prompt dispatched before this build, or a frame for a
+    /// prompt another cohort minted, simply is not in the pile.
+    pub(crate) fn advance_queued_prompt(&mut self, uuid: &str, state: &str) -> bool {
+        let Some(at) = self.prompt_queue.iter().position(|p| p.uuid == uuid) else {
+            return false;
+        };
+        if state != "queued" {
+            self.prompt_queue.remove(at);
+        }
+        true
+    }
+
+    /// Drop an entry outright - a cancel that the CLI confirmed.
+    pub(crate) fn drop_queued_prompt(&mut self, uuid: &str) {
+        self.prompt_queue.retain(|p| p.uuid != uuid);
     }
 
     /// Fill in the command of every entry whose card and tool call are both
@@ -296,6 +341,7 @@ impl DomainSession {
             session_id: None,
             conn,
             pending_interactions: HashMap::new(),
+            prompt_queue: Vec::new(),
             spawned_force_new: false,
             spawn_wrote_row: false,
             runtime_state: None,

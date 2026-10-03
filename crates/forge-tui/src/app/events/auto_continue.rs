@@ -274,11 +274,16 @@ mod tests {
         maybe_fire(&mut app);
 
         let cmd = rx.try_recv().expect("a continuation prompt is dispatched");
-        let forge_primitives::AgentCommand::PromptWithImages { session_id, text: prompt, images } =
-            cmd
+        let forge_primitives::AgentCommand::PromptWithImages {
+            session_id,
+            text: prompt,
+            images,
+            uuid,
+        } = cmd
         else {
             panic!("expected PromptWithImages, got {cmd:?}");
         };
+        assert!(!uuid.is_empty(), "every prompt carries the id its lifecycle frames echo");
         assert_eq!(session_id, "session-1");
         assert!(images.is_empty(), "a continuation carries no attachments");
         assert!(prompt.contains("HTTP 529"), "names the failure: {prompt}");

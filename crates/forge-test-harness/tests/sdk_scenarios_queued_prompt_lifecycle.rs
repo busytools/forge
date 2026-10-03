@@ -139,10 +139,7 @@ async fn wire_capture_queued_prompt_lifecycle() {
             if v["type"] != "command_lifecycle" {
                 return None;
             }
-            Some((
-                v["command_uuid"].as_str()?.to_string(),
-                v["state"].as_str()?.to_string(),
-            ))
+            Some((v["command_uuid"].as_str()?.to_string(), v["state"].as_str()?.to_string()))
         })
         .collect();
     for (id, what) in [(P1, "the idle prompt"), (P2, "the prompt queued mid-turn")] {

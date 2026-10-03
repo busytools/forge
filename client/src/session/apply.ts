@@ -263,6 +263,8 @@ export const IGNORED: readonly string[] = [
   'plugins_update_run_finished',
   'plugins_update_run_progress',
   'prompt_queued_while_busy',
+  'prompt_lifecycle',
+  'prompt_cancel_resolved',
   'review_activity_notice',
   'runtime_reload_completed',
   'runtime_reload_failed',

@@ -12,7 +12,7 @@ use forge_agent::client::SessionLaunchSettings;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{
-    Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
+    Command, PromptSource, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
 use crate::workspace::LiveWorkerRefusal;
@@ -366,7 +366,9 @@ pub(crate) fn handle_deliver_peer_prompt(
         // the TUI knows to render the peer block.
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
         let text = wrapped.to_prose();
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, text) {
+        if let Err(err) =
+            workspace.dispatch_workspace_prompt_from(&target_key, text, PromptSource::Peer)
+        {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 target_project = %target_project,
@@ -473,7 +475,8 @@ pub(crate) fn deliver_cron_prompt(
         // order regardless of which event the TUI reducer drains first.
         let text = missed_cron_text(&prompt, missed);
         push_cron_prompt_into_chat(workspace, &target_key, &text);
-        return match workspace.dispatch_workspace_prompt(&target_key, text) {
+        return match workspace.dispatch_workspace_prompt_from(&target_key, text, PromptSource::Cron)
+        {
             Ok(()) => CronFireOutcome::Delivered,
             Err(err) => {
                 tracing::warn!(
@@ -686,9 +689,11 @@ pub(crate) fn deliver_gotify_message(
             // it renders in order regardless of which event the TUI reducer
             // drains first (mirrors handle_deliver_peer_prompt).
             push_gotify_notification_into_chat(workspace, &worker_key, &notification);
-            if let Err(err) =
-                workspace.dispatch_workspace_prompt(&worker_key, notification.to_prose())
-            {
+            if let Err(err) = workspace.dispatch_workspace_prompt_from(
+                &worker_key,
+                notification.to_prose(),
+                PromptSource::Gotify,
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -714,8 +719,11 @@ pub(crate) fn deliver_gotify_message(
 
     if let Some(target_key) = running_lead {
         push_gotify_notification_into_chat(workspace, &target_key, &notification);
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, notification.to_prose())
-        {
+        if let Err(err) = workspace.dispatch_workspace_prompt_from(
+            &target_key,
+            notification.to_prose(),
+            PromptSource::Gotify,
+        ) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -866,7 +874,11 @@ pub(crate) fn deliver_slack_message(
             .domain_session_for(&worker_key)
             .is_some_and(|d| d.lock().session_id.is_some());
         if connected {
-            if let Err(err) = workspace.dispatch_workspace_prompt(&worker_key, prose.clone()) {
+            if let Err(err) = workspace.dispatch_workspace_prompt_from(
+                &worker_key,
+                prose.clone(),
+                PromptSource::Slack,
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -901,7 +913,11 @@ pub(crate) fn deliver_slack_message(
         });
 
     if let Some(target_key) = running_lead {
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, prose.clone()) {
+        if let Err(err) = workspace.dispatch_workspace_prompt_from(
+            &target_key,
+            prose.clone(),
+            PromptSource::Slack,
+        ) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -2754,6 +2770,7 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
+                    | crate::protocol::Command::PromptUnder { key, text, .. }
                     if *key == worker_key && text.contains("hello")
             )),
             "the worker receives the message as a prompt: {dispatched:?}",

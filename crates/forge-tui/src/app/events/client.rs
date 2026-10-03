@@ -364,6 +364,27 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
         }
+        SessionUpdate::PromptLifecycle { key, uuid, state } => {
+            // A prompt's queue state drives the client's pile; the terminal's
+            // own queued row is drawn from the frame it already gets, so this
+            // is a breadcrumb rather than a drawing here.
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_lifecycle",
+                session_slot = %key.display(),
+                uuid = %uuid,
+                state = %state,
+            );
+        }
+        SessionUpdate::PromptCancelResolved { key, uuid, cancelled } => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_cancel_resolved",
+                session_slot = %key.display(),
+                uuid = %uuid,
+                cancelled,
+            );
+        }
         SessionUpdate::PromptQueuedWhileBusy { key } => {
             // TurnComplete settles regardless; a queued turn
             // announces itself on the wire when it starts.

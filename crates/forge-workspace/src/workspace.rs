@@ -23,7 +23,9 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate};
+use crate::protocol::{
+    Command, DispatchError, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
+};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3506,6 +3508,18 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
+        self.dispatch_workspace_prompt_from(key, text, PromptSource::Forge)
+    }
+
+    /// [`Self::dispatch_workspace_prompt`], with the row's source label named
+    /// by the caller: a delivery knows what it is (a cron fire, a Gotify
+    /// notification, a peer comm) and the queued row has to say so.
+    pub fn dispatch_workspace_prompt_from(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        source: PromptSource,
+    ) -> Result<(), DispatchError> {
         // Busy is captured before the dispatch: dispatching first would
         // read the turn_pending stamp the dispatch itself just set.
         // Signalling only on success keeps a failed dispatch (the
@@ -3514,10 +3528,17 @@ impl Workspace {
         // residual signals at all depends on a session_state_changed
         // mirror being present, so it is CLI-version-dependent.
         let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
-        // `route` rather than `dispatch`: the delivery's frame is the envelope
-        // one its own update forges, not a bare user turn.
-        let result =
-            self.route(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
+        // The id is minted here so the queued row and the CLI's lifecycle
+        // frames share it from the first millisecond; `PromptUnder` is how it
+        // travels. `route` rather than `dispatch`: the delivery's frame is the
+        // envelope one its own update forges, not a bare user turn.
+        let result = self.route(Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid: forge_sdk::request_id::next_prompt_id(),
+            source,
+        });
         if busy && result.is_ok() {
             let _ = self
                 .update_sender()
@@ -3607,7 +3628,9 @@ impl Workspace {
         // every view but the sender, with nothing left to close it: the refusal
         // is written to the asking socket alone.
         let prompt = match &cmd {
-            Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
+            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
+                Some((key.clone(), text.clone()))
+            }
             _ => None,
         };
         // A composer's text that names a forge command is FORGE'S, not the
@@ -3622,18 +3645,20 @@ impl Workspace {
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
         let (outcome, answer) = match &cmd {
-            Command::Prompt { key, text, .. } => match crate::prompt::forge_invocation(text) {
-                Some(crate::prompt::Invocation::Command(prompt)) => {
-                    self.run_forge_prompt(key, &prompt)
+            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
+                match crate::prompt::forge_invocation(text) {
+                    Some(crate::prompt::Invocation::Command(prompt)) => {
+                        self.run_forge_prompt(key, &prompt)
+                    }
+                    Some(crate::prompt::Invocation::Misuse(usage)) => {
+                        (Ok(()), Some(forge_misuse(usage)))
+                    }
+                    None => match self.unrunnable_slash_name(key, text) {
+                        Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
+                        None => (self.route(cmd), None),
+                    },
                 }
-                Some(crate::prompt::Invocation::Misuse(usage)) => {
-                    (Ok(()), Some(forge_misuse(usage)))
-                }
-                None => match self.unrunnable_slash_name(key, text) {
-                    Some(refusal) => (Ok(()), Some(forge_misuse(&refusal))),
-                    None => (self.route(cmd), None),
-                },
-            },
+            }
             _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
@@ -3970,7 +3995,7 @@ impl Workspace {
                 // Stamp turn_pending only on the routed path (set + route
                 // together) so the in-flight guards can't race a Prompt
                 // whose wire-lagged `Running` echo hasn't landed yet.
-                if matches!(cmd, Command::Prompt { .. })
+                if matches!(cmd, Command::Prompt { .. } | Command::PromptUnder { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
                     domain.lock().turn_pending = true;
@@ -5939,7 +5964,11 @@ impl Workspace {
                     sender_org: String::new(),
                     body: reason.clone(),
                 };
-                if let Err(err) = self.dispatch_workspace_prompt(&lead_slot, wrapped.to_prose()) {
+                if let Err(err) = self.dispatch_workspace_prompt_from(
+                    &lead_slot,
+                    wrapped.to_prose(),
+                    PromptSource::Peer,
+                ) {
                     tracing::warn!(
                         target: "forge_workspace::worker_async_failure",
                         project = %project_key.as_str(),
@@ -6631,7 +6660,9 @@ impl Workspace {
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
         crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice);
-        if let Err(err) = self.dispatch_workspace_prompt(sender, notice.to_prose()) {
+        if let Err(err) =
+            self.dispatch_workspace_prompt_from(sender, notice.to_prose(), PromptSource::Peer)
+        {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 slot = %sender.display(),
@@ -8664,7 +8695,9 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|cmd| matches!(
                 cmd,
-                crate::protocol::Command::Prompt { key, .. } if *key == lead_key
+                crate::protocol::Command::Prompt { key, .. }
+                    | crate::protocol::Command::PromptUnder { key, .. }
+                    if *key == lead_key
             )),
             "the running lead receives the message as a prompt: {dispatched:?}",
         );
@@ -8763,7 +8796,11 @@ provider = "anthropic"
             "the asleep project is spawned: {dispatched:?}",
         );
         assert!(
-            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            dispatched.iter().all(|cmd| !matches!(
+                cmd,
+                crate::protocol::Command::Prompt { .. }
+                    | crate::protocol::Command::PromptUnder { .. }
+            )),
             "no session is prompted directly",
         );
         assert_eq!(
@@ -8795,7 +8832,11 @@ provider = "anthropic"
 
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
-            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            dispatched.iter().all(|cmd| !matches!(
+                cmd,
+                crate::protocol::Command::Prompt { .. }
+                    | crate::protocol::Command::PromptUnder { .. }
+            )),
             "the asleep path buffers; the second delivery added no prompt",
         );
         assert_eq!(parked_slack_count(&ws, "glead", None), 1, "one buffered message, not two");
@@ -10666,11 +10707,11 @@ provider = "anthropic"
         let dispatched = ws.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 1, "the notice is also dispatched as a turn");
         match &dispatched[0] {
-            Command::Prompt { key, text, .. } => {
+            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
                 assert_eq!(*key, sender, "the dispatched turn goes to the sender");
                 assert!(text.contains("failed to deliver"), "carrying the failure prose: {text}");
             }
-            other => panic!("expected Command::Prompt, got {other:?}"),
+            other => panic!("expected a prompt command, got {other:?}"),
         }
     }
 }
@@ -13955,10 +13996,14 @@ mod async_worker_spawn_failure_tests {
 
         // Notice dispatched via Command::Prompt to the lead's key.
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "exactly one WorkerSpawnFailedNotice envelope");
-        if let Command::Prompt { key, text, .. } = prompts[0] {
+        if let Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } =
+            prompts[0]
+        {
             assert_eq!(*key, lead_key, "notice targets the lead session id");
             assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
             assert!(text.contains("already used by worktree"));
@@ -14007,8 +14052,10 @@ mod async_worker_spawn_failure_tests {
         assert!(handled);
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert!(prompts.is_empty(), "non-worktree classifier outcome must NOT dispatch a notice");
         let entries = workspace.list_live_workers(&project_key);
         assert_eq!(entries.len(), 1, "non-worktree failure keeps the entry visible");
@@ -14450,8 +14497,10 @@ mod async_worker_spawn_failure_tests {
         assert!(handled, "still consumes the failure even when lead is gone");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert!(prompts.is_empty(), "no notice dispatched when lead session is gone");
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
@@ -15546,7 +15595,7 @@ mod kick_dispatcher_tests {
         let keys: Vec<SessionSlot> = dispatched
             .into_iter()
             .filter_map(|c| match c {
-                Command::Prompt { key, .. } => Some(key),
+                Command::Prompt { key, .. } | Command::PromptUnder { key, .. } => Some(key),
                 _ => None,
             })
             .collect();
@@ -15639,8 +15688,10 @@ mod kick_dispatcher_tests {
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "second start_kick_dispatcher must not duplicate dispatches");
     }
 
@@ -16143,7 +16194,9 @@ mod prompt_frame_origin_tests {
             "the seat is restarted: {commands:?}",
         );
         assert!(
-            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. })),
             "and the words are never forwarded to the CLI: {commands:?}",
         );
     }
@@ -16173,7 +16226,9 @@ mod prompt_frame_origin_tests {
             "the named session is resumed: {commands:?}",
         );
         assert!(
-            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. })),
             "and the words are never forwarded to the CLI: {commands:?}",
         );
     }
