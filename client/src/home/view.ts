@@ -61,15 +61,22 @@ export interface TaskCell {
 }
 
 /**
- * Whether a row's seat has nothing running behind it: the two lifecycles the
- * core reports for a seat whose session is gone.
+ * Whether the seat's page answers: a lead's always does - the core resolves
+ * its directory from the project declaration, and opening one starts it - and
+ * a worker's only while it has a session behind it.
  *
- * Such a row is information rather than a way in - opening its seat draws a
- * refusal - which is the terminal's own treatment of a sleeping worker row,
- * and why a view must not draw one as a link.
+ * A row whose seat refuses is information rather than a way in: opening it
+ * draws "this seat has no session behind it", and the terminal draws a
+ * sleeping worker row the same way, as a label with no hit target.
+ *
+ * `LoggedOut` shares the arm with `Sleeping` so a row's mark and its link
+ * cannot disagree: the two are one mark in the parked web view's grouping,
+ * and no worker row carries the state today.
  */
-export function asleep(state: RowState): boolean {
-  return (
+export function openable(row: Pick<Row, 'slot' | 'state'>): boolean {
+  if (row.slot.label === 'lead') return true;
+  const { state } = row;
+  return !(
     state.kind === 'lifecycle' &&
     (state.lifecycle === 'Sleeping' || state.lifecycle === 'LoggedOut')
   );

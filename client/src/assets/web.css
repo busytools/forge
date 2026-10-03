@@ -227,6 +227,12 @@ section.org > h2 .counts {
 .row.failed::after { color: var(--bad); }
 .row.needs::after { color: var(--warn); }
 .row.auth::after { color: var(--bad); }
+/* A row whose seat refuses is not a way in: the chrome that says "this goes
+   somewhere" - the pointer, the hover ground, the chevron - belongs to rows
+   that do. The row says why in words instead. */
+.row.asleep { cursor: default; }
+.row.asleep::after { display: none; }
+.row.asleep:hover { background: none; }
 /* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
    child, so the flex only stops the text from ellipsising - and a name
    like `pure-black-github-intellij` has to shorten rather than clip. */
@@ -531,6 +537,11 @@ details.sfold > summary::-webkit-details-marker { display: none; }
 details.sfold > summary .nm { color: var(--dim); }
 details.sfold > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
 details.sfold[open] > summary .arw { color: var(--accent); }
+/* The fold's own rows are labels, not ways in: a sleeping seat has no page to
+   open. Scoped to div.wk so the summary - drawn as a worker row, and still
+   the fold's control - keeps its pointer and its hover ground. */
+details.sfold div.wk { cursor: default; }
+details.sfold div.wk:hover { background: none; }
 
 /* a line whose work is in flight, the ring in front of it */
 .hold { display: flex; align-items: center; gap: 9px; color: var(--accent);

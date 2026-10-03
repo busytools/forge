@@ -25,7 +25,9 @@ nothing to draw, and the client never falls back to bundled data.
 A row is the same five columns for a lead and for a worker, and a worker sits
 indented under its project. The name is the link rather than the row, because
 a row can also carry an artifact anchor and an anchor inside an anchor is not
-HTML.
+HTML. A worker's seat with no session behind it is the one row that is not a
+link: its page refuses to open, so the name is drawn as text, the `what` cell
+says `asleep`, and the row carries no pointer, hover ground or chevron.
 
 **The header draws the forge build, not this app's own version.** The header
 states which forge is serving, and the client is a different program, so the
