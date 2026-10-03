@@ -245,6 +245,7 @@ impl Workspace {
             config_dir,
             LoadedConfig::empty_for_test(),
             Arc::new(crate::slack::SlackWorkspaces::default()),
+            None,
         )
     }
 
@@ -274,7 +275,13 @@ impl Workspace {
     ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>), String> {
         let slack =
             crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())?;
-        Ok(Self::testing_stub_with_slack(config_dir, config, Arc::new(slack)))
+        let systemone = crate::systemone::client_for(
+            config.systemone.as_ref(),
+            &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+        )
+        .map_err(|error| error.to_string())?
+        .map(Arc::new);
+        Ok(Self::testing_stub_with_slack(config_dir, config, Arc::new(slack), systemone))
     }
 
     /// `Self::testing_stub_with_config` with the Slack clients supplied
@@ -285,6 +292,7 @@ impl Workspace {
         config_dir: PathBuf,
         config: LoadedConfig,
         slack: Arc<crate::slack::SlackWorkspaces>,
+        systemone: Option<Arc<forge_system_one::SystemOneClient>>,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
         // that exercise the cron / state stores expect `forge/` present.
@@ -305,6 +313,7 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config,
+            systemone,
             catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -528,6 +537,7 @@ impl Workspace {
             PathBuf::from("/tmp/forge-testing-stub-dictate"),
             config,
             Arc::new(crate::slack::SlackWorkspaces::default()),
+            None,
         )
     }
 
@@ -764,5 +774,35 @@ mod tests {
             error.contains("has an empty token"),
             "the error names the malformed fixture, got: {error}",
         );
+    }
+
+    /// The boot leg: a configured `[systemone]` section must reach the
+    /// workspace as a client, and an absent one must leave the tools
+    /// unregistered.
+    #[test]
+    fn a_configured_systemone_section_builds_a_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = LoadedConfig::empty_for_test();
+        config.systemone = Some(forge_system_one::SystemOneConfig {
+            base_url: "https://api.typesafe.ai".to_owned(),
+            api_key: None,
+            model: "jev-latest".to_owned(),
+            timeout_ms: 30_000,
+        });
+        let (workspace, _rx) =
+            Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("a valid systemone section builds");
+        assert!(workspace.systemone.is_some(), "a configured section must reach the workspace");
+    }
+
+    #[test]
+    fn an_absent_systemone_section_leaves_no_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) = Workspace::testing_stub_with_config(
+            dir.path().to_path_buf(),
+            LoadedConfig::empty_for_test(),
+        )
+        .expect("an empty config builds");
+        assert!(workspace.systemone.is_none(), "an absent section must not build a client");
     }
 }

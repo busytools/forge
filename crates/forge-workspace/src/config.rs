@@ -48,6 +48,11 @@ struct ForgeToml {
     /// stays dormant.
     #[serde(default)]
     gotify: Option<GotifyConfig>,
+    /// Optional `[systemone]` section - the decision-model endpoint the
+    /// session tools ask. Absent or `enabled = false` → `None` → the
+    /// tools are never injected.
+    #[serde(default)]
+    systemone: Option<forge_system_one::SystemOneSection>,
     /// Optional `[[slack]]` sections - one entry per workspace. Absent or
     /// empty → the connector stays dormant.
     #[serde(default)]
@@ -344,6 +349,9 @@ pub(crate) struct LoadedConfig {
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
+    /// `[systemone]` decision-model endpoint, or `None` when the
+    /// section is absent or disabled (the tools are not injected).
+    pub systemone: Option<forge_system_one::SystemOneConfig>,
     /// `[[slack]]` workspaces. An absent or empty list leaves the
     /// connector dormant, the way an absent `[gotify]` does.
     pub slack: Vec<SlackConfig>,
@@ -452,6 +460,7 @@ impl LoadedConfig {
             accounts: Vec::new(),
             dictate: crate::dictate::DictateSettings::default(),
             gotify: None,
+            systemone: None,
             slack: Vec::new(),
             plugins: PluginSettings::default(),
             gateway_port: DEFAULT_GATEWAY_PORT,
@@ -841,12 +850,23 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     };
     let web = resolve_web(parsed.web, gateway_port, &path)?;
 
+    let systemone = match parsed.systemone {
+        Some(section) => {
+            section.into_config().map_err(|message| WorkspaceError::ConfigInvalid {
+                path: path.clone(),
+                message: format!("[systemone] {message}"),
+            })?
+        }
+        None => None,
+    };
+
     Ok(LoadedConfig {
         projects,
         default_index,
         accounts,
         dictate: parsed.dictate,
         gotify: parsed.gotify,
+        systemone,
         slack: parsed.slack,
         plugins: parsed.plugins,
         gateway_port,
@@ -2069,6 +2089,13 @@ provider = "anthropic"
                 format!("{base}\n[gotify]\nurl = \"https://notifier\"\nclient_tokens = \"t\"\n"),
                 "client_tokens",
             ),
+            (
+                "[systemone]",
+                format!(
+                    "{base}\n[systemone]\nendpoint = \"https://api.typesafe.ai\"\nbase_url = \"https://api.typesafe.ai\"\nmodel = \"jev-latest\"\n"
+                ),
+                "endpoint",
+            ),
         ];
         // Collected rather than asserted one at a time: a section that
         // started ignoring keys again should be named alongside the
@@ -2630,6 +2657,83 @@ base_url = "http://localhost:18765"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.gotify, None);
+    }
+
+    #[test]
+    fn parses_systemone_block() {
+        let dir = tempdir().expect("tempdir");
+        let raw = format!(
+            "{}\n[systemone]\nbase_url = \"https://api.typesafe.ai\"\napi_key = \"ts-key\"\nmodel = \"jev-latest\"\ntimeout_ms = 15000\n",
+            minimal_config()
+        );
+        write_config(dir.path(), &raw);
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(
+            config.systemone,
+            Some(forge_system_one::SystemOneConfig {
+                base_url: "https://api.typesafe.ai".to_owned(),
+                api_key: Some("ts-key".to_owned()),
+                model: "jev-latest".to_owned(),
+                timeout_ms: 15_000,
+            })
+        );
+    }
+
+    #[test]
+    fn absent_systemone_block_is_none() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.systemone, None);
+    }
+
+    #[test]
+    fn disabled_systemone_block_is_none() {
+        let dir = tempdir().expect("tempdir");
+        let raw = format!(
+            "{}\n[systemone]\nenabled = false\nbase_url = \"https://api.typesafe.ai\"\nmodel = \"jev-latest\"\n",
+            minimal_config()
+        );
+        write_config(dir.path(), &raw);
+        let config = load_from_dir(dir.path()).expect("a disabled section loads");
+        assert_eq!(config.systemone, None);
+    }
+
+    #[test]
+    fn enabled_systemone_without_base_url_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[systemone]\nmodel = \"jev-latest\"\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("an enabled section needs a base_url");
+        assert!(err.to_string().contains("[systemone] `base_url` is required"), "{err}");
+    }
+
+    #[test]
+    fn systemone_without_model_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[systemone]\nbase_url = \"https://api.typesafe.ai\"\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("an enabled section needs a model");
+        assert!(err.to_string().contains("[systemone] `model` is required"), "{err}");
+    }
+
+    #[test]
+    fn zero_systemone_timeout_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let raw = format!(
+            "{}\n[systemone]\nbase_url = \"https://api.typesafe.ai\"\nmodel = \"jev-latest\"\ntimeout_ms = 0\n",
+            minimal_config()
+        );
+        write_config(dir.path(), &raw);
+        let err = load_from_dir(dir.path()).expect_err("a zero timeout is refused");
+        assert!(
+            err.to_string().contains("[systemone] `timeout_ms` must be greater than zero"),
+            "{err}"
+        );
     }
 
     #[test]

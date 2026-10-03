@@ -127,6 +127,7 @@ forge-connectors = { path = "crates/forge-connectors", version = "=1.0.109" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.0.109" }
 forge-agent = { path = "crates/forge-agent", version = "=1.0.109" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.0.109" }
+forge-system-one = { path = "crates/forge-system-one", version = "=1.0.109" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.0.109" }
 forge-server = { path = "crates/forge-server", version = "=1.0.109" }
 # forge-web is still a member and still builds, but nothing depends on it

@@ -48,7 +48,11 @@ impl SystemOneClient {
 
     /// Ask one question about one state; the answer must validate against
     /// the question it answers.
-    pub async fn ask(&self, state: &serde_json::Value, question: &Question) -> Result<AskOutcome, SystemOneError> {
+    pub async fn ask(
+        &self,
+        state: &serde_json::Value,
+        question: &Question,
+    ) -> Result<AskOutcome, SystemOneError> {
         let body = serde_json::json!({
             "model": self.model,
             "state": state,
@@ -66,19 +70,28 @@ impl SystemOneClient {
             }
         })?;
         let status = response.status();
-        let text = response.text().await.map_err(|err| SystemOneError::Transport(err.to_string()))?;
+        let text =
+            response.text().await.map_err(|err| SystemOneError::Transport(err.to_string()))?;
         if !status.is_success() {
-            return Err(SystemOneError::Http { status: status.as_u16(), body: truncate(&text, ERROR_BODY_LIMIT) });
+            return Err(SystemOneError::Http {
+                status: status.as_u16(),
+                body: truncate(&text, ERROR_BODY_LIMIT),
+            });
         }
-        let envelope: ResponseEnvelope =
-            serde_json::from_str(&text).map_err(|err| SystemOneError::InvalidResponse(format!("response did not parse: {err}")))?;
+        let envelope: ResponseEnvelope = serde_json::from_str(&text).map_err(|err| {
+            SystemOneError::InvalidResponse(format!("response did not parse: {err}"))
+        })?;
         let ResponseEnvelope { model, mut answers, usage } = envelope;
         let answer = if answers.len() == 1 { answers.remove(QUESTION_KEY) } else { None };
         let Some(answer) = answer else {
             let keys: Vec<&String> = answers.keys().collect();
-            return Err(SystemOneError::InvalidResponse(format!("response answers {keys:?} do not match the requested question `{QUESTION_KEY}`")));
+            return Err(SystemOneError::InvalidResponse(format!(
+                "response answers {keys:?} do not match the requested question `{QUESTION_KEY}`"
+            )));
         };
-        let usage = usage.ok_or_else(|| SystemOneError::InvalidResponse("response is missing `usage`".to_owned()))?;
+        let usage = usage.ok_or_else(|| {
+            SystemOneError::InvalidResponse("response is missing `usage`".to_owned())
+        })?;
         validate_answer(question, &answer).map_err(SystemOneError::InvalidResponse)?;
         Ok(AskOutcome { model, answer, usage })
     }
@@ -114,7 +127,11 @@ mod tests {
 
     /// Spawn a one-route server that records what it was sent and answers
     /// with the canned (status, body), optionally after a delay.
-    async fn spawn_server(status: u16, response_body: &str, delay: Option<Duration>) -> (String, Arc<Mutex<Vec<Recorded>>>) {
+    async fn spawn_server(
+        status: u16,
+        response_body: &str,
+        delay: Option<Duration>,
+    ) -> (String, Arc<Mutex<Vec<Recorded>>>) {
         let requests: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&requests);
         let body_for_handler: Arc<String> = Arc::new(response_body.to_owned());
@@ -133,11 +150,15 @@ mod tests {
                     if let Some(delay) = delay {
                         tokio::time::sleep(delay).await;
                     }
-                    (axum::http::StatusCode::from_u16(status).expect("test status"), (*body_for_handler).clone())
+                    (
+                        axum::http::StatusCode::from_u16(status).expect("test status"),
+                        (*body_for_handler).clone(),
+                    )
                 }
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
         let addr = listener.local_addr().expect("bound address");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("test server serves");
@@ -146,7 +167,12 @@ mod tests {
     }
 
     fn config_for(base: &str, api_key: Option<&str>) -> SystemOneConfig {
-        SystemOneConfig { base_url: base.to_owned(), api_key: api_key.map(str::to_owned), model: "test-model".to_owned(), timeout_ms: 5_000 }
+        SystemOneConfig {
+            base_url: base.to_owned(),
+            api_key: api_key.map(str::to_owned),
+            model: "test-model".to_owned(),
+            timeout_ms: 5_000,
+        }
     }
 
     fn client_for(base: &str, api_key: Option<&str>) -> SystemOneClient {
@@ -160,7 +186,9 @@ mod tests {
     fn choice_question() -> Question {
         Question::Choice {
             instructions: "Which team?".to_owned(),
-            criteria: [("billing".to_owned(), None), ("technical".to_owned(), None)].into_iter().collect(),
+            criteria: [("billing".to_owned(), None), ("technical".to_owned(), None)]
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -186,7 +214,10 @@ mod tests {
         let (base, requests) = spawn_server(200, NOUL_OK_BODY, None).await;
         let client = client_for(&base, Some("k"));
 
-        let outcome = client.ask(&serde_json::json!({"ticket": "x"}), &noul_question()).await.expect("request succeeds");
+        let outcome = client
+            .ask(&serde_json::json!({"ticket": "x"}), &noul_question())
+            .await
+            .expect("request succeeds");
 
         assert_eq!(
             outcome,
@@ -217,11 +248,15 @@ mod tests {
 
     #[tokio::test]
     async fn typesafe_detail_body_is_carried() {
-        let body = r#"{"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required"}]}"#;
+        let body =
+            r#"{"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required"}]}"#;
         let (base, _) = spawn_server(422, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("422 is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("422 is an error");
 
         let (status, body) = http_error(err);
         assert_eq!(status, 422);
@@ -234,7 +269,10 @@ mod tests {
         let (base, _) = spawn_server(429, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("429 is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("429 is an error");
 
         let (status, body) = http_error(err);
         assert_eq!(status, 429);
@@ -246,7 +284,10 @@ mod tests {
         let (base, _) = spawn_server(504, "<html><body>gateway timeout</body></html>", None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("504 is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("504 is an error");
 
         let (status, body) = http_error(err);
         assert_eq!(status, 504);
@@ -255,12 +296,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_dead_port_is_a_transport_error() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
         let addr = listener.local_addr().expect("bound address");
         drop(listener);
         let client = client_for(&format!("http://127.0.0.1:{}", addr.port()), Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("refused connection is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("refused connection is an error");
 
         assert!(matches!(err, SystemOneError::Transport(_)), "{err:?}");
     }
@@ -272,7 +317,10 @@ mod tests {
         config.timeout_ms = 50;
         let client = SystemOneClient::new(&config, reqwest::Client::new());
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("a slow response is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("a slow response is an error");
 
         assert!(matches!(err, SystemOneError::Timeout), "{err:?}");
     }
@@ -283,7 +331,10 @@ mod tests {
         let (base, _) = spawn_server(200, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &choice_question()).await.expect_err("drifted keys are an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &choice_question())
+            .await
+            .expect_err("drifted keys are an error");
 
         assert!(invalid_response(err).starts_with("probability keys"));
     }
@@ -294,7 +345,10 @@ mod tests {
         let (base, _) = spawn_server(200, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let outcome = client.ask(&serde_json::json!("x"), &noul_question()).await.expect("extra fields do not break parsing");
+        let outcome = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect("extra fields do not break parsing");
 
         assert_eq!(outcome.usage.cost, Some(0.0001));
     }
@@ -305,7 +359,10 @@ mod tests {
         let (base, _) = spawn_server(200, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("missing usage is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("missing usage is an error");
 
         assert!(invalid_response(err).contains("usage"));
     }
@@ -316,7 +373,10 @@ mod tests {
         let (base, _) = spawn_server(200, body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("a mismatched answer key is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("a mismatched answer key is an error");
 
         assert!(invalid_response(err).contains("requested question"));
     }

@@ -36,6 +36,7 @@ forge-connectors = { workspace = true }
 forge-agent = { workspace = true }
 forge-sdk = { workspace = true }
 forge-dictate = { workspace = true }
+forge-system-one = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 time = { workspace = true }

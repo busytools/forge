@@ -1296,6 +1296,7 @@ mod tests {
             dir.path().to_path_buf(),
             config,
             Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
+            None,
         );
         ws.seed_test_project("forge", "/tmp/slack-facade-scope");
         ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);

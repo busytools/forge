@@ -14,6 +14,9 @@
 //! - `gotify` - the caller's own Gotify subscriptions.
 //! - `slack` - the caller's own Slack subscriptions, reads and held
 //!   outbound actions.
+//! - `systemone` - the decision tools (`ask_noul`, `ask_choice`,
+//!   `ask_score`), injected only when `[systemone]` is configured and
+//!   enabled.
 //!
 //! Tool surface depends on the calling session's kind:
 //!
@@ -41,6 +44,7 @@ use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::slack::facade::SlackFacade;
+use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
@@ -51,6 +55,7 @@ pub mod gotify;
 pub mod peers;
 pub mod review;
 pub mod slack;
+pub mod systemone;
 pub mod tasks;
 pub mod workers;
 
@@ -104,6 +109,7 @@ pub fn build_forge_server(
     gotify_facade: Arc<dyn GotifyFacade>,
     slack_facade: Arc<dyn SlackFacade>,
     tasks_facade: Arc<dyn TasksFacade>,
+    systemone_facade: Option<Arc<dyn SystemOneFacade>>,
     slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
@@ -117,6 +123,11 @@ pub fn build_forge_server(
     builder = cron::add_tools(builder, cron_facade, slot.clone());
     builder = gotify::add_tools(builder, gotify_facade, slot.clone());
     builder = tasks::add_tools(builder, tasks_facade, slot.clone());
+    // Injected only when a client exists: a disabled `[systemone]`
+    // leaves no tool a session could try.
+    if let Some(systemone_facade) = systemone_facade {
+        builder = systemone::add_tools(builder, systemone_facade);
+    }
     builder = slack::add_tools(builder, slack_facade, slot);
     builder.build()
 }
@@ -129,6 +140,7 @@ mod tests {
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::slack::facade::MockSlackFacade;
+    use crate::mcp::systemone::facade::MockSystemOneFacade;
     use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
@@ -136,7 +148,16 @@ mod tests {
         SessionSlot::from_str_for_test(s)
     }
 
+    /// The configured shape: a systemone client exists, so its any-caller
+    /// tools register for both kinds.
     fn forge_server(kind: SessionKind) -> McpServer {
+        forge_server_with(kind, Some(MockSystemOneFacade::new().into_arc()))
+    }
+
+    fn forge_server_with(
+        kind: SessionKind,
+        systemone_facade: Option<Arc<dyn SystemOneFacade>>,
+    ) -> McpServer {
         build_forge_server(
             MockWorkspaceFacade::new().into_arc(),
             MockWorkerFacade::new().into_arc(),
@@ -145,6 +166,7 @@ mod tests {
             MockGotifyFacade::new().into_arc(),
             MockSlackFacade::new().into_arc(),
             MockTasksFacade::new().into_arc(),
+            systemone_facade,
             fake_key("test"),
             kind,
         )
@@ -153,7 +175,11 @@ mod tests {
     /// Every tool name the server registered, read off its debug
     /// listing - which is exactly the set the LLM is offered.
     fn registered_names(kind: SessionKind) -> Vec<String> {
-        let debug = format!("{:?}", forge_server(kind));
+        names_of(&forge_server(kind))
+    }
+
+    fn names_of(server: &McpServer) -> Vec<String> {
+        let debug = format!("{server:?}");
         let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
         let (tools, _) = tools.split_once(']').expect("the tool list is closed");
         tools
@@ -185,8 +211,8 @@ mod tests {
     ];
 
     /// Every group that is any-caller: both session kinds manage their
-    /// own project's reviews, crons, tasks and subscriptions.
-    const ANY_CALLER_TOOLS: [&str; 27] = [
+    /// own project's reviews, crons, tasks, subscriptions and decisions.
+    const ANY_CALLER_TOOLS: [&str; 30] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -214,6 +240,9 @@ mod tests {
         "slack__user",
         "slack__pins",
         "slack__bookmarks",
+        "systemone__ask_noul",
+        "systemone__ask_choice",
+        "systemone__ask_score",
     ];
 
     #[test]
@@ -261,6 +290,22 @@ mod tests {
                 assert!(
                     names.contains(&expected.to_owned()),
                     "{expected} must register for {kind:?}"
+                );
+            }
+        }
+    }
+
+    /// The injection gate: without a configured `[systemone]` the decision
+    /// tools must not appear at all - a session cannot try what forge
+    /// chose not to offer.
+    #[test]
+    fn systemone_tools_absent_without_a_client() {
+        for kind in [SessionKind::Lead, SessionKind::Worker] {
+            let names = names_of(&forge_server_with(kind, None));
+            for absent in ["systemone__ask_noul", "systemone__ask_choice", "systemone__ask_score"] {
+                assert!(
+                    !names.contains(&absent.to_owned()),
+                    "{absent} must be absent without a client for {kind:?}: {names:?}"
                 );
             }
         }
