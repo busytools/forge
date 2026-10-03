@@ -80,6 +80,8 @@
   let list: VListHandle | null = $state(null);
   /** Where the column last left the reader, which its own pin's echo cannot disarm. */
   let placed: number | null = null;
+  /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
+  let placedFor: string | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -190,9 +192,8 @@
    *
    * **Nothing draws from either map, and every read of them is untracked**: the
    * seat on screen is `held` above, and a tracked read here would make the
-   * effect below depend on the entry the subscription writes on every frame -
-   * which is a column that re-keys itself, and a `placed` that resets, under
-   * each one.
+   * effect below depend on the entry the subscription writes on every frame,
+   * re-running it per frame with nothing about the seat changed.
    */
   const kept = new SvelteMap<string, Conversation>();
   /** The seats whose conversation is still open here, so a switch back does not open a second. */
@@ -285,6 +286,8 @@
     const which = seat;
     const open = connection;
     let entry = untrack(() => live.get(which));
+    /** Whether this run carries a conversation the column did not already hold. */
+    let fresh = false;
     // A seat reopened on another connection is a different conversation, so the
     // one held goes with the socket that carried it.
     if (entry !== undefined && entry.connection !== open) {
@@ -311,10 +314,32 @@
         },
       };
       live.set(which, entry);
+      fresh = true;
     }
     working = entry.chat;
-    // The placement belonged to the conversation that is going.
-    placed = null;
+    // The placement belonged to the conversation that is going, and the two
+    // clauses are the two ways one goes. `fresh` is a conversation this run
+    // opened: a seat's first visit, or a seat re-opened on another connection.
+    // The seat compare is a kept conversation - one this column still holds
+    // from an earlier visit - coming back on screen with a placement measured
+    // on the seat the reader just left, which left standing would be another
+    // seat's number read as this view's own.
+    //
+    // **A re-run that changes neither is not a conversation change**, and the
+    // placement is a fact about the reader's element rather than about the
+    // read - so clearing it on every re-run is what let the landing's own pin
+    // read as an un-pinned column and switch the follow off mid-open (measured
+    // on the switch into the giant seat: the reader left 175,859px above the
+    // foot).
+    //
+    // **A third way one goes is deliberately not named here**: an occupant swap
+    // on the same seat and connection (`session_replaced`) keeps the placement,
+    // and that is benign only because the swap empties the conversation, so the
+    // list unmounts and the new landing re-pins before any event can read the
+    // old value. A swap that kept the list mounted across it would make this
+    // stale.
+    if (fresh || which !== placedFor) placed = null;
+    placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;
