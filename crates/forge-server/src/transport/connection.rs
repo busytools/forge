@@ -2,6 +2,7 @@
 //! that answers what a client asks for.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -11,9 +12,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::PROTOCOL_VERSION;
 use super::TransportState;
+use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
-use crate::delivery::delivery_turn;
 use crate::live::Live;
 use crate::{Command, DispatchError, SessionUpdate};
 
@@ -92,11 +93,17 @@ async fn run_connection(
     watched: &mut Vec<Subject>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> anyhow::Result<()> {
+    let mut held = Batch::default();
     loop {
+        let due = held.due();
         tokio::select! {
             msg = socket.next() => {
                 let Some(msg) = msg else { break };   // the client went away
                 let msg = msg?;
+                // What the core has already said goes out first: an answer is
+                // composed after it, and a snapshot overtaking an update the
+                // core emitted before it would land older news on newer.
+                batch::flush(socket, held.take()).await?;
                 handle_client(socket, state, watched, updates, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
@@ -107,8 +114,15 @@ async fn run_connection(
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
                 if watched.iter().any(|what| what.covers(&update)) {
-                    send_update(socket, update).await?;
+                    held.push(Instant::now(), update);
                 }
+            }
+            // The deadline is a value, not a condition: with nothing held the
+            // branch is disabled and this instant is never waited on.
+            () = tokio::time::sleep_until(due.unwrap_or_else(Instant::now).into()),
+                if due.is_some() =>
+            {
+                batch::flush(socket, held.take()).await?;
             }
         }
     }
@@ -192,12 +206,13 @@ async fn handle_client(
         ClientMessage::Subscribe { what, answering } => {
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
-            let queued = open_stream(state, updates, answering);
-            for update in queued {
+            let mut queued = Vec::new();
+            for update in open_stream(state, updates, answering) {
                 if watched.iter().any(|what| what.covers(&update)) {
-                    send_update(socket, update).await?;
+                    queued.push(update);
                 }
             }
+            batch::flush(socket, queued).await?;
             match encode_subject(state, &what).await {
                 Ok(data) => {
                     // Watched only once the subject is one this server can
@@ -408,31 +423,6 @@ async fn send(socket: &mut WebSocket, message: ServerMessage) -> anyhow::Result<
     let text = serde_json::to_string(&message)?;
     socket.send(Message::Text(text.into())).await?;
     Ok(())
-}
-
-/// Send one update to this client, and ahead of it the turn it draws as when
-/// it is a delivery.
-///
-/// A cron fire, a Gotify notification, a Slack message and a peer comm each
-/// reach a session's model as a prompt on stdin, and the CLI does not echo a
-/// prompt back - so the wire carries nothing a view could draw and a client
-/// drawing only frames would show the assistant answering something nobody
-/// saw. The terminal forges that turn in its own process; this is the same
-/// forge on the way out, so a client that is not the terminal draws it too.
-/// The typed update follows, because a view keeps it for its own bookkeeping.
-async fn send_update(socket: &mut WebSocket, update: SessionUpdate) -> anyhow::Result<()> {
-    if let Some(key) = update.slot().cloned()
-        && let Some(msg) = delivery_turn(&update, &key)
-    {
-        send(
-            socket,
-            ServerMessage::Update {
-                update: Box::new(SessionUpdate::ChatAppended { key, msg, origin: None }),
-            },
-        )
-        .await?;
-    }
-    send(socket, ServerMessage::Update { update: Box::new(update) }).await
 }
 
 /// Dispatch one command, and answer a client that asked for an answer.

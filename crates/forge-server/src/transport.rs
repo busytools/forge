@@ -17,6 +17,7 @@ use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::work::WorkCache;
 
+pub mod batch;
 mod connection;
 pub mod conversation;
 pub mod envelope;

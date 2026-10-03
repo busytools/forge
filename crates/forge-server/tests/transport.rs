@@ -1297,6 +1297,144 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
 
 /// Two clients on one seat both hear it: the second neither steals the
 /// first's stream nor sees half of it.
+/// The interval a connection's stream is written on: a burst leaves as one
+/// batch, whole and in the order the core emitted it. The frames a client
+/// reads are the frames it read before, only grouped in time.
+///
+/// **The lower bound is the change itself.** Before it every update was
+/// written where it landed, so a burst's first frame was on the wire before
+/// this read came back; a timer cannot fire early, so half an interval is a
+/// floor nothing but writing through can get under.
+#[tokio::test]
+async fn a_burst_leaves_a_connection_in_one_batch_whole_and_in_order() {
+    const EMITTED: [&str; 3] = ["one", "two", "three"];
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("a seat that exists is answered with its snapshot")
+    };
+
+    let emitted = std::time::Instant::now();
+    for name in EMITTED {
+        fleet.emit(SessionUpdate::ConnectionFailed {
+            key: lead_seat(),
+            message: name.to_owned(),
+            fatal: false,
+        });
+    }
+
+    let mut heard = Vec::new();
+    let mut first = None;
+    for _ in 0..EMITTED.len() {
+        // Matched on the message rather than the variant: the core raises
+        // updates of its own, and a frame this test did not emit is not one
+        // of its three.
+        let update = update_until(&mut socket, "an update this test emitted", |update| {
+            matches!(update, SessionUpdate::ConnectionFailed { message, .. }
+                if EMITTED.contains(&message.as_str()))
+        })
+        .await;
+        first.get_or_insert_with(std::time::Instant::now);
+        let SessionUpdate::ConnectionFailed { message, .. } = update else {
+            panic!("the wait answered with what it was asked for");
+        };
+        heard.push(message);
+    }
+    let first = first.expect("three updates were read");
+
+    assert_eq!(
+        heard, EMITTED,
+        "the batch carries every update, whole, in the order the core emitted them",
+    );
+    assert!(
+        first.duration_since(emitted) >= forge_server::transport::batch::FLUSH_INTERVAL / 2,
+        "the first frame waited for the batch's window rather than being written where it \
+         landed: {:?} after the update was emitted",
+        first.duration_since(emitted),
+    );
+}
+
+/// What a storm is made of: consecutive token appends inside one batch reach
+/// a client as ONE update carrying what they grew by, so the frame count a
+/// page sees drops with the arrival rate.
+///
+/// The evidence that the others were folded is ORDER, never a timeout: the
+/// frame after the merged one is the next thing the core emitted, so a
+/// leftover append would have to arrive where that is.
+#[tokio::test]
+async fn a_run_of_token_appends_reaches_a_client_as_one_update() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: false },
+    )
+    .await;
+    let ServerMessage::Snapshot { .. } = next_server(&mut socket).await else {
+        panic!("a seat that exists is answered with its snapshot")
+    };
+
+    // Two thinking blocks' worth: the running value restarts at the second,
+    // so the deltas are the turn's estimate and the last running value is not
+    // the total.
+    for (running, delta) in [(200u64, 200i64), (250, 50), (30, 30)] {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            origin: None,
+            msg: forge_primitives::Message::ThinkingTokens {
+                estimated_tokens: running,
+                estimated_tokens_delta: delta,
+                uuid: format!("tokens-{running}"),
+                session_id: "s".to_owned(),
+            },
+        });
+    }
+    let sentinel = "after the run";
+    fleet.emit(SessionUpdate::ConnectionFailed {
+        key: lead_seat(),
+        message: sentinel.to_owned(),
+        fatal: false,
+    });
+
+    let update = update_until(&mut socket, "the token appends this test emitted", |update| {
+        matches!(
+            update,
+            SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::ThinkingTokens { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    let SessionUpdate::ChatAppended {
+        msg:
+            forge_primitives::Message::ThinkingTokens {
+                estimated_tokens, estimated_tokens_delta, ..
+            },
+        ..
+    } = update
+    else {
+        panic!("the wait answered with what it was asked for");
+    };
+    assert_eq!(estimated_tokens_delta, 280, "the one frame carries what the run grew by, summed");
+    assert_eq!(
+        estimated_tokens, 30,
+        "and the last arrival's own running value, which restarts per block",
+    );
+
+    let next = next_server(&mut socket).await;
+    assert!(
+        matches!(&next, ServerMessage::Update { update }
+            if matches!(&**update, SessionUpdate::ConnectionFailed { message, .. } if message == sentinel)),
+        "the run arrives as one update: what follows it is the next thing the core emitted: {next:?}",
+    );
+}
+
 #[tokio::test]
 async fn two_sockets_on_one_seat_both_hear_it() {
     let (url, fleet) = a_server().await;
@@ -1692,18 +1830,22 @@ fn a_thinking_turn() -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// A turn that thinks reaches a client watching its seat, frame for frame.
+/// A turn that thinks reaches a client watching its seat, frame for frame
+/// with each run of token appends folded into the one frame it draws as.
 ///
 /// **The instrument is the socket, and the answer is the pair of counts.**
 /// The terminal draws its thinking bar - a running row carrying the spinner,
 /// the elapsed clock and `thinking N` - from the frames the CLI sends, and a
-/// client watching the same seat has to be sent the same set: the terminal
-/// and the client read one stream up to the connection's own filter, so the
-/// only way the terminal can hold a frame the client does not is that filter,
-/// and the only way the client can hold it and draw nothing is the client.
-/// `seen` against `sent` is the denominator, and the second socket is the
-/// control that says the count can come back short: it hears the barrier
-/// every subscriber hears and none of the turn.
+/// client watching the same seat is owed the same turn: the terminal reads
+/// every frame, and the connection folds a run of consecutive token appends
+/// into one frame carrying what they grew by. Both views draw a turn's
+/// estimate as the SUM of the deltas rather than the last running value,
+/// which is what makes the fold a fold and not a drop - so a client draws
+/// the same number off fewer frames, and what it is owed is `owed`: the sent
+/// sequence with each run standing as one entry, and the sum of every delta
+/// behind it. `seen` against `owed` is the denominator, and the second socket
+/// is the control that says the count can come back short: it hears the
+/// barrier every subscriber hears and none of the turn.
 #[tokio::test]
 async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let (url, fleet) = a_server().await;
@@ -1731,6 +1873,16 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
 
     let turn = a_thinking_turn();
     let sent: Vec<&str> = turn.iter().map(|(name, _)| *name).collect();
+    // Every token the CLI reported, which the client's one frame for the run
+    // has to account for: a fold that lost a frame would show up as a short
+    // total rather than as a missing name, the run's name being one either
+    // way.
+    let grown: i64 = turn
+        .iter()
+        .filter_map(|(_, value)| {
+            value.get("estimated_tokens_delta").and_then(serde_json::Value::as_i64)
+        })
+        .sum();
     for (_, value) in turn {
         fleet.emit(SessionUpdate::ChatAppended {
             key: lead_seat(),
@@ -1745,11 +1897,19 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
 
     let mut seen: Vec<String> = Vec::new();
+    let mut heard: i64 = 0;
     loop {
         match next_server(&mut watched).await {
             ServerMessage::Update { update } => match *update {
                 SessionUpdate::ChatAppended { key, msg, .. } => {
                     assert_eq!(key, lead_seat(), "another seat's frame reached this one");
+                    if let forge_primitives::Message::ThinkingTokens {
+                        estimated_tokens_delta,
+                        ..
+                    } = &msg
+                    {
+                        heard += estimated_tokens_delta;
+                    }
                     seen.push(frame_name(&msg));
                 }
                 SessionUpdate::TurnCancelled { .. } => break,
@@ -1758,13 +1918,30 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
             other => panic!("a seat's subscription carries updates, got {other:?}"),
         }
     }
+    // What the sent sequence is owed as: every frame as itself, and each run
+    // of consecutive token appends as the one entry the connection folds it
+    // into.
+    let mut owed: Vec<&str> = Vec::new();
+    for name in &sent {
+        if *name == "system/thinking_tokens" && owed.last() == Some(&"system/thinking_tokens") {
+            continue;
+        }
+        owed.push(name);
+    }
     assert_eq!(
         seen,
-        sent,
-        "frames seen ({}) against frames sent ({}): the socket is the instrument, and \
-         a short read here is the server dropping a frame the terminal draws",
+        owed,
+        "frames seen ({}) against the frames owed ({}): the socket is the instrument, and \
+         a frame missing, moved or added here is the server drawing the turn differently \
+         from the terminal",
         seen.len(),
-        sent.len(),
+        owed.len(),
+    );
+    assert_eq!(
+        heard, grown,
+        "the deltas a client hears ({heard}) against every token the CLI reported ({grown}): \
+         the fold is a fold only while its sum is whole, and a short one is a token the \
+         client never drew",
     );
 
     let mut leaked: Vec<String> = Vec::new();
