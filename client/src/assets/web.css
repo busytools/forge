@@ -985,13 +985,10 @@ details.hooks > summary .st.err { color: var(--bad); }
    row per frame, with what it printed behind the row's own open - a
    session-start hook prints the boilerplate it injects into the session, so a
    run drawn whole beneath its turn would bury it. The tail is the hook's words
-   joined, so it is clamped to its one line the way a row's name is, the whole
-   output staying behind the open. */
-details.hookrow > summary .ev { color: var(--muted);
+   joined, so it is clamped to its one line and takes the width the name
+   leaves, the whole output staying behind the open. */
+details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The name keeps its width: two clamped spans would otherwise share the flex
-   shrink, and a long tail would take the name's own letters with it. */
-details.hookrow > summary .tn { flex: none; }
 /* The tail's own inline marks - a `**bold**` in the context a hook injected -
    take the prose tone the name's marks do, rather than the tail's muting. */
 details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }

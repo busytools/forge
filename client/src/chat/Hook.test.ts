@@ -146,9 +146,11 @@ describe('the hook run row', () => {
       );
       // **And the cut never takes the name's letters.** Two clamped spans
       // share the flex shrink, and a long tail shrank `SessionStart:startup`
-      // to `Se...` until the name was held at its own width (Ved, 2026-10-03).
-      expect(sheet, `${what} keeps the row's name at its own width`).toMatch(
-        /details\.hookrow > summary \.tn \{[^}]*flex: none/,
+      // to `Se...` until the tail was given the width the name leaves (Ved,
+      // 2026-10-03) - a tail laid out on a zero basis asks for nothing of the
+      // name's own, and one longer than the row is cut instead of it.
+      expect(sheet, `${what} gives the tail the width the name leaves`).toMatch(
+        /details\.hookrow > summary \.ev \{[^}]*flex: 1 1 0/,
       );
       // A mark in the tail reads as a mark in the prose tone, the way the
       // name's own marks do - the tail's muting is for the words around it.

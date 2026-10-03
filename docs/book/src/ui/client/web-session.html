@@ -612,9 +612,8 @@
      row per frame, with what it printed behind the row's own open - a
      session-start hook prints the boilerplate it injects into the session, so a
      run drawn whole beneath its turn would bury it. */
-  details.hookrow > summary .ev { color: var(--muted);
+  details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details.hookrow > summary .tn { flex: none; }
   details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
   details.inboundrow > summary .ev { color: var(--muted); }
   details.inboundrow > summary .ev.warn { color: var(--warn); }
