@@ -15,6 +15,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
+  decision: null,
   skill: null,
   image: null,
   imageNote: null,
@@ -53,6 +54,7 @@ describe('the row one call draws', () => {
           note: null,
           body: [{ kind: 'text', text: 'Launching skill: unslop' }],
           mutation: null,
+          decision: null,
           skill: '# Unslop\n\nEdit text to remove AI patterns.',
           image: null,
           imageNote: null,
@@ -82,6 +84,7 @@ describe('the row one call draws', () => {
           note: null,
           body: [],
           mutation: null,
+          decision: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -114,6 +117,7 @@ describe('the row one call draws', () => {
             { kind: 'image', mime: 'image/png', uri: null },
           ],
           mutation: null,
+          decision: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -185,5 +189,45 @@ describe('the row one call draws', () => {
       render(Call, { props: { k: 'bg-clean', call: backgrounded(null) } }).body,
       'and a settled call does not',
     ).not.toContain('class="leaf running"');
+  });
+
+  it('draws a parsed decision as its block, in place of the raw result', () => {
+    // The result's JSON and the block carry the same facts; the row draws the
+    // block. The fold's tests pin that an unreadable result keeps drawing its
+    // text, which is this same branch not taken.
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_decide',
+        open: true,
+        call: {
+          id: 'toolu_decide',
+          row: { kind: 'systemone' },
+          name: 'mcp__forge__systemone__ask_noul',
+          title: 'ask noul - Is this mechanical?',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [
+            {
+              kind: 'text',
+              text: '{"model":"jev-1.13.0","answer":{"type":"noul","noul":0.93},"usage":{"input_tokens":392,"output_tokens":20}}',
+            },
+          ],
+          mutation: null,
+          decision: {
+            model: 'jev-1.13.0',
+            usage: { input_tokens: 392, output_tokens: 20, cost: null },
+            answer: { kind: 'noul', noul: 0.93 },
+          },
+          skill: null,
+          image: null,
+          imageNote: null,
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the block draws').toContain('class="dec"');
+    expect(drawn, 'with the answer as its number').toContain('0.93');
+    expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
   });
 });

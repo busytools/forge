@@ -4,6 +4,7 @@
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
+  import Decision from './Decision.svelte';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
@@ -187,6 +188,12 @@
          onto the skill itself, which is what anyone opening it wants to read. -->
     <div class="body">
       <Prose text={call.skill} />
+    </div>
+  {:else if call.decision !== null}
+    <!-- The result's own JSON is the same facts undressed; the block is how
+         they read, and an unreadable result never reaches this branch. -->
+    <div class="body">
+      <Decision decision={call.decision} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">

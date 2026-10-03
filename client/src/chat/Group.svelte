@@ -173,9 +173,9 @@
     }
   }
 
-  /** Whether a call's body is drawn without being asked for: a mutation's diff, while it is small enough to draw. */
+  /** Whether a call's body is drawn without being asked for: the leaf's own rule. */
   function opens(call: ToolLeaf): boolean {
-    return opensByDefault(call.name, call.body);
+    return opensByDefault(call.name, call.body, call.decision);
   }
 </script>
 
