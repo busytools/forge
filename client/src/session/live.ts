@@ -29,19 +29,8 @@ import { slotOf, subjectKey, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
-import { applyUpdate, REPLACES, UNFED, variantOf } from './apply';
+import { applyUpdate, REPLACES, variantOf } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
-
-/**
- * How often the fields still unfed are read.
- *
- * A read is a whole encode, and the fields a poll takes from it are the
- * slowest-moving part of the record - a file list, a catalogue - so this is
- * the coarsest read that keeps a page honest rather than the
- * cheapest that keeps it moving. The list itself is `UNFED`, and the tick is
- * retired when the last field leaves it.
- */
-export const POLL_MS = 5_000;
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
 export interface SessionRead {
@@ -83,33 +72,31 @@ interface Seat {
   /** What the seat is subscribed as: a later reader that can answer raises it. */
   answering: boolean;
   /**
-   * What a whole record is wanted for, and whether one is wanted at all.
+   * Whether an ask of ours is in flight.
    *
-   * **An ask is recorded with what it was issued for, at the moment it went
-   * out.** A read is the whole server encode - hundreds of milliseconds on a
-   * busy seat - so one is often in flight when something replaces the record,
-   * and that answer was encoded from the state before it. Reading a flag at
-   * the answer instead would take whatever landed as the new record, which is
-   * how the previous occupant's conversation came to be drawn as this one's.
-   * So the mode travels WITH the ask, and a replacement wanted while an answer
-   * is in flight is asked for again rather than assumed.
+   * **A wanted record is recorded at the moment it is wanted.** A read is the
+   * whole server encode - hundreds of milliseconds on a busy seat - so one is
+   * often in flight when something replaces the record, and that answer was
+   * encoded from the state before it. Reading a flag at the answer instead
+   * would take whatever landed as the new record, which is how the previous
+   * occupant's conversation came to be drawn as this one's. So a replacement
+   * wanted while an answer is in flight is asked for again rather than
+   * assumed.
    *
    * Three things want a whole record: the first read, a reconnect (the
    * subscription is re-made, so its snapshot is the server's account of where
    * the seat is now), and a seat that spawned, connected or took a new
-   * occupant. Every other answer is a poll's, and a poll moves only the slices
-   * no update feeds.
+   * occupant.
    */
-  asking: 'replace' | 'merge' | null;
+  asking: boolean;
   replaceWanted: boolean;
   /**
    * How many of this seat's frames have been applied to the record.
    *
    * **An answer older than a frame cannot be adopted whole**, and this is how
    * that is known: an ask records the count it was issued at, and an answer
-   * landing after the count moved is published the way `merged()` publishes a
-   * poll's - the slices only a read moves - rather than replacing a record the
-   * frames have already carried past it.
+   * landing after the count moved is refused and asked for again rather than
+   * replacing a record the frames have already carried past it.
    *
    * The composer's notice is the case that made it. The seat's own record
    * carries a landed take, a `dictate_started` frame takes that notice off, and
@@ -119,8 +106,6 @@ interface Seat {
   frames: number;
   /** The frame count the ask in flight was issued at. */
   askedAt: number;
-  /** A poll's timer, armed while a page is showing the seat. */
-  poll: ReturnType<typeof setInterval> | null;
   stopMessages: (() => void) | null;
   stopStatus: (() => void) | null;
 }
@@ -213,34 +198,26 @@ function createSeat(
   const key = subjectKey(subject);
 
   /**
-   * A page is showing this seat: the poll runs, and nothing else is asked.
+   * A page is showing this seat: nothing is asked for it.
    *
    * **A read here would walk the record backwards.** It would re-derive the
    * record from the last snapshot the socket took, which is the record as it
    * was before every frame applied since; only a seat holding nothing reads,
    * and on a live connection that read is the subscription's own answer, in
-   * flight already.
+   * flight already. The seat follows its frames from there.
    */
   function showing(): () => void {
     shown = true;
-    if (seat.wire === null) read(true);
-    seat.poll = setInterval(() => {
-      reread();
-    }, POLL_MS);
+    if (seat.wire === null) read();
     return leaving;
   }
 
-  /**
-   * The last reader has gone: the poll stops with it, because it is a whole
-   * server encode per tick and nothing is drawing what it keeps honest.
-   */
+  /** The last reader has gone. */
   function leaving(): void {
     shown = false;
     // No frame paints for a page that has gone, so a record still waiting for
     // one is written now: it is what a return draws.
     if (queued !== null) flush();
-    if (seat.poll !== null) clearInterval(seat.poll);
-    seat.poll = null;
     if (seat.held?.state().kind === 'refused') release();
   }
 
@@ -251,11 +228,10 @@ function createSeat(
     held: null,
     opened: 0,
     answering,
-    asking: null,
+    asking: false,
     replaceWanted: true,
     frames: 0,
     askedAt: 0,
-    poll: null,
     stopMessages: null,
     stopStatus: null,
   };
@@ -327,7 +303,15 @@ function createSeat(
     flush();
   }
 
-  function read(replace: boolean): void {
+  /**
+   * Take the record the seat is holding.
+   *
+   * **A read is the whole record and there is nothing else to take.** Every
+   * slice a frame can carry has a handler, so an answer is not a poll's
+   * refresh of a few fields: it is the truth about the seat, and what a
+   * cold load, a reconnect and a seat swap are owed.
+   */
+  function read(): void {
     if (seat.held === null) return;
     const state = seat.held.state();
     if (state.kind === 'refused') {
@@ -336,8 +320,7 @@ function createSeat(
     }
     const data = seat.held.snapshot();
     if (data === null) return;
-    const fresh = sessionFrom(data);
-    publish(replace || seat.wire === null ? fresh : merged(seat.wire, fresh), null);
+    publish(sessionFrom(data), null);
   }
 
   /**
@@ -348,8 +331,8 @@ function createSeat(
    * recorded and asked for when the answer lands.
    */
   function reread(): void {
-    if (seat.asking !== null) return;
-    seat.asking = seat.replaceWanted ? 'replace' : 'merge';
+    if (seat.asking) return;
+    seat.asking = true;
     seat.replaceWanted = false;
     seat.askedAt = seat.frames;
     connection.refresh(subject);
@@ -360,7 +343,7 @@ function createSeat(
     seat.opened += 1;
     // The subscription's own answer is the first whole record, and it is an
     // ask this page made: the subscribe is what the server answers.
-    seat.asking = 'replace';
+    seat.asking = true;
     seat.replaceWanted = false;
     seat.askedAt = seat.frames;
     seat.stopMessages = connection.onMessage((message) => {
@@ -374,17 +357,17 @@ function createSeat(
         //
         // **Only that spends the ask in flight.** A blanket clear on any
         // subscribe refusal spends a seat's whole-record ask on a refusal
-        // about another seat, and the answer it was waiting for is then merged
-        // rather than taken - the new occupant's record never adopted, and the
-        // previous conversation standing until the next replace. Anything
-        // else - a refused command, a page that could not be read, a frame the
-        // server did not know - leaves the ask standing too, and with it
-        // whatever whole record is still wanted.
+        // about another seat, and the answer it was waiting for is then
+        // refused as outrun and asked again - the new occupant's record never
+        // adopted, and the previous conversation standing until the next
+        // answer. Anything else - a refused command, a page that could not be
+        // read, a frame the server did not know - leaves the ask standing too,
+        // and with it whatever whole record is still wanted.
         if (message.what === 'subscribe' && seat.held?.state().kind === 'refused') {
-          seat.asking = null;
+          seat.asking = false;
           // A refusal is the seat's own answer and a page draws why from it,
           // rather than keeping the record it read before the refusal.
-          read(false);
+          read();
         }
         return;
       }
@@ -393,32 +376,30 @@ function createSeat(
         // the one the server answers with is a different object saying the same
         // thing, so `===` never matches it.
         if (subjectKey(message.subject) !== key) return;
-        // What this answer is: the ask records what it was issued for, and an
-        // answer to no ask of ours - the subscription's own, or a reconnect's -
-        // is whatever the seat needs next. A whole record wanted while an ask
-        // was out cannot be answered by that ask's answer, whatever it was.
-        const mode = seat.asking ?? (seat.replaceWanted ? 'replace' : 'merge');
-        const stale = seat.asking !== null && seat.replaceWanted;
+        // What this answer is: the ask records whether one was ours, and an
+        // answer to no ask - the subscription's own, or a reconnect's - is the
+        // whole record this seat needs.
+        const ours = seat.asking;
+        // A whole record wanted while an ask was out cannot be answered by that
+        // ask's answer, whatever it was.
+        const stale = ours && seat.replaceWanted;
         // And the other way an answer is older than what is held: a frame
         // landed after the ask went out, so the record has been carried past
         // where this answer was encoded.
-        const moved = seat.asking !== null && seat.frames !== seat.askedAt;
-        seat.asking = null;
-        read(mode === 'replace' && !stale && !moved);
-        // **A whole record an answer could not carry is still wanted.** Merging
-        // keeps the frame-fed state, which is what stops a take's notice coming
-        // back, but it also keeps the conversation and the header that answer
-        // was asked for - so the want is set and asked again rather than spent,
-        // and the fresh answer lands on the first clean window.
-        //
-        // Only a REPLACES answer that was outrun lands here: a poll's answer is
-        // a merge already, and its want was nothing.
-        if (stale || (moved && mode === 'replace')) {
+        const moved = ours && seat.frames !== seat.askedAt;
+        seat.asking = false;
+        // **An answer the frames have outrun is not taken.** A read is the
+        // whole record now, so applying one encoded before a frame that has
+        // already landed would walk the record back: the want is set and asked
+        // again rather than spent, and the fresh answer lands on the first
+        // clean window.
+        if ((stale || moved) && seat.wire !== null) {
           seat.replaceWanted = true;
           reread();
-        } else {
-          seat.replaceWanted = false;
+          return;
         }
+        seat.replaceWanted = false;
+        read();
         return;
       }
       if (message.kind !== 'update') return;
@@ -465,9 +446,9 @@ function createSeat(
     seat.stopStatus = connection.onStatus((next: ConnectionStatus) => {
       if (next !== 'open') {
         // The ask in flight went with the drop, and the record this seat holds
-        // is from before it: the answer the reconnect brings is a whole one
-        // rather than a poll's.
-        seat.asking = null;
+        // is from before it: the answer the reconnect brings is the whole
+        // record, so one is wanted.
+        seat.asking = false;
         seat.replaceWanted = true;
       }
     });
@@ -485,8 +466,6 @@ function createSeat(
     seat.stopStatus?.();
     seat.stopMessages = null;
     seat.stopStatus = null;
-    if (seat.poll !== null) clearInterval(seat.poll);
-    seat.poll = null;
     for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
     seat.opened = 0;
     seat.held = null;
@@ -496,24 +475,4 @@ function createSeat(
 
   watch();
   return seat;
-}
-
-/**
- * A poll's answer, keeping only the fields on `UNFED`'s list.
- *
- * **A field leaves that list when a handler for its frame lands**, and the
- * list is the whole of what this takes: a field that has a handler and stayed
- * on the list would be a pushed row an older answer reverts.
- *
- * **The conversation is the one to watch here.** A poll is asked for while
- * frames are arriving, and its answer was encoded after some of them and
- * before others - so taking its whole record would drop the frames that
- * landed in between, and the page would walk backwards on a busy seat.
- */
-function merged(held: SessionRecord, fresh: SessionRecord): SessionRecord {
-  const out = { ...held };
-  for (const field of UNFED) {
-    Object.assign(out, { [field]: fresh[field] });
-  }
-  return out;
 }

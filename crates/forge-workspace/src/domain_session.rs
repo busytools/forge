@@ -210,6 +210,10 @@ pub struct DomainSession {
     /// window of it, and it never goes back - a seat that dispatched keeps
     /// the section it gates.
     pub has_dispatches: bool,
+    /// The seat's walked file index, and when it was taken. Written by the
+    /// seat's own loop while a view is showing it, so the composer's `@`
+    /// list reads a value rather than paying for a walk of the tree.
+    pub file_index: Option<crate::work::HeldFileIndex>,
 }
 
 impl DomainSession {
@@ -329,6 +333,7 @@ impl DomainSession {
             process_snapshot: None,
             work_snapshot: None,
             has_dispatches: false,
+            file_index: None,
         }
     }
 

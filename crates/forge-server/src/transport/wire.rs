@@ -1039,10 +1039,11 @@ async fn session(
 
     Ok(SessionWire {
         slot: slot.clone(),
-        // Through the shared cache rather than the surface's own walk: the
-        // walk is a full tree, and every client on this seat would otherwise
-        // pay for it again.
-        file_index: state.work.files(&state.surface, slot, &state_at.scan_cwd).await,
+        // The seat's own loop walks it and pushes the movement: this answers
+        // the store, so a page reads what the loop found rather than paying
+        // for a walk of the tree. A seat nothing has walked yet answers with
+        // the empty index the composer's list draws nothing from.
+        file_index: state.surface.file_index(slot).unwrap_or_default(),
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
         mcp: surface.mcp_servers(slot),

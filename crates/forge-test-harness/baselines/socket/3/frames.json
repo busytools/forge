@@ -29,6 +29,7 @@
     "DictateTranscribing": "dictate_transcribing",
     "DispatchesChanged": "dispatches_changed",
     "FatalError": "fatal_error",
+    "FileIndexChanged": "file_index_changed",
     "ForgeAccountIdentity": "forge_account_identity",
     "GotifyNotificationAppended": "gotify_notification_appended",
     "HistoryReplayed": "history_replayed",

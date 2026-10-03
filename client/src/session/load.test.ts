@@ -10,7 +10,6 @@ import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { freeze } from '../chat/testing/frozen';
-import { POLL_MS } from './live';
 
 /**
  * Every builder the inspector reaches through is wrapped, so what one arriving
@@ -395,14 +394,12 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **The process walk reaches the section as a pushed row, and a poll's
-   * answer cannot put it back.** The walk was one of the slices the merge took
-   * from a poll's answer; now the seat's own hold sends it, so the section
-   * appearing on a frame is this slice's user-visible claim - and the poll
-   * still carrying the empty walk, landing after the frame, is the revert a
-   * merge that still took `processes` would allow.
+   * **The process walk reaches the section as a pushed row.** The walk was one
+   * of the slices a poll's answer carried; now the seat's own hold sends it, so
+   * the section appearing on a frame - without the page asking anything - is
+   * the slice's user-visible claim.
    */
-  it('draws a section from a pushed walk and keeps it through a poll', () => {
+  it('draws a section from a pushed walk', () => {
     const fields: Record<string, unknown> = {
       processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
     };
@@ -422,26 +419,15 @@ describe('what one arriving frame costs the inspector', () => {
     expect(keys, `a pushed walk drew no section: ${JSON.stringify(keys)}`).toContain(
       'sec-processes',
     );
-
-    vi.advanceTimersByTime(POLL_MS + 1);
-    flushSync();
-
-    const after = drawn().map((section) => section.key);
-    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
-    expect(after, `a poll put the pushed walk back: ${JSON.stringify(after)}`).toContain(
-      'sec-processes',
-    );
+    expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });
 
   /**
    * **A dispatch made while this page is open reaches the section as a pushed
-   * frame, and a poll's answer cannot take it back.** The core raises the flag
-   * on the frame the CLI already sends, so the section appears as the dispatch
-   * happens - and the poll's answer, encoded before that frame and applied
-   * after it, is the revert the merge would allow if the flag were still on
-   * its list.
+   * frame.** The core raises the flag on the frame the CLI already sends, so
+   * the section appears as the dispatch happens, with nothing asked for.
    */
-  it('draws the subagents section from a pushed dispatch and keeps it through a poll', () => {
+  it('draws the subagents section from a pushed dispatch', () => {
     const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };
     const server = open([], fields);
     expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
@@ -452,22 +438,7 @@ describe('what one arriving frame costs the inspector', () => {
     expect(keys, `a pushed dispatch drew no section: ${JSON.stringify(keys)}`).toContain(
       'sec-subagents',
     );
-
-    // The poll's answer still carries the false it was encoded with, plus a
-    // field a frame feeds - which must not replace this page's own value
-    // either, since the answer is a merge.
-    fields['mcp'] = { servers: [{ name: 'forge', status: 'connected', tools: [] }], error: null };
-    vi.advanceTimersByTime(POLL_MS + 1);
-    flushSync();
-
-    const after = drawn().map((section) => section.key);
-    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
-    expect(after, `a poll put the pushed dispatch back: ${JSON.stringify(after)}`).toContain(
-      'sec-subagents',
-    );
-    expect(after, 'the answer replaced the record rather than merging into it').not.toContain(
-      'sec-mcp servers',
-    );
+    expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });
 });
 

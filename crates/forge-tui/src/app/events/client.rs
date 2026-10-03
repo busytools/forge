@@ -554,11 +554,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // asks: its bucket is seeded by `Connected`, which it is present for
         // because it is the view that starts the sessions.
         //
-        // The seat's six pushed sets - its working tree, its monitors, the
-        // CLI's background registry, its process walk and its two catalogues -
-        // are nothing this view draws yet: the terminal keeps its own copies,
-        // folded from the frames it already receives and read through its own
-        // scanner, and pointing it at the store is its own piece.
+        // The seat's seven pushed sets - its working tree, its monitors, the
+        // CLI's background registry, its process walk, its two catalogues and
+        // its file index - are nothing this view draws yet: the terminal keeps
+        // its own copies, folded from the frames it already receives and read
+        // through its own scanner, and pointing it at the store is its own
+        // piece.
         SessionUpdate::PeerEnvelopeAppended { .. }
         | SessionUpdate::GotifyNotificationAppended { .. }
         | SessionUpdate::SlackMessageAppended { .. }
@@ -571,7 +572,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::ProcessesChanged { .. }
         | SessionUpdate::SlashCommandsChanged { .. }
         | SessionUpdate::SubagentsChanged { .. }
-        | SessionUpdate::DispatchesChanged { .. } => {}
+        | SessionUpdate::DispatchesChanged { .. }
+        | SessionUpdate::FileIndexChanged { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {

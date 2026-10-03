@@ -322,8 +322,7 @@ async fn shell(
                                     agents,
                                     "",
                                     crate::composer::Draft::Known,
-                                )
-                                .await)
+                                ))
                             }
                         }
                     }

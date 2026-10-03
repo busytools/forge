@@ -37,8 +37,7 @@ import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreState, StoreValue } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
-import { POLL_MS, watchSession, type SessionRead } from './live';
-import type { SessionRecord } from './wire';
+import { watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 
 // This is the one page mounted over a REAL connection, so it drives the
@@ -787,34 +786,6 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * **The record moves when the frame arrives and only the redraw waits.** A
-   * poll's answer lands in between and merges into the held record, so a fold
-   * deferred to the paint would be read past by that answer - the frame dropped
-   * and the conversation walked backwards.
-   */
-  it('folds a frame into the held record before it is published', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('held') } }));
-    const published = page.publishes();
-
-    // A poll's answer, encoded before the frame landed.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
-    paint();
-
-    expect(spoken(page), 'the frame was folded at the paint rather than on arrival').toEqual([
-      'held',
-    ]);
-    // And the paint states what the answer already stated: the frame it was
-    // waiting for went with the write, rather than a second redraw for it.
-    expect(page.publishes(), 'the paint stated a record the read had already stated').toBe(
-      published + 1,
-    );
-    page.stop();
-  });
-
-  /**
    * **A settings pick moves the record the moment the core echoes it.** The
    * update carries the whole set and the seat folds it the way the terminal's
    * own arm folds it, so the panel follows the pick instead of waiting for a
@@ -1057,59 +1028,21 @@ describe('the seat the client holds between visits', () => {
 });
 
 /**
- * The fields the merge still takes from a poll - the composer's file list and
- * the record's own dispatch answer - are the reason a page cannot simply
- * follow the stream for every field: no frame this build handles carries them.
- * A slow read is what keeps them honest, and a field leaves the list when a
- * handler for its frame lands.
+ * The read this client still makes, and the one answer it refuses.
  *
- * The clock is faked here and nowhere else in this file, and the socket cases
- * above need the real one, so each case below starts and ends its own.
+ * **Every slice a frame can carry has a handler now**, so a read is the whole
+ * record and there is no field a timer keeps fresh: the poll retired with the
+ * last one. What is left to pin is when an ANSWER is taken - a cold load, a
+ * reconnect and a swap are owed the whole record, and an answer the frames
+ * have already outrun is not.
  */
-describe('the slow read for the fields still unfed', () => {
-  beforeEach(() => {
-    // The frame queue above is the test's own, so the clock leaves the two
-    // callbacks alone: faked, a paint would land on the fake clock's schedule
-    // and a case could not say when.
-    vi.useFakeTimers({ toNotFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('asks for the session on the poll interval', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-    const asked = page.reads();
-
-    vi.advanceTimersByTime(POLL_MS + 1);
-
-    expect(page.reads(), 'the page never asked again').toBe(asked + 1);
-    page.stop();
-  });
-
-  it('stops asking once the last reader has gone', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-    page.stop();
-    const asked = page.reads();
-
-    vi.advanceTimersByTime(POLL_MS * 3);
-
-    expect(page.reads(), 'a stopped page is still reading the seat').toBe(asked);
-  });
-
+describe('the read, and the answer a frame has outrun', () => {
   /**
-   * The poll runs for the seat being drawn, so a seat shown again arms it
-   * again - and arms it without reading on the way in, which is the burst this
-   * whole change exists to delete. A poll armed once at the seat's creation
-   * and dropped with the first reader leaves every seat shown later drawing
-   * the file list and the catalogue as they were when it was last read.
+   * **A seat shown again draws what it holds and asks for nothing.** The
+   * record it kept is the one the frames kept fresh, so a return is a draw
+   * rather than a read - the burst this whole series exists to delete.
    */
-  it('arms the poll again when the seat is shown again', () => {
+  it('draws a seat shown again without asking for it', () => {
     const connection = drivable();
     const showing = watch(connection);
     showing.land(snapshotOf(LEAD));
@@ -1122,211 +1055,17 @@ describe('the slow read for the fields still unfed', () => {
     const asked = connection.reads();
     expect(asked, 'the return read the seat rather than drawing what it holds').toBe(0);
 
-    vi.advanceTimersByTime(POLL_MS + 1);
-
-    expect(connection.reads(), 'the poll never came back for a seat shown again').toBe(asked + 1);
     back.stop();
   });
 
   /**
-   * **Every field still on the merge's list moves on a poll, and there is
-   * one.** The fields that left it are pinned by the revert case below, which
-   * is what tells a fed field from a polled one.
+   * **An answer the frames have outrun is refused, and asked for again.** A
+   * read is the whole record now, so one encoded before a frame that has
+   * already landed carries the seat backwards: the page keeps what the frames
+   * left and asks a second time, which is the want the merge used to satisfy
+   * by patching around the answer.
    */
-  it('takes every field still unfed from what the poll answered with', () => {
-    const cases: {
-      what: string;
-      stale: Record<string, unknown>;
-      fresh: Record<string, unknown>;
-      moved: (wire: SessionRecord) => unknown;
-      expect: unknown;
-    }[] = [
-      {
-        what: 'file list',
-        stale: { file_index: { entries: {} } },
-        fresh: { file_index: { entries: { 'a.ts': {} } } },
-        // The record's own type for the walk is `unknown`, so the test says
-        // what it is reading rather than passing an untyped value on.
-        moved: (wire) =>
-          Object.keys((wire.file_index as { entries: Record<string, unknown> }).entries).length,
-        expect: 1,
-      },
-    ];
-
-    for (const one of cases) {
-      const connection = drivable();
-      const page = watch(connection);
-      const read = (): SessionRecord => {
-        const wire = page.read().wire;
-        expect(wire, `the ${one.what} case has a record`).not.toBeNull();
-        return wire as SessionRecord;
-      };
-      page.land(snapshotOf(LEAD, one.stale));
-
-      page.land(snapshotOf(LEAD, one.fresh));
-
-      expect(one.moved(read()), `the ${one.what} never moved on a poll`).toEqual(one.expect);
-      page.stop();
-    }
-  });
-
-  /**
-   * **A pushed row is not a row a poll can revert, and that is true of EVERY
-   * field that left the merge's list.** A poll's answer is encoded before a
-   * frame lands and applied after it, so a field the merge still took from
-   * that answer is a pushed row the next read puts back. One field pinned
-   * would leave the others unguarded, which is how a restore of one of
-   * them to the list could ship green.
-   */
-  it('does not let a poll answer put a pushed row back', () => {
-    const walk = {
-      processes: [
-        {
-          pid: 41,
-          parent_pid: 40,
-          name: 'cargo',
-          command: 'cargo nextest run',
-          memory_bytes: 1,
-        },
-      ],
-      scanned_at: { secs_since_epoch: 2, nanos_since_epoch: 0 },
-    };
-    const monitor = {
-      tool_use_id: 'm1',
-      task_id: null,
-      description: 'ci-watch',
-      command: 'gh run watch',
-      persistent: false,
-      timeout_ms: 0,
-      status: 'running',
-      output_file: null,
-      ended_at: null,
-    };
-    const task = {
-      task_id: 't1',
-      task_type: 'local_bash',
-      description: 'gh run watch',
-      command: 'gh run watch 1',
-    };
-    const cases: {
-      what: string;
-      stale: Record<string, unknown>;
-      frame: SessionUpdate;
-      moved: (wire: SessionRecord) => unknown;
-      fresh: unknown;
-    }[] = [
-      {
-        what: 'working tree',
-        stale: { work: { branch: 'stale', changed: 9, gate: 'in_repo' } },
-        frame: {
-          work_changed: {
-            key: LEAD,
-            work: { branch: 'fresh', changed: 1, gate: 'in_repo' },
-            pr: null,
-            closes: [],
-          },
-        },
-        moved: (wire) => wire.work.branch,
-        fresh: 'fresh',
-      },
-      {
-        what: 'pull request',
-        stale: { pr: { number: 1, url: 'https://example.test/pull/1' } },
-        frame: {
-          work_changed: {
-            key: LEAD,
-            work: { branch: 'main', changed: 0, gate: 'in_repo' },
-            pr: { number: 2, url: 'https://example.test/pull/2' },
-            closes: [],
-          },
-        },
-        moved: (wire) => wire.pr?.number,
-        fresh: 2,
-      },
-      {
-        what: 'closing issues',
-        stale: { closes: [{ number: 1, url: 'https://example.test/issue/1' }] },
-        frame: {
-          work_changed: {
-            key: LEAD,
-            work: { branch: 'main', changed: 0, gate: 'in_repo' },
-            pr: null,
-            closes: [{ number: 2, url: 'https://example.test/issue/2' }],
-          },
-        },
-        moved: (wire) => wire.closes[0]?.number,
-        fresh: 2,
-      },
-      {
-        what: 'monitor set',
-        stale: { monitors: [] },
-        frame: { monitors_changed: { key: LEAD, monitors: [monitor] } },
-        moved: (wire) => wire.monitors.length,
-        fresh: 1,
-      },
-      {
-        what: 'background registry',
-        stale: { background_tasks: [] },
-        frame: { background_tasks_changed: { key: LEAD, tasks: [task] } },
-        moved: (wire) => wire.background_tasks.length,
-        fresh: 1,
-      },
-      {
-        what: 'process walk',
-        stale: {
-          processes: { processes: [], scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 } },
-        },
-        frame: { processes_changed: { key: LEAD, snapshot: walk } },
-        moved: (wire) => wire.processes?.scanned_at.secs_since_epoch,
-        fresh: 2,
-      },
-      {
-        what: 'command catalogue',
-        stale: { slash_commands: [] },
-        frame: { slash_commands_changed: { key: LEAD, commands: [{ name: 'compact' }] } },
-        moved: (wire) => wire.slash_commands.length,
-        fresh: 1,
-      },
-      {
-        what: 'agent catalogue',
-        stale: { subagents: [] },
-        frame: { subagents_changed: { key: LEAD, subagents: [{ name: 'reviewer' }] } },
-        moved: (wire) => wire.subagents.length,
-        fresh: 1,
-      },
-      {
-        what: 'dispatch answer',
-        stale: { has_dispatches: false },
-        frame: { dispatches_changed: { key: LEAD, has_dispatches: true } },
-        moved: (wire) => wire.has_dispatches,
-        fresh: true,
-      },
-    ];
-
-    for (const one of cases) {
-      const connection = drivable();
-      const page = watch(connection);
-      const read = (): SessionRecord => {
-        const wire = page.read().wire;
-        expect(wire, `the ${one.what} case has a record`).not.toBeNull();
-        return wire as SessionRecord;
-      };
-      page.land(snapshotOf(LEAD, one.stale));
-
-      // The frame moves it...
-      page.land(updateOf(one.frame));
-      paint();
-      expect(one.moved(read()), `precondition: the ${one.what} frame landed`).toEqual(one.fresh);
-
-      // ...and a poll's answer from before it lands after it.
-      page.land(snapshotOf(LEAD, one.stale));
-
-      expect(one.moved(read()), `a poll answer put the pushed ${one.what} back`).toEqual(one.fresh);
-      page.stop();
-    }
-  });
-
-  it('does not let an answer older than a seat swap stand in for the swap', () => {
+  it('refuses an answer the frames have outrun, and asks again', () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
@@ -1334,27 +1073,28 @@ describe('the slow read for the fields still unfed', () => {
     paint();
     expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
-    // A poll asks for the nine while the seat is still this occupant's.
-    vi.advanceTimersByTime(POLL_MS + 1);
+    // The seat takes a new occupant: the page asks for the whole record.
+    page.land(updateOf(occupant('new')));
     const asked = page.reads();
 
-    // The seat takes a new occupant before that answer comes back.
-    page.land(updateOf(occupant('new')));
-    expect(page.reads(), 'the swap asked while a read was already in flight').toBe(asked);
+    // A frame lands while that answer is in flight, so the record has been
+    // carried past where the answer was encoded.
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('more') } }));
+    paint();
 
-    // The poll's answer lands: the seat as it was BEFORE the swap.
+    // The answer lands: the seat as it was BEFORE that frame, with the
+    // previous occupant's empty conversation in it.
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
 
     expect(
       page.read().wire?.conversation.turns,
-      'an answer from before the swap was published as the new record',
-    ).toHaveLength(1);
-    expect(page.reads(), 'the swap was never asked for a whole record').toBe(asked + 1);
+      'an answer the frames had outrun was taken',
+    ).toHaveLength(2);
+    expect(page.reads(), 'the outrun answer was never asked for again').toBe(asked + 1);
 
-    // And the answer the swap did ask for replaces the record rather than
-    // merging into the one the previous occupant left.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
-    expect(page.read().wire?.conversation.turns, 'the swap never took the record').toHaveLength(0);
+    // And the fresh ask converges: its clean answer is taken whole.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 }, work: null }));
+    expect(page.read().wire?.conversation.turns, 'the fresh answer was not taken').toHaveLength(0);
     page.stop();
   });
 
@@ -1419,8 +1159,10 @@ describe('the slow read for the fields still unfed', () => {
     const asked = page.reads();
 
     // A take starts while that answer is in flight, which takes the notice off
-    // the record the page holds.
+    // the record the page holds - and the paint states it, so what the page
+    // holds and what it publishes agree when the answer lands.
     page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+    paint();
 
     // The answer lands: the seat as it was BEFORE the take, notice and all.
     // Adopted whole it puts the landing back, and the box takes words the
@@ -1432,12 +1174,11 @@ describe('the slow read for the fields still unfed', () => {
       'an answer from before the take put the landing back',
     ).toBeNull();
 
-    // **The whole record is still WANTED.** Merging keeps the frame-fed
-    // composer, which is the fix above, but it also keeps the conversation and
-    // the header this answer was asked for - so the want is kept and asked
-    // again, the way a want raised while an ask was out is. Without this the
-    // old occupant stands until a later REPLACES frame with a clean window or a
-    // socket drop, which the five-second poll never does.
+    // **The whole record is still WANTED.** Refusing the outrun answer keeps
+    // the frame-fed composer, which is the fix above, but the conversation and
+    // the header this answer was asked for are still owed - so the want is kept
+    // and asked again. Without this the old occupant stands until a later
+    // REPLACES frame with a clean window or a socket drop.
     expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
 
     // And the fresh ask converges: its clean answer is adopted whole.
@@ -1457,37 +1198,5 @@ describe('the slow read for the fields still unfed', () => {
 
     expect(other.read().wire?.composer.notice, 'the control took the record').toEqual(landed());
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
-
-    // And the narrowness that keeps the re-ask from being over-broad: a POLL's
-    // answer outrun by a frame is a merge already, and its want was nothing, so
-    // it asks for nothing more.
-    const polling = drivable();
-    const timed = watch(polling);
-    timed.land(snapshotOf(LEAD));
-    vi.advanceTimersByTime(POLL_MS + 1);
-    const polled = timed.reads();
-    timed.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
-    timed.land(snapshotOf(LEAD));
-
-    expect(timed.reads(), "a poll's outrun answer asked again").toBe(polled);
-    timed.stop();
-  });
-
-  it('does not walk back a slice an update already advanced', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD));
-    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
-    paint();
-    const advanced = page.read().wire;
-
-    // A poll's answer, taken before the frame landed: its conversation is
-    // empty, and taking it would drop the frame the page is holding.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
-
-    expect(page.read().wire?.conversation, 'the poll walked the conversation back').toEqual(
-      advanced?.conversation,
-    );
-    page.stop();
   });
 });

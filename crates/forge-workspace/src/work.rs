@@ -125,6 +125,18 @@ pub const SNAPSHOT_STALENESS: Duration = Duration::from_secs(10);
 /// sustained change can be scanned, one scan per poke per held seat.
 pub const POKE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How long a walked file index answers for: the window the socket's own read
+/// served it for before the push landed, so a seat's `@` list is no fresher
+/// and no staler than it was.
+pub const INDEX_STALENESS: Duration = Duration::from_secs(5);
+
+/// A seat's walked file index, and when it was taken.
+#[derive(Clone)]
+pub struct HeldFileIndex {
+    pub index: Arc<crate::file_index::FileIndex>,
+    pub read_at: Instant,
+}
+
 /// Whether the tree should be read again.
 ///
 /// Three reasons, and the middle one is what watching buys: nothing read yet,
@@ -132,9 +144,15 @@ pub const POKE_INTERVAL: Duration = Duration::from_secs(1);
 /// stale - the last being what covers everything the watcher cannot report,
 /// a commit or a stage among them.
 pub fn should_scan(snapshot: Option<&WorkSnapshot>, dirty: bool, now: Instant) -> bool {
-    match snapshot {
+    reads_again(snapshot.map(|held| held.read_at), dirty, now, SNAPSHOT_STALENESS)
+}
+
+/// Whether a read whose answer was taken at `read_at` should be taken again,
+/// on the same three reasons for every read this module owns.
+fn reads_again(read_at: Option<Instant>, dirty: bool, now: Instant, window: Duration) -> bool {
+    match read_at {
         None => true,
-        Some(held) => dirty || now.saturating_duration_since(held.read_at) >= SNAPSHOT_STALENESS,
+        Some(at) => dirty || now.saturating_duration_since(at) >= window,
     }
 }
 
@@ -265,7 +283,20 @@ impl Workspace {
         // looked.
         self.walk_processes_if_stale(slot, self.claude_pid(slot)).await;
         let walked = self.process_snapshot(slot).map(|held| held.processes);
-        spawn_work_watch(Arc::clone(self), slot.clone(), scanning, stopped, announced, walked);
+        // The file index is the same bargain: a page that opens on the seat
+        // reads the list its composer's `@` trigger offers, so the hold walks
+        // it once rather than leaving the composer empty until the first poke.
+        self.walk_files_if_stale(slot, false).await;
+        let indexed = self.file_index(slot).map(|held| held.index);
+        spawn_work_watch(
+            Arc::clone(self),
+            slot.clone(),
+            scanning,
+            stopped,
+            announced,
+            walked,
+            indexed,
+        );
         true
     }
 
@@ -332,6 +363,65 @@ impl Workspace {
                 false
             }
         }
+    }
+
+    /// Walk `slot`'s tree into a file index when the one held is missing, the
+    /// tree moved, or the answer is past [`INDEX_STALENESS`], and store what
+    /// the walk found.
+    ///
+    /// **The held seat's own loop is the walker**, the role the process walk
+    /// took: the socket's reads used to walk their seat, and this walks only
+    /// the seats somebody is showing. The walk honours the user's own
+    /// gitignore preference, read per walk so a flip reaches the next one.
+    pub(crate) async fn walk_files_if_stale(&self, slot: &SessionSlot, dirty: bool) -> bool {
+        let stale = reads_again(
+            self.file_index(slot).map(|held| held.read_at),
+            dirty,
+            Instant::now(),
+            INDEX_STALENESS,
+        );
+        if !stale {
+            return false;
+        }
+        let Some(cwd) = self.cwd_for_session(slot) else {
+            return false;
+        };
+        let respect = crate::file_index::respect_gitignore(self.user_preferences().as_ref());
+        let root = PathBuf::from(cwd);
+        // The walk is a whole tree, so it runs on the blocking pool rather
+        // than on the reactor.
+        match tokio::task::spawn_blocking(move || {
+            crate::file_index::FileIndex::scan(&root, respect)
+        })
+        .await
+        {
+            Ok(index) => {
+                self.store_file_index(slot, Arc::new(index));
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::work",
+                    event_name = "file_index_walk_failed",
+                    %error,
+                    slot = %slot.display(),
+                    "the file-index walk did not finish; the seat keeps the index it had",
+                );
+                false
+            }
+        }
+    }
+
+    /// Store a walked file index for `slot`, as the seat's loop does.
+    pub fn store_file_index(&self, slot: &SessionSlot, index: Arc<crate::file_index::FileIndex>) {
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().file_index = Some(HeldFileIndex { index, read_at: Instant::now() });
+        }
+    }
+
+    /// The seat's walked file index, when one has been taken.
+    pub fn file_index(&self, slot: &SessionSlot) -> Option<HeldFileIndex> {
+        self.domain_session_for(slot)?.lock().file_index.clone()
     }
 
     /// Store a scan for `slot`, as the seat's loop and a fixture both do.
@@ -423,7 +513,8 @@ fn local_bash_commands(tasks: &[crate::BackgroundTask]) -> Vec<String> {
 }
 
 /// One seat's scan loop: the tree is watched, the poke reads it and walks the
-/// seat's process tree, and whatever moved goes to whoever is showing the seat.
+/// seat's process tree and its files, and whatever moved goes to whoever is
+/// showing the seat.
 fn spawn_work_watch(
     workspace: Arc<Workspace>,
     slot: SessionSlot,
@@ -431,6 +522,7 @@ fn spawn_work_watch(
     mut stopped: tokio::sync::oneshot::Receiver<()>,
     announced: Option<Announced>,
     walked: Option<Vec<forge_agent::env::processes::ProcessEntry>>,
+    indexed: Option<Arc<crate::file_index::FileIndex>>,
 ) {
     tokio::spawn(async move {
         let Some(cwd) = workspace.cwd_for_session(&slot) else {
@@ -449,6 +541,7 @@ fn spawn_work_watch(
         let (changes, _watch) = start_change_watch(PathBuf::from(cwd), true);
         let mut announced = announced;
         let mut walked = walked;
+        let mut indexed = indexed;
         // Whether the last poke found the seat's session gone, so the quiet
         // spell is reported once rather than once a second.
         let mut quiet = false;
@@ -502,6 +595,19 @@ fn spawn_work_watch(
             let mut dirty = false;
             while changes.try_recv().is_ok() {
                 dirty = true;
+            }
+            // The file index, on the same mark and the same poke: the watch
+            // that moved the tree is also what a `@` list would have to
+            // follow, and [`INDEX_STALENESS`] is what keeps a build
+            // directory's churn from becoming a frame per write.
+            workspace.walk_files_if_stale(&slot, dirty).await;
+            if let Some(held) = workspace.file_index(&slot)
+                && indexed.as_ref() != Some(&held.index)
+            {
+                indexed = Some(Arc::clone(&held.index));
+                workspace
+                    .update_tx
+                    .send(SessionUpdate::FileIndexChanged { key: slot.clone(), index: held.index });
             }
             let Ok(held) = workspace.scan_work_if_stale(&slot, &scanning, dirty).await else {
                 tracing::debug!(
@@ -985,6 +1091,148 @@ provider = "anthropic"
         assert!(
             tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),
             "the hold's walk is what the seat's viewers already hold, so nothing is announced",
+        );
+    }
+
+    /// **The mark the watch sets is what makes the walk run inside the
+    /// window.** A tree that moved is walked on the very next poke; one that
+    /// did not waits for [`INDEX_STALENESS`] - and this drives the walk
+    /// directly rather than racing the file watcher, whose promptness is the
+    /// machine's business rather than this rule's.
+    #[tokio::test]
+    async fn the_watchs_mark_walks_inside_the_window() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+        let held = workspace.file_index(&seat).expect("the hold walks the index");
+
+        assert!(
+            !workspace.walk_files_if_stale(&seat, false).await,
+            "a still tree inside the window is the answer rather than a reason to walk",
+        );
+
+        std::fs::write(dir.path().join("new.rs"), "").expect("write");
+        assert!(workspace.walk_files_if_stale(&seat, true).await, "the mark walks at once");
+
+        let walked = workspace.file_index(&seat).expect("the walk stored an index");
+        assert!(walked.index.entries.contains_key("new.rs"), "with what the walk found");
+        assert!(walked.read_at > held.read_at, "and the answer is the newer one");
+    }
+
+    /// **A file written into a held seat's tree reaches its viewers.** The walk
+    /// is the loop's, so a composer's `@` list follows the tree the person is
+    /// working in.
+    #[tokio::test]
+    async fn a_file_written_into_a_held_seat_reaches_its_viewers() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+
+        std::fs::write(dir.path().join("new.rs"), "").expect("write");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("a file written into the seat's tree was never announced");
+            };
+            let SessionUpdate::FileIndexChanged { key, index } = moved else {
+                continue;
+            };
+            assert_eq!(key, seat);
+            if index.entries.contains_key("new.rs") {
+                break;
+            }
+        }
+    }
+
+    /// **Writes inside one poke arrive as ONE frame carrying all of them.**
+    /// The watch's report is a mark, not a trigger: a walk per report would
+    /// put one frame on the wire per file a build touches, which is the
+    /// throttle a `@` list does not need and the socket will not merge.
+    #[tokio::test]
+    async fn writes_inside_one_poke_arrive_as_one_frame() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(dir.path().join(name), "").expect("write");
+        }
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let first = loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the writes were never announced");
+            };
+            if let SessionUpdate::FileIndexChanged { index, .. } = moved {
+                break index;
+            }
+        };
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            assert!(
+                first.entries.contains_key(name),
+                "one frame carries {name}: {:?}",
+                first.entries.keys().collect::<Vec<_>>(),
+            );
+        }
+
+        // And nothing follows: one mark, one walk, one frame.
+        let quiet = tokio::time::Instant::now() + Duration::from_secs(2);
+        while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
+            if matches!(moved, SessionUpdate::FileIndexChanged { .. }) {
+                panic!("a second frame followed one poke's writes");
+            }
+        }
+    }
+
+    /// **Two walks that find the same index say nothing.** Unlike the process
+    /// entries, a `FileCandidate` carries only paths and depths - no memory
+    /// figure to drift as the tree works - so a still tree is genuinely still,
+    /// and the comparison can promise silence rather than near-silence. The
+    /// window is what makes this a walk: the poke at the far end of it takes
+    /// one whether anything moved or not.
+    #[tokio::test]
+    async fn a_still_tree_announces_nothing() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(7), updates.recv()).await.is_err(),
+            "a still tree announced something",
+        );
+    }
+
+    /// A walk is an answer for the preference it was built under, and the
+    /// seat's loop reads the preference per walk: a flip reaches the next one
+    /// rather than waiting for a restart.
+    #[tokio::test]
+    async fn a_preference_flip_moves_the_next_walk() {
+        let dir = a_repo();
+        std::fs::write(dir.path().join(".gitignore"), "ignored.rs\n").expect("write");
+        std::fs::write(dir.path().join("ignored.rs"), "").expect("write");
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.seed_test_user_preferences(serde_json::json!({}));
+        workspace.hold_seat(&seat).await;
+
+        let held = workspace.file_index(&seat).expect("the hold walks the index");
+        assert!(
+            !held.index.entries.contains_key("ignored.rs"),
+            "the walk respects the file while the preference says so",
+        );
+
+        workspace.seed_test_user_preferences(serde_json::json!({"respectGitignore": false}));
+        assert!(workspace.walk_files_if_stale(&seat, true).await, "a flip is a walk");
+
+        let walked = workspace.file_index(&seat).expect("the walk stored an index");
+        assert!(
+            walked.index.entries.contains_key("ignored.rs"),
+            "and takes the preference read at the next walk",
         );
     }
 

@@ -167,7 +167,6 @@ async fn composer_region(
     // The box asking for itself is the reader typing: its own field, its own
     // words, so the field is the one it drew.
     crate::composer::render(&home, &slot, &roster, &agents, &draft, crate::composer::Draft::Known)
-        .await
         .into_response()
 }
 
@@ -190,7 +189,6 @@ async fn send_to(
         // nothing happened, and the box that comes back is one whose send
         // control is gone, which is what a field with nothing in it earns.
         return composer_region_of(&wiring, &slot, crate::composer::Draft::Known, &draft)
-            .await
             .into_response();
     }
     if surface
@@ -206,12 +204,11 @@ async fn send_to(
         // the core, so there is nothing to send twice, and a box that
         // replaced the reader's field would destroy what they wrote.
         return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
-            .await
             .into_response();
     }
     // The one response that replaces the field: the reader's words have gone
     // to the core, so a box that kept them would send them twice.
-    composer_region_of(&wiring, &slot, crate::composer::Draft::Cleared, "").await.into_response()
+    composer_region_of(&wiring, &slot, crate::composer::Draft::Cleared, "").into_response()
 }
 
 /// The dock's answer. The outcome is built from the option the core offered
@@ -249,7 +246,6 @@ async fn answer_prompt(
         // two hundred, and a swapped region drawn from a core that holds
         // nothing is the box, so the stale dock clears itself.
         return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
-            .await
             .into_response();
     };
     if wiring.state.surface.dispatch(command).is_err() {
@@ -259,11 +255,10 @@ async fn answer_prompt(
         // options post into nothing and its field is parked, so the reader
         // cannot even type to force a refetch.
         return composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "")
-            .await
             .into_response();
     }
     // An answer is not the reader's words, so the box keeps them.
-    composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "").await.into_response()
+    composer_region_of(&wiring, &slot, crate::composer::Draft::Unknown, "").into_response()
 }
 
 /// The take's controls: start, submit or abandon.
@@ -300,7 +295,6 @@ async fn dictate(
             }
         },
     )
-    .await
 }
 
 /// Resolve the seat a control posted to, run `command` for it, and answer
@@ -310,7 +304,7 @@ async fn dictate(
 /// would draw rather than queued and rather than refused with a status htmx
 /// will not swap: the seat's own state is the reason, and the reader sees it
 /// on the page.
-async fn act(
+fn act(
     wiring: &Wiring,
     org: &str,
     project: &str,
@@ -328,15 +322,15 @@ async fn act(
         // As above: the seat's own state is the refusal, drawn rather than
         // returned, because a status htmx will not swap is a click that
         // looks like nothing happened.
-        return composer_region_of(wiring, &slot, draft, "").await.into_response();
+        return composer_region_of(wiring, &slot, draft, "").into_response();
     }
-    composer_region_of(wiring, &slot, draft, "").await.into_response()
+    composer_region_of(wiring, &slot, draft, "").into_response()
 }
 
 /// The composer region for a seat the caller has already resolved, drawn
 /// with whatever the caller knows of the field's text - which for every
 /// caller but the refusal is nothing.
-async fn composer_region_of(
+fn composer_region_of(
     wiring: &Wiring,
     slot: &forge_primitives::SessionSlot,
     draft_state: crate::composer::Draft,
@@ -345,7 +339,6 @@ async fn composer_region_of(
     let surface = &wiring.state.surface;
     let home = crate::session::context(&wiring.state, wiring.bound);
     crate::composer::render(&home, slot, &surface.roster(), &surface.agents(), draft, draft_state)
-        .await
 }
 
 /// One vendored script: the page's own, as published. An unknown name is a

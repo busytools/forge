@@ -1196,6 +1196,18 @@ pub enum SessionUpdate {
         key: SessionSlot,
         has_dispatches: bool,
     },
+    /// The tree's file index moved, as the whole index the core holds.
+    ///
+    /// **Pushed rather than read, and throttled here rather than by the
+    /// socket.** The socket's batch folds only consecutive token appends, so
+    /// a burst of index frames would go out one per change: the walk runs at
+    /// most once per `INDEX_STALENESS` and the frame goes out only when the
+    /// index actually differs from the one last announced, so a tree being
+    /// built into says nothing however much it churns.
+    FileIndexChanged {
+        key: SessionSlot,
+        index: std::sync::Arc<crate::file_index::FileIndex>,
+    },
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
@@ -1471,6 +1483,7 @@ impl SessionUpdate {
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
+            | Self::FileIndexChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
             | Self::BackgroundTasksChanged { key, .. }
@@ -1612,6 +1625,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("DispatchesChanged")
                 .field("key", key)
                 .field("has_dispatches", has_dispatches)
+                .finish(),
+            Self::FileIndexChanged { key, index } => f
+                .debug_struct("FileIndexChanged")
+                .field("key", key)
+                .field("count", &index.entries.len())
                 .finish(),
             Self::ProcessesChanged { key, snapshot } => f
                 .debug_struct("ProcessesChanged")
@@ -1950,12 +1968,21 @@ mod session_update_variants {
                         };
                         if let Some((entries, _)) = after.split_once(']') {
                             names.extend(quoted_names(entries).map(str::to_owned));
+                            // Opened and closed on one line: the export carried
+                            // its whole list, and what follows is not it.
+                            table = "";
                         } else {
                             open = true;
                             names.extend(quoted_names(after).map(str::to_owned));
                         }
                     } else if trimmed.starts_with(']') {
                         open = false;
+                        // **The array is the whole of what its export
+                        // classifies.** The mode used to end at the next
+                        // `export const`, which made the LAST list in the file
+                        // read every `[` below it - a client helper's own
+                        // literals answering as variants.
+                        table = "";
                     } else if trimmed.starts_with('\'') {
                         names.extend(quoted_names(trimmed).map(str::to_owned));
                     }

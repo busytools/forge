@@ -159,6 +159,13 @@ export const HANDLERS: Record<string, Apply> = {
     return typeof dispatched === 'boolean' ? { ...held, has_dispatches: dispatched } : held;
   },
 
+  // The walk the seat's own loop keeps fresh, carried whole under the frame's
+  // own name. A payload naming no index is a frame this build cannot read.
+  file_index_changed: (held, payload) => {
+    const index = payload['index'];
+    return index === undefined ? held : { ...held, file_index: index };
+  },
+
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
@@ -341,21 +348,6 @@ export const IGNORED: readonly string[] = [
   'status_snapshot',
   'worker_status_changed',
 ];
-
-/**
- * The fields the merge takes from a poll's answer, because no update this
- * build handles carries them.
- *
- * **The read still answers every field** - `sessionFrom` narrows the whole
- * record - and what is narrow is the MERGE: an answer is applied by taking
- * only these from it. That is what keeps a poll from reverting a pushed row,
- * since an answer is encoded before a frame lands and applied after it.
- *
- * One remains: the composer's file list. Each pushed set left this list as
- * its handler landed, and this list is what retires the tick once nothing is
- * on it.
- */
-export const UNFED: readonly (keyof SessionRecord)[] = ['file_index'];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */
 export function applyUpdate(held: SessionRecord, update: SessionUpdate): SessionRecord {
