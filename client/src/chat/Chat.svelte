@@ -8,6 +8,7 @@
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
   import Compacting from './Compacting.svelte';
   import { latestCompaction } from './compaction-jump';
   import {
@@ -82,6 +83,17 @@
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
   let placedFor: string | null = null;
+  /**
+   * The row the reader's own eye is on, held while they are away from the foot.
+   *
+   * **Measured in rows rather than pixels** (the terminal's rule, and
+   * `anchor.ts` carries the reasoning): the layout moves under a reader who is
+   * not at the foot - a lane re-sorts to whichever took the latest row, a row
+   * measures taller once drawn - and an offset that stays put reads as the page
+   * sliding under them (Ved, 2026-10-03). It goes the moment the follow is back
+   * on, because the foot is where that reader wants to be.
+   */
+  let anchor: Anchor | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -242,8 +254,14 @@
     viewport = node;
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (holdsEverything()) working?.following(true);
+      if (holdsEverything()) {
+        working?.following(true);
+        anchor = null;
+      }
       if (held.following) land();
+      // A reader away from the foot has a place of their own, and a size change
+      // is one of the two ways it moves under them.
+      else restoreAnchor();
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
@@ -251,6 +269,40 @@
       watcher.disconnect();
       viewport = null;
     };
+  }
+
+  /** The keyed rows the column has drawn, in document order, with their boxes. */
+  function keyedRows(): RowBox[] {
+    if (viewport === null) return [];
+    return [...viewport.querySelectorAll('[data-k]')].map((row) => {
+      const box = row.getBoundingClientRect();
+      return { key: row.getAttribute('data-k') ?? '', top: box.top, bottom: box.bottom };
+    });
+  }
+
+  /** Hold the row the reader's top edge is on, which is what their place means. */
+  function captureAnchor(): void {
+    if (viewport === null) return;
+    const landed = anchorAt(keyedRows(), viewport.getBoundingClientRect().top);
+    if (landed !== null) anchor = landed;
+  }
+
+  /**
+   * Put the reader back on the row the anchor holds, wherever the layout moved
+   * it to - and nowhere at all when the row is out of the drawn window, since
+   * the column cannot measure where it went. The anchor stays for a pass that
+   * can, and the row coming back into the window is a size change like any
+   * other.
+   */
+  function restoreAnchor(): void {
+    const held = anchor;
+    if (held === null || viewport === null) return;
+    const row = viewport.querySelector(`[data-k="${CSS.escape(held.key)}"]`);
+    if (row === null) return;
+    const box = viewport.getBoundingClientRect();
+    const top = row.getBoundingClientRect().top - box.top + viewport.scrollTop;
+    const want = anchoredScroll(held, top);
+    if (Math.abs(want - viewport.scrollTop) >= 1) viewport.scrollTop = want;
   }
 
   /**
@@ -338,7 +390,11 @@
     // list unmounts and the new landing re-pins before any event can read the
     // old value. A swap that kept the list mounted across it would make this
     // stale.
-    if (fresh || which !== placedFor) placed = null;
+    if (fresh || which !== placedFor) {
+      placed = null;
+      // The place a reader held was a row of the conversation that is going.
+      anchor = null;
+    }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
@@ -566,6 +622,28 @@
     return () => cancelAnimationFrame(settled);
   });
 
+  /**
+   * The place a reader away from the foot is holding, put back whenever the
+   * conversation changes around them.
+   *
+   * **The other half of the follow's own pass.** That one pins the foot for a
+   * reader who is at it; this one holds the row for a reader who is not, and
+   * it runs on the same signal - a conversation change - with the same
+   * once-more-after-this-frame's-layout pass, because the row that moved was
+   * laid out after this column's effects ran.
+   *
+   * **Skipped while the prepend compensation is on**: that path holds the
+   * reader by the list's own shift as older turns arrive above them, and two
+   * hands on the scroll is one too many.
+   */
+  $effect(() => {
+    const park = held;
+    const moving = shift;
+    if (anchor === null || park.following || !park.loaded || moving) return;
+    const settled = requestAnimationFrame(() => restoreAnchor());
+    return () => cancelAnimationFrame(settled);
+  });
+
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
     // **The very end, with no reading threshold.** A reader a few pixels short
@@ -605,7 +683,12 @@
     const shrank = height < shaped;
     shaped = height;
     if (!shrank) {
-      if (atFoot()) working?.following(true);
+      if (atFoot()) {
+        working?.following(true);
+        // The foot is where a following reader wants to be, so the place they
+        // held on the way there is done with.
+        anchor = null;
+      }
       // `placed` is where the last pin left the reader; before any pin has
       // run it is unknown, and a reader above the foot is above it whatever
       // that number is - so the comparison falls back to any upward move
@@ -613,6 +696,11 @@
       // column that had not pinned yet (Ved, 2026-10-03).
       else if (offset < (placed ?? Infinity)) working?.following(false);
     }
+    // **A reader away from the foot has a place, and this is where it is read.**
+    // Their own scroll is the one moment the page is where they put it, so the
+    // row under their top edge is what the column holds their place by from
+    // here on.
+    if (!held.following) captureAnchor();
     if (offset < REACH) loadOlder();
   }
 
@@ -740,6 +828,7 @@
       title="back to the latest"
       onclick={() => {
         working?.following(true);
+        anchor = null;
         land();
       }}
     >
