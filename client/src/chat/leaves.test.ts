@@ -286,13 +286,13 @@ describe('what opens without being asked', () => {
     // unbounded. Dropping the size term re-opens every giant diff silently.
     const small = edit(10);
     expect(
-      opensByDefault(small.name, small.body),
+      opensByDefault(small.name, small.body, null),
       'an ordinary mutation draws its diff without being asked',
     ).toBe(true);
 
     const huge = edit(1500);
     expect(
-      opensByDefault(huge.name, huge.body),
+      opensByDefault(huge.name, huge.body, null),
       'a mutation over the bound starts closed, and one click still opens it',
     ).toBe(false);
 
@@ -306,14 +306,60 @@ describe('what opens without being asked', () => {
       answered('The file /x/gen.rs has been updated.'),
     );
     expect(
-      opensByDefault(oneLongLine.name, oneLongLine.body),
+      opensByDefault(oneLongLine.name, oneLongLine.body, null),
       'a few enormous lines are rows in the hundreds of thousands, and stay closed',
     ).toBe(false);
 
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
-    expect(opensByDefault(bash.name, bash.body), 'a call with no diff never opens itself').toBe(
-      false,
+    expect(
+      opensByDefault(bash.name, bash.body, null),
+      'a call with no diff never opens itself',
+    ).toBe(false);
+  });
+});
+
+describe('a systemone decision on its row', () => {
+  const NOUL = JSON.stringify({
+    model: 'jev-1.13.0',
+    answer: { type: 'noul', noul: 0.93 },
+    usage: { input_tokens: 392, output_tokens: 20 },
+  });
+  const asked = {
+    state: 'a one-line import fix',
+    instructions: 'Is this mechanical and reversible?\nAnd nothing else.',
+  };
+
+  it('names the row with the tool word and the question', () => {
+    const leaf = leafOf('t1', 'mcp__forge__systemone__ask_noul', asked, answered(NOUL));
+    expect(leaf.title, 'the tool word, then the first line of the question').toBe(
+      'ask noul - Is this mechanical and reversible?',
     );
+    expect(leaf.decision !== null, 'and the result parses onto the row').toBe(true);
+  });
+
+  it('draws the word alone where the call carried no question', () => {
+    const leaf = leafOf('t2', 'mcp__forge__systemone__ask_choice', {}, answered(NOUL));
+    expect(leaf.title).toBe('ask choice');
+  });
+
+  it('opens a decided row without being asked, and leaves a raw fallback closed', () => {
+    const decided = leafOf('t1', 'mcp__forge__systemone__ask_noul', asked, answered(NOUL));
+    expect(
+      opensByDefault(decided.name, decided.body, decided.decision),
+      'a decided row opens like a small edit',
+    ).toBe(true);
+
+    const unreadable = leafOf(
+      't2',
+      'mcp__forge__systemone__ask_noul',
+      asked,
+      answered('not the JSON this page reads'),
+    );
+    expect(unreadable.decision, 'an unreadable result is not dressed').toBeNull();
+    expect(
+      opensByDefault(unreadable.name, unreadable.body, unreadable.decision),
+      'and stays closed like every other call',
+    ).toBe(false);
   });
 });
 

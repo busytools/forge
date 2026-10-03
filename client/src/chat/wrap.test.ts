@@ -66,6 +66,7 @@ const CALL = inPage(
           { kind: 'text', text: 'ok' },
         ],
         mutation: null,
+        decision: null,
         skill: null,
         image: null,
         imageNote: null,

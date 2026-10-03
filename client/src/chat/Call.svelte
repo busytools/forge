@@ -4,6 +4,7 @@
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
+  import Decision from './Decision.svelte';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
@@ -52,8 +53,19 @@
    * state from then on: a row is re-rendered whenever the turn is, and an
    * `open` attribute written from a prop on every update closes a row the
    * reader has just opened.
+   *
+   * **A late opener is the one exception, and only its edge.** A decision's
+   * block arrives with the result, after the row has mounted closed, so a
+   * snapshot alone would draw the live and re-read paths differently; the row
+   * opens on the false -> true edge of the prop and never again, so a reader
+   * who closed it stays closed. An edit's diff is in the call at mount, so
+   * that edge only ever fires for a block that arrived late.
    */
   let opened = $state(untrack(() => open));
+
+  $effect(() => {
+    if (open && !untrack(() => opened)) opened = true;
+  });
 
   /** The tools whose body is a list of hits rather than prose or a command's output. */
   const SEARCHES = new Set(['Grep', 'Glob', 'LS']);
@@ -189,6 +201,12 @@
          onto the skill itself, which is what anyone opening it wants to read. -->
     <div class="body">
       <Prose text={call.skill} />
+    </div>
+  {:else if call.decision !== null}
+    <!-- The result's own JSON is the same facts undressed; the block is how
+         they read, and an unreadable result never reaches this branch. -->
+    <div class="body">
+      <Decision decision={call.decision} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">

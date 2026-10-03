@@ -11,8 +11,9 @@
  */
 
 import { languageOf } from './code';
+import { decisionOf, decisionWord, type Decision } from './decisions';
 import { isEdit, type CallStatus, type KindRow, rowOf } from './families';
-import { headline, stripEscapes, toolName } from './text';
+import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
@@ -112,6 +113,12 @@ export interface ToolLeaf {
    */
   mutation: MutationMarks | null;
   /**
+   * The System One decision the result carried, or `null` for every other
+   * call and for a result the page could not read - which draws as the raw
+   * text it is, never dropped.
+   */
+  decision: Decision | null;
+  /**
    * The skill's own markdown, for a `Skill` call, or null for every other
    * call.
    *
@@ -141,8 +148,8 @@ export interface ToolLeaf {
 }
 
 /**
- * Whether a call's body is drawn without being asked for: a mutation's diff,
- * while it is small enough to draw.
+ * Whether a call's body is drawn without being asked for: a decision's block,
+ * or a mutation's diff while it is small enough to draw.
  *
  * **A very large diff is not drawn open.** Laying one out costs WebKit a full
  * pass over it on every dirty, which pins the renderer on the seat holding it
@@ -150,8 +157,12 @@ export interface ToolLeaf {
  * included. A row over the bound starts closed; one click still opens it, and
  * nothing is dropped.
  */
-export function opensByDefault(name: string, body: CallBody[]): boolean {
-  return isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES;
+export function opensByDefault(name: string, body: CallBody[], decision: Decision | null): boolean {
+  // A decision opens for the same reason a small edit does: the answer is the
+  // point of the call, and a closed row would say only that something was
+  // asked. The distribution's own bound keeps it safe - a choice tops out at
+  // 255 options, far under the diff bound above.
+  return decision !== null || (isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES);
 }
 
 /** The most diff rows a mutation's row draws without being asked. */
@@ -498,6 +509,15 @@ function hunk(old: string, added: string): CallBody[] {
  * this follows.
  */
 export function titleOf(name: string, input: unknown): string {
+  // A decision's row leads with the tool word and the question it was asked:
+  // the tool's raw name reads as plumbing, and the question is the one thing
+  // on the row a reader scans for.
+  const word = decisionWord(name);
+  if (word !== null) {
+    const instructions = field(input, 'instructions');
+    const first = instructions === null ? '' : firstLine(instructions).trim();
+    return first === '' ? word : `${word} - ${first}`;
+  }
   const said = headline(name, input);
   return said === name ? toolName(name) : said;
 }
@@ -545,6 +565,7 @@ export function leafOf(
     note: task?.backgrounded === true ? task.note : null,
     body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
     mutation: marksOf(name, input, body, record),
+    decision: decisionOf(name, input, result),
     skill: null,
     image: imageOf(result),
     imageNote: null,

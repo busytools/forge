@@ -479,6 +479,29 @@
   .term .sum { color: var(--ok); }
   /* A task that ended badly is the same line in the bad tone. */
   .term .fail { color: var(--bad); }
+  /* A systemone decision's block: the answer, its distribution, and what it
+     cost. The winner's fill is the shipped teal, which no other rule uses. */
+  .dec { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
+  .dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
+  .dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
+  .dec .num.sure { color: var(--ok); }
+  .dec .num.unsure { color: var(--warn); }
+  .dec .read { font-size: var(--fs-label); color: var(--muted); }
+  .dec .read b { color: var(--text); font-weight: 500; }
+  .dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
+  .dec .opt { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
+    gap: 10px; align-items: center; font-size: var(--fs-label); }
+  .dec .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dec .opt.win .name { color: var(--text); }
+  .dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  .dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
+  .dec .fill.win { background: var(--teal); }
+  .dec .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dec .opt.win .p { color: var(--text); }
+  .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
+    border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+  .dec .foot .sep { opacity: .5; }
   .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
     margin: 4px 0; border-left: 1px solid var(--line); }
   .searchhit .ln { color: var(--accent); }
@@ -1011,6 +1034,7 @@
   <symbol id="i-badge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M13 10h5M13 14h5M6.5 17a3 3 0 0 1 5 0"/></symbol>
   <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
+  <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
 </svg>
 
 <input type="checkbox" id="l" hidden>
@@ -1530,6 +1554,63 @@ docs: Render the message body into rows.</div>
             <details class="leaf">
               <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
               <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+            </details>
+          </div>
+
+          <div class="lane">
+            <div class="knd"><svg class="ic gl"><use href="#i-decide"/></svg><span class="nm">systemone</span></div>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Is this one-line import fix mechanical and reversible?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num sure">0.93</span><span class="read">yes</span></div>
+                  <div class="dist">
+                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:93%"></span></span><span class="p">0.93</span></div>
+                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:7%"></span></span><span class="p">0.07</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>392 in - 20 out</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask choice - Which team should handle this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="read">pick: <b>payments</b> - confidence 0.72</span></div>
+                  <div class="dist">
+                    <div class="opt"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div>
+                    <div class="opt win"><span class="name">payments</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask score - How urgent is this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num">1.79</span><span class="read">of 2 - between Soon and Urgent</span></div>
+                  <div class="dist">
+                    <div class="opt"><span class="name">Routine</span><span class="track"><span class="fill" style="width:8%"></span></span><span class="p">0.08</span></div>
+                    <div class="opt win"><span class="name">Soon</span><span class="track"><span class="fill win" style="width:31%"></span></span><span class="p">0.31</span></div>
+                    <div class="opt win"><span class="name">Urgent</span><span class="track"><span class="fill win" style="width:61%"></span></span><span class="p">0.61</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>410 in - 24 out</span></div>
+                </div>
+              </div>
+            </details>
+            <details class="leaf" open>
+              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Should the rename touch the shared module now?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dec">
+                  <div class="verdict"><span class="num unsure">0.52</span><span class="read">yes</span></div>
+                  <div class="dist">
+                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:52%"></span></span><span class="p">0.52</span></div>
+                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div>
+                  </div>
+                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
+                </div>
+              </div>
             </details>
           </div>
 
