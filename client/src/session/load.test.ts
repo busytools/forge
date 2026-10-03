@@ -178,21 +178,6 @@ function dispatched(): Record<string, unknown> {
   };
 }
 
-/** A Monitor the record carries: no frame feeds it, so only a read can move it. */
-function monitor(): Record<string, unknown> {
-  return {
-    tool_use_id: 'm1',
-    task_id: null,
-    description: 'ci-watch',
-    command: 'gh run watch',
-    persistent: false,
-    timeout_ms: 0,
-    status: 'running',
-    output_file: null,
-    ended_at: null,
-  };
-}
-
 let app: Record<string, unknown> | null = null;
 
 /** Mount the page against a seat, and settle the read it makes on the way up. */
@@ -408,18 +393,34 @@ describe('what one arriving frame costs the inspector', () => {
    * tell "the poll never ran" from "the field is not taken from the poll".
    */
   it('takes a field no frame feeds from what the poll answered with', () => {
-    const fields: Record<string, unknown> = { monitors: [] };
+    const walked = () => ({
+      processes: {
+        processes: [
+          {
+            pid: 4,
+            parent_pid: 1,
+            name: 'claude',
+            command: 'claude',
+            memory_bytes: 1024,
+          },
+        ],
+        scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
+      },
+    });
+    const fields: Record<string, unknown> = {
+      processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
+    };
     const server = open([], fields);
-    expect(drawn().map((section) => section.key)).not.toContain('sec-monitors');
+    expect(drawn().map((section) => section.key)).not.toContain('sec-processes');
 
-    fields['monitors'] = [monitor()];
+    fields['processes'] = walked()['processes'];
     vi.advanceTimersByTime(POLL_MS + 1);
     flushSync();
 
     const keys = drawn().map((section) => section.key);
     expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
     expect(keys, `a poll's answer did not reach the record: ${JSON.stringify(keys)}`).toContain(
-      'sec-monitors',
+      'sec-processes',
     );
   });
 

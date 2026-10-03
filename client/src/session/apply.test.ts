@@ -198,6 +198,83 @@ describe('applyUpdate', () => {
     });
   });
 
+  describe('the pushed sets', () => {
+    it('replaces the working tree, its PR and its closing issues from one frame', () => {
+      const next = applyUpdate(empty(), {
+        work_changed: {
+          key: SLOT,
+          work: { branch: 'main', changed: 2, gate: 'in_repo' },
+          pr: { number: 1249, url: 'https://example.test/pull/1249' },
+          closes: [{ number: 1215, url: 'https://example.test/1215' }],
+        },
+      });
+
+      expect(next.work).toEqual({ branch: 'main', changed: 2, gate: 'in_repo' });
+      expect(next.pr).toEqual({ number: 1249, url: 'https://example.test/pull/1249' });
+      expect(next.closes).toEqual([{ number: 1215, url: 'https://example.test/1215' }]);
+    });
+
+    it('replaces the monitor set whole', () => {
+      const next = applyUpdate(empty(), {
+        monitors_changed: {
+          key: SLOT,
+          monitors: [
+            {
+              tool_use_id: 'tu-1',
+              task_id: 't-1',
+              description: 'ci-watch',
+              command: 'gh run watch 1',
+              persistent: true,
+              timeout_ms: 0,
+              status: 'running',
+              output_file: null,
+              ended_at: null,
+            },
+          ],
+        },
+      });
+
+      expect(next.monitors).toHaveLength(1);
+      expect(next.monitors[0]?.description).toBe('ci-watch');
+    });
+
+    it('reads the registry off the payload key the frame carries', () => {
+      // The frame names the set `tasks`; the record's field is
+      // `background_tasks`, and reading the payload by the record's name is
+      // the mistake that leaves the field empty forever.
+      const next = applyUpdate(empty(), {
+        background_tasks_changed: {
+          key: SLOT,
+          tasks: [
+            {
+              task_id: 't-1',
+              task_type: 'local_bash',
+              description: 'gh run watch',
+              command: 'gh run watch 1',
+            },
+          ],
+        },
+      });
+
+      expect(next.background_tasks).toHaveLength(1);
+      expect(next.background_tasks[0]).toMatchObject({ task_id: 't-1' });
+    });
+
+    it('clears a set the frame says is empty', () => {
+      const held = applyUpdate(empty(), {
+        background_tasks_changed: {
+          key: SLOT,
+          tasks: [{ task_id: 't-1', task_type: 'local_bash', description: 'x', command: null }],
+        },
+      });
+      const next = applyUpdate(held, { background_tasks_changed: { key: SLOT, tasks: [] } });
+
+      expect(next.background_tasks, 'an empty set is the frame saying nothing is running').toEqual(
+        [],
+      );
+    });
+  });
+
   describe('the header the frames move', () => {
     it('takes the mode and the effort a hook observation carries', () => {
       const next = applyUpdate(empty(), {
