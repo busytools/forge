@@ -2883,6 +2883,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: None,
                     is_git_repo: seeded_is_git,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -4849,6 +4850,7 @@ provider = "anthropic"
                     interactive: None,
                     // The shape `migrate_from_dynamic_workers` writes.
                     is_git_repo: None,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row the migration writes");

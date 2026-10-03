@@ -3428,6 +3428,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: None,
                     is_git_repo: None,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row");

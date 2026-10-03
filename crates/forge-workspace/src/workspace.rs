@@ -3217,6 +3217,7 @@ impl Workspace {
             resume_kick: existing.as_ref().and_then(|row| row.resume_kick.clone()),
             interactive: existing.as_ref().and_then(|row| row.interactive),
             is_git_repo: existing.as_ref().and_then(|row| row.is_git_repo),
+            mcp_families: existing.as_ref().and_then(|row| row.mcp_families.clone()),
         };
         if let Err(error) = crate::store::sessions::put(db, &row) {
             tracing::warn!(
@@ -5014,6 +5015,7 @@ impl Workspace {
                 label: label.to_owned(),
                 session_id: Some(id.to_owned()),
                 charter: Some(charter.to_owned()),
+                mcp_families: existing.as_ref().and_then(|row| row.mcp_families.clone()),
                 kick: kick
                     .map(str::to_owned)
                     .or_else(|| existing.as_ref().and_then(|row| row.kick.clone())),
@@ -5238,6 +5240,7 @@ impl Workspace {
                 // `update` leaves an absent field alone; the gitness is
                 // fixed at spawn and never re-decided here.
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
     }
@@ -9203,6 +9206,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the lead row a spawn writes");
@@ -9218,6 +9222,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the steward's own row, as the released build leaves it");
@@ -9436,6 +9441,7 @@ provider = "anthropic"
                 resume_kick: None,
                 interactive: None,
                 is_git_repo: None,
+                mcp_families: None,
             },
         )
         .expect("seed the row");
@@ -12388,6 +12394,7 @@ mod worker_respawn_tests {
             resume_kick: None,
             interactive: Some(false),
             is_git_repo: None,
+            mcp_families: None,
         }
     }
 
@@ -12454,6 +12461,7 @@ mod worker_respawn_tests {
                 resume_kick: None,
                 interactive: Some(false),
                 is_git_repo: Some(true),
+                mcp_families: None,
             },
         )
         .expect("seed the id-less row");

@@ -59,6 +59,11 @@ pub struct SessionRecord {
     /// own.
     #[serde(default)]
     pub is_git_repo: Option<bool>,
+    /// The MCP families the spawn's allowlist restricted this worker to,
+    /// exactly as the lead wrote them. `None` means every family, so a
+    /// row written before the field existed keeps its full surface.
+    #[serde(default)]
+    pub mcp_families: Option<Vec<String>>,
 }
 
 /// A configured project as the migration needs it: its catalog key, and
@@ -214,6 +219,8 @@ pub fn migrate_from_dynamic_workers(
             resume_kick: worker.resume_kick.clone(),
             interactive: Some(worker.interactive),
             is_git_repo: None,
+            // Nor a family selection; absent means every family.
+            mcp_families: None,
         };
         // An existing row is the id-bearing one: merge onto it so the
         // occupant it names survives. `update` leaves an absent field at
@@ -431,6 +438,7 @@ mod tests {
             resume_kick: None,
             interactive: None,
             is_git_repo: None,
+            mcp_families: None,
         }
     }
 
@@ -444,6 +452,30 @@ mod tests {
         kick: Option<&str>,
     ) -> SessionRecord {
         SessionRecord { kick: kick.map(str::to_owned), ..record(org, project, label, session_id) }
+    }
+
+    /// The family selection survives the store: written as spawned, read
+    /// back whole; a row written before the field existed decodes as
+    /// absent, which resolves to every family.
+    #[test]
+    fn the_family_selection_round_trips_and_old_rows_stay_absent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let mut row = record("Personal", "forge", "steward", None);
+        row.mcp_families = Some(vec!["slack".to_owned(), "tasks".to_owned()]);
+        put(&db, &row).expect("write");
+
+        let read = get(&db, "Personal", "forge", "steward").expect("read").expect("row");
+        assert_eq!(
+            read.mcp_families,
+            Some(vec!["slack".to_owned(), "tasks".to_owned()]),
+            "the stored selection reads back whole"
+        );
+
+        let legacy = br#"{"session_id":null}"#;
+        let decoded = decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
+        assert_eq!(decoded.mcp_families, None, "an absent field stays absent, never an invented set");
     }
 
     /// The first boot after this table exists is the migration: every
@@ -479,6 +511,9 @@ mod tests {
                 // The retired table never held it; the spawn probes and
                 // records it on the worker's next spawn.
                 is_git_repo: None,
+                // Neither did it hold a family selection; absent means
+                // every family.
+                mcp_families: None,
             },
             "the row carries the worker's fields and no id",
         );

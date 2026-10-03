@@ -713,6 +713,7 @@ impl Workspace {
                 resume_kick: None,
                 interactive: Some(interactive),
                 is_git_repo: None,
+                mcp_families: None,
             },
         );
     }
