@@ -403,6 +403,12 @@
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
+      // **And so is the follow, which is why the entry re-arms it** (#1673):
+      // a seat's conversation is kept, and its follow flag was kept with it -
+      // so a seat left scrolled up came back with the pass returning early
+      // and the reader landing wherever the old offset fell. A place belongs
+      // to the visit; every entry lands at the latest.
+      working?.following(true);
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here: left
       // standing they hold `shift` on, which is the guard that keeps the
@@ -487,7 +493,16 @@
    * draws with its baseline below the fold for the whole compaction. Keyed
    * here so the follow re-sticks when the line appears.
    */
-  const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+  /**
+   * What the follow pass runs on: the seat, and the newest turn's shape.
+   *
+   * **The seat is IN the key** so a switch always re-runs the pass - two seats
+   * can hold the same number of turns, and a pass keyed on the count alone
+   * would leave the arriving conversation unpinned (#1673).
+   */
+  const follows = $derived(
+    held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,
+  );
 
   /**
    * The newest turn's own report row - the unit, and the figures in it -
