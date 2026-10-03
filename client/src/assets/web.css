@@ -439,6 +439,16 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   flex-wrap: nowrap; min-width: 0; }
 .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The wordmark in the header, the way home: the home's own brand a size down
+   so the session's name still leads, in a real anchor so the keyboard reaches
+   it, the URL stays real and the router follows it in place. The hairline is
+   what separates the app's brand from the seat's own. */
+.sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
+  color: inherit; text-decoration: none; }
+.sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+.sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
+.sess .brand:hover .word { text-decoration: underline; }
+.sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   min-width: 0; overflow: hidden;
