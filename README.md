@@ -25,6 +25,7 @@ Strictly acyclic:
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-dictate         leaf: dictation, depends on no forge-* crate
+forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
@@ -40,6 +41,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
 | [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization. Depends on no forge-* crate and knows nothing about a host. |
+| [`forge-system-one`](crates/forge-system-one) | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types with their validation, and the HTTP call with its timeout and error mapping. Depends on no forge-* crate. |
 | [`forge-gateway`](crates/forge-gateway) | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only. |
 | [`forge-connectors`](crates/forge-connectors) | One module per inbound connector: the stream client, REST lookups and matching for one external integration (Gotify and Slack today). Depends on forge-primitives only. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |

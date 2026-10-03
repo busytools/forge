@@ -1,11 +1,12 @@
 # forge - project guide
 
 A Rust workspace that wraps Anthropic's `claude` CLI in a multi-session
-terminal UI. Eleven crates, layered acyclically:
+terminal UI. Twelve crates, layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
 forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
+forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
@@ -24,6 +25,11 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   on no forge-* crate and knows nothing about a host, so it must not
   grow one; a doc comment mentioning a keypress, a composer or a
   session is a bug.
+- **`forge-system-one`** - the System One decision-model client: the
+  `[systemone]` config shape, the wire question/answer types with their
+  validation, and the HTTP call with its timeout and error mapping. A
+  leaf: depends on no forge-* crate, and its own types stay there even
+  once another crate reads them.
 - **`forge-gateway`** - the account pool: one backend per `forge.toml`
   provider token (credential resolution, the usage probe's HTTP +
   payload mapping, billing shape), plus account selection by declared
@@ -107,51 +113,56 @@ Work top-down; first match wins.
    and its own types stay there even once another crate reads them.
    Wanting a forge-* dependency here is a design problem, not a
    dependency problem.
-2. **A type that crosses a crate boundary?** (envelope, snapshot
+2. **System One decision-model I/O?** (the `[systemone]` config shape,
+   the wire question and answer types with their validation, the HTTP
+   call) -> `forge-system-one`. A leaf: it may not depend on any forge-*
+   crate, and its own types stay there even once another crate reads
+   them.
+3. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
    more than one crate) -> `forge-primitives`. Pure data shapes only.
-3. **Provider credential, probe, usage mapping, billing or repair?**
+4. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
    failure allows), or is it which account a session spawns under,
    whether an account is healthy, or when it is next probed? ->
    `forge-gateway`, one backend per token and the account pool.
-4. **Inbound connector I/O for an external integration?** (its stream
+5. **Inbound connector I/O for an external integration?** (its stream
    client, REST lookups, subscription matching, reconnecting
    subsystem pump) -> `forge-connectors`, one module per connector.
    The connector holds no workspace state: Gotify reaches the
    workspace through the `GotifyHost` port forge-workspace implements,
    and Slack holds only its Web API client.
-5. **Speaks stream-json to the `claude` subprocess?** (decoder,
+6. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
-6. **Live state about the user's environment?** (git watcher, cwd
+7. **Live state about the user's environment?** (git watcher, cwd
    resolution, env probes, OAuth, plugins, settings IO, plugin catalog
    scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-7. **Orchestration across projects, sessions, accounts, `forge.toml`,
+8. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
    `Command` variants, `SessionUpdate` events. A read a VIEW needs is a
    verb on the view surface below, not a bare method.
-8. **A session record as a view sees it, or a decision any view would
+9. **A session record as a view sees it, or a decision any view would
    make over one?** (the render-ready record, the reducer that derives
    it, the policy that decides how a run of blocks folds, the peer
    envelope parsing in both directions) -> `forge-server`. Sits
    between workspace and the views; the test is "does this render?" -
    if it does, it is the view's.
-9. **A widget, screen, key binding, mouse handler, or per-session
-   presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
-   state in `app/`.
-10. **A view that is not the TUI?** (its pages, its markup, its own
+10. **A widget, screen, key binding, mouse handler, or per-session
+    presentation state?** -> `forge-tui`. Render in `ui/`, dispatch +
+    state in `app/`.
+11. **A view that is not the TUI?** (its pages, its markup, its own
     per-view state) -> a crate of its own, built against the socket in
     `forge-server` rather than against the core. `forge-web` is the one
     that exists, parked until it is rebuilt that way. Either way it sits
     beside `forge-tui` on the same core, reads through the view surface
     in `forge-server` and never `forge-workspace`, and starts no
     subsystem of its own.
-11. **A wire-conformance scenario?** -> `forge-test-harness`.
+12. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
@@ -210,8 +221,9 @@ forge-tui", so bias toward the deeper crate when unsure.
   channel (see `git_diff_event_tx/rx`).
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
   means one is wrong; lift to primitives or import the re-export. The
-  one exception is `forge-dictate`, which may not depend on primitives
-  at all: its types stay in it and consumers import them from there.
+  exceptions are the leaf crates that may not depend on any forge-*
+  crate, `forge-dictate` and `forge-system-one`: their types stay in
+  them and consumers import them from there.
 - **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or tui is the thing this crate exists to
   delete; route through `forge_gateway::backend(token)` instead.
