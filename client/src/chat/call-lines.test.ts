@@ -44,6 +44,22 @@ const refused = (): ToolLeaf => ({
   ],
 });
 
+/** A failed command: what it ran, and the reason it came back with. */
+const refusedBash = (): ToolLeaf => ({
+  id: 'toolu_bash',
+  row: { kind: 'family', family: 'bash' },
+  name: 'Bash',
+  title: 'run the gate against the wrong tree',
+  command: 'just check --nope',
+  status: 'failed',
+  note: null,
+  body: [{ kind: 'error', message: 'Command failed with exit code 2', detail: '' }],
+  mutation: null,
+  skill: null,
+  image: null,
+  imageNote: null,
+});
+
 let app: Record<string, unknown> | null = null;
 
 afterEach(() => {
@@ -85,6 +101,23 @@ describe("the lines a call's row draws", () => {
     );
     expect(hint?.textContent, 'and the detail under it is not dropped').toContain(
       'String:   a = 3;',
+    );
+  });
+
+  it('draws a failed command line above its reason, the way a settled one draws it', () => {
+    // The command leads its own output on a settled row, and a failed one is
+    // the same row: the reason under it says nothing about WHAT failed if the
+    // line that names the command goes missing.
+    app = mount(Call, { target: document.body, props: { k: 'toolu_bash', call: refusedBash() } });
+    flushSync();
+
+    const hint = document.querySelector('.errhint');
+    expect(hint, 'the reason draws in the hint chrome').not.toBeNull();
+    expect(hint?.textContent, 'the command that was run leads its own failure').toContain(
+      'just check --nope',
+    );
+    expect(hint?.textContent, 'and the reason follows it').toContain(
+      'Command failed with exit code 2',
     );
   });
 

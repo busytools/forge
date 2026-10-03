@@ -280,8 +280,12 @@
     {:else if piece.kind === 'error'}
       <!-- A failed call's reason, in the caption chrome rather than a box of
            its own: what happened first, the detail under it. The CLI's
-           envelope was read off in the fold, so only the words arrive here. -->
+           envelope was read off in the fold, so only the words arrive here -
+           and the command leads its own failure the way it leads a settled
+           one, or the reason says nothing about what failed. -->
       <div class="errhint">
+        {#if call.command !== null}<span class="pfx">$</span>
+          {call.command}<br />{/if}
         <div class="m">{piece.message}</div>
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
