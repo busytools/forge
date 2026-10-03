@@ -200,7 +200,7 @@
   class:right-shown={rightShown}
   class:right-hidden={!rightShown}
 >
-  <Rail home={wire} current={slot} {now} onclose={() => (leftChosen = false)} />
+  <Rail home={wire} current={slot} {now} {connection} onclose={() => (leftChosen = false)} />
 
   <main class="chat">
     <div class="sess">

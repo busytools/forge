@@ -2,7 +2,6 @@
   import type { Row } from '../home/view';
   import Chevron from '../components/Chevron.svelte';
   import { hrefForSlot } from '../routes';
-  import CloseChip from './CloseChip.svelte';
   import { railMark } from './view';
 
   /**
@@ -14,6 +13,10 @@
    * one-way: the fold OPENS when the seat the page is showing moves in behind
    * it - an occupant swap onto a sleeping seat reaches this without a fresh
    * mount - and never closes on its own.
+   *
+   * No close chip: a sleeping seat has no session to close, and the
+   * terminal's own answer for these rows is to draw them as information and
+   * not as controls.
    */
   let { sleeping, shown }: { sleeping: Row[]; shown: string | null } = $props();
 
@@ -36,7 +39,6 @@
     <div class="wk" class:on={shown === worker.slot.label}>
       <span class="dot {railMark(worker.state)}"></span>
       <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
-      <CloseChip />
     </div>
   {/each}
 </details>

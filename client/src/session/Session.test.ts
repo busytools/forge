@@ -119,16 +119,16 @@ describe('the session shell as it draws', () => {
 
   /**
    * The close chip is a control with an accessible name rather than a glyph in
-   * a span sized to a monospace line box, and it is disabled because nothing
-   * in this view can close a session yet.
+   * a span sized to a monospace line box, and the name says what it closes -
+   * the row it is drawn on, which is what decides the command it sends
+   * (`session/close.test.ts`).
    */
-  it('draws the row chip as a disabled button with a name', () => {
+  it('draws the row chip as a button naming what it closes', () => {
     const chip = /<button[^>]*class="x"[^>]*>/.exec(draw())?.[0] ?? '';
     expect(chip, 'the row chip is not a control').not.toBe('');
-    expect(chip, 'the chip promised a click it cannot do').toContain('disabled');
-    expect(chip, 'the chip carries no name').toContain(
-      'aria-label="closing a session is not available yet"',
-    );
+    expect(chip, 'the chip takes a click it would not answer').not.toContain('disabled');
+    expect(chip, 'the chip carries no name').toContain('aria-label="close proj"');
+    expect(chip, 'the chip does not say what it closes').toContain('title="close proj"');
   });
 
   /**

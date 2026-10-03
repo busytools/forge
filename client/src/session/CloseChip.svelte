@@ -10,18 +10,14 @@
    * page draws, and the thing that carries it is a control with an accessible
    * name rather than a `title` on a `span`.
    *
-   * It is disabled rather than wired to nothing: nothing in this view can
-   * close a session yet, so a button that takes a click and does nothing would
-   * promise work it cannot do.
+   * The ROW supplies the act. Which command a close sends - a worker closes
+   * through `close_worker`, a project's row through `close_session` - and
+   * where the reader lands afterwards are rail decisions (`session/close.ts`),
+   * made where the row is drawn and not here.
    */
+  let { name, onclose }: { name: string; onclose: () => void } = $props();
 </script>
 
-<button
-  class="x"
-  type="button"
-  disabled
-  title="closing a session is not available yet"
-  aria-label="closing a session is not available yet"
->
+<button class="x" type="button" title="close {name}" aria-label="close {name}" onclick={onclose}>
   <Icon name="x" />
 </button>
