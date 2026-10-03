@@ -18,18 +18,19 @@ const SCORE_INPUT = {
 describe('an answer the client could not read', () => {
   it('falls back to the raw text for anything that is not a decision result', () => {
     const name = 'mcp__forge__systemone__ask_noul';
-    const answer = '{"type":"noul","noul":0.93}';
-    const json = (held: string): string => JSON.stringify({ model: 'jev-1.13.0', answer: held });
+    // A payload that PARSES, so each fallback is its guard's doing and not a
+    // malformed body every return path would refuse anyway.
+    const wellFormed = '{"model":"jev-1.13.0","answer":{"type":"noul","noul":0.93}}';
 
     expect(decisionOf(name, NOUL_INPUT, undefined), 'no result yet').toBeNull();
-    expect(decisionOf(name, NOUL_INPUT, result(json(answer), true)), 'a failed call').toBeNull();
+    expect(decisionOf(name, NOUL_INPUT, result(wellFormed, true)), 'a failed call').toBeNull();
     expect(decisionOf(name, NOUL_INPUT, result('not json at all')), 'malformed').toBeNull();
     expect(
-      decisionOf(name, NOUL_INPUT, result(json('{"type":"verdict","noul":0.9}'))),
+      decisionOf(name, NOUL_INPUT, result('{"model":"m","answer":{"type":"verdict","noul":0.9}}')),
       'an answer shape nothing here draws',
     ).toBeNull();
     expect(
-      decisionOf('mcp__forge__agents__list', NOUL_INPUT, result(json(answer))),
+      decisionOf('mcp__forge__agents__list', NOUL_INPUT, result(wellFormed)),
       'a call that is not a decision',
     ).toBeNull();
   });
