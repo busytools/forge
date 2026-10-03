@@ -21,6 +21,7 @@ pub struct SystemOneClient {
     endpoint: String,
     api_key: Option<String>,
     model: String,
+    timeout: Duration,
 }
 
 #[derive(serde::Deserialize)]
@@ -31,17 +32,18 @@ struct ResponseEnvelope {
 }
 
 impl SystemOneClient {
-    pub fn new(config: &SystemOneConfig) -> Result<Self, SystemOneError> {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_millis(config.timeout_ms))
-            .build()
-            .map_err(|err| SystemOneError::Transport(err.to_string()))?;
-        Ok(Self {
+    /// The caller builds the `reqwest::Client`, so a boot site can pass
+    /// the `NODE_EXTRA_CA_CERTS` trust client every outbound call uses;
+    /// the config's timeout is applied per request so a client shared
+    /// with another leg cannot widen it.
+    pub fn new(config: &SystemOneConfig, http: reqwest::Client) -> Self {
+        Self {
             http,
             endpoint: systemone_url(&config.base_url),
             api_key: config.api_key.clone(),
             model: config.model.clone(),
-        })
+            timeout: Duration::from_millis(config.timeout_ms),
+        }
     }
 
     /// Ask one question about one state; the answer must validate against
@@ -52,7 +54,7 @@ impl SystemOneClient {
             "state": state,
             "questions": { QUESTION_KEY: question },
         });
-        let mut request = self.http.post(&self.endpoint).json(&body);
+        let mut request = self.http.post(&self.endpoint).json(&body).timeout(self.timeout);
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
@@ -147,6 +149,10 @@ mod tests {
         SystemOneConfig { base_url: base.to_owned(), api_key: api_key.map(str::to_owned), model: "test-model".to_owned(), timeout_ms: 5_000 }
     }
 
+    fn client_for(base: &str, api_key: Option<&str>) -> SystemOneClient {
+        SystemOneClient::new(&config_for(base, api_key), reqwest::Client::new())
+    }
+
     fn noul_question() -> Question {
         Question::Noul { instructions: "Is this a bug?".to_owned(), criteria: None }
     }
@@ -178,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn noul_round_trips_and_sends_the_wire_body() {
         let (base, requests) = spawn_server(200, NOUL_OK_BODY, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let outcome = client.ask(&serde_json::json!({"ticket": "x"}), &noul_question()).await.expect("request succeeds");
 
@@ -201,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn no_key_sends_no_authorization_header() {
         let (base, requests) = spawn_server(200, NOUL_OK_BODY, None).await;
-        let client = SystemOneClient::new(&config_for(&base, None)).expect("client builds");
+        let client = client_for(&base, None);
 
         client.ask(&serde_json::json!("x"), &noul_question()).await.expect("request succeeds");
 
@@ -213,7 +219,7 @@ mod tests {
     async fn typesafe_detail_body_is_carried() {
         let body = r#"{"detail":[{"type":"missing","loc":["body","model"],"msg":"Field required"}]}"#;
         let (base, _) = spawn_server(422, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("422 is an error");
 
@@ -226,7 +232,7 @@ mod tests {
     async fn openrouter_error_envelope_is_carried() {
         let body = r#"{"error":{"code":429,"message":"Rate limit exceeded"}}"#;
         let (base, _) = spawn_server(429, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("429 is an error");
 
@@ -238,7 +244,7 @@ mod tests {
     #[tokio::test]
     async fn html_error_body_is_carried() {
         let (base, _) = spawn_server(504, "<html><body>gateway timeout</body></html>", None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("504 is an error");
 
@@ -252,7 +258,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
         let addr = listener.local_addr().expect("bound address");
         drop(listener);
-        let client = SystemOneClient::new(&config_for(&format!("http://127.0.0.1:{}", addr.port()), Some("k"))).expect("client builds");
+        let client = client_for(&format!("http://127.0.0.1:{}", addr.port()), Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("refused connection is an error");
 
@@ -264,7 +270,7 @@ mod tests {
         let (base, _) = spawn_server(200, NOUL_OK_BODY, Some(Duration::from_millis(200))).await;
         let mut config = config_for(&base, Some("k"));
         config.timeout_ms = 50;
-        let client = SystemOneClient::new(&config).expect("client builds");
+        let client = SystemOneClient::new(&config, reqwest::Client::new());
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("a slow response is an error");
 
@@ -275,7 +281,7 @@ mod tests {
     async fn choice_key_drift_is_an_invalid_response() {
         let body = r#"{"model":"m","answers":{"q":{"type":"choice","choice":"billing","probabilities":{"billing":0.9,"sales":0.1}}},"usage":{"input_tokens":1,"output_tokens":1}}"#;
         let (base, _) = spawn_server(200, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &choice_question()).await.expect_err("drifted keys are an error");
 
@@ -286,7 +292,7 @@ mod tests {
     async fn extra_response_fields_are_ignored() {
         let body = r#"{"id":"gen-1","provider":"TypeSafe","model":"m","answers":{"q":{"type":"noul","noul":0.5}},"usage":{"input_tokens":1,"output_tokens":1,"cost":0.0001}}"#;
         let (base, _) = spawn_server(200, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let outcome = client.ask(&serde_json::json!("x"), &noul_question()).await.expect("extra fields do not break parsing");
 
@@ -297,7 +303,7 @@ mod tests {
     async fn missing_usage_is_an_invalid_response() {
         let body = r#"{"model":"m","answers":{"q":{"type":"noul","noul":0.5}}}"#;
         let (base, _) = spawn_server(200, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("missing usage is an error");
 
@@ -308,7 +314,7 @@ mod tests {
     async fn answer_key_mismatch_is_an_invalid_response() {
         let body = r#"{"model":"m","answers":{"x":{"type":"noul","noul":0.5}},"usage":{"input_tokens":1,"output_tokens":1}}"#;
         let (base, _) = spawn_server(200, body, None).await;
-        let client = SystemOneClient::new(&config_for(&base, Some("k"))).expect("client builds");
+        let client = client_for(&base, Some("k"));
 
         let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("a mismatched answer key is an error");
 
