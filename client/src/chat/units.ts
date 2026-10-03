@@ -58,6 +58,21 @@ export interface AnsweredQuestion {
   typed_note: string | null;
 }
 
+/** One call on a family's lane, with what the fold lists it by. */
+export interface CallLeaf {
+  /**
+   * The fold's own name for the row.
+   *
+   * **The wire's `tool_use` id, or the frame and block it arrived in where the
+   * wire gave none.** The fold computes it at the call (the way it names every
+   * row), because a view that fell back to the id alone would key two id-less
+   * calls of one family to an empty string - a duplicate key, which stops the
+   * whole turn drawing at mount.
+   */
+  key: string;
+  leaf: ToolLeaf;
+}
+
 /** One family's calls inside a group. */
 export interface FamilyLeaves {
   tag: 'family';
@@ -65,7 +80,7 @@ export interface FamilyLeaves {
   row: KindRow;
   /** The word the row draws. */
   label: string;
-  calls: ToolLeaf[];
+  calls: CallLeaf[];
 }
 
 /** How loudly a notice reads. */
@@ -1374,11 +1389,16 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         );
         if (held === undefined) {
           families.push({
-            lane: { tag: 'family', row: item.row, label: item.label, calls: [item.leaf] },
+            lane: {
+              tag: 'family',
+              row: item.row,
+              label: item.label,
+              calls: [{ key: item.key, leaf: item.leaf }],
+            },
             at: index,
           });
         } else {
-          held.lane.calls.push(item.leaf);
+          held.lane.calls.push({ key: item.key, leaf: item.leaf });
           held.at = index;
         }
         continue;

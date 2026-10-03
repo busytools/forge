@@ -9,7 +9,7 @@
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine, paragraphs } from './text';
-  import type { HookLeaf, Lane, MessageKind, PeerCard } from './units';
+  import type { CallLeaf, HookLeaf, Lane, MessageKind, PeerCard } from './units';
 
   /** A thought as its lane draws it: the words, and the row's line rendered. */
   type DrawnThought = { key: string; text: string; lead: string };
@@ -68,7 +68,7 @@
               key: `m:${lane.kind}`,
               glyph: glyphOf(lane.kind),
               label: lane.kind,
-              calls: [] as ToolLeaf[],
+              calls: [] as CallLeaf[],
               cards: lane.cards,
               thoughts: [] as DrawnThought[],
               hooks: [] as HookLeaf[],
@@ -78,7 +78,7 @@
                 key: 't:think',
                 glyph: 'brain',
                 label: 'thinking',
-                calls: [] as ToolLeaf[],
+                calls: [] as CallLeaf[],
                 cards: [] as PeerCard[],
                 // The row's line is the text joined and unblocked, its inline
                 // marks rendered: a preview cannot draw a heading, and it can
@@ -93,7 +93,7 @@
                 key: 'h:hook',
                 glyph: 'hook',
                 label: 'hook',
-                calls: [] as ToolLeaf[],
+                calls: [] as CallLeaf[],
                 cards: [] as PeerCard[],
                 thoughts: [] as DrawnThought[],
                 hooks: lane.runs,
@@ -119,8 +119,8 @@
         <Icon name={lane.glyph} class="gl" />
         <span class="nm">{lane.label}</span>
       </div>
-      {#each lane.calls as call (call.id)}
-        <Call {call} open={opens(call)} />
+      {#each lane.calls as call (call.key)}
+        <Call call={call.leaf} open={opens(call.leaf)} />
       {/each}
       {#each lane.cards as card (card.id)}
         <details class="leaf">

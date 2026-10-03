@@ -403,7 +403,7 @@ describe('the conversation the chat draws', () => {
       group?.kind === 'group'
         ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
         : [];
-    expect(calls[0]?.skill, "the call's row is where the body landed").toBe(
+    expect(calls[0]?.leaf.skill, "the call's row is where the body landed").toBe(
       '# Unslop\n\nEdit text.',
     );
   });
@@ -495,7 +495,7 @@ describe('the conversation the chat draws', () => {
       group?.kind === 'group'
         ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
         : [];
-    expect(calls[0]?.imageNote, "the call's row carries it").toContain('Multiply coordinates');
+    expect(calls[0]?.leaf.imageNote, "the call's row carries it").toContain('Multiply coordinates');
   });
 
   it('re-renders only the turn in flight when its frames arrive', () => {
