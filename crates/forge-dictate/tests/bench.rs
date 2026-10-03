@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use forge_dictate::{Config, Engine, ModelSpec, Outcome, SAMPLE_RATE, Samples, Stages};
+use forge_dictate::{Config, Engine, ModelSpec, Normalizer, Outcome, SAMPLE_RATE, Samples, Stages};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -357,6 +357,89 @@ fn bench_corpus() {
     std::fs::create_dir_all(path.parent().expect("has a parent")).expect("bench dir");
     std::fs::write(&path, out).expect("results file must be writable");
     println!("\nwrote {}", path.display());
+}
+
+/// The two model loads, timed separately, each twice.
+///
+/// `Stages::model_load` times the ASR weights only, and the normalizer's
+/// comparable 1.5 GB loads after that timer stops and lands inside
+/// `pipeline` - the gap the results file's own notes call out as
+/// unmeasured. This times both through the calls the engine makes, and
+/// loads each a second time in the same process so a cold pass and a warm
+/// one are separable.
+///
+/// Nothing here reaches the results file: the load is bimodal for the same
+/// reason the file gives for leaving `model_load` out of itself, so its
+/// figures are stdout only, like that one.
+///
+/// COLD MEANS THE PAGE CACHE HOLDS NONE OF THE WEIGHTS, and two things take
+/// that away: a machine that has just read them, and a running forge, which
+/// holds the normalizer mapped so `purge` cannot evict it. Run this after a
+/// purge, and point `FORGE_DICTATE_BENCH_MODELS` at a copy of the weights
+/// when something live has the originals mapped - the copy is the same
+/// bytes with no mapping, so the purge reaches it, and `model_identity`
+/// checks it against the spec. A run without either is warm throughout and
+/// is the control.
+///
+/// Run it as `just bench` never does, in a process of its own:
+///
+/// ```text
+/// cargo nextest run -p forge-dictate --test bench --run-ignored all \
+///   --no-capture -E 'test(model_load_cold_warm)'
+/// ```
+#[test]
+#[ignore = "needs both models on disk; measures model load only"]
+fn model_load_cold_warm() {
+    let models = std::env::var_os("FORGE_DICTATE_BENCH_MODELS").map_or_else(
+        || {
+            dirs::cache_dir()
+                .map(|d| d.join("forge-dictate"))
+                .expect("a cache directory is required to locate the weights")
+        },
+        PathBuf::from,
+    );
+    let asr = ModelSpec::cohere_transcribe_q4_k_m();
+    let normalizer = ModelSpec::s1_mini_f16();
+    let asr_path = models.join(&asr.file);
+    let normalizer_path = models.join(&normalizer.file);
+    let _ = model_identity(&asr, &asr_path);
+    let _ = model_identity(&normalizer, &normalizer_path);
+
+    let load_asr = || {
+        let started = std::time::Instant::now();
+        let model = transcribe_cpp::Model::load(&asr_path).expect("asr weights must load");
+        let session = model.session().expect("a session must open over the weights");
+        let elapsed = started.elapsed();
+        drop(session);
+        drop(model);
+        elapsed
+    };
+    let load_normalizer = || {
+        let started = std::time::Instant::now();
+        let normalizer = Normalizer::load(&normalizer_path).expect("normalizer weights must load");
+        let elapsed = started.elapsed();
+        drop(normalizer);
+        elapsed
+    };
+
+    println!("\n=== model loads, separately (nothing here reaches the results file) ===");
+    for pass in ["first (cold)", "second (warm, same process)"] {
+        let asr_ms = ms(load_asr());
+        let normalizer_ms = ms(load_normalizer());
+        println!(
+            "{pass:<32} asr {asr_ms:>6} ms, normalizer {normalizer_ms:>6} ms, both {:>6} ms",
+            asr_ms + normalizer_ms
+        );
+    }
+
+    // The app-visible path: the engine loads both on its worker thread, and
+    // `wait_ready` resolves once the second is in memory.
+    let started = std::time::Instant::now();
+    let engine = Engine::new(forge_dictate::ConfigBuilder::new().models_dir(&models).build())
+        .expect("engine must start");
+    engine.wait_ready().expect("both models must load");
+    println!("\nengine (new + wait_ready): {} ms", ms(started.elapsed()));
+    drop(engine);
 }
 
 fn header(
