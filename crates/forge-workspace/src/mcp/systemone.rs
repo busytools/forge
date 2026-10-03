@@ -554,6 +554,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_transport_failure_names_itself() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        *mock.result.lock() = Some(Err(SystemOneError::Transport("connection refused".to_owned())));
+        let tool = AskNoul { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
+
+        assert!(out.is_error);
+        assert!(out.blocks[0].text.contains("System One request failed: connection refused"), "{}", out.blocks[0].text);
+    }
+
+    #[tokio::test]
     async fn timeout_and_invalid_response_map_to_their_texts() {
         let mock = Arc::new(MockSystemOneFacade::new());
         let tool = AskNoul { facade: mock.clone() };
