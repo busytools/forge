@@ -261,7 +261,10 @@ to the model as `mcp__forge__<group>__<tool>`, with seven groups today:
 
 `review`, `cron`, `tasks`, `gotify` and `slack` are registered for every
 session; `systemone` joins them when `[systemone]` is configured and
-enabled. The split that varies by session kind is inside `agents`: any session may
+enabled. A worker's families can be narrowed at spawn -
+`agents__spawn`'s `mcp_families` list, revised by `agents__update` and
+stored on the worker's durable record - and each withheld family is
+named in that worker's own prompt; the `agents` group is always on. The split that varies by session kind is inside `agents`: any session may
 `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only. Reach is the same for both: a target is a

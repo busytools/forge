@@ -273,6 +273,7 @@ pub trait WorkerFacade: Send + Sync {
         resume_kick: Option<String>,
         interactive: bool,
         resume_session: bool,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Merge the supplied fields onto the stored dynamic-worker row for
@@ -280,7 +281,10 @@ pub trait WorkerFacade: Send + Sync {
     /// stored value. Errors with `NoSuchWorker` when no row exists:
     /// update revises an existing worker, it never creates one. Takes
     /// effect on that worker's next respawn, since a session's system
-    /// prompt is fixed when the session spawns.
+    /// prompt and tool list are fixed when the session spawns.
+    /// `mcp_families` follows the same contract: `None` leaves the
+    /// stored selection alone, `Some(names)` replaces it - canonicalised
+    /// by the tool - and `Some(empty)` resets it to every family.
     fn update_worker(
         &self,
         caller: &SessionSlot,
@@ -288,6 +292,7 @@ pub trait WorkerFacade: Send + Sync {
         charter: Option<String>,
         kick: Option<String>,
         resume_kick: Option<String>,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<(), WorkerUpdateError>;
 
     /// Dispatch a `Command::DespawnWorker` and await its result.
@@ -430,6 +435,7 @@ impl WorkerFacade for ProdWorkerFacade {
         resume_kick: Option<String>,
         interactive: bool,
         resume_session: bool,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -535,6 +541,7 @@ impl WorkerFacade for ProdWorkerFacade {
             kick,
             resume_kick,
             interactive,
+            mcp_families,
             from_boot_respawn: false,
             return_to: Some(tx),
         };
@@ -585,12 +592,14 @@ impl WorkerFacade for ProdWorkerFacade {
         charter: Option<String>,
         kick: Option<String>,
         resume_kick: Option<String>,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<(), WorkerUpdateError> {
         let cp = self.caller_project(caller).ok_or(WorkerUpdateError::UnknownCallerProject)?;
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerUpdateError::StoreFailed {
             message: "workspace dropped".into(),
         })?;
-        match ws.update_worker_row(&cp.project_key, label, charter, kick, resume_kick) {
+        match ws.update_worker_row(&cp.project_key, label, charter, kick, resume_kick, mcp_families)
+        {
             Ok(true) => Ok(()),
             Ok(false) => Err(WorkerUpdateError::NoSuchWorker {
                 label: label.to_owned(),
@@ -802,12 +811,14 @@ impl WorkerFacade for ProdWorkerFacade {
 /// `(caller, label, resolved charter, kick, resume_kick, interactive,
 /// resume_session)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedSpawnCall = (SessionSlot, String, String, Option<String>, Option<String>, bool, bool);
+type RecordedSpawnCall =
+    (SessionSlot, String, String, Option<String>, Option<String>, bool, bool, Option<Vec<String>>);
 
 /// A captured `MockWorkerFacade::update_worker` call:
 /// `(caller, label, charter, kick, resume_kick)`.
 #[cfg(any(test, feature = "testing"))]
-type RecordedUpdateCall = (SessionSlot, String, Option<String>, Option<String>, Option<String>);
+type RecordedUpdateCall =
+    (SessionSlot, String, Option<String>, Option<String>, Option<String>, Option<Vec<String>>);
 
 /// One captured `deliver_worker_prompt_to_project` call: the address it
 /// was given, and the prompt it carried.
@@ -888,6 +899,7 @@ impl WorkerFacade for MockWorkerFacade {
         resume_kick: Option<String>,
         interactive: bool,
         resume_session: bool,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -899,6 +911,7 @@ impl WorkerFacade for MockWorkerFacade {
             resume_kick,
             interactive,
             resume_session,
+            mcp_families,
         ));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -912,6 +925,7 @@ impl WorkerFacade for MockWorkerFacade {
         charter: Option<String>,
         kick: Option<String>,
         resume_kick: Option<String>,
+        mcp_families: Option<Vec<String>>,
     ) -> Result<(), WorkerUpdateError> {
         self.caller_project(caller).ok_or(WorkerUpdateError::UnknownCallerProject)?;
         self.update_calls.lock().push((
@@ -920,6 +934,7 @@ impl WorkerFacade for MockWorkerFacade {
             charter,
             kick,
             resume_kick,
+            mcp_families,
         ));
         self.update_result.lock().clone().unwrap_or(Ok(()))
     }
@@ -1096,6 +1111,7 @@ mod mock_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -1111,6 +1127,7 @@ mod mock_tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
+            mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
             session_choice: SessionChoice::Fresh,
@@ -1124,6 +1141,7 @@ mod mock_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -1163,7 +1181,7 @@ mod mock_tests {
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         let res = mock
-            .spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false, false)
+            .spawn_worker(&lead, "reviewer".into(), "   ".into(), None, None, false, false, None)
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(

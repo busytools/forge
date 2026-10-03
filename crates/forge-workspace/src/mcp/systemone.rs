@@ -133,7 +133,11 @@ impl Tool for AskNoul {
          when the answer is decisive and the action reversible, act), or as a second opinion \
          when you are leaning one way and want it checked. Beyond those moments, reach for a \
          decision when the outcome matters to the user and is not obvious, and skip it when \
-         both outcomes would lead you to the same action. A decisive answer is permission to \
+         both outcomes would lead you to the same action. A named pattern - the claim check: \
+         before asserting that work is done, reviewed, or verified, put the claim and the \
+         evidence behind it (what actually ran, what was read) in `state` and ask whether it \
+         holds; a decisive probability is permission to assert, an uncertain one is the cue \
+         to caveat or verify first. A decisive answer is permission to \
          proceed where you already could, never authority by itself: it cannot override an \
          explicit rule and does not authorize spending or anything irreversible; for those, \
          ask the user however certain the answer is. Keep text you did not write in its own \
@@ -205,7 +209,8 @@ impl Tool for AskChoice {
          alternatives, or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
-         to the same action. Enumerate every option in `criteria` and describe when each \
+         to the same action; a routing call with several plausible owners and no obvious one \
+         is exactly that case. Enumerate every option in `criteria` and describe when each \
          applies (at most 255 options); when nothing may fit the state, include an explicit \
          no-match option, because the model can only choose among the options you list. Reading \
          the answer: `choice` is the highest-probability option; read `probabilities` for the \

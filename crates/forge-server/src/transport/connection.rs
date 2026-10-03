@@ -545,6 +545,7 @@ async fn dispatch_answering(
             kick,
             resume_kick,
             interactive,
+            mcp_families,
             from_boot_respawn,
             ..
         } => {
@@ -558,6 +559,7 @@ async fn dispatch_answering(
                 kick,
                 resume_kick,
                 interactive,
+                mcp_families,
                 from_boot_respawn,
                 return_to: Some(tx),
             };

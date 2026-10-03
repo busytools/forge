@@ -671,6 +671,7 @@ impl Workspace {
             // Non-git: the seeded row nests under its project in the
             // launchpad without needing a worktree on disk.
             false,
+            None,
         );
     }
 
@@ -690,6 +691,7 @@ impl Workspace {
             None,
             false,
             true,
+            None,
         );
     }
 
@@ -714,6 +716,7 @@ impl Workspace {
                 resume_kick: None,
                 interactive: Some(interactive),
                 is_git_repo: None,
+                mcp_families: None,
             },
         );
     }

@@ -21,10 +21,10 @@
 //! Tool surface depends on the calling session's kind:
 //!
 //! - **Lead** sessions (project leads, including project sessions
-//!   another agent spawned) see all eight `agents__*` verbs. A lead is
+//!   another agent spawned) see all seven `agents__*` verbs. A lead is
 //!   the only role that can spawn, despawn, update or read capacity,
 //!   because each of those acts on the caller's own project.
-//! - **Worker** sessions see the four shared verbs and none of the
+//! - **Worker** sessions see the three shared verbs and none of the
 //!   lead-only ones. The reach is the same: a worker may address any
 //!   other session by its slot, its own lead and siblings included.
 //!
@@ -33,6 +33,7 @@
 //! fast-path in `forge-sdk::control_dispatch` (which matches the
 //! `mcp__forge__` prefix at the tool-name level).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
@@ -64,21 +65,202 @@ pub mod workers;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
     /// Project lead - the session representing a project. Sees all
-    /// eight `agents__*` verbs.
+    /// seven `agents__*` verbs.
     Lead,
-    /// Worker - a child agent a lead spawned. Sees the four shared
+    /// Worker - a child agent a lead spawned. Sees the three shared
     /// `agents__*` verbs and none of the lead-only ones.
     Worker,
+}
+
+/// The toggleable MCP families. `agents` is always on and is not here:
+/// a worker without `tell`/`ask` cannot report to its lead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum McpFamily {
+    Review,
+    Cron,
+    Tasks,
+    Gotify,
+    Slack,
+    Systemone,
+}
+
+impl McpFamily {
+    /// Every toggleable family, in wire order.
+    pub const ALL: [McpFamily; 6] = [
+        McpFamily::Review,
+        McpFamily::Cron,
+        McpFamily::Tasks,
+        McpFamily::Gotify,
+        McpFamily::Slack,
+        McpFamily::Systemone,
+    ];
+
+    /// The default set: a worker whose row names none gets everything.
+    pub fn all() -> BTreeSet<McpFamily> {
+        Self::ALL.into_iter().collect()
+    }
+
+    /// The wire spelling, also the family segment its tool names carry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpFamily::Review => "review",
+            McpFamily::Cron => "cron",
+            McpFamily::Tasks => "tasks",
+            McpFamily::Gotify => "gotify",
+            McpFamily::Slack => "slack",
+            McpFamily::Systemone => "systemone",
+        }
+    }
+
+    /// Parse a spawn argument's spelling; `None` for anything else.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|family| family.as_str() == name)
+    }
+}
+
+/// A stored selection's resolved set: absent or empty means every
+/// family; names are canonicalised into wire order and de-duplicated.
+/// Unknown names cannot be written by either tool (both validate), but a
+/// hand-edited row could carry one - it is dropped loudly rather than
+/// widening or narrowing the surface silently.
+pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFamily> {
+    let Some(stored) = stored else {
+        return McpFamily::all();
+    };
+    if stored.is_empty() {
+        return McpFamily::all();
+    }
+    let requested: BTreeSet<McpFamily> = stored
+        .iter()
+        .filter_map(|name| {
+            let parsed = McpFamily::parse(name);
+            if parsed.is_none() {
+                tracing::warn!(
+                    target: "forge_workspace::mcp",
+                    event_name = "unknown_mcp_family_in_row",
+                    name = %name,
+                    "a stored mcp family name is not selectable; ignoring it",
+                );
+            }
+            parsed
+        })
+        .collect();
+    if requested.is_empty() {
+        // A row nothing valid survives from is corrupt, not a selection
+        // of nothing: fail open to every family the way an unreadable
+        // row does, never to agents-only beside six withheld lines.
+        tracing::warn!(
+            target: "forge_workspace::mcp",
+            event_name = "mcp_family_row_all_unknown",
+            "every stored mcp family name was unselectable; reading the row as every family",
+        );
+        return McpFamily::all();
+    }
+    requested
+}
+
+/// The effective set: the stored selection resolved, then narrowed by
+/// what this forge's config can actually inject - the same gates the
+/// build applies, so the prompt's withheld lines cannot drift from the
+/// tools the session really gets. `[systemone]` off is the one config
+/// gate that removes a family outright today.
+pub(crate) fn effective_mcp_families(
+    stored: Option<&[String]>,
+    systemone_available: bool,
+) -> BTreeSet<McpFamily> {
+    let mut families = resolve_mcp_families(stored);
+    if !systemone_available {
+        families.remove(&McpFamily::Systemone);
+    }
+    families
+}
+
+/// The canonical stored form of a selection: names in wire order,
+/// de-duplicated; an empty list means every family, so it is stored as
+/// `None`.
+pub(crate) fn canonical_mcp_families(names: &[String]) -> Result<Option<Vec<String>>, String> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let mut selected: BTreeSet<McpFamily> = BTreeSet::new();
+    for name in names {
+        if name == "agents" {
+            return Err("`agents` is always on for every worker and cannot be listed".to_owned());
+        }
+        let Some(family) = McpFamily::parse(name) else {
+            let selectable: Vec<&str> =
+                McpFamily::ALL.iter().map(|family| family.as_str()).collect();
+            return Err(format!(
+                "unknown MCP family `{name}`; the selectable families are: {}",
+                selectable.join(", ")
+            ));
+        };
+        selected.insert(family);
+    }
+    Ok(Some(selected.into_iter().map(McpFamily::as_str).map(str::to_owned).collect()))
+}
+
+/// The lines a worker's prompt carries for the families it was NOT
+/// given: one per withheld family, in wire order. All families selected
+/// means no lines. This wording ships as the worker's own instruction
+/// (rule 17), so it says what is absent and what to do instead.
+pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'static str> {
+    McpFamily::ALL
+        .into_iter()
+        .filter(|family| !families.contains(family))
+        .map(|family| match family {
+            McpFamily::Review => {
+                "This session has no `review__*` tools. Review threads for your work are \
+                 handled through your lead - ask it to relay findings or to post your replies."
+            }
+            McpFamily::Cron => {
+                "This session has no `cron__*` tools. You cannot schedule durable work; ask \
+                 your lead to set up any recurring task."
+            }
+            McpFamily::Tasks => {
+                "This session has no `tasks__*` tools. The project task list is not yours to \
+                 edit; report status to your lead instead."
+            }
+            McpFamily::Gotify => {
+                "This session has no `gotify__*` tools. Notifications from Gotify do not \
+                 reach you; your lead carries anything urgent."
+            }
+            McpFamily::Slack => {
+                "This session has no `slack__*` tools. Channel reads and posts go through \
+                 your lead."
+            }
+            McpFamily::Systemone => {
+                "This session has no `systemone__*` decision tools. When a decision is \
+                 material and not obvious, route it to your lead instead of guessing."
+            }
+        })
+        .collect()
+}
+
+/// The facades one session's server is composed from: the agents pair
+/// plus one per toggleable family.
+pub struct ForgeServerFacades {
+    pub workspace: Arc<dyn WorkspaceFacade>,
+    pub worker: Arc<dyn WorkerFacade>,
+    pub review: Arc<dyn ReviewFacade>,
+    pub cron: Arc<dyn CronFacade>,
+    pub gotify: Arc<dyn GotifyFacade>,
+    pub slack: Arc<dyn SlackFacade>,
+    pub tasks: Arc<dyn TasksFacade>,
+    pub systemone: Option<Arc<dyn SystemOneFacade>>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → agents (all eight) + review + cron + tasks +
-///   gotify + slack.
-/// - [`SessionKind::Worker`] → agents (the shared four) + review + cron +
-///   tasks + gotify + slack.
+/// - [`SessionKind::Lead`] → agents (all seven) + the selected families.
+/// - [`SessionKind::Worker`] → agents (the shared three) + the selected
+///   families.
+///
+/// `families` narrows the toggleable groups: only the selected ones
+/// register. The `agents` core is unconditional, and `systemone` is
+/// doubly gated - the family and a configured client.
 ///
 /// `review`, `cron`, `tasks`, `gotify` and `slack` are any-caller, so they
 /// register for both kinds - unlike the four lead-only `agents__*` verbs. What
@@ -102,33 +284,41 @@ pub enum SessionKind {
 /// of it, which is safe because a slot is stable across `/new` and
 /// `/resume` - those swap the occupant and leave the slot alone.
 pub fn build_forge_server(
-    workspace_facade: Arc<dyn WorkspaceFacade>,
-    worker_facade: Arc<dyn WorkerFacade>,
-    review_facade: Arc<dyn ReviewFacade>,
-    cron_facade: Arc<dyn CronFacade>,
-    gotify_facade: Arc<dyn GotifyFacade>,
-    slack_facade: Arc<dyn SlackFacade>,
-    tasks_facade: Arc<dyn TasksFacade>,
-    systemone_facade: Option<Arc<dyn SystemOneFacade>>,
+    facades: ForgeServerFacades,
+    families: &BTreeSet<McpFamily>,
     slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
+    let ForgeServerFacades { workspace, worker, review, cron, gotify, slack, tasks, systemone } =
+        facades;
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
-    let dispatcher = Arc::new(AgentDispatcher::new(workspace_facade, worker_facade.clone()));
+    let dispatcher = Arc::new(AgentDispatcher::new(workspace, worker.clone()));
     builder = agents::add_shared_tools(builder, dispatcher, slot.clone());
     if matches!(kind, SessionKind::Lead) {
-        builder = agents::add_lead_tools(builder, worker_facade, slot.clone());
+        builder = agents::add_lead_tools(builder, worker, slot.clone());
     }
-    builder = review::add_tools(builder, review_facade, slot.clone());
-    builder = cron::add_tools(builder, cron_facade, slot.clone());
-    builder = gotify::add_tools(builder, gotify_facade, slot.clone());
-    builder = tasks::add_tools(builder, tasks_facade, slot.clone());
-    // Injected only when a client exists: a disabled `[systemone]`
-    // leaves no tool a session could try.
-    if let Some(systemone_facade) = systemone_facade {
-        builder = systemone::add_tools(builder, systemone_facade);
+    if families.contains(&McpFamily::Review) {
+        builder = review::add_tools(builder, review, slot.clone());
     }
-    builder = slack::add_tools(builder, slack_facade, slot);
+    if families.contains(&McpFamily::Cron) {
+        builder = cron::add_tools(builder, cron, slot.clone());
+    }
+    if families.contains(&McpFamily::Gotify) {
+        builder = gotify::add_tools(builder, gotify, slot.clone());
+    }
+    if families.contains(&McpFamily::Tasks) {
+        builder = tasks::add_tools(builder, tasks, slot.clone());
+    }
+    // Doubly gated: the family is selected AND a client exists - a
+    // disabled `[systemone]` leaves no tool a session could try.
+    if families.contains(&McpFamily::Systemone)
+        && let Some(systemone) = systemone
+    {
+        builder = systemone::add_tools(builder, systemone);
+    }
+    if families.contains(&McpFamily::Slack) {
+        builder = slack::add_tools(builder, slack, slot);
+    }
     builder.build()
 }
 
@@ -158,15 +348,26 @@ mod tests {
         kind: SessionKind,
         systemone_facade: Option<Arc<dyn SystemOneFacade>>,
     ) -> McpServer {
+        forge_server_families(kind, &McpFamily::all(), systemone_facade)
+    }
+
+    fn forge_server_families(
+        kind: SessionKind,
+        families: &std::collections::BTreeSet<McpFamily>,
+        systemone_facade: Option<Arc<dyn SystemOneFacade>>,
+    ) -> McpServer {
         build_forge_server(
-            MockWorkspaceFacade::new().into_arc(),
-            MockWorkerFacade::new().into_arc(),
-            MockReviewFacade::new().into_arc(),
-            MockCronFacade::new().into_arc(),
-            MockGotifyFacade::new().into_arc(),
-            MockSlackFacade::new().into_arc(),
-            MockTasksFacade::new().into_arc(),
-            systemone_facade,
+            ForgeServerFacades {
+                workspace: MockWorkspaceFacade::new().into_arc(),
+                worker: MockWorkerFacade::new().into_arc(),
+                review: MockReviewFacade::new().into_arc(),
+                cron: MockCronFacade::new().into_arc(),
+                gotify: MockGotifyFacade::new().into_arc(),
+                slack: MockSlackFacade::new().into_arc(),
+                tasks: MockTasksFacade::new().into_arc(),
+                systemone: systemone_facade,
+            },
+            families,
             fake_key("test"),
             kind,
         )
@@ -315,6 +516,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Withhold every toggleable family and only the always-on agents
+    /// core survives: the four shared verbs for a worker, all eight for
+    /// a lead.
+    #[test]
+    fn withholding_every_family_leaves_only_the_agents_core() {
+        let none: std::collections::BTreeSet<McpFamily> = std::collections::BTreeSet::new();
+        let mut worker = names_of(&forge_server_families(
+            SessionKind::Worker,
+            &none,
+            Some(MockSystemOneFacade::new().into_arc()),
+        ));
+        worker.sort();
+        assert_eq!(
+            worker,
+            ["agents__list", "agents__send_message", "agents__whoami"],
+            "a withheld family leaves no trace in a worker's tool list"
+        );
+
+        let lead = names_of(&forge_server_families(SessionKind::Lead, &none, None));
+        assert!(lead.contains(&"agents__spawn".to_owned()), "{lead:?}");
+        assert!(
+            !lead.iter().any(|name| {
+                name.starts_with("cron__")
+                    || name.starts_with("systemone__")
+                    || name.starts_with("slack__")
+            }),
+            "no toggleable family registers for a lead with everything withheld: {lead:?}"
+        );
+    }
+
+    /// A narrow selection registers exactly the core plus the chosen
+    /// family.
+    #[test]
+    fn a_cron_only_selection_registers_the_core_and_cron() {
+        let families: std::collections::BTreeSet<McpFamily> =
+            [McpFamily::Cron].into_iter().collect();
+        let mut names = names_of(&forge_server_families(SessionKind::Worker, &families, None));
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "agents__list",
+                "agents__send_message",
+                "agents__whoami",
+                "cron__create",
+                "cron__delete",
+                "cron__list",
+            ],
+            "{names:?}"
+        );
+    }
+
+    /// A stored selection resolves to the canonical set: absent and
+    /// empty both mean every family, known names land in wire order, and
+    /// a name no longer selectable is dropped rather than widening or
+    /// narrowing the surface silently.
+    #[test]
+    fn stored_family_names_resolve_to_the_canonical_set() {
+        assert_eq!(resolve_mcp_families(None), McpFamily::all(), "absent means every family");
+        assert_eq!(resolve_mcp_families(Some(&[])), McpFamily::all(), "empty means every family");
+
+        let stored = vec!["slack".to_owned(), "cron".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&stored)),
+            [McpFamily::Cron, McpFamily::Slack].into_iter().collect(),
+            "known names resolve into the set"
+        );
+
+        let with_unknown = vec!["bogus".to_owned(), "tasks".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&with_unknown)),
+            [McpFamily::Tasks].into_iter().collect(),
+            "an unknown name is dropped"
+        );
+    }
+
+    /// One line per withheld family, in wire order; the present family
+    /// gets none, and nothing withheld means no lines at all.
+    #[test]
+    fn withheld_lines_are_pinned_verbatim() {
+        let none: BTreeSet<McpFamily> = BTreeSet::new();
+        assert_eq!(
+            withheld_family_lines(&none),
+            [
+                "This session has no `review__*` tools. Review threads for your work are handled through your lead - ask it to relay findings or to post your replies.",
+                "This session has no `cron__*` tools. You cannot schedule durable work; ask your lead to set up any recurring task.",
+                "This session has no `tasks__*` tools. The project task list is not yours to edit; report status to your lead instead.",
+                "This session has no `gotify__*` tools. Notifications from Gotify do not reach you; your lead carries anything urgent.",
+                "This session has no `slack__*` tools. Channel reads and posts go through your lead.",
+                "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.",
+            ],
+        );
+
+        let slack_only: BTreeSet<McpFamily> = [McpFamily::Slack].into_iter().collect();
+        let lines = withheld_family_lines(&slack_only);
+        assert_eq!(lines.len(), 5, "five of the six families are withheld");
+        for line in &lines {
+            assert!(!line.contains("slack__"), "the present family gets no line: {line}");
+        }
+        assert!(withheld_family_lines(&McpFamily::all()).is_empty(), "nothing withheld, no lines");
+    }
+
+    /// The config gate reaches the EFFECTIVE set - what the build injects
+    /// and what the prompt composer sees - so a selected-but-disabled
+    /// systemone reads as withheld on both.
+    #[test]
+    fn the_config_gate_reaches_the_effective_set() {
+        let selected = vec!["systemone".to_owned(), "tasks".to_owned()];
+        assert_eq!(
+            effective_mcp_families(Some(&selected), true),
+            [McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
+        );
+        assert_eq!(
+            effective_mcp_families(Some(&selected), false),
+            [McpFamily::Tasks].into_iter().collect(),
+            "a disabled [systemone] cannot be part of the effective set",
+        );
+
+        let all_without_config = effective_mcp_families(None, false);
+        assert!(!all_without_config.contains(&McpFamily::Systemone));
+        assert_eq!(all_without_config.len(), 5, "every other family stays");
+    }
+
+    /// The config gate reaches the COMPOSER too: a selected-but-disabled
+    /// systemone produces its withheld line, which is what the spawn
+    /// description promises a worker it was not given.
+    #[test]
+    fn a_disabled_systemone_still_produces_its_withheld_line() {
+        let selected = vec!["systemone".to_owned()];
+        let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
+        assert!(
+            !withheld_family_lines(&effective_mcp_families(Some(&selected), true)).contains(&line),
+            "with the section on, the family is present and gets no line",
+        );
+        assert!(
+            withheld_family_lines(&effective_mcp_families(Some(&selected), false)).contains(&line),
+            "[systemone] off is withheld for the worker's prompt as well as its tools",
+        );
+    }
+
+    /// A stored row holding only unselectable names is corrupt, not a
+    /// selection of nothing: it fails open to every family the way an
+    /// unreadable row does, never to agents-only beside six withheld
+    /// lines.
+    #[test]
+    fn an_all_corrupt_selection_fails_open() {
+        let corrupt = vec!["bogus".to_owned(), "agents".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&corrupt)),
+            McpFamily::all(),
+            "a row nothing valid survives from reads as absent",
+        );
+    }
+
+    /// The family set and the systemone client are independent gates: a
+    /// set naming systemone injects nothing when the section is off, and
+    /// a set omitting it injects nothing even when a client exists.
+    #[test]
+    fn the_family_set_and_the_systemone_client_gate_independently() {
+        let without_systemone: std::collections::BTreeSet<McpFamily> =
+            McpFamily::all().into_iter().filter(|family| *family != McpFamily::Systemone).collect();
+        let names = names_of(&forge_server_families(
+            SessionKind::Worker,
+            &without_systemone,
+            Some(MockSystemOneFacade::new().into_arc()),
+        ));
+        assert!(
+            !names.iter().any(|name| name.starts_with("systemone__")),
+            "a client alone does not inject the family: {names:?}"
+        );
+
+        let names = names_of(&forge_server_families(SessionKind::Worker, &McpFamily::all(), None));
+        assert!(
+            !names.iter().any(|name| name.starts_with("systemone__")),
+            "[systemone] off injects nothing however the set reads: {names:?}"
+        );
     }
 
     /// A `replay-only:` marker exempts the retired tools it NAMES, on one
