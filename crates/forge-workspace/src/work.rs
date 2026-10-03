@@ -919,6 +919,11 @@ provider = "anthropic"
     /// a held seat whose tree gains a process must see it; the two ways that
     /// breaks are the loop walking nothing and the announcement being dropped,
     /// and either leaves every client's section stale for good.
+    ///
+    /// The announcement is waited for BY THE CHILD rather than as the next one
+    /// off the stream: these legs walk a real tree, and a running tree drifts
+    /// (`walk_moved`), so a poke that finds only the drift is a legitimate
+    /// frame that carries no child yet.
     #[tokio::test]
     async fn a_process_arriving_under_a_held_seat_is_announced() {
         let dir = a_repo();
@@ -933,18 +938,19 @@ provider = "anthropic"
             Child(std::process::Command::new("sleep").arg("30").spawn().expect("a child to find"));
         let child_pid = child.0.id();
 
-        let told = tokio::time::timeout(Duration::from_secs(5), updates.recv()).await;
-        let Ok(Some(moved)) = told else {
-            panic!("a process arriving under the seat was never announced");
-        };
-        let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
-            panic!("an arriving process announces the walk, got {moved:?}");
-        };
-        assert_eq!(key, seat);
-        assert!(
-            snapshot.processes.iter().any(|entry| entry.pid == child_pid),
-            "the announced walk carries the child at {child_pid}",
-        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("a process arriving under the seat was never announced");
+            };
+            let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
+                continue;
+            };
+            assert_eq!(key, seat);
+            if snapshot.processes.iter().any(|entry| entry.pid == child_pid) {
+                break;
+            }
+        }
         drop(child);
     }
 
@@ -952,12 +958,20 @@ provider = "anthropic"
     /// subscription snapshot answers from the store the hold just wrote, so a
     /// baseline read taken before that write would re-announce the tree the
     /// page already holds at the loop's first compare.
+    ///
+    /// The pid is a `sleep` the test owns, not the test process itself: what
+    /// is walked is that process's DESCENDANTS, and a `sleep` has none - so
+    /// the tree is empty and stays empty, which is what makes "nothing is
+    /// announced" a property of the code rather than of the machine's load.
+    /// The test process's own tree drifts as the suite runs, and drift is news.
     #[tokio::test]
     async fn the_holds_walk_is_not_announced_again() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
-        workspace.seed_test_claude_pid(&seat, std::process::id());
+        let walked =
+            Child(std::process::Command::new("sleep").arg("30").spawn().expect("a child to walk"));
+        workspace.seed_test_claude_pid(&seat, walked.0.id());
         // A walk from before the hold, past the window so the hold's own walk
         // replaces it - which is the baseline the loop must be seeded with.
         let mut stale = walk_of(vec![entry_at(4242)]);
