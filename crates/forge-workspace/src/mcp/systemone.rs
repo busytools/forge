@@ -609,6 +609,11 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
         assert!(out.is_error);
         assert!(out.blocks[0].text.contains("timed out"), "{}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains("timeout_ms"),
+            "the hint half is the deviation the PR body rests on: {}",
+            out.blocks[0].text
+        );
 
         *mock.result.lock() =
             Some(Err(SystemOneError::InvalidResponse("probability keys drift".to_owned())));
