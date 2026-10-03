@@ -17,7 +17,8 @@
     "src/composer/wire.ts",
     "src/composer/meter.ts",
     "src/session/view.ts",
-    "src/session/apply.ts"
+    "src/session/apply.ts",
+    "src/session/live.ts"
   ],
   "reporters": ["clear-text", "progress", "html", "json"],
   "htmlReporter": { "fileName": "reports/mutation/index.html" },
