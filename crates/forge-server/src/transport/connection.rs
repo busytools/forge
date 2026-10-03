@@ -79,6 +79,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     for what in &watched {
         if let Subject::Session(slot) = what {
             Live::lock(&state.live).detach(slot);
+            state.surface.release_seat(slot);
         }
     }
     outcome
@@ -208,6 +209,12 @@ async fn handle_client(
                     // arming a mark nobody needs: the reader is looking at it.
                     if let Subject::Session(slot) = &what {
                         Live::lock(&state.live).attach(slot);
+                        // And the seat's working tree is read while a page
+                        // is showing it: the hold is what the scan runs for,
+                        // and it is taken only once the subscription stands,
+                        // so a refusal cannot leave a scan running behind
+                        // nothing.
+                        state.surface.hold_seat(slot).await;
                     }
                     watched.push(what.clone());
                     send(socket, ServerMessage::Snapshot { subject: what, data }).await
@@ -397,6 +404,7 @@ async fn handle_client(
                 watched.remove(at);
                 if let Subject::Session(slot) = &what {
                     Live::lock(&state.live).detach(slot);
+                    state.surface.release_seat(slot);
                 }
             }
             Ok(())

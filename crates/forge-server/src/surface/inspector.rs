@@ -6,6 +6,8 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
+use std::sync::Arc;
+
 use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
@@ -19,6 +21,7 @@ use crate::surface::ViewSurface;
 pub use forge_workspace::env::processes::{
     ProcessEntry, ProcessSnapshot, basename_exe, extract_inner_command,
 };
+pub use forge_workspace::work::WorkSnapshot;
 pub use forge_workspace::{ContextUsage, McpServers};
 
 /// What a session header states about the session.
@@ -123,6 +126,40 @@ impl ViewSurface {
     /// is the whole of the sharing.
     pub fn store_process_snapshot(&self, slot: &SessionSlot, snapshot: Option<ProcessSnapshot>) {
         self.workspace.store_process_snapshot(slot, snapshot);
+    }
+
+    /// The seat's working tree, as the scan that owns it last answered, or as
+    /// a read taken here when nothing has scanned it yet.
+    ///
+    /// **The read is the exception rather than the path.** A seat a view is
+    /// showing is scanned by its own loop, so this answers a stored value and
+    /// shells out to nothing; reading here covers a seat nobody has held,
+    /// which is a lagging edge rather than a steady state.
+    pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
+        if let Some(held) = self.workspace.work_snapshot(slot) {
+            return held;
+        }
+        self.workspace.scan_work_at(slot, cwd).await
+    }
+
+    /// Store a scan's answer, which is the write half of [`Self::work`].
+    ///
+    /// A fixture's door, and the same store the seat's own loop writes: one
+    /// store means a record read and a pushed row cannot disagree.
+    pub fn store_work_snapshot(&self, slot: &SessionSlot, snapshot: WorkSnapshot) {
+        self.workspace.store_work_snapshot(slot, snapshot);
+    }
+
+    /// Show a seat: this view is looking at it, which is what keeps its
+    /// working tree scanned while the view holds it.
+    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
+        self.workspace.hold_seat(slot).await;
+    }
+
+    /// Stop showing a seat, which is what lets its scan go when nobody else
+    /// is holding it.
+    pub fn release_seat(&self, slot: &SessionSlot) {
+        self.workspace.release_seat(slot);
     }
 
     /// Ask the core for a fresh context reading on `slot`, which its bridge

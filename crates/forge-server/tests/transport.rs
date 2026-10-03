@@ -1222,6 +1222,84 @@ async fn a_devices_request_is_answered_with_the_list_or_its_refusal() {
     }
 }
 
+/// A seat a client is showing has its working tree read, and the row it
+/// picks up reaches that client on the seat's own subscription.
+///
+/// This is the whole wiring in one test: the subscribe that holds the seat,
+/// the watch that reports the edit, the scan the loop takes, and the update
+/// that routes by the seat's slot.
+#[tokio::test]
+async fn a_held_seats_moved_tree_reaches_the_client() {
+    let root = tempfile::tempdir().expect("tempdir");
+    // The fleet first: a project directory that exists before the fleet is
+    // built resolves under a different key.
+    let fleet = Fleet::in_dir(root.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo(&repo);
+
+    let state = Arc::new(TransportState {
+        surface: fleet.surface(),
+        work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
+        live: Mutex::new(Live::new()),
+        config: forge_primitives::WebConfig::default(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    snapshot_answering(&mut socket).await;
+
+    // Edited in a loop, each attempt read for less than the staleness window:
+    // the watch arms on its own thread, so an early edit can land before
+    // notify is listening - and a write read after 10s would pass on the
+    // staleness rule instead, proving nothing about the watch.
+    for edit in 1..12 {
+        std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
+        if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
+            let SessionUpdate::WorkChanged { key, work, .. } = *update else {
+                continue;
+            };
+            assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
+            assert_eq!(work.changed, Some(1), "and carries the count the edit made");
+            return;
+        }
+    }
+    panic!("a held seat's moved tree never reached the client");
+}
+
+/// A repository with one commit, for a test that needs a tree git can read.
+fn a_repo(dir: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.test"]);
+    git(&["config", "user.name", "test"]);
+    std::fs::write(dir.join("kept.txt"), "one").expect("write");
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+}
+
 /// A subscription hears the updates its subject receives and no others.
 #[tokio::test]
 async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {

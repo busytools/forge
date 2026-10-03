@@ -1,4 +1,11 @@
-//! The agent's working tree, behind a cache: no render path shells out.
+//! The working tree the HOME's rows read, behind a cache: no render path
+//! shells out.
+//!
+//! The session page's own row is not here. That one is
+//! [`forge_workspace::work`]'s: the scan runs for a seat somebody is showing,
+//! and the row is pushed rather than read. This cache is the fleet's - every
+//! project and agent row reads a branch and a change count as it renders -
+//! and a row is not worth a `git` subprocess per render.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,56 +16,15 @@ use crate::file_index::FileIndex;
 use crate::git_diff;
 use crate::surface::ViewSurface;
 use forge_primitives::SessionSlot;
-use forge_primitives::git_diff::{GitDiffSnapshot, RepoGate};
+
+// The row a view draws, and the gate that qualifies it, live where the
+// session page's scan does: one shape for both readers, and one place the
+// shape is decided.
+pub use forge_workspace::work::{Gate, WorkState, work_from_scan};
 
 /// How long a read answers for. Everything inside the window is served
 /// from the cache, which is what keeps a page render off a subprocess.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-
-/// What one agent's working tree looks like, and what git said about it.
-///
-/// `branch` and `changed` are `None` when there is nothing to report, and
-/// `gate` is what tells the two cases apart: a directory outside a
-/// repository, a working tree that is gone, and a git that would not run
-/// all leave both fields empty and want different lines on the row.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct WorkState {
-    pub branch: Option<String>,
-    pub changed: Option<usize>,
-    pub gate: Gate,
-}
-
-/// The repo gate, as a view reads it. Its own type so the view does not
-/// have to name the scanner's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Gate {
-    /// Git answered: there is a repository here, and whatever the two
-    /// fields say about it is the whole truth.
-    #[default]
-    InRepo,
-    /// A directory with no repository behind it.
-    NotARepository,
-    /// The directory is not there at all. Git reports this as the case
-    /// above, and it is true and misleading at once: a row saying a
-    /// project is not a repository about a path that does not exist
-    /// claims something it cannot know. A despawned worker's worktree is
-    /// the usual one.
-    Gone,
-    /// Git would not run, or would not answer. Distinct from both above
-    /// because it is forge's problem rather than the project's.
-    ScannerFailed,
-}
-
-impl From<RepoGate> for Gate {
-    fn from(gate: RepoGate) -> Self {
-        match gate {
-            RepoGate::InRepo => Self::InRepo,
-            RepoGate::NotARepo => Self::NotARepository,
-            RepoGate::ScannerFailed => Self::ScannerFailed,
-        }
-    }
-}
 
 /// Each session's working tree, so a caller reads a value instead of
 /// spawning `git` per row per render.
@@ -71,13 +37,8 @@ struct Entry {
     /// The last read, `None` until the first one lands.
     state: Option<WorkState>,
     read_at: Instant,
-    /// The full scan the inspector draws: the files behind the count, and
-    /// the open PR. Its own window, because it runs more of git than the
-    /// row's own read does.
-    diff: Option<GitDiffSnapshot>,
-    diff_read_at: Instant,
-    /// The file walk the composer's `@` list reads. Its own window again:
-    /// a walk costs more than the row's read and less than the full scan.
+    /// The file walk the composer's `@` list reads. Its own window: a walk
+    /// costs more than the row's read does.
     file_index: Option<Arc<FileIndex>>,
     /// The ignore preference read for that walk, `None` until one lands.
     /// The walk's answer depends on it, so it is part of what the cache is
@@ -96,8 +57,6 @@ impl Entry {
             cwd: cwd.to_owned(),
             state: None,
             read_at: Instant::now(),
-            diff: None,
-            diff_read_at: Instant::now(),
             file_index: None,
             files_respecting: None,
             files_read_at: Instant::now(),
@@ -152,38 +111,6 @@ impl WorkCache {
         entry.state = Some(state.clone());
         entry.read_at = Instant::now();
         state
-    }
-
-    /// The full scan of `cwd`'s working tree, at most `REFRESH_INTERVAL`
-    /// old. A view drawing the detail reads this; the row's own line reads
-    /// [`Self::snapshot`], and the two share a slot's entry so neither
-    /// holds a second opinion about which tree the slot is in.
-    pub async fn diff(&self, slot: &SessionSlot, cwd: &Path) -> GitDiffSnapshot {
-        let refreshing = {
-            let mut entries = self.entries();
-            Arc::clone(&entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd)).refreshing)
-        };
-        let _refreshing = refreshing.lock().await;
-        {
-            let entries = self.entries();
-            if let Some(diff) = entries
-                .get(slot)
-                .filter(|entry| entry.cwd == cwd && entry.diff_read_at.elapsed() < REFRESH_INTERVAL)
-                .and_then(|entry| entry.diff.as_ref())
-            {
-                return diff.clone();
-            }
-        }
-        // The previous scan rides along so the PR lookup is reused rather
-        // than repeated: the scan rate-limits its own lookups on it.
-        let prev = self.entries().get(slot).and_then(|entry| entry.diff.clone());
-        let diff = git_diff::scan(cwd, prev.as_ref()).await;
-        let mut entries = self.entries();
-        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd));
-        cwd.clone_into(&mut entry.cwd);
-        entry.diff = Some(diff.clone());
-        entry.diff_read_at = Instant::now();
-        diff
     }
 
     /// One root's files, walked at most `REFRESH_INTERVAL` old. The `@`
@@ -254,48 +181,6 @@ impl WorkCache {
     fn entries(&self) -> MutexGuard<'_, HashMap<SessionSlot, Entry>> {
         self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-
-    /// Store a scan for `slot` as if the cache had taken it, so a fixture can
-    /// pin a populated PR and worktree without `gh` and a pushed branch.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_diff(&self, slot: &SessionSlot, cwd: &Path, diff: &GitDiffSnapshot) {
-        let mut entries = self.entries();
-        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(cwd));
-        cwd.clone_into(&mut entry.cwd);
-        entry.diff = Some(diff.clone());
-        entry.diff_read_at = Instant::now();
-    }
-}
-
-/// The same working tree, as the row's own read states it, derived from a scan
-/// the view already took.
-///
-/// One scan rather than two reads: the branch, the gate and the count then
-/// belong to the same instant as the PR the row's section draws beside them,
-/// so a branch switch between two reads cannot render a PR for a branch the
-/// wire does not name. The count is the scan's worktree layer, which is the
-/// number the terminal's own GIT section shows, and `None` when that layer
-/// failed rather than a zero a reader would take for a clean tree.
-pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
-    let gate = match diff.repo_gate {
-        // Git calls a missing directory "not a repository", so the path itself
-        // decides between the two, exactly as the row's own read does.
-        RepoGate::NotARepo if !cwd.exists() => Gate::Gone,
-        other => Gate::from(other),
-    };
-    if gate != Gate::InRepo {
-        return WorkState { branch: None, changed: None, gate };
-    }
-    let branch = match &diff.branch {
-        forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
-        _ => None,
-    };
-    let changed = match &diff.worktree {
-        forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.total_files),
-        forge_primitives::git_diff::LayerState::Clean => Some(0),
-        forge_primitives::git_diff::LayerState::ScanFailed => None,
-    };
-    WorkState { branch, changed, gate }
 }
 
 /// One read of `cwd`. The count decides whether the directory is a
