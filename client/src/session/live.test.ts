@@ -1107,7 +1107,7 @@ describe('the slow read for the fields still unfed', () => {
    * again - and arms it without reading on the way in, which is the burst this
    * whole change exists to delete. A poll armed once at the seat's creation
    * and dropped with the first reader leaves every seat shown later drawing
-   * the process walk and the working tree as they were when it was last read.
+   * the file list and the catalogue as they were when it was last read.
    */
   it('arms the poll again when the seat is shown again', () => {
     const connection = drivable();

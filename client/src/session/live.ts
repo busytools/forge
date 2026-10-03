@@ -36,8 +36,8 @@ import { sessionFrom, type SessionRecord } from './wire';
  * How often the fields still unfed are read.
  *
  * A read is a whole encode, and the fields a poll takes from it are the
- * slowest-moving part of the record - a process walk, a file list, a catalogue
- * - so this is the coarsest read that keeps a page honest rather than the
+ * slowest-moving part of the record - a file list, a catalogue - so this is
+ * the coarsest read that keeps a page honest rather than the
  * cheapest that keeps it moving. The list itself is `UNFED`, and the tick is
  * retired when the last field leaves it.
  */
@@ -438,8 +438,8 @@ function createSeat(
 
       // The three variants that REPLACE the record rather than patching it: a
       // seat waking up, connecting, or taking a new occupant. What they carry
-      // is not a record - the folded transcript, the process walk, the working
-      // tree - so only a read answers them.
+      // is not a record - the seat's own session facts and the folded
+      // transcript - so only a read answers them.
       const [name] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
         seat.replaceWanted = true;

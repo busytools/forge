@@ -258,9 +258,9 @@ export const HANDLERS: Record<string, Apply> = {
 /**
  * The variants that replace the seat's whole record rather than patching it: a
  * new occupant under the slot, or the first connect. What they carry is a
- * payload of their own and not a record - the transcript in the folded turns a
- * page reads, the process walk, the working tree - so a page answers them with
- * a read.
+ * payload of their own and not a record - the seat's own session facts and the
+ * transcript in the folded turns a page reads - so a page answers them with a
+ * read.
  */
 export const REPLACES: readonly string[] = [
   'spawning',
