@@ -20,7 +20,9 @@ describe('the block one decision draws', () => {
   it('draws a noul as its number, its word, and both sides of the yes/no', () => {
     const body = drawn({});
     expect(body, 'the number as the result returned it').toContain('>0.93<');
-    expect(body, 'the word the majority side reads as').toContain('>yes<');
+    // The verdict's own span, not `>yes<`: the distribution's yes row draws
+    // the same word, so the loose form survives a swapped verdict word.
+    expect(body, 'the word the majority side reads as').toContain('class="read">yes</span>');
     expect(body, 'and the other side, derived, as a value of its own').toContain('>0.07<');
     expect(body, 'the number carries the sure tone').toContain('num sure');
     expect(body, 'and the side that won carries the mark').toContain('opt win');
@@ -29,7 +31,7 @@ describe('the block one decision draws', () => {
   it('tones a coin flip without changing the words', () => {
     const body = drawn({ answer: { kind: 'noul', noul: 0.52 } });
     expect(body, 'the number draws unsure').toContain('num unsure');
-    expect(body, 'and the word is still the majority side').toContain('>yes<');
+    expect(body, 'and the word is still the majority side').toContain('class="read">yes</span>');
   });
 
   it('draws a choice as its pick and its distribution', () => {
