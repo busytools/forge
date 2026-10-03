@@ -96,6 +96,12 @@ describe('the inbound delivery row', () => {
       expect(sheet, `${what} keeps the elevated tone`).toMatch(
         /details\.inboundrow > summary \.ev\.warn \{[^}]*color: var\(--warn\)/,
       );
+      // **And the tail's marks take the prose tone, the hook row's twin**:
+      // a `**bold**` in a delivery reads as a mark in both rows, not as the
+      // muting around it.
+      expect(sheet, `${what} draws the tail's marks in the prose tone`).toMatch(
+        /details\.inboundrow > summary \.ev (?:strong|code)[^{]*\{[^}]*color: var\(--text\)/,
+      );
     }
   });
 });

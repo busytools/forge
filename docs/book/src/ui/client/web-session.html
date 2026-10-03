@@ -636,6 +636,8 @@
   details.inboundrow > summary .ev { color: var(--muted); flex: 1 1 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.inboundrow > summary .ev.warn { color: var(--warn); }
+  details.inboundrow > summary .ev strong, details.inboundrow > summary .ev code {
+    color: var(--text); }
 
   .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -1501,11 +1503,11 @@ docs: Render the message body into rows.</div>
             <div class="knd"><svg class="ic gl"><use href="#i-bot"/></svg><span class="nm">peer</span></div>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn"><span class="dir">sent to</span><span class="k">forge/steward</span> &#183; picking it up</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><p>picking it up</p><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
+              <div class="body"><div class="pbody"><div class="prose"><p>picking it up</p></div><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-inbox"/></svg><span class="tn"><span class="dir">from</span><span class="k">gateway-backend</span> &#183; the gate is green, shipping</span><span class="org">Granite</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><p>the gate is green, shipping</p></div></div>
+              <div class="body"><div class="pbody"><div class="prose"><p>the gate is green, shipping</p></div></div></div>
             </details>
             <details class="leaf">
               <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn warn"><span class="k">companies</span> &#183; failed to deliver: channel closed</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1783,9 +1785,12 @@ docs: Render the message body into rows.</div>
           <div class="lane">
             <div class="knd"><svg class="ic gl"><use href="#i-schedules"/></svg><span class="nm">cron</span></div>
             <details class="leaf inboundrow">
+              <!-- A cron fire's title IS its body's first line, so no tail is
+                   drawn: a tail that repeats the title is not a tail. -->
               <summary><span class="tn">morning sweep</span>
-                <span class="ev">morning sweep</span>
                 <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body"><div class="prose">
+                <p>morning sweep</p></div></div>
             </details>
           </div>
           <div class="lane">

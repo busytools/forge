@@ -17,7 +17,7 @@ nothing to draw, and the client never falls back to bundled data.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Header | the brand mark, `forge`, the forge build serving the socket, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `cli_version`; `agents` and `projects` counted |
+| Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
 | Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
 | Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, with each row's task from `projects` |
