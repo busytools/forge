@@ -142,6 +142,53 @@ describe('what a call body draws', () => {
     ).toBe(true);
     expect(failed.status, 'and the row still settles on the failure').toBe('failed');
   });
+
+  it("reads the CLI's own envelope off a failed result, keeping the words it wrapped", () => {
+    // **The wrapper is addressed to the model, not to a reader.** It was drawn
+    // raw under the diff (measured on Ved's 2026-10-03 screenshot), and the
+    // fold is the one point every result's text enters - so it is read off
+    // once here, the same reading the terminal's `extract_tool_use_error_message`
+    // gives the same payload. The first line is the message; the rest is detail
+    // the note path would drop.
+    const wrapped =
+      '<tool_use_error>String to replace not found in file.\n' +
+      'String:   fn outcome(answer: Answer) {\n' +
+      '    AskOutcome { model: "test-model".to_owned() }</tool_use_error>';
+    const failed = leafOf(
+      't5',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: 'one', new_string: 'two' },
+      { type: 'tool_result', content: wrapped, is_error: true },
+    );
+
+    expect(failed.body.at(-1), 'the failure draws as its own piece, wrapper gone').toEqual({
+      kind: 'error',
+      message: 'String to replace not found in file.',
+      detail:
+        'String:   fn outcome(answer: Answer) {\n    AskOutcome { model: "test-model".to_owned() }',
+    });
+    expect(JSON.stringify(failed.body), 'and the tag never reaches the page').not.toContain(
+      'tool_use_error',
+    );
+
+    // The single-line payload, which is the other shape the envelope arrives
+    // in: a message with nothing under it.
+    const quiet = leafOf(
+      't6',
+      'Edit',
+      { file_path: '/x/a.rs', old_string: 'one', new_string: 'two' },
+      {
+        type: 'tool_result',
+        content: '<tool_use_error>File has not been read yet.</tool_use_error>',
+        is_error: true,
+      },
+    );
+    expect(quiet.body.at(-1)).toEqual({
+      kind: 'error',
+      message: 'File has not been read yet.',
+      detail: '',
+    });
+  });
 });
 
 describe('what opens without being asked', () => {

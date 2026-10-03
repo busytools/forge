@@ -523,6 +523,16 @@
   .patchline { display: flex; align-items: center; padding: 4px 0 0;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .patchsize { margin-right: 8px; }
+  /* A failed call's own words, in the same caption chrome rather than the error
+     box's: the CLI's envelope is read off in the fold (`leaves.ts`), and what is
+     left is a line for a reader - what happened first, the detail under it. The
+     terminal keeps its error tone on the same payload; this draws the caption it
+     reads as. */
+  .errhint { padding: 4px 0 0; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); overflow-wrap: anywhere; }
+  /* The detail is the excerpt as the CLI wrote it, indentation and all, so it
+     keeps its line breaks where the message above is one line. */
+  .errhint .d { margin-top: 2px; white-space: pre-wrap; }
   .dif .ln .n { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
   /* The number each side holds the line at, which is what makes two hunks in one
      file readable: the old file's on the left, the new file's beside it, and a
@@ -1409,6 +1419,25 @@ Consecutive tool calls between two user messages fold into one group.</div>
                   <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
                 </div>
                 <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+              </div>
+            </details>
+            <!-- A failed edit: the diff it meant to make, and the CLI's own
+                 reason under it in the caption chrome - the envelope's tags
+                 are read off in the fold and never reach the page. -->
+            <details class="leaf" open>
+              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+              <div class="body">
+                <div class="dif">
+                  <div class="h">@@ -30,2 +30,2 @@</div>
+                  <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
+                  <div class="ln a"><span class="on"></span><span class="nn">31</span><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+                </div>
+                <div class="errhint">
+                  <div class="m">String to replace not found in file.</div>
+                  <div class="d">String:   fn outcome(answer: Answer) -&gt; AskOutcome {
+    AskOutcome { model: "test-model".to_owned(), answer, usage: Usage { input_tokens: 10, output_tokens: 3, cost: None } }
+  }</div>
+                </div>
               </div>
             </details>
           </div>

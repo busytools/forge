@@ -17,6 +17,8 @@ import { headline, stripEscapes, toolName } from './text';
 /** What a call's row opens on. */
 export type CallBody =
   | { kind: 'text'; text: string }
+  /** A failed call's own words, the CLI's envelope read off in the fold. */
+  | { kind: 'error'; message: string; detail: string }
   | { kind: 'diff'; old: string; new: string }
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
   | { kind: 'image'; mime: string | null; uri: string | null };
@@ -223,6 +225,31 @@ export function blocksOf(content: unknown): Block[] {
 }
 
 /**
+ * The CLI's own envelope off a tool result, read in the fold.
+ *
+ * **The tag is addressed to the model, not to a reader**: it is how a failed
+ * tool's message crosses the wire, and drawn raw it is a wall under the diff.
+ * So it is read off at the one point every result's text enters, keyed on the
+ * envelope itself rather than on the status - the same reading the terminal's
+ * `extract_tool_use_error_message` gives the same payload, case-insensitively
+ * included. The first line is the message; the rest is the detail under it.
+ */
+function toolUseError(text: string): { message: string; detail: string } | null {
+  const lower = text.toLowerCase();
+  const open = '<tool_use_error>';
+  const start = lower.indexOf(open);
+  if (start === -1) return null;
+  const end = lower.indexOf('</tool_use_error>', start + open.length);
+  if (end === -1) return null;
+  const inner = text.slice(start + open.length, end).trim();
+  if (inner === '') return null;
+  const at = inner.indexOf('\n');
+  return at === -1
+    ? { message: inner, detail: '' }
+    : { message: inner.slice(0, at).trim(), detail: inner.slice(at + 1).trim() };
+}
+
+/**
  * What a call's result recorded, from the shapes a tool result arrives in.
  *
  * The content is a string for most tools and a block array for a few, and both
@@ -232,13 +259,18 @@ export function blocksOf(content: unknown): Block[] {
 export function bodyOf(content: unknown): CallBody[] {
   if (typeof content === 'string') {
     const text = stripEscapes(content);
-    return text.trim() === '' ? [] : [{ kind: 'text', text }];
+    if (text.trim() === '') return [];
+    const failed = toolUseError(text);
+    return [failed === null ? { kind: 'text', text } : { kind: 'error', ...failed }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
       const text = stripEscapes(block.text);
-      if (text.trim() !== '') out.push({ kind: 'text', text });
+      if (text.trim() !== '') {
+        const failed = toolUseError(text);
+        out.push(failed === null ? { kind: 'text', text } : { kind: 'error', ...failed });
+      }
     }
     if (block.type === 'image') {
       // The wire nests both under `source`, which is the shape a user turn's
