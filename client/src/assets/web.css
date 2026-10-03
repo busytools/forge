@@ -912,9 +912,17 @@ details.leaf > summary .st.sk { color: var(--dim); }
   color: inherit; cursor: pointer; }
 .sess .f-comp:hover { color: var(--accent); }
 
-/* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
+/* peer traffic, drawn as tool rows: the words say which way it went, the mark
+   reinforces them, and the label names the seat the row is about */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
 details.leaf > summary .k { color: var(--text); font-weight: 700; }
+/* The direction word that leads a message row, muted so the seat the row is
+   about stays the subject, and the row's own word for a verb card. */
+details.leaf > summary .dir { color: var(--dim); margin-right: 5px; flex: none; }
+/* A failure keeps the outgoing row and takes the warning tone: the words say
+   what happened and the colour says it went wrong. */
+details.leaf > summary .tn.warn { color: var(--warn); }
+details.leaf > summary .tn.warn .k { color: var(--warn); }
 details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
 .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
@@ -984,8 +992,14 @@ details.hooks > summary .st.err { color: var(--bad); }
    frames the CLI sends while one hook runs fold to a row per run rather than a
    row per frame, with what it printed behind the row's own open - a
    session-start hook prints the boilerplate it injects into the session, so a
-   run drawn whole beneath its turn would bury it. */
-details.hookrow > summary .ev { color: var(--muted); }
+   run drawn whole beneath its turn would bury it. The tail is the hook's words
+   joined, so it is clamped to its one line and takes the width the name
+   leaves, the whole output staying behind the open. */
+details.hookrow > summary .ev { color: var(--muted); flex: 1 1 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The tail's own inline marks - a `**bold**` in the context a hook injected -
+   take the prose tone the name's marks do, rather than the tail's muting. */
+details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color: var(--text); }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated. */
 details.inboundrow > summary .ev { color: var(--muted); }

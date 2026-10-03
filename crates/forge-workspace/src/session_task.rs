@@ -302,18 +302,12 @@ impl SessionTask {
                             tool_id,
                         });
                     }
-                    // Expire any inflight peer asks targeting this
-                    // session's project: the OLD session UUID is gone
-                    // (the user just `/clear`-ed, `/new`-ed, logged
-                    // out, etc.), the NEW session has no knowledge of
-                    // any q-id that was pending against the previous
-                    // identity, so no reply will ever arrive. Mirrors
-                    // the drop-hook behavior in `impl Drop for
-                    // SessionTask` below - same `TargetConnectionFailed`
-                    // reason because semantically the original target
-                    // is unreachable.
+                    // Everything parked for the replaced identity has no
+                    // session left to drain it, so the bucket is dropped
+                    // and any message in it is acknowledged back to its
+                    // sender.
                     if let Some(workspace) = self.workspace.upgrade() {
-                        workspace.expire_target_inflight(
+                        workspace.expire_parked_for_slot(
                             &self.key,
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                         );
@@ -430,26 +424,15 @@ impl SessionTask {
                     workspace.record_spawn_failure(&key, &message);
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
-                // live turn without a Result, so flush the same way the
-                // peer-ask expiry below does.
+                // live turn without a Result, so flush the turn's own
+                // bookkeeping here.
                 let caller = self.domain.lock().key.clone();
                 self.drain_review_activity_for(&caller);
-                // Expire any inflight peer asks targeting THIS session
-                // before emitting the user-visible ConnectionFailed.
-                // Each ask gets the dual-path failure notification to
-                // its caller (PeerAskFailed UI state + Command::Prompt
-                // with DeliveryFailureNotice). No 30-min wait when
-                // we know the target is gone.
+                // A spawn that never connected still holds everything
+                // parked for its slot: drop the bucket and acknowledge any
+                // message in it back to its sender, before the
+                // user-visible ConnectionFailed lands.
                 if let Some(workspace) = self.workspace.upgrade() {
-                    workspace.expire_target_inflight(
-                        &key,
-                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-                    );
-                    // A spawn that never connected still holds everything
-                    // parked for its slot, and the target_session match
-                    // above cannot reach those (they were never stamped).
-                    // Fail the peer asks so their callers get a delivery
-                    // notice rather than waiting out the timeout.
                     workspace.expire_parked_for_slot(
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
@@ -980,36 +963,23 @@ impl SessionTask {
     /// re-dispatched as a normal `Command::Prompt` against `self.key`.
     /// The existing prompt-delivery path handles it identically to a
     /// user-typed prompt - the only difference is the prose body
-    /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
+    /// carries the `[Message id=m-…]` wrapper
     /// that `forge_server::envelope::detect_inbound` matches, which
     /// the chat renders as a styled peer block.
     fn deliver_parked_peers(
         &self,
         workspace: &Arc<crate::Workspace>,
-        pending: Vec<crate::mcp::peers::types::WrappedPrompt>,
+        pending: Vec<crate::parked::ParkedPeer>,
     ) {
         if pending.is_empty() {
             return;
         }
-        // Same sidebar-badge bookkeeping the running-target branch of
-        // `spawn::handle_deliver_peer_prompt` does: Question wrappers
-        // bump the recipient's incoming counter so the sidebar `·N↓`
-        // reflects the just-arrived ask. The wrappers we drain here
-        // were buffered when the target was sleeping, so the bump
-        // was deferred until now. Tells / Replies / notices don't
-        // bump - same rule as the running-target path.
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
-        for wrapped in pending {
-            if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
-                facade.bump_inflight_stats(
-                    &self.key,
-                    crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
-                );
-                workspace.stamp_inflight_target(&wrapped.correlation_id, &self.key);
-            }
-            // Same typed peer-envelope echo the running-target
-            // dispatch path does. Fire BEFORE the LLM-side dispatch
-            // so the user-turn ordering is natural.
+        // Same typed peer-envelope echo the running-target dispatch path
+        // does. Fire BEFORE the LLM-side dispatch so the user-turn
+        // ordering is natural. The sender is not used here: it rides the
+        // parked entry for the expiry path alone.
+        for entry in pending {
+            let crate::parked::ParkedPeer { wrapped, .. } = entry;
             crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped);
             let text = wrapped.to_prose();
             if let Err(err) = workspace.dispatch_workspace_prompt(&self.key, text) {
@@ -1119,10 +1089,9 @@ impl SessionTask {
 }
 
 /// Drop hook: on SessionTask exit (any reason - graceful close,
-/// crash, panic), expire every in-flight peer ask targeting this
-/// session. The expiration fires PeerAskFailed + a synthetic
-/// DeliveryFailureNotice prompt to each caller so they aren't left
-/// waiting on a session that no longer exists.
+/// crash, panic), drop whatever is parked for this session's slot - a
+/// message waiting on a session that no longer exists is acknowledged
+/// back to its sender rather than delivered to nobody.
 ///
 /// Uses the stored `Weak<Workspace>` reference so a Workspace drop
 /// before the task drops doesn't double-fire or panic.
@@ -1137,7 +1106,7 @@ impl Drop for SessionTask {
         let caller = self.domain.lock().key.clone();
         self.drain_review_activity_for(&caller);
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.expire_target_inflight(
+            workspace.expire_parked_for_slot(
                 &self.key,
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
@@ -3729,14 +3698,12 @@ provider = "anthropic"
     /// method directly).
     #[tokio::test]
     async fn first_connected_drains_parked_peer_prompts_in_fifo_order() {
-        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        let sender = SessionSlot::from_str_for_test("sender-proj");
 
         // Park three Messages for the task's slot in known order.
-        // Message kind (not Question) keeps the assertion focused on
-        // FIFO dispatch; the Question-kind incoming-counter bump is
-        // exercised separately.
         let session_key = test_slot();
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
@@ -3744,8 +3711,9 @@ provider = "anthropic"
         for body in bodies {
             workspace.park_peer_prompt(
                 &session_key,
+                &sender,
                 WrappedPrompt {
-                    correlation_id: CorrelationId::new_tell(),
+                    id: MessageId::mint(),
                     kind: WrappedKind::Message,
                     sender_name: "forge".to_owned(),
                     sender_org: "Default".to_owned(),
@@ -5955,7 +5923,7 @@ mod connected_hook_tests {
     }
 
     /// A live worker whose entry carries no kick gets none - it idles
-    /// until the lead sends an agents__tell.
+    /// until the lead sends an agents__send_message.
     #[tokio::test(start_paused = true)]
     async fn worker_without_inline_kick_for_adhoc_label_does_not_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();

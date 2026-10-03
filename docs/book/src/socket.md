@@ -22,7 +22,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 2, "settings": {"mark": null, "theme": null, "font": null}}
+{"kind": "greeting", "version": 3, "settings": {"mark": null, "theme": null, "font": null}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -66,7 +66,7 @@ variant's own name rather than on `kind`:
 A command's variant is its name around its field bag - `Command` has 34
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 54 of `SessionUpdate`'s 59 variants are struct variants too. The other
+and 53 of `SessionUpdate`'s 58 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -220,7 +220,7 @@ facts a row is drawn from.
 | Field | What it is |
 |---|---|
 | `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
-| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, the seat's peer-coordination counters - the numbers its activity badge is drawn from - and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
+| `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
 | `plugins` | Every remembered plugin update, latest write per installed entry. |
@@ -239,7 +239,7 @@ conversation, and what the composer is doing.
 |---|---|
 | `slot` | The seat itself. |
 | `header` | The occupant's session id - the one a copy control hands out, and `null` when there is no occupant to name (nothing started, nothing connected yet, or one dropped after a sign-in or a failed connection) - the resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, asked for on the reads that encode a subject when the seat has none, again when a turn finishes on a seat a page holds, and again when a compaction settles, a page or not (the socket issues the ask whether or not an agent is behind the seat, so where there is none it is refused and nothing reaches the CLI; the answer lands as a `context_usage_snapshot` update only where there is one) and whether a turn is in flight. |
-| `conversation` | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the CLI's own frames. The live `update` stream carries those frames too, and one kind this cannot: a frame the server forged for words the CLI does not echo back. |
+| `conversation` | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and differs in ways a client sees: a run of consecutive token appends inside one flush arrives there as ONE frame carrying the summed `estimated_tokens_delta`, and a frame the server forged carries no `uuid` where one the CLI sent does. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list. |
 | `has_dispatches` | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
@@ -269,21 +269,28 @@ the current numbers asks again by subscribing again.
 
 **Two representations of one conversation cross, and they agree.** A
 settled turn arrives by `more` as the messages it ran as; the turn in
-flight arrives as the same CLI frames, one `update` at a time. **A client
-folds both with one rule of its own** - how a run of tool calls groups, the
-labels it draws and the tail it shows - and the two meet with nothing to
-reconcile about their shape, because the frames are the same shape on
-either side. The one thing the server keeps is the turn boundary, which is
-what stops a page handing over half a turn; where a turn BEGINS is a fact
-about the session, and how its work is drawn is not. **What can differ is
-the id, and only for the forged frame below.**
+flight arrives as the same CLI frames, one `update` at a time - except
+that a run of consecutive token appends inside one flush crosses as ONE
+frame carrying what they grew by summed, where a page's copy of the same
+turn carries the CLI's own several. **A client folds both with one rule of
+its own** - how a run of tool calls groups, the labels it draws and the
+tail it shows - and the two meet with nothing to reconcile about their
+shape, because the frames are the same shape on either side. The one thing
+the server keeps is the turn boundary, which is what stops a page handing
+over half a turn; where a turn BEGINS is a fact about the session, and how
+its work is drawn is not. Neither view is short of a token for the fold:
+both draw a turn's estimate as the sum of the deltas, so the two agree on
+the number where they differ in frames. **What can differ is the id, and
+only for the forged frame below.**
 
-**Not every frame on the stream is the CLI's, and the difference is the
-id.** A prompt handed to `claude` on stdin is not echoed back, so forge
-forges the user turn itself and sends it as a `chat_appended` like any
-other frame - a cron fire, a Gotify notification, a Slack message, a peer
-comm, and a reader's own send, which without it no viewer but the sender
-would ever see.
+**Not every frame on the stream is the CLI's, and for the forged kind the
+id is the tell.** A prompt handed to `claude` on stdin is not echoed back,
+so forge forges the user turn itself and sends it as a `chat_appended` like
+any other frame - a cron fire, a Gotify notification, a Slack message, a
+peer comm, and a reader's own send, which without it no viewer but the
+sender would ever see. **The folded frame is the other kind, and its id is
+the CLI's**: it is the last arrival's, because the one frame stands for the
+run the flush carried.
 
 **A prompt frame carries an `origin`**, `ui` or `view`. It says who
 submitted the words, is stamped where the dispatch happened rather than

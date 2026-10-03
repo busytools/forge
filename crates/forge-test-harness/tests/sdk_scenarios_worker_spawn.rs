@@ -83,8 +83,6 @@ async fn worker_spawn_scenario() {
         org: "TestOrg".into(),
         path: std::path::PathBuf::from("/tmp/forge"),
         status: forge_workspace::PeerLiveness::Running,
-        in_flight_incoming: 0,
-        in_flight_outgoing: 0,
         spawned_at: None,
     });
     let server = build_agents_server(Arc::new(peers), facade, caller);

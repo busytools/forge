@@ -124,7 +124,7 @@ pub struct WorkerEntry {
     /// First-turn message, delivered as the worker's first user turn on
     /// Connected (see `maybe_kick_worker_on_connected`). `None` for a
     /// kick-less spawn, where the worker idles until the lead sends an
-    /// `agents__tell`.
+    /// `agents__send_message`.
     pub kick: Option<String>,
 }
 

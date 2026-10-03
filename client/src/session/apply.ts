@@ -254,7 +254,6 @@ export const IGNORED: readonly string[] = [
   'mcp_operation_error',
   'oauth_credentials_snapshot',
   'peer_envelope_appended',
-  'peer_inflight_stats_changed',
   'plugins_cli_action_failed',
   'plugins_cli_action_succeeded',
   'plugins_inventory_refresh_failed',

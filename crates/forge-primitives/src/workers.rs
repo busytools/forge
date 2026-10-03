@@ -14,7 +14,7 @@ use crate::runtime::SessionLifecycleState;
 pub const FORGE_WORKER_TAG_PREFIX: &str = "forge:worker:";
 
 /// Reserved label for a project's own agent, addressed as the `label`
-/// of an `agents__tell` / `agents__ask` target. `agents__spawn`
+/// of an `agents__send_message` target. `agents__spawn`
 /// rejects it so no live worker can shadow the keyword.
 pub const LEAD_LABEL: &str = "lead";
 

@@ -303,12 +303,10 @@ describe('the chat column as it draws', () => {
       {
         key: 't1',
         messages: [
+          envelope("[Message id=m-1 from agent 'forge/steward' (org 'Busytools')]\n\nis it filed?"),
+          envelope("[Message id=m-2 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI"),
           envelope(
-            "[Question id=q-1 from agent 'forge/steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis it filed?",
-          ),
-          envelope("[Message id=t-2 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI"),
-          envelope(
-            "[Question id=q-3 from agent 'forge/steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-3]\n\nand the wake?",
+            "[Message id=m-3 from agent 'forge/steward' (org 'Busytools')]\n\nand the wake?",
           ),
         ],
       },
@@ -316,11 +314,11 @@ describe('the chat column as it draws', () => {
 
     const html = document.body.innerHTML;
     expect(drawn(), 'every message is on the page, both asks included').toContain('is it filed?');
-    expect((html.match(/>ask</g) ?? []).length, 'the two asks share one lane').toBe(1);
-    expect((html.match(/>message</g) ?? []).length, 'and the message its own').toBe(1);
-    expect(html, 'a counterparty in this project').toContain('i-bot');
-    expect(html, 'and one somewhere else').toContain('i-away');
-    expect(html, 'with its org on the row').toContain('Gateway');
+    expect((html.match(/>peer</g) ?? []).length, 'every row draws on the one lane').toBe(1);
+    expect((html.match(/class="knd"/g) ?? []).length, 'and there is one of it').toBe(1);
+    expect(html, 'the rows say which way each went').toContain('>from</span>');
+    expect(html, 'carrying the incoming mark').toContain('i-inbox');
+    expect(html, 'with the org of a counterparty outside the reader own').toContain('Gateway');
   });
 
   it('draws a tool run whose lanes share a word, which a server named after a family reaches', () => {

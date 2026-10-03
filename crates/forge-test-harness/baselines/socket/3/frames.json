@@ -36,7 +36,6 @@
     "Notice": "notice",
     "OauthCredentialsSnapshot": "oauth_credentials_snapshot",
     "PeerEnvelopeAppended": "peer_envelope_appended",
-    "PeerInflightStatsChanged": "peer_inflight_stats_changed",
     "PendingInteractionResolved": "pending_interaction_resolved",
     "PermissionRequest": "permission_request",
     "PluginsCliActionFailed": "plugins_cli_action_failed",
@@ -66,6 +65,7 @@
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",
+    "WorkChanged": "work_changed",
     "WorkerStatusChanged": "worker_status_changed"
   },
   "subject": {

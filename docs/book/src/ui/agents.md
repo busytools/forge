@@ -1,26 +1,27 @@
 # Agents MCP - cross-agent coordination
 
-Every spawned `claude` child gets an in-process MCP server exposing the agents, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the agents and cron ones. A session is addressed by its slot: the `forge.toml` project name, the project's org, and a label - `lead` for the project's own agent. When the LLM in project A calls `agents__ask`, forge wraps the prompt in a bracket-prefixed envelope and dispatches it as a synthetic user turn to the addressed seat; the reply lands as another wrapped envelope on A's chat. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block. See the [Projects pane](./projects-pane.md) for the per-row in-flight badges.
+Every spawned `claude` child gets an in-process MCP server exposing the agents, review, cron, [Gotify](./inspector-processes.md) and [Slack](./slack.md) groups; the table below covers the agents and cron ones. A session is addressed by its slot: the `forge.toml` project name, the project's org, and a label - `lead` for the project's own agent. When the LLM in project A calls `agents__send_message`, forge wraps the message in a bracket-prefixed envelope and dispatches it as a synthetic user turn to the addressed seat; an answer is another message to A. The renderer matches the wrappers and shows a styled peer block instead of the raw bracket prose. All `mcp__forge__*` calls are auto-approved, and the default tool card is suppressed so the chat shows the styled block.
 
 ## Agent chat blocks
 
 Every agent tool call and inbound envelope renders as one block shape: a TitleCase verb names the kind, a directional icon (`⤴` out, `⤵` in) the direction, and the body indents under the tool-card connectors. No source label sits above - the row names its own kind and its target, which is a project for another project's own agent and `project/label` for a worker.
 
+**One kind carries every message.** There is no reply verb and no reply envelope: an answer to another agent is a message addressed to it, so `Message` is both what a session sent and what arrived. The two notices below stay separate because a failure is not conversation.
+
 | Verb | Direction | Comes from |
 |---|---|---|
-| `Tell` | outbound unsolicited | `agents__tell` |
-| `Ask` | outbound question | `agents__ask` |
-| `Message` | inbound unsolicited | a `[Message ...]` envelope |
-| `Question` | inbound question | a `[Question ...]` envelope |
-| `Reply` | inbound response | a `[Reply ...]` envelope; a late one carries a `⚠ late` modifier |
+| `Message` | outbound | `agents__send_message` |
+| `Message` | inbound | a `[Message id=m-... ...]` envelope |
+| `Message` | inbound | a `[Message to agent ... failed to deliver: ...]` envelope, marked `⚠ undeliverable` |
+| `Worker '<label>' spawn failed` | inbound | a `[Worker ... spawn failed ...]` envelope |
 
 <div class="term">
 
   <pre class="indent">
-     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Tell planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Message planner</span>
      <span class="dim">└─ Re-stating tight: #178 go option A, #179+#180 brainstorm, #182 opt-in.</span>
 
-     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Ask planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Message planner</span>
      <span class="dim">└─ Is the seam plan ready for the workspace.rs split?</span>
 
      <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Message planner</span>
@@ -31,30 +32,21 @@ Every agent tool call and inbound envelope renders as one block shape: a TitleCa
      <span class="dim">│  reviewer pinged. Heads-up: #187's diff shows -105 lines as artifact...</span>
      <span class="dim">└─ Queued: #185 after these two land.</span>
 
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Reply planner</span>
-     <span class="dim">└─ Yes - seam plan attached, six carve-outs roughly 300 LOC each. Sign-of...</span>
-
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Question data-modules</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Message data-modules</span>
      <span class="dim">└─ Should we proceed with the runner upgrade now or wait for CI to drain?</span></pre>
 
 </div>
 
-Notices stay single-line with a `⚠` modifier inline.
+A delivery failure keeps the same row, with a `⚠ undeliverable` modifier and the reason in the body; a worker's async spawn failure is its own one-line notice.
 
 <div class="term">
 
   <pre class="indent">
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Ask planner</span> <span class="dim">-</span> <span class="warning">⚠ timed out</span>
-     <span class="dim">└─ was: "Is the seam plan ready for the workspace.rs split?"</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Message planner</span> <span class="dim">-</span> <span class="warning">⚠ undeliverable</span>
+     <span class="dim">└─ target session connection lost</span>
 
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Tell planner</span> <span class="dim">-</span> <span class="warning">⚠ undeliverable</span>
-     <span class="dim">└─ reason: target sleeping</span>
-
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Reply planner</span> <span class="dim">-</span> <span class="warning">⚠ late</span>
-     <span class="dim">└─ Sorry for the delay - the original ask had already expired.</span>
-
-     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Question forge</span> <span class="dim">-</span> <span class="warning">⚠ expired</span>
-     <span class="dim">└─ your reply will be tagged late.</span></pre>
+     <span class="error bold">✗</span> <span class="error bold">Worker 'planner' spawn failed</span>
+     <span class="dim">└─ Failed to resolve base branch "HEAD": git rev-parse failed</span></pre>
 
 </div>
 
@@ -63,7 +55,7 @@ Notices stay single-line with a `⚠` modifier inline.
 
 - Collapse: the body ellipses to one line (`└─ <first 60 chars>...`); click the row to expand the full body inline.
 - Same-worker streak: three consecutive envelopes from the same worker stack body lines under one header - no repeated `Message <same-name>` rows; different workers in the same project still get one header each.
-- `agents__spawn` / `agents__despawn` / `agents__update` / `agents__capacity` / `agents__list` render as standard tool cards; only the ask / tell calls are suppressed. A reply carries no target, so it renders as a standard tool card too.
+- `agents__spawn` / `agents__despawn` / `agents__update` / `agents__capacity` / `agents__list` / `agents__whoami` render as standard tool cards; only the sends are suppressed, and the failed-delivery notice rides its own row rather than a separate one.
 - Arrival order: an inbound turn appends at the tail in arrival order - never repositioned above the in-flight assistant turn that holds the outbound send. Delivery strips any stranded empty placeholder (so a rapid Gotify flood never leaves a blank bubble between turns), opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state (chat spinner plus a Projects-pane spin). A resumed history opens no live turn.
 - Malformed envelopes fall through to the default user-message rendering rather than erroring. A `[Worker ... spawn failed ...]` envelope stays a one-line system notice with no kind icon - a workspace lifecycle event, not agent traffic.
 
@@ -155,48 +147,18 @@ The block hides the conversation and message ids the delivered turn carries; the
 
 </details>
 
-## Sidebar peer-activity badges
-
-On every live project row and worker row in the [Projects pane](./projects-pane.md), a badge cluster sits between the row name and the close ` x ` button. Each badge is `·N` plus a glyph; counts of 0 are omitted. Failure badges disappear 60 s after the counter last incremented. Workers carry their own per-session badges - a forge-asks-worker bumps the worker's `incoming`, a worker-asks-sibling bumps the worker's `outgoing`.
-
-<div class="term">
-
-  <pre class="indent">
- <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">forge</span> <span class="dim">·2↑·1↓</span>             <span class="user-band"> x </span>
- <span class="dim">   │  ├─ </span><span class="dim">⠋</span> <span class="dim">probe-a</span>  <span class="dim">·1↑</span>             <span class="user-band"> x </span>
- <span class="dim">   │  └─ </span><span class="dim">⠋</span> <span class="dim">reviewer</span>                      <span class="user-band"> x </span>
- <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">gateway-backend</span> <span class="dim">·1↓</span><span class="warning">·1⌛</span> <span class="user-band"> x </span>
- <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">gateway-liq-bot</span> <span class="error">·1✕</span>     <span class="user-band"> x </span></pre>
-
-</div>
-
-| Badge | Source field | Color | Meaning |
-|---|---|---|---|
-| `·N↑` | `PeerInflightStats.outgoing` | DIM | Asks this session sent that are still awaiting reply |
-| `·N↓` | `PeerInflightStats.incoming` | DIM | Asks this session received that are still awaiting our reply |
-| `·N⌛` | `PeerInflightStats.timed_out` | STATUS_WARNING | Asks this session sent that timed out (30-min default). Fades after 60 s. |
-| `·N✕` | `PeerInflightStats.delivery_failed` | STATUS_ERROR | Asks this session sent that failed to deliver (spawn / channel / connection error). Fades after 60 s. |
-
-<details>
-<summary>Badge details</summary>
-
-Sleeping projects have no live state to read peer counters from, so their rows carry no badge column and the name gets the full width instead.
-
-</details>
-
 ## Tools exposed by the `mcp__forge__` server
 
-These are the agents and cron tools, all auto-approved. The four verbs that act on the caller's own project - `spawn`, `despawn`, `update` and `capacity` - are lead-only, so a worker's server carries the shared four and the cron tools.
+These are the agents and cron tools, all auto-approved. The four verbs that act on the caller's own project - `spawn`, `despawn`, `update` and `capacity` - are lead-only, so a worker's server carries the shared three and the cron tools.
 
 <details>
 <summary>The agents and cron tools</summary>
 
 | Tool | Inputs | Semantics |
 |---|---|---|
-| `agents__whoami` | - | The caller's own slot (org, project, label) plus its status: path, liveness, in-flight counts. |
-| `agents__list` | `project` (optional) | Every project's own agent in `forge.toml` - the caller's included - with its liveness and in-flight counters, plus the caller's own live workers. `project` narrows it to one project. |
-| `agents__tell` | `org` · `project` · `label` (optional) · `message` · `in_reply_to` (optional) | Fire-and-forget; returns a correlation id. A reply to a still-open ask renders as `Reply` and closes it, and needs no target - it is routed to whoever asked. A target that names no configured project is refused rather than guessed at. |
-| `agents__ask` | `org` · `project` · `label` (optional) · `prompt` | Returns a correlation id; the ask goes in-flight and the reply lands as a synthetic user turn. In-flight until a reply lands or the target is lost. An unknown target fails synchronously; async failures deliver a `[Ask ... failed to deliver: ...]` envelope. |
+| `agents__whoami` | - | The caller's own slot (org, project, label) plus its status: path, liveness, spawn time. |
+| `agents__list` | `project` (optional) | Every project's own agent in `forge.toml` - the caller's included - with its liveness, plus the caller's own live workers. `project` narrows it to one project. |
+| `agents__send_message` | `org` · `project` · `label` (optional) · `message` | One verb for every send: fire-and-forget, returning `{status, id, to}` with the id the send went out under. A reply is just another message to the seat that sent you one, so there is no reply form and no outstanding state. A target that names no configured project is refused rather than guessed at; a message parked for a sleeping project whose spawn then fails is acknowledged back to the sender as a failed-delivery block. |
 | `agents__spawn` | `label` · `charter` · `kick` (optional) · `resume_kick` (optional) · `interactive` (optional) · `resume_session` (optional) | Lead-only. A new durable worker in the caller's own project: its own `claude` subprocess, chat view and permissions, addressed by `label` under that project's slot. Without `kick` it idles until told. `resume_session` re-spawns a despawned label onto its prior session, recreating its worktree. |
 | `agents__despawn` | `label` · `force` (optional) | Lead-only. Tears the worker down and removes its git worktree. A dirty worktree blocks the despawn unless `force`; nothing is silently discarded. |
 | `agents__update` | `label` · `charter` / `kick` / `resume_kick` (at least one) | Lead-only. Revises an existing worker's stored texts, taking effect on its next respawn. Never creates a worker. |

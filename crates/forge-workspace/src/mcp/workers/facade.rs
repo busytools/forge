@@ -10,23 +10,21 @@ use forge_agent::client::SpawnFailureKind;
 use forge_primitives::WorkerStatus;
 
 use crate::SessionSlot;
-use crate::mcp::peers::facade::{PeerStatsDelta, ReplyDeliverError};
-use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
+use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionChoice, WorkerSpawnReply};
 use crate::workspace::{ResumeTarget, Workspace};
 
 /// Synchronous decision from `deliver_worker_prompt` - whether the
 /// target was found (delivered) or unknown (label has no live
-/// match). Async failures surface via existing `inflight_asks`
-/// expiry machinery, same as peer-MCP.
+/// match).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerTargetStatus {
     Delivered,
 }
 
-/// Synchronous error from `deliver_worker_prompt`. Async delivery
-/// failures (worker crashes mid-flight) flow through the same
-/// `Workspace::expire_*_inflight` machinery as peer-MCP.
+/// Synchronous error from `deliver_worker_prompt`. An async failure - a
+/// worker that never finishes connecting - leaves a parked message that
+/// `Workspace::expire_parked_for_slot` acknowledges back to its sender.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDeliverError {
     /// No live worker in `project_key` matches `label`.
@@ -51,7 +49,7 @@ pub enum WorkerLeadDeliverError {
 }
 
 /// The label reserved for a project's own agent. A caller addresses it
-/// as the `label` of an `agents__tell` / `agents__ask` target;
+/// as the `label` of an `agents__send_message` target;
 /// `agents__spawn` rejects the label so no live worker can shadow the
 /// keyword.
 pub use forge_primitives::LEAD_LABEL;
@@ -353,38 +351,6 @@ pub trait WorkerFacade: Send + Sync {
         caller: &SessionSlot,
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError>;
-
-    /// Deliver a Reply straight to the asker's session, bypassing
-    /// label resolution (the asker is addressed by `SessionSlot`).
-    /// Shares the peer-MCP by-session delivery path. Returns `Err`
-    /// only when the caller session closed.
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError>;
-
-    /// Register an outgoing ask in the workspace's `inflight_asks`
-    /// map. Same map the peer-MCP uses; correlation ids never
-    /// collide because of the `q-` / `t-` prefix scheme.
-    fn register_inflight_ask(&self, ask: InflightAsk);
-
-    /// Atomically remove an `InflightAsk` from the inflight map.
-    /// Returns the removed ask so the caller can inspect its
-    /// metadata, or `None` when the entry was already gone.
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
-
-    /// Look up an `InflightAsk` without removing it. Used by
-    /// `agents__tell` to classify an `in_reply_to` argument as either a
-    /// clean reply (entry exists) or a degraded message (entry gone).
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
-
-    /// Bump per-session inflight stats counters, the map the sidebar
-    /// badge reads. `agents__ask` bumps `OutgoingPlus1` on the caller
-    /// when it fires; `agents__tell` with `in_reply_to` decrements
-    /// `OutgoingMinus1` on the original asker and `IncomingMinus1` on
-    /// the replier.
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
 }
 
 /// Validation chain shared by the production and mock `spawn_worker`
@@ -830,48 +796,6 @@ impl WorkerFacade for ProdWorkerFacade {
         }
         Ok(WorkerTargetStatus::Delivered)
     }
-
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError> {
-        let Some(ws) = self.workspace.upgrade() else {
-            return Err(ReplyDeliverError::CallerSessionGone);
-        };
-        ws.deliver_reply_to_caller(caller, reply)
-    }
-
-    fn register_inflight_ask(&self, ask: InflightAsk) {
-        let Some(ws) = self.workspace.upgrade() else { return };
-        let id = ask.correlation_id.clone();
-        if ws.inflight_asks.lock().insert(id.clone(), ask).is_some() {
-            tracing::warn!(
-                target: "forge_workspace::mcp::workers::facade",
-                correlation_id = %id,
-                "register_inflight_ask: collision on correlation id - prior ask overwritten",
-            );
-        }
-    }
-
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        let ws = self.workspace.upgrade()?;
-        ws.inflight_asks.lock().remove(id)
-    }
-
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        let ws = self.workspace.upgrade()?;
-        ws.inflight_asks.lock().get(id).cloned()
-    }
-
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
-        // Reuse the peer-MCP facade's identical implementation by
-        // routing through `ProdWorkspaceFacade`. Same `peer_stats`
-        // map; one Mutex shared between peer + worker traffic.
-        let Some(ws) = self.workspace.upgrade() else { return };
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&ws);
-        facade.bump_inflight_stats(key, delta);
-    }
 }
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
@@ -926,19 +850,6 @@ pub struct MockWorkerFacade {
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
     /// Captured `deliver_worker_prompt_to_project` calls.
     pub deliver_to_project_calls: parking_lot::Mutex<Vec<RecordedProjectDelivery>>,
-    /// Captured `deliver_reply_to_caller` calls so tests can assert
-    /// the reply's target + kind.
-    pub reply_to_caller_calls: parking_lot::Mutex<Vec<(SessionSlot, WrappedPrompt)>>,
-    /// If set, `deliver_reply_to_caller` returns this error instead of
-    /// recording + Ok, so tests can exercise the failed-reply path
-    /// (the ask must stay open and no counters decrement).
-    pub force_reply_error: parking_lot::Mutex<Option<ReplyDeliverError>>,
-    /// Inflight asks the mock has registered.
-    pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
-    /// Captured `bump_inflight_stats` calls so tests can assert the
-    /// expected delta sequence (e.g. `OutgoingPlus1` on ask, then
-    /// `IncomingMinus1` + `OutgoingMinus1` on a reply tell).
-    pub bumps: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// Captured `despawn_worker` calls: (caller, label, force).
     pub despawn_calls: parking_lot::Mutex<Vec<(SessionSlot, String, bool)>>,
     /// Pre-loaded outcome for `despawn_worker` on a known label. When
@@ -1150,34 +1061,6 @@ impl WorkerFacade for MockWorkerFacade {
         self.deliver_calls.lock().push((caller.clone(), "<lead>".to_owned(), wrapped));
         Ok(WorkerTargetStatus::Delivered)
     }
-
-    fn deliver_reply_to_caller(
-        &self,
-        caller: &SessionSlot,
-        reply: &WrappedPrompt,
-    ) -> Result<(), ReplyDeliverError> {
-        if let Some(err) = self.force_reply_error.lock().clone() {
-            return Err(err);
-        }
-        self.reply_to_caller_calls.lock().push((caller.clone(), reply.clone()));
-        Ok(())
-    }
-
-    fn register_inflight_ask(&self, ask: InflightAsk) {
-        self.inflight.lock().insert(ask.correlation_id.clone(), ask);
-    }
-
-    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        self.inflight.lock().remove(id)
-    }
-
-    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        self.inflight.lock().get(id).cloned()
-    }
-
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
-        self.bumps.lock().push((key.clone(), delta));
-    }
 }
 
 #[cfg(test)]
@@ -1335,8 +1218,8 @@ mod mock_tests {
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         let wrapped = WrappedPrompt {
-            correlation_id: CorrelationId::new_ask(),
-            kind: WrappedKind::Question,
+            id: crate::mcp::peers::types::MessageId::mint(),
+            kind: WrappedKind::Message,
             sender_name: "forge".into(),
             sender_org: "Personal".into(),
             body: "hi".into(),

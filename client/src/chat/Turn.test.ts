@@ -559,33 +559,42 @@ describe('one turn, as the page draws it', () => {
     expect(leaf).toContain('<span class="ring"></span>');
   });
 
-  it('marks a message by the seat the page is drawing, not by the row alone', () => {
-    // The mark says whether the counterparty is in THIS project, so the row
-    // cannot decide it: the seat has to reach the fold. A turn drawn with no
-    // seat in hand takes the ordinary case - in this project - rather than
-    // guessing at a stranger.
-    const envelope = (who: string): unknown => ({
+  it('tags the org by the seat the page is drawing, not by the row alone', () => {
+    // Whether the tag appears is a comparison against THIS reader's org, so
+    // the row cannot decide it: the seat has to reach the fold. A turn drawn
+    // with no seat in hand claims no tag rather than guessing at a stranger.
+    const envelope = (org: string): unknown => ({
       type: 'user',
       message: {
         role: 'user',
         content: [
-          { type: 'text', text: `[Message id=t-1 from agent '${who}' (org 'Busytools')]\n\nhi` },
+          {
+            type: 'text',
+            text: `[Message id=m-1 from agent 'gateway-backend' (org '${org}')]\n\nhi`,
+          },
         ],
       },
       uuid: 'u1',
     });
     const seat = { org: 'Busytools', project: 'forge', label: 'chat-kinds' };
+    const drawSeated = (org: string): string =>
+      render(Turn, {
+        props: {
+          turn: { key: 't1', messages: [envelope(org)], live: false } as HeldTurn,
+          slot: seat,
+        },
+      }).body;
 
-    const seated = render(Turn, {
-      props: {
-        turn: { key: 't1', messages: [envelope('gateway-backend')], live: false } as HeldTurn,
-        slot: seat,
-      },
-    }).body;
-    const unseated = draw(envelope('gateway-backend'));
-
-    expect(seated, 'another project draws away').toContain('i-away');
-    expect(unseated, 'and with no seat to compare against, the ordinary case').toContain('i-bot');
+    expect(drawSeated('Gateway'), 'a counterparty outside the reader own org is tagged').toContain(
+      '<span class="org">Gateway</span>',
+    );
+    expect(drawSeated('Busytools'), 'and one inside it carries no tag at all').not.toContain(
+      'class="org"',
+    );
+    expect(
+      draw(envelope('Gateway')),
+      'and with no seat to compare against, the org the envelope carries stands as it is',
+    ).toContain('<span class="org">Gateway</span>');
   });
 });
 

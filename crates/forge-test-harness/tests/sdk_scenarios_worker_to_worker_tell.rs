@@ -1,9 +1,9 @@
 //! Live-capture scenario: lead drives `mcp__forge__agents__spawn`
-//! followed by `mcp__forge__agents__tell`.
+//! followed by `mcp__forge__agents__send_message`.
 //!
-//! Simplified to lead-to-worker tell because the harness spawns a
+//! Simplified to lead-to-worker delivery because the harness spawns a
 //! single `claude` subprocess and cannot orchestrate a second worker
-//! subprocess from within the same trace. Worker-to-worker tell
+//! subprocess from within the same trace. Worker-to-worker delivery
 //! exercises the same SDK-side `deliver_worker_prompt` path in
 //! production (the second worker just lives in a different process);
 //! the wire shape on the lead's stream-json is identical. Full
@@ -15,10 +15,10 @@
 //!   `forge` MCP server.
 //! - `mcp_message:tools/call` for `agents__spawn` (CLI -> SDK).
 //! - SDK `control_response` carrying the mock's `{session_id, tag}`.
-//! - `mcp_message:tools/call` for `agents__tell` targeting the
+//! - `mcp_message:tools/call` for `agents__send_message` targeting the
 //!   spawned worker by label.
 //! - SDK `control_response` carrying the mock's
-//!   `{correlation_id, target_status: "delivered"}`.
+//!   `{status: "sent", id, to}`.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -48,8 +48,8 @@ async fn worker_to_worker_tell_scenario() {
         durability_warning: None,
         session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
-    // Pre-seed the worker pool so agents__tell finds a live target
-    // by label. The spawn call captures the request but does not
+    // Pre-seed the worker pool so agents__send_message finds a live
+    // target by label. The spawn call captures the request but does not
     // mutate this map on its own.
     mock.workers.lock().insert(
         "forge".to_string(),
@@ -67,7 +67,7 @@ async fn worker_to_worker_tell_scenario() {
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
 
-    // `agents__tell` resolves its target against the configured
+    // `agents__send_message` resolves its target against the configured
     // projects, so seed the one the caller's workers live in.
     let peers = MockWorkspaceFacade::new();
     peers.peers.lock().push(forge_workspace::PeerStatus {
@@ -75,8 +75,6 @@ async fn worker_to_worker_tell_scenario() {
         org: "TestOrg".into(),
         path: std::path::PathBuf::from("/tmp/forge"),
         status: forge_workspace::PeerLiveness::Running,
-        in_flight_incoming: 0,
-        in_flight_outgoing: 0,
         spawned_at: None,
     });
     let server = build_agents_server(Arc::new(peers), facade, caller);
@@ -92,9 +90,10 @@ async fn worker_to_worker_tell_scenario() {
             .send_user_message(
                 "Call mcp__forge__agents__spawn with label=\"beta\" and \
                  charter=\"You are beta. When told something, acknowledge briefly.\". \
-                 Then call mcp__forge__agents__tell with org=\"TestOrg\", project=\"forge\", \
-                 label=\"beta\" and message=\"hello beta, please acknowledge\". Reply with a \
-                 one-line summary confirming the tell was delivered.",
+                 Then call mcp__forge__agents__send_message with org=\"TestOrg\", \
+                 project=\"forge\", label=\"beta\" and message=\"hello beta, please \
+                 acknowledge\". Reply with a one-line summary confirming the message was \
+                 delivered.",
             )
             .await?;
         Ok((client, events))

@@ -17,6 +17,7 @@ use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::work::WorkCache;
 
+pub mod batch;
 mod connection;
 pub mod conversation;
 pub mod envelope;
@@ -42,7 +43,14 @@ pub mod wire;
 /// `slack_draft_resolved`, and `baselines/socket/1/` keeps the older tag as
 /// the record a v1 server emitted. Nothing reads a past version's directory:
 /// it is an archive, and its staleness is the point rather than a fault.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// **Removing an update is a bump too, and v3 is one.** The peer surface
+/// collapsed to `agents__send_message`, which retired
+/// `peer_inflight_stats_changed` along with the per-seat counters and the two
+/// agent-row fields that carried them: a subscriber that still expects the
+/// variant would wait for a badge that never moves again. `baselines/socket/2/`
+/// is the record a v2 server emitted.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations

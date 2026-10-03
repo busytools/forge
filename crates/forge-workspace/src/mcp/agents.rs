@@ -1,7 +1,7 @@
 //! The `agents__*` family - one address space for every forge session.
 //!
 //! A target is a slot: `(org, project, label)`, with `lead` reserved
-//! for a project's own agent. Four verbs reach any slot from any
+//! for a project's own agent. Three verbs reach any slot from any
 //! session; the rest act on the caller's own project and are lead-only.
 
 pub mod facade;
@@ -14,21 +14,18 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL, TargetError};
-use crate::mcp::peers::facade::PeerStatsDelta;
 // Only `build_server` names this, and that is gated on the test features -
 // so an ungated import is unused in the configuration install.sh builds.
 #[cfg(any(test, feature = "testing"))]
 use crate::mcp::peers::facade::WorkspaceFacade;
-use crate::mcp::peers::types::{
-    CorrelationId, InflightAsk, PeerStatus, WrappedKind, WrappedPrompt,
-};
+use crate::mcp::peers::types::{MessageId, PeerStatus, WrappedKind, WrappedPrompt};
 use crate::mcp::workers::facade::{
     DespawnOutcome, WorkerCapSource, WorkerDespawnError, WorkerFacade, WorkerSpawnError,
     WorkerUpdateError,
 };
 use crate::protocol::SessionChoice;
 
-/// Attach the four any-caller verbs to an existing
+/// Attach the three any-caller verbs to an existing
 /// [`McpServerBuilder`](forge_sdk::mcp::server::McpServerBuilder).
 pub(crate) fn add_shared_tools(
     builder: forge_sdk::mcp::server::McpServerBuilder,
@@ -37,9 +34,8 @@ pub(crate) fn add_shared_tools(
 ) -> forge_sdk::mcp::server::McpServerBuilder {
     let whoami = Whoami { dispatcher: dispatcher.clone(), slot: slot.clone() };
     let list = List { dispatcher: dispatcher.clone(), slot: slot.clone() };
-    let tell = Tell { dispatcher: dispatcher.clone(), slot: slot.clone() };
-    let ask = Ask { dispatcher, slot };
-    builder.tool(whoami).tool(list).tool(tell).tool(ask)
+    let send = SendMessage { dispatcher, slot };
+    builder.tool(whoami).tool(list).tool(send)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -63,8 +59,9 @@ fn slot_json(slot: &SessionSlot) -> serde_json::Value {
     })
 }
 
-/// A snapshot row: the address to pass back to tell / ask, then
-/// whatever the engine that produced the snapshot knows about the seat.
+/// A snapshot row: the address to pass back to `agents__send_message`,
+/// then whatever the engine that produced the snapshot knows about the
+/// seat.
 fn row(slot: &SessionSlot, detail: &impl serde::Serialize) -> Result<serde_json::Value, String> {
     let mut body =
         serde_json::to_value(detail).map_err(|err| format!("snapshot serialization: {err}"))?;
@@ -105,32 +102,26 @@ struct TargetArgs {
 /// agent, `project/label` for a worker, with the org beside it.
 ///
 /// Derived rather than delegated to an engine, because one identity has to
-/// hold on every path. A reply names no target, and the two engines
-/// answered this differently - the in-project one by label, the
-/// cross-project one by project - so a single worker rendered as two
-/// senders depending on which verb carried its message. The label is what
-/// keeps a worker distinguishable from its own lead at all: without it a
-/// worker messaging another project carried the bare project name, which
-/// is exactly what its lead sends.
+/// hold on every path - the two engines answered this differently, the
+/// in-project one by label and the cross-project one by project, so a
+/// single worker rendered as two senders depending on which path carried
+/// its message. The label is what keeps a worker distinguishable from its
+/// own lead at all: without it a worker messaging another project carried
+/// the bare project name, which is exactly what its lead sends.
 fn sender_identity(slot: &SessionSlot) -> (String, String) {
-    let name = if slot.is_lead() {
-        slot.project().to_owned()
-    } else {
-        format!("{}/{}", slot.project(), slot.label())
-    };
-    (name, slot.org().to_owned())
+    (crate::mcp::peers::types::seat_name(slot), slot.org().to_owned())
 }
 
 impl TargetArgs {
-    /// The seat this call names. Optional on the schema because a reply
-    /// routes by `in_reply_to` and never needs one - which is why a
-    /// missing target is a message-path error rather than a parse one.
+    /// The seat this call names. Optional in the parsed struct rather than
+    /// required, so a missing half is a message naming what to pass rather
+    /// than a serde error.
     fn resolve(&self, known: &[PeerStatus]) -> Result<AgentTarget, String> {
         let (Some(org), Some(project)) = (self.org.as_deref(), self.project.as_deref()) else {
             return Err(
-                "an unsolicited message needs a target: pass `org` and `project`, and `label` \
-                 to reach a worker rather than the project's own agent. Call agents__list to \
-                 see who you can reach."
+                "a message needs a target: pass `org` and `project`, and `label` to reach a \
+                 worker rather than the project's own agent. Call agents__list to see who you \
+                 can reach."
                     .to_owned(),
             );
         };
@@ -154,9 +145,7 @@ impl Tool for Whoami {
     fn description(&self) -> &'static str {
         "Returns your own forge identity: the slot you are addressed by \
          (org, project, label) and what forge knows about it - project \
-         path, current status, and your project's in-flight ask counters \
-         (the project's, not the seat's - a worker reads the same \
-         counters its lead does). Useful \
+         path, current status, and when the session was spawned. Useful \
          when an inbound envelope says 'from agent X' and you want to \
          confirm whether X is you, when you need to tell another agent \
          which slot to answer, or when you need your own org and project \
@@ -216,14 +205,14 @@ impl Tool for List {
          \
          A project's own agent is reachable whether or not it is \
          currently running: a sleeping project's agent is spawned by the \
-         first ask or tell it receives, which is true of another \
+         first message it receives, which is true of another \
          project's agent - your own is already up if you are reading \
-         this. A worker row must be live for the ask or tell to land. \
+         this. A worker row must be live for the message to land. \
          \
          Rows differ in what they carry - a project's agent reports its \
          path and liveness, a worker reports its charter, current \
          activity and session id. Every row carries the slot to pass \
-         back to agents__tell / agents__ask. \
+         back to agents__send_message. \
          \
          Only your own project's workers are listed. Another project's \
          workers are addressed by their labels, and those labels come \
@@ -234,14 +223,14 @@ impl Tool for List {
          run a command, file an issue, push a branch, anything with side \
          effects - call this tool FIRST. If the target project appears \
          here, do NOT cd into it and mutate its files directly. Hand the \
-         work off via agents__ask (when you need an answer or \
-         confirmation back) or agents__tell (for a notification or \
-         fire-and-forget hand-off). Each agent owns its own repo; stay in \
+         work off with agents__send_message, which delivers it to that \
+         project's own agent. Each agent owns its own repo; stay in \
          your lane and let the other project's agent execute the change. \
          \
          Reading another project's files for context is fine - sometimes \
-         scanning the source yourself gives a sharper answer than waiting \
-         on an ask. The constraint is only on writes / state changes. \
+         scanning the source yourself gives a sharper answer than asking \
+         the other agent. The constraint is only on writes / state \
+         changes. \
          \
          Takes no arguments unless you want the `project` filter."
     }
@@ -290,50 +279,43 @@ impl Tool for List {
     }
 }
 
-/// `agents__tell` - a one-way message to any seat, or a reply to an
-/// earlier ask.
-pub(crate) struct Tell {
+/// `agents__send_message` - one verb for every send, to any seat.
+///
+/// There is no reply verb: a reply is another message to the seat that
+/// sent you one, so every send is addressed the same way.
+pub(crate) struct SendMessage {
     pub(crate) dispatcher: Arc<AgentDispatcher>,
     pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
-struct TellArgs {
+struct SendMessageArgs {
     #[serde(flatten)]
     target: TargetArgs,
     message: String,
-    #[serde(default)]
-    in_reply_to: Option<String>,
 }
 
 #[async_trait::async_trait]
-impl Tool for Tell {
+impl Tool for SendMessage {
     fn name(&self) -> &'static str {
-        "agents__tell"
+        "agents__send_message"
     }
 
     fn description(&self) -> &'static str {
-        "Send a one-way message to another forge agent - its own agent, \
-         or a named worker - and return immediately. The target is a \
-         slot: `project` and `org` name it, and `label` names the seat \
-         inside that project. Omit `label` to reach the project's own \
-         agent; set it to a worker's label to reach that worker. Run \
+        "Send a message to another forge agent - its own agent, or a \
+         named worker - and return immediately. The target is a slot: \
+         `org` and `project` name it, and `label` names the seat inside \
+         that project. Omit `label` to reach the project's own agent; \
+         set it to a worker's label to reach that worker. Run \
          agents__list for a label in your own project; a worker in \
          another project is addressed by whatever label that project's \
          own agent gives you. \
          \
-         Two shapes: (1) REPLY to an inbound agents__ask - set \
-         in_reply_to to the correlation_id from that ask's envelope, and \
-         the original asker sees your message rendered as a Reply in its \
-         own chat, wherever it lives. A reply needs no target: it is \
-         routed to whoever asked, so leave `org`, `project` and `label` \
-         off entirely rather than guessing them. (2) UNSOLICITED - omit \
-         in_reply_to to send standalone prose (announcements, an FYI, a \
-         hand-off); this form does need a target. \
-         The target sees the message as a new user turn and may respond \
-         by asking or telling you back, or simply continue its own work. \
-         A request addressed to another project's own agent is delivered \
-         to that project's agent, spawning it first if it was sleeping. \
+         Every message is the same kind of thing, including a reply: to \
+         answer an agent that sent you one, address it by its own slot \
+         the way you would address anyone else. The target sees the \
+         message as a new user turn and may message you back, or simply \
+         continue its own work. \
          \
          Use this instead of mutating another project's files directly \
          whenever the user asks you to notify or hand off work to another \
@@ -343,209 +325,17 @@ impl Tool for Tell {
          is still allowed; only state changes and hand-offs go through \
          this tool. \
          \
-         A `delivered` status means the queue ACCEPTED the message, not \
-         that the target read it - a target that is down or wedged still \
-         returns delivered, so confirm real work happened by a reply or \
-         an observable artifact rather than by the ack."
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "org": {
-                    "type": "string",
-                    "description": "Org the target project belongs to, as shown by agents__list. Case-sensitive. Required for an unsolicited message; leave it off when replying.",
-                },
-                "project": {
-                    "type": "string",
-                    "description": "Project name of the target, as shown by agents__list. Case-sensitive. Your own project's name addresses a seat in your own project. Required for an unsolicited message; leave it off when replying.",
-                },
-                "label": {
-                    "type": "string",
-                    "description": "Optional. Which seat inside the project: a worker's label, or 'lead' for the project's own agent. Omit for the project's own agent. Case-sensitive; if several workers share a label, the latest-spawned receives the message.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The message body. Rendered as a new user turn in the target's chat, so write it as you would address the target directly.",
-                },
-                "in_reply_to": {
-                    "type": "string",
-                    "description": "Optional. Set to the correlation_id (q-XXXXXXXX) of an inbound agents__ask to mark this as a reply. The original asker sees it as a Reply envelope and the ask closes. Omit for unsolicited messages.",
-                },
-            },
-            "required": ["message"],
-            "additionalProperties": false,
-        })
-    }
-
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: TellArgs = match serde_json::from_value(input.value) {
-            Ok(a) => a,
-            Err(err) => return tool_error(format!("invalid arguments: {err}")),
-        };
-        // A malformed id would miss the inflight-map lookup silently and
-        // degrade a reply to a plain message, hiding the real problem.
-        let in_reply_to_id = match args.in_reply_to.as_deref() {
-            None => None,
-            Some(s) => match CorrelationId::from_external(s) {
-                Some(id) => Some(id),
-                None => {
-                    return tool_error(format!(
-                        "in_reply_to {s:?} is not a well-formed correlation id \
-                         (expected q-XXXXXXXX or t-XXXXXXXX, 8 lowercase hex chars)"
-                    ));
-                }
-            },
-        };
-
-        let correlation_id = CorrelationId::new_tell();
-
-        // Classified before the target is resolved, because a reply does
-        // not need one: it routes to whoever asked, by slot, and the
-        // sender's own slot may not be addressable from here at all.
-        if let Some(id) = in_reply_to_id.as_ref()
-            && let Some(ask) = self.dispatcher.workers().resolve_correlation(id)
-        {
-            let (sender_name, sender_org) = sender_identity(&self.slot);
-            let wrapped = WrappedPrompt {
-                correlation_id: correlation_id.clone(),
-                kind: WrappedKind::Reply,
-                sender_name,
-                sender_org,
-                body: args.message,
-            };
-            if let Err(err) =
-                self.dispatcher.workers().deliver_reply_to_caller(&ask.caller, &wrapped)
-            {
-                return tool_error(err.user_message());
-            }
-            self.dispatcher.workers().complete_inflight_ask(id);
-            self.dispatcher
-                .workers()
-                .bump_inflight_stats(&self.slot, PeerStatsDelta::IncomingMinus1);
-            self.dispatcher
-                .workers()
-                .bump_inflight_stats(&ask.caller, PeerStatsDelta::OutgoingMinus1);
-            return Self::delivered_response(&correlation_id, "delivered", None);
-        }
-
-        let known = self.dispatcher.peers().list_peers();
-        let target = match args.target.resolve(&known) {
-            Ok(target) => target,
-            Err(message) => {
-                // A caller that passed in_reply_to meant to reply, and the
-                // shipped instruction tells it not to guess a target - so
-                // a missing-target complaint points at a call it did not
-                // make. Name the id it should re-check instead.
-                return tool_error(match in_reply_to_id.as_ref() {
-                    Some(id) => format!(
-                        "{message} Your in_reply_to {id} did not match an open \
-                                         ask either, so nothing was sent as a reply: it may be \
-                                         stale, already answered, or its asker's session may \
-                                         have closed."
-                    ),
-                    None => message,
-                });
-            }
-        };
-        let note = in_reply_to_id.as_ref().map(|id| {
-            format!(
-                "in_reply_to {id} did not match an open ask (it may be stale or already \
-                 answered), so this was delivered as a plain message rather than a reply. \
-                 Re-check the correlation id if you meant to reply."
-            )
-        });
-        let (sender_name, sender_org) = sender_identity(&self.slot);
-        let wrapped = WrappedPrompt {
-            correlation_id: correlation_id.clone(),
-            kind: WrappedKind::Message,
-            sender_name,
-            sender_org,
-            body: args.message,
-        };
-        match self.dispatcher.deliver(&self.slot, &target, wrapped) {
-            Ok(status) => Self::delivered_response(&correlation_id, status, note),
-            Err(message) => tool_error(message),
-        }
-    }
-}
-
-impl Tell {
-    fn delivered_response(
-        correlation_id: &CorrelationId,
-        status: &str,
-        note: Option<String>,
-    ) -> ToolOutput {
-        let mut body = serde_json::json!({
-            "correlation_id": correlation_id.as_str(),
-            "target_status": status,
-        });
-        if let Some(note) = note
-            && let Some(obj) = body.as_object_mut()
-        {
-            obj.insert("note".to_owned(), serde_json::Value::String(note));
-        }
-        json_output(&body)
-    }
-}
-
-/// `agents__ask` - an async question to any seat. The reply lands in
-/// the asking session's own chat.
-pub(crate) struct Ask {
-    pub(crate) dispatcher: Arc<AgentDispatcher>,
-    pub(crate) slot: SessionSlot,
-}
-
-#[derive(serde::Deserialize)]
-struct AskArgs {
-    #[serde(flatten)]
-    target: TargetArgs,
-    prompt: String,
-}
-
-#[async_trait::async_trait]
-impl Tool for Ask {
-    fn name(&self) -> &'static str {
-        "agents__ask"
-    }
-
-    fn description(&self) -> &'static str {
-        "Ask another forge agent - its own agent, or a named worker - a \
-         question and receive the reply asynchronously. The target is a \
-         slot: `org` and `project` name it, and `label` names the seat \
-         inside that project. Omit `label` to ask the project's own \
-         agent; set it to a worker's label to ask that worker. Run \
-         agents__list for a label in your own project; a worker in \
-         another project is addressed by whatever label that project's \
-         own agent gives you. \
+         A request addressed to another project's own agent is delivered \
+         to that project's agent, spawning it first if it was sleeping, \
+         so expect extra latency on the first message to a sleeping \
+         project. A request addressed to a worker reaches it only while \
+         that worker is live; if the label is gone the call fails \
+         immediately and names the label. \
          \
-         Returns IMMEDIATELY with a correlation_id (for example \
-         q-7f3a92e0); this tool does NOT wait for the reply. The target's \
-         LLM sees your prompt as a new user turn, does its work - \
-         possibly seconds, possibly minutes - and responds by calling \
-         agents__tell with in_reply_to set to your correlation_id. That \
-         reply lands as a fresh user turn in YOUR chat whenever it is \
-         ready, so finish your current turn naturally and continue with \
-         other work; the reply surfaces on its own. Multiple asks can run \
-         in parallel - fire several in one turn and the replies arrive \
-         independently, each carrying its own correlation_id. \
-         \
-         Use this whenever you need another agent to TAKE AN ACTION or \
-         give you an authoritative answer that only that agent should \
-         produce - running a build there, kicking off a migration there, \
-         confirming whether a deploy landed, asking it to review a design \
-         from its own context. Reading the target's files for your own \
-         context is fine and often quicker than waiting on an ask; the \
-         rule is only that state changes happen through the target's own \
-         agent, via this tool. \
-         \
-         A request addressed to another project's own agent spawns that \
-         project first if it was sleeping, so expect extra latency on the \
-         first ask to a sleeping project. A request addressed to a worker \
-         reaches it only while that worker is live; \
-         if the label is gone the call fails immediately and names the \
-         label."
+         A `sent` status means the queue ACCEPTED the message, not that \
+         the target read it - a target that is down or wedged still \
+         returns sent, so confirm real work happened by an answer or an \
+         observable artifact rather than by the ack."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -562,20 +352,20 @@ impl Tool for Ask {
                 },
                 "label": {
                     "type": "string",
-                    "description": "Optional. Which seat inside the project: a worker's label, or 'lead' for the project's own agent. Omit for the project's own agent. Case-sensitive; if several workers share a label, the latest-spawned receives the question.",
+                    "description": "Optional. Which seat inside the project: a worker's label, or 'lead' for the project's own agent. Omit for the project's own agent. Case-sensitive; if several workers share a label, the latest-spawned receives the message.",
                 },
-                "prompt": {
+                "message": {
                     "type": "string",
-                    "description": "The question body. Rendered as a new user turn in the target's chat - write it as a direct request. Include enough context that the target can answer without further round-trips.",
+                    "description": "The message body. Rendered as a new user turn in the target's chat, so write it as you would address the target directly.",
                 },
             },
-            "required": ["org", "project", "prompt"],
+            "required": ["org", "project", "message"],
             "additionalProperties": false,
         })
     }
 
     async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: AskArgs = match serde_json::from_value(input.value) {
+        let args: SendMessageArgs = match serde_json::from_value(input.value) {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -585,59 +375,26 @@ impl Tool for Ask {
             Err(message) => return tool_error(message),
         };
 
-        let correlation_id = CorrelationId::new_ask();
-        let own_project =
-            target.org() == self.slot.org() && target.project() == self.slot.project();
+        let id = MessageId::mint();
         let (sender_name, sender_org) = sender_identity(&self.slot);
         let wrapped = WrappedPrompt {
-            correlation_id: correlation_id.clone(),
-            kind: WrappedKind::Question,
+            id: id.clone(),
+            kind: WrappedKind::Message,
             sender_name,
             sender_org,
-            body: args.prompt,
+            body: args.message,
         };
-
-        // Register before dispatching: a target that is already running
-        // can answer before the registration would otherwise land, and
-        // an unresolved reply degrades silently to a plain message.
-        // Roll back on a refused dispatch so the inflight map and the
-        // outgoing counter do not leak an ask nobody will answer.
-        let project_key = self
-            .dispatcher
-            .workers()
-            .caller_project(&self.slot)
-            .map(|cp| cp.project_key.as_str().to_owned())
-            .unwrap_or_default();
-        let target_project = if own_project {
-            crate::mcp::workers::worker_target_project_key(&project_key, target.label())
-        } else {
-            target.project().to_owned()
-        };
-        self.dispatcher.workers().register_inflight_ask(InflightAsk {
-            correlation_id: correlation_id.clone(),
-            caller: self.slot.clone(),
-            target_project,
-            target_session: None,
-        });
-        self.dispatcher.workers().bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingPlus1);
-
         match self.dispatcher.deliver(&self.slot, &target, wrapped) {
-            Ok(status) => json_output(&serde_json::json!({
-                "correlation_id": correlation_id.as_str(),
-                "target_status": status,
-                "slot": slot_json(&SessionSlot::new(
+            Ok(()) => json_output(&serde_json::json!({
+                "status": "sent",
+                "id": id.as_str(),
+                "to": slot_json(&SessionSlot::new(
                     target.org(),
                     target.project(),
                     target.label(),
                 )),
             })),
-            Err(message) => {
-                self.dispatcher.workers().complete_inflight_ask(&correlation_id);
-                self.dispatcher
-                    .workers()
-                    .bump_inflight_stats(&self.slot, PeerStatsDelta::OutgoingMinus1);
-                tool_error(message)
-            }
+            Err(message) => tool_error(message),
         }
     }
 }
@@ -682,7 +439,7 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         }
         WorkerSpawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
         WorkerSpawnError::ReservedLabel => format!(
-            "label '{LEAD_LABEL}' is reserved - agents__tell / agents__ask use it as \
+            "label '{LEAD_LABEL}' is reserved - agents__send_message uses it as \
              the addressing keyword for the caller's project's own agent. Pick a different label."
         ),
         WorkerSpawnError::EmptyCharter => "charter must be non-empty after trim".to_owned(),
@@ -767,15 +524,16 @@ impl Tool for Spawn {
         "Spawn a new worker session inside YOUR project (lead-only). \
          The worker is a full forge session - its own claude subprocess, \
          own chat view, own permissions - addressable from your session \
-         by its label, via agents__tell / agents__ask with your own \
+         by its label, via agents__send_message with your own \
          org and project. `charter` is the worker's mission, threaded \
          into the new session's system prompt, and defines what that \
          worker is. PROVIDE `kick` TO START THE WORKER IMMEDIATELY: \
          the kick is delivered as the worker's first user-turn the moment \
          it connects, so it begins working at once. WITHOUT a kick the \
-         worker sits idle until you send it an agents__tell - a 'begin \
-         now' line in the charter does NOT run on its own, so pass `kick` \
-         for any ad-hoc spawn you want to start now. Returns the worker's \
+         worker sits idle until you send it an agents__send_message - a \
+         'begin now' line in the charter does NOT run on its own, so pass \
+         `kick` for any ad-hoc spawn you want to start now. Returns the \
+         worker's \
          session_id and tag (`forge:worker:<label>`). A spawned worker is \
          DURABLE: it survives forge restarts and is automatically \
          re-spawned, resuming where it left off (a restarted worker is \
@@ -805,7 +563,7 @@ impl Tool for Spawn {
          still needs closing. A forgotten worker keeps coming back on \
          every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
-         with agents__tell / agents__ask instead of spawning again. \
+         with agents__send_message instead of spawning again. \
          The label 'lead' is reserved (it addresses a project's own \
          agent) and rejected here. \
          Use agents__list to see your project's current worker pool. \
@@ -819,7 +577,7 @@ impl Tool for Spawn {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Identifier you will use to address this worker later, as the `label` of an agents__tell / agents__ask target. Non-empty after trim. At most one live worker per label - reusing a label with a live worker is rejected.",
+                    "description": "Identifier you will use to address this worker later, as the `label` of an agents__send_message target. Non-empty after trim. At most one live worker per label - reusing a label with a live worker is rejected.",
                 },
                 "charter": {
                     "type": "string",
@@ -827,7 +585,7 @@ impl Tool for Spawn {
                 },
                 "kick": {
                     "type": "string",
-                    "description": "Optional first-turn message delivered to the worker the moment it connects, so it STARTS WORKING IMMEDIATELY (equivalent to sending an agents__tell right after spawn). STRONGLY RECOMMENDED for ad-hoc spawns: WITHOUT a kick the worker sits idle until you send it an agents__tell - a 'begin now' line in the charter does NOT run on its own. Omit only when you intend to drive the worker yourself with a later agents__tell.",
+                    "description": "Optional first-turn message delivered to the worker the moment it connects, so it STARTS WORKING IMMEDIATELY (equivalent to sending an agents__send_message right after spawn). STRONGLY RECOMMENDED for ad-hoc spawns: WITHOUT a kick the worker sits idle until you send it an agents__send_message - a 'begin now' line in the charter does NOT run on its own. Omit only when you intend to drive the worker yourself with a later agents__send_message.",
                 },
                 "resume_kick": {
                     "type": "string",
@@ -835,7 +593,7 @@ impl Tool for Spawn {
                 },
                 "interactive": {
                     "type": "boolean",
-                    "description": "Set true ONLY when the user asked for a worker they will talk to DIRECTLY and will have its row open. It keeps the built-in AskUserQuestion tool, which every other worker is denied: a worker's question renders in its own row, which nobody is usually watching, and an answer that does arrive is indistinguishable from a decision the user actually made - so a worker can attribute a choice to the user in good faith that the user never saw. Defaults to false, which is right for any worker you are spawning on your own initiative; that worker reaches the user through you, via its agents__ask to you. This is fixed at spawn - changing it means despawning the worker and spawning it again.",
+                    "description": "Set true ONLY when the user asked for a worker they will talk to DIRECTLY and will have its row open. It keeps the built-in AskUserQuestion tool, which every other worker is denied: a worker's question renders in its own row, which nobody is usually watching, and an answer that does arrive is indistinguishable from a decision the user actually made - so a worker can attribute a choice to the user in good faith that the user never saw. Defaults to false, which is right for any worker you are spawning on your own initiative; that worker reaches the user through you, via its agents__send_message to you. This is fixed at spawn - changing it means despawning the worker and spawning it again.",
                 },
                 "resume_session": {
                     "type": "boolean",
@@ -924,8 +682,8 @@ impl Tool for Despawn {
     fn description(&self) -> &'static str {
         "Despawn (close + clean up) a worker in YOUR project by label \
          (lead-only). Kills the worker's claude subprocess, removes it \
-         from agents__list, expires any inflight asks addressed to it, \
-         AND cleans up its git worktree. A CLEAN worktree is removed as \
+         from agents__list, AND cleans up its git worktree. A CLEAN \
+         worktree is removed as \
          part of the despawn; a DIRTY one (uncommitted/untracked changes \
          or unpushed commits) BLOCKS the despawn and returns a reason - \
          clean it up (commit + push, or reset) and retry, or pass \
@@ -1092,7 +850,7 @@ impl Tool for Update {
          current value, and at least one must be supplied. TAKES EFFECT ON \
          THE WORKER'S NEXT RESPAWN, NOT IMMEDIATELY - a session's system \
          prompt is fixed when the session spawns, so a running worker \
-         keeps what it started with; use agents__tell to redirect it now. \
+         keeps what it started with; use agents__send_message to redirect it now. \
          The worker must already exist: this never creates one, so spawn \
          it with agents__spawn first (which takes the same three texts). \
          Address it by the same `label` you spawned it with, as shown by \
@@ -1189,7 +947,6 @@ mod tests {
     use super::*;
     use crate::ProjectKey;
     use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
-    use crate::mcp::peers::facade::ReplyDeliverError;
     use crate::mcp::peers::facade::{MockWorkspaceFacade, WorkspaceFacade};
     use crate::mcp::peers::types::PeerLiveness;
     use crate::mcp::workers::facade::{
@@ -1258,8 +1015,6 @@ mod tests {
             org: org.to_owned(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             status: PeerLiveness::Running,
-            in_flight_incoming: 0,
-            in_flight_outgoing: 0,
             spawned_at: None,
         }
     }
@@ -1291,16 +1046,9 @@ mod tests {
         }
     }
 
-    async fn call_tell(host: &Host, to: AgentTarget, message: &str) -> ToolOutput {
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+    async fn call_send(host: &Host, to: AgentTarget, message: &str) -> ToolOutput {
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         let mut args = serde_json::json!({ "message": message });
-        fill_address(&mut args, &to);
-        tool.call(ToolInput { value: args }).await
-    }
-
-    async fn call_ask(host: &Host, to: AgentTarget, prompt: &str) -> ToolOutput {
-        let tool = Ask { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let mut args = serde_json::json!({ "prompt": prompt });
         fill_address(&mut args, &to);
         tool.call(ToolInput { value: args }).await
     }
@@ -1371,33 +1119,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tell_reaches_a_worker_in_another_project() {
+    async fn a_send_reaches_a_worker_in_another_project() {
         // The reach the merge adds: today this takes two leads and a
         // prose relay.
         let host = host();
-        let output = call_tell(&host, target("other", "proj", Some("w1")), "hi").await;
-        assert!(!output.is_error, "cross-project tell must land: {:?}", output.blocks);
+        let output = call_send(&host, target("other", "proj", Some("w1")), "hi").await;
+        assert!(!output.is_error, "cross-project send must land: {:?}", output.blocks);
         assert_eq!(host.workers.deliver_to_project_calls.lock().len(), 1);
     }
 
     #[tokio::test]
-    async fn tell_at_a_projects_own_agent_reaches_that_projects_lead() {
+    async fn a_send_at_a_projects_own_agent_reaches_that_projects_lead() {
         let host = host();
-        let output = call_tell(&host, target("other", "proj", None), "hi").await;
-        assert!(!output.is_error, "tell to another project's agent must land: {:?}", output.blocks);
+        let output = call_send(&host, target("other", "proj", None), "hi").await;
+        assert!(!output.is_error, "send to another project's agent must land: {:?}", output.blocks);
         let calls = host.peers.deliver_calls.lock();
         assert_eq!(calls.len(), 1, "the peers engine carried it");
         assert_eq!(calls[0].1, "proj", "addressed by project name");
     }
 
+    /// The result names the send and the seat it reached, and nothing
+    /// else: the id is traceability for the sender's own echo, and there
+    /// is no outstanding state for a second field to describe.
     #[tokio::test]
-    async fn ask_returns_the_reply_to_the_asking_session() {
+    async fn a_send_result_carries_the_id_and_the_seat_it_reached() {
         let host = host();
-        let output = call_ask(&host, target("other", "proj", Some("w1")), "question").await;
-        assert!(!output.is_error, "cross-project ask must land: {:?}", output.blocks);
-        let asked: Vec<_> = host.workers.inflight.lock().values().cloned().collect();
-        assert_eq!(asked.len(), 1, "the ask is tracked so the reply has somewhere to land");
-        assert_eq!(asked[0].caller, caller(), "a cross-project ask comes back to the caller");
+        let output = call_send(&host, target("other", "proj", Some("w1")), "hi").await;
+        assert!(!output.is_error, "the send must land: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("send returns JSON");
+        assert_eq!(parsed["status"], "sent");
+        let id = parsed["id"].as_str().expect("the result carries the send's id");
+        assert!(id.starts_with("m-"), "ids name the send: {id}");
+        assert_eq!(
+            parsed["to"],
+            serde_json::json!({
+                "org": "other",
+                "project": "proj",
+                "label": "w1",
+            })
+        );
+        assert_eq!(
+            parsed.as_object().expect("an object").len(),
+            3,
+            "the shape is status/id/to and nothing else: {parsed}",
+        );
     }
 
     #[tokio::test]
@@ -1442,95 +1208,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reply_needs_no_target() {
-        // A reply routes to whoever asked, by slot. The asker here is a
-        // worker in another project, whose slot the replier may not be
-        // able to name - so a reply that names no target must still land.
-        let host = host();
-        let ask_id = CorrelationId::new_ask();
-        let asker = SessionSlot::worker("other", "proj", "w1");
-        host.workers.inflight.lock().insert(
-            ask_id.clone(),
-            InflightAsk {
-                correlation_id: ask_id.clone(),
-                caller: asker.clone(),
-                target_project: "proj::w1".to_owned(),
-                target_session: None,
-            },
-        );
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "message": "answer",
-                    "in_reply_to": ask_id.as_str(),
-                }),
-            })
-            .await;
-        assert!(!output.is_error, "a reply must land without a target: {:?}", output.blocks);
-        let replies = host.workers.reply_to_caller_calls.lock();
-        assert_eq!(replies.len(), 1, "the reply reached the asker's session");
-        assert_eq!(replies[0].0, asker, "and the asker is the session that asked");
-    }
-
-    #[tokio::test]
-    async fn two_repliers_are_told_apart_by_their_own_project() {
-        // A reply is routed to whoever asked, so it needs no target and
-        // cannot pick an engine's naming. Left to the label alone every
-        // lead's reply reads `lead`, and the recipient's chat groups two
-        // projects' replies as one sender.
-        let host = host();
-        let ask_id = CorrelationId::new_ask();
-        host.workers.inflight.lock().insert(
-            ask_id.clone(),
-            InflightAsk {
-                correlation_id: ask_id.clone(),
-                caller: SessionSlot::worker("other", "proj", "w1"),
-                target_project: "proj::w1".to_owned(),
-                target_session: None,
-            },
-        );
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "message": "answer",
-                    "in_reply_to": ask_id.as_str(),
-                }),
-            })
-            .await;
-        assert!(!output.is_error, "the reply must land: {:?}", output.blocks);
-        let replies = host.workers.reply_to_caller_calls.lock();
-        assert_eq!(replies[0].1.sender_name, "core", "the reply names the project that sent it");
-        assert_eq!(replies[0].1.sender_org, "acme", "and its org");
-    }
-
-    #[tokio::test]
-    async fn a_reply_that_no_longer_resolves_says_so_instead_of_asking_for_a_target() {
-        // A stale id with no target is exactly what the shipped reply
-        // instruction produces, since it says not to guess a target.
-        // Reporting a missing target points at a call the caller did not
-        // make and does not name the id it should re-check.
-        let host = host();
-        let stale = CorrelationId::new_ask();
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "message": "answer",
-                    "in_reply_to": stale.as_str(),
-                }),
-            })
-            .await;
-        assert!(output.is_error, "nothing was addressed, so the call cannot succeed");
-        assert!(
-            output.blocks[0].text.contains(stale.as_str()),
-            "the refusal names the correlation id it could not resolve: {}",
-            output.blocks[0].text,
-        );
-    }
-
-    #[tokio::test]
     async fn list_carries_the_callers_own_workers_under_their_labels() {
         let host = host();
         let rows = call_list(&host, None).await;
@@ -1543,7 +1220,7 @@ mod tests {
     }
 
     /// A worker's own call, one per shared verb. The role-set tests pin that
-    /// a worker is OFFERED these four; these pin that they work when it calls
+    /// a worker is OFFERED these three; these pin that they work when it calls
     /// them, which is the reach the merge widened and which nothing else
     /// exercises - every other test in this file runs as a lead.
     #[tokio::test]
@@ -1572,9 +1249,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_worker_can_tell_its_lead() {
+    async fn a_worker_can_message_its_lead() {
         let host = host();
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -1585,31 +1262,12 @@ mod tests {
                 }),
             })
             .await;
-        assert!(!output.is_error, "a worker's tell to its lead must land: {:?}", output.blocks);
+        assert!(!output.is_error, "a worker's message to its lead must land: {:?}", output.blocks);
         // The reserved label takes the lead path, and only that path:
         // the worker path would look for a worker labelled `lead` in the
         // caller's pool and refuse.
         let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
-        assert_eq!(parsed["target_status"], "delivered");
-    }
-
-    #[tokio::test]
-    async fn a_worker_can_ask_its_lead() {
-        let host = host();
-        let tool = Ask { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "org": "acme",
-                    "project": "core",
-                    "label": LEAD_LABEL,
-                    "prompt": "which PR first?",
-                }),
-            })
-            .await;
-        assert!(!output.is_error, "a worker's ask to its lead must land: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
-        assert_eq!(parsed["target_status"], "delivered");
+        assert_eq!(parsed["status"], "sent");
     }
 
     #[tokio::test]
@@ -1671,30 +1329,10 @@ mod tests {
     async fn a_workers_envelope_carries_its_label_beside_its_project() {
         // Drop the label and a worker's envelope is the bare project name,
         // which is exactly what its own lead sends - so a recipient cannot
-        // tell the two apart at all. Both verbs carry the one identity.
+        // tell the two apart at all.
         let host = host();
-
-        let ask = Ask { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
-        let output = ask
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "org": "other",
-                    "project": "proj",
-                    "label": "w1",
-                    "prompt": "question",
-                }),
-            })
-            .await;
-        assert!(!output.is_error, "the ask must land: {:?}", output.blocks);
-        let (name, org) = {
-            let asked = host.workers.deliver_to_project_calls.lock();
-            (asked[0].wrapped.sender_name.clone(), asked[0].wrapped.sender_org.clone())
-        };
-        assert_eq!(name, "core/w2", "an ask names the worker");
-        assert_eq!(org, "acme", "and its org, not the project's");
-
-        let tell = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
-        let output = tell
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
+        let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
                     "org": "other",
@@ -1704,81 +1342,10 @@ mod tests {
                 }),
             })
             .await;
-        assert!(!output.is_error, "the tell must land: {:?}", output.blocks);
-        let told = host.workers.deliver_to_project_calls.lock();
-        assert_eq!(
-            told[1].wrapped.sender_name, "core/w2",
-            "a tell names the same worker the same way"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_reply_that_cannot_reach_its_asker_leaves_the_ask_open() {
-        // An asker's session can close between the ask and the reply.
-        // The replier has to be told, and the ask must stay open rather
-        // than be closed by a reply that landed nowhere.
-        let host = host();
-        let ask_id = CorrelationId::new_ask();
-        host.workers.inflight.lock().insert(
-            ask_id.clone(),
-            InflightAsk {
-                correlation_id: ask_id.clone(),
-                caller: SessionSlot::worker("other", "proj", "w1"),
-                target_project: "proj::w1".to_owned(),
-                target_session: None,
-            },
-        );
-        *host.workers.force_reply_error.lock() = Some(ReplyDeliverError::CallerSessionGone);
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "message": "answer",
-                    "in_reply_to": ask_id.as_str(),
-                }),
-            })
-            .await;
-        assert!(output.is_error, "a reply that cannot land is not a success");
-        assert!(
-            output.blocks[0].text.contains("no longer available"),
-            "the refusal says why: {}",
-            output.blocks[0].text,
-        );
-        assert!(
-            host.workers.inflight.lock().contains_key(&ask_id),
-            "the ask stays open, since nothing answered it",
-        );
-    }
-
-    #[tokio::test]
-    async fn a_reply_closes_the_ask_and_clears_the_askers_outgoing_counter() {
-        let host = host();
-        let ask_id = CorrelationId::new_ask();
-        let asker = SessionSlot::worker("other", "proj", "w1");
-        host.workers.inflight.lock().insert(
-            ask_id.clone(),
-            InflightAsk {
-                correlation_id: ask_id.clone(),
-                caller: asker.clone(),
-                target_project: "proj::w1".to_owned(),
-                target_session: None,
-            },
-        );
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool
-            .call(ToolInput {
-                value: serde_json::json!({
-                    "message": "answer",
-                    "in_reply_to": ask_id.as_str(),
-                }),
-            })
-            .await;
-        assert!(!output.is_error, "the reply must land: {:?}", output.blocks);
-        assert!(host.workers.inflight.lock().get(&ask_id).is_none(), "an answered ask is closed");
-        assert!(
-            host.workers.bumps.lock().contains(&(asker, PeerStatsDelta::OutgoingMinus1)),
-            "the asker stops counting an ask that has been answered",
-        );
+        assert!(!output.is_error, "the send must land: {:?}", output.blocks);
+        let sent = host.workers.deliver_to_project_calls.lock();
+        assert_eq!(sent[0].wrapped.sender_name, "core/w2", "the envelope names the worker");
+        assert_eq!(sent[0].wrapped.sender_org, "acme", "and its org, not the project's");
     }
 
     #[tokio::test]
@@ -2043,7 +1610,7 @@ mod tests {
     #[tokio::test]
     async fn a_target_naming_an_unknown_project_is_refused() {
         let host = host();
-        let tool = Tell { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({

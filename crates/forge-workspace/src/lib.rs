@@ -123,7 +123,7 @@ pub use workspace::{PendingInteractionKind, SessionChipInfo, SessionChipState, W
 // server builders, mock facades, the caller-key resolver).
 pub use mcp::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
-pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+pub use mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};
 
 // Re-export forge-agent types that public surface returns, so

@@ -148,8 +148,6 @@ function agent(
     pending_depth: 0,
     last_activity: null,
     reason: null,
-    peer: { outgoing: 0, incoming: 0, delivery_failed: 0 },
-    peer_failure_at: null,
     work,
   };
 }

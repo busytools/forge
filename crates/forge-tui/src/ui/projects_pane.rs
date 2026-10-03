@@ -14,9 +14,8 @@
 //! click routing keeps working regardless of truncation.
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
-use forge_primitives::PeerInflightStats;
 use forge_server::surface::ViewSurface;
 use forge_workspace::ProjectView;
 use ratatui::Frame;
@@ -282,18 +281,8 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
 /// `└─`) so the inspector + projects pane read as one consistent
 /// visual language across the workspace.
-type LiveRowMeta = (forge_workspace::SessionSlot, SessionLifecycleState, bool, PeerBadgeInput);
+type LiveRowMeta = (forge_workspace::SessionSlot, SessionLifecycleState, bool);
 type RowMeta<'p> = (&'p ProjectView, Option<LiveRowMeta>);
-
-/// Snapshot of the peer-activity counters + last-failure timestamp
-/// captured from the row's `UiSession` bucket before row rendering.
-/// Passed into [`append_org_project_row`] so the badge spans can be
-/// inlined without re-borrowing `app.sessions`.
-#[derive(Clone, Default)]
-struct PeerBadgeInput {
-    stats: PeerInflightStats,
-    last_failure_at: Option<Instant>,
-}
 
 /// Projects bucketed the way the pane draws them: orgs
 /// alphabetically (the `BTreeMap` key order), then projects
@@ -399,12 +388,6 @@ fn append_project_rows(
     let lifecycle_for = |key: &forge_workspace::SessionSlot| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
-    let badges_for = |key: &forge_workspace::SessionSlot| -> PeerBadgeInput {
-        app.sessions.get(key).map_or_else(PeerBadgeInput::default, |s| PeerBadgeInput {
-            stats: s.peer_badges.clone(),
-            last_failure_at: s.peer_badges_last_failure_at,
-        })
-    };
 
     // Row metadata per org, assembled in drawn order: each entry is
     // a Vec of (project, optional live session metadata + peer
@@ -425,9 +408,8 @@ fn append_project_rows(
             // session this row represents - a worker selection highlights
             // the worker row and leaves the lead plain.
             let live = live_session.map(|(key, lifecycle)| {
-                let badges = badges_for(&key);
                 let is_focused = active_session_key.as_ref() == Some(&key);
-                (key, lifecycle, is_focused, badges)
+                (key, lifecycle, is_focused)
             });
             rows.push((project, live));
         }
@@ -513,7 +495,7 @@ fn append_org_project_row(
     spans.push(Span::raw(" "));
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
-    if let Some((session_key, lifecycle, is_focused, badge_input)) = live {
+    if let Some((session_key, lifecycle, is_focused)) = live {
         // A pending permission/question prompt surfaces yellow △
         // regardless of lifecycle - the prompt is the session's own
         // state. Selection recolours the glyph below, never swaps it.
@@ -551,23 +533,12 @@ fn append_org_project_row(
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         };
-        // Reserve room for the peer-activity badge cluster between
-        // the name and the close button so the badges sit flush
-        // against the right column rather than off-screen on narrow
-        // panes.
-        let (badge_spans, badge_width) =
-            peer_badge_spans(&badge_input.stats, badge_input.last_failure_at, Instant::now());
-        let name_budget = total_name_budget.saturating_sub(badge_width);
-        let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-        let label_pad = name_budget.saturating_sub(label.chars().count());
+        let label = truncate_with_ellipsis(project.name.as_str(), total_name_budget);
+        let label_pad = total_name_budget.saturating_sub(label.chars().count());
         spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(label, name_style));
         spans.push(Span::raw(" ".repeat(label_pad)));
-        // Peer-activity badges (·N↑ outgoing, ·N↓ incoming, ·N⌛
-        // timed-out, ·N✕ delivery-failed). Failure badges fade after
-        // 60 s so the sidebar doesn't stay red after a single hiccup.
-        spans.extend(badge_spans);
         // 1-col separator before the button - matches the 1-col
         // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
@@ -701,27 +672,9 @@ fn append_worker_tree_children(
         let row_y = area.y + line_count_as_u16(lines);
         let is_last = idx + 1 == worker_count;
         let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
-        // Peer-activity badges mirror the project-lead row at :501 -
-        // every worker's `session_key` carries its own `peer_badges`
-        // populated by the `PeerInflightStatsChanged` reducer, so the
-        // counter advances on the worker row when forge asks the
-        // worker / when the worker asks a sibling.
-        //
-        // `unwrap_or_default()` handles the brief post-spawn window
-        // before Connected lands: `peer_badge_spans` with default stats
-        // returns empty spans + width=0, so the column collapses
-        // cleanly.
-        let (badge_stats, badge_last_failure_at) = app
-            .sessions
-            .get(&worker.slot)
-            .map(|s| (s.peer_badges.clone(), s.peer_badges_last_failure_at))
-            .unwrap_or_default();
-        let (badge_spans, badge_width) =
-            peer_badge_spans(&badge_stats, badge_last_failure_at, Instant::now());
         let label_budget = total_width
             .saturating_sub(usize::from(WORKER_ROW_LEFT_CHROME))
-            .saturating_sub(control_gutter_width())
-            .saturating_sub(badge_width);
+            .saturating_sub(control_gutter_width());
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.slot);
@@ -809,7 +762,6 @@ fn append_worker_tree_children(
             Span::styled(label, label_style),
             Span::raw(" ".repeat(label_pad)),
         ];
-        spans.extend(badge_spans);
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             crate::app::ROW_CLOSE_BUTTON.to_owned(),
@@ -994,68 +946,6 @@ fn glyph_for_lifecycle(
             (spinner_glyph.to_string(), Color::Reset)
         }
     }
-}
-
-/// Duration after which the transient delivery-failure badge (`·N✕`)
-/// fades off the row. Counted from `peer_badges_last_failure_at`,
-/// which is stamped each time the workspace reports a fresh
-/// `delivery_failed` increment. Cumulative
-/// outgoing/incoming counts have no fade - they reflect live state
-/// while the in-flight asks are pending.
-const PEER_FAILURE_FADE: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Build the peer-activity badge cluster spans for a row. Returns the
-/// spans plus the printed width so the caller can shrink `name_budget`
-/// before truncating the project label - without this, badges on a
-/// narrow pane would either push the close button off-screen or land
-/// on top of the label.
-///
-/// Visual order matches the brainstorm spec: outgoing → incoming →
-/// timed-out → delivery-failed. Each badge is `·<count><glyph>` and
-/// gets a single foreground colour. Counts of 0 are omitted entirely
-/// rather than rendered as `·0↑` (the goal is "noise only when there's
-/// activity"). Failure badges (`⌛`, `✕`) disappear after
-/// [`PEER_FAILURE_FADE`] so a one-time spawn hiccup doesn't keep the
-/// sidebar painted red until the session is closed.
-fn peer_badge_spans(
-    stats: &PeerInflightStats,
-    last_failure_at: Option<Instant>,
-    now: Instant,
-) -> (Vec<Span<'static>>, usize) {
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut width: usize = 0;
-
-    let mut push = |span: Span<'static>| {
-        width += span.content.chars().count();
-        spans.push(span);
-    };
-
-    if stats.outgoing > 0 {
-        push(Span::styled(
-            format!("\u{00b7}{}\u{2191}", stats.outgoing),
-            Style::default().fg(theme::DIM),
-        ));
-    }
-    if stats.incoming > 0 {
-        push(Span::styled(
-            format!("\u{00b7}{}\u{2193}", stats.incoming),
-            Style::default().fg(theme::DIM),
-        ));
-    }
-
-    // Failure badges fade after 60 s. `last_failure_at` is `None`
-    // when no failure has ever fired for this session.
-    let failures_fresh = last_failure_at.is_some_and(|when| {
-        now.checked_duration_since(when).is_some_and(|d| d < PEER_FAILURE_FADE)
-    });
-    if failures_fresh && stats.delivery_failed > 0 {
-        push(Span::styled(
-            format!("\u{00b7}{}\u{2715}", stats.delivery_failed),
-            Style::default().fg(theme::STATUS_ERROR),
-        ));
-    }
-
-    (spans, width)
 }
 
 // ---------------------------------------------------------------
@@ -2087,132 +1977,6 @@ mod tests {
         assert_eq!(bar_cells_for(24), 11);
         // Narrower than the chrome+floor: clamps to 6.
         assert_eq!(bar_cells_for(10), 6);
-    }
-
-    #[test]
-    fn peer_badge_spans_empty_when_no_activity() {
-        let stats = PeerInflightStats::default();
-        let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
-        assert!(spans.is_empty(), "no badges expected for default stats");
-        assert_eq!(width, 0);
-    }
-
-    #[test]
-    fn peer_badge_spans_renders_outgoing_and_incoming() {
-        let stats = PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 };
-        let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("\u{2191}"), "outgoing arrow present: {text}");
-        assert!(text.contains("\u{2193}"), "incoming arrow present: {text}");
-        assert!(text.contains('2'), "outgoing count present: {text}");
-        assert!(text.contains('1'), "incoming count present: {text}");
-        // ·2↑·1↓ - 6 chars (· and arrow each count as 1 char).
-        assert_eq!(width, 6);
-    }
-
-    #[test]
-    fn peer_badge_spans_shows_failures_when_fresh() {
-        let stats = PeerInflightStats { outgoing: 0, incoming: 0, delivery_failed: 1 };
-        let now = Instant::now();
-        let (spans, _) = peer_badge_spans(&stats, Some(now), now);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("\u{2715}"), "failure glyph present when fresh: {text}");
-    }
-
-    #[test]
-    fn peer_badge_spans_fades_failures_after_60s() {
-        let stats = PeerInflightStats { outgoing: 0, incoming: 0, delivery_failed: 1 };
-        // Simulate `now` being 61 s past the failure timestamp by
-        // pinning `last_failure_at` to a synthetic Instant and using
-        // a `now` that's just after the fade window. Instant doesn't
-        // accept arbitrary offsets, but `Instant::now() - 61s` is
-        // valid via checked_sub.
-        let later = Instant::now();
-        let earlier = later.checked_sub(PEER_FAILURE_FADE + std::time::Duration::from_secs(1));
-        let Some(stamped) = earlier else {
-            // System clock can't go back that far on this platform;
-            // skip the fade-window assertion rather than panic.
-            return;
-        };
-        let (spans, _) = peer_badge_spans(&stats, Some(stamped), later);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(!text.contains("\u{2715}"), "failure glyph faded after 60 s: {text}");
-    }
-
-    /// Closes #308 Fix A: worker rows in the Projects pane MUST render
-    /// the same peer-activity badge cluster the project-lead row shows.
-    /// Bumps already fire correctly on the worker's `session_key`
-    /// (`PeerInflightStatsChanged` lands them on
-    /// `UiSession.peer_badges`); without this surface the user sees
-    /// the counter advance on the lead row but never on the worker
-    /// itself.
-    #[test]
-    fn worker_row_renders_peer_badge_when_stats_present() {
-        use crate::app::session::UiSession;
-        use forge_workspace::ProjectKey;
-        use forge_workspace::SessionSlot;
-        use forge_workspace::WorkerEntry;
-        use std::time::SystemTime;
-
-        let mut app = App::test_default();
-        let workspace = app.workspace.clone().expect("workspace stub");
-        let project_key = ProjectKey::new("alice-project");
-        let worker_session_key = SessionSlot::from_str_for_test("worker-probe-a");
-        let entry = WorkerEntry {
-            label: "probe-a".into(),
-            charter: "render-badge-test".into(),
-            slot: worker_session_key.clone(),
-            session_id: None,
-            status: forge_primitives::WorkerLiveness::Running,
-            spawned_at: SystemTime::UNIX_EPOCH,
-            spawned_by: SessionSlot::from_str_for_test("lead"),
-            needs_tag: false,
-            is_git_repo_at_spawn: false,
-            diagnostic: None,
-            kick: None,
-        };
-        workspace.insert_live_worker(&project_key, entry);
-        // Seed the worker's UiSession with peer_badges so the renderer
-        // has a non-default stats value to surface.
-        let mut worker_session = UiSession::new(worker_session_key.clone(), "alice-project");
-        worker_session.peer_badges =
-            PeerInflightStats { outgoing: 2, incoming: 1, delivery_failed: 0 };
-        app.sessions.insert(worker_session_key.clone(), worker_session);
-
-        let project = ProjectView::new_for_test(
-            project_key.clone(),
-            "alice-project",
-            "/tmp/alice-project",
-            Vec::new(),
-        );
-        let area = Rect { x: 0, y: 0, width: 40, height: 20 };
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, false, '\u{280B}');
-
-        let joined: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-            .collect();
-        let worker_row = joined
-            .iter()
-            .find(|line| {
-                line.contains("probe-a")
-                    && (line.contains("\u{2514}\u{2500}") || line.contains("\u{251C}\u{2500}"))
-            })
-            .expect("worker row should render with tree-connector + label");
-
-        assert!(
-            worker_row.contains('\u{2191}'),
-            "worker row should carry the outgoing arrow ↑; got: {worker_row}"
-        );
-        assert!(
-            worker_row.contains('\u{2193}'),
-            "worker row should carry the incoming arrow ↓; got: {worker_row}"
-        );
-        assert!(
-            worker_row.contains('2') && worker_row.contains('1'),
-            "worker row should render outgoing=2 + incoming=1; got: {worker_row}"
-        );
     }
 
     fn line_text(line: &Line<'_>) -> String {

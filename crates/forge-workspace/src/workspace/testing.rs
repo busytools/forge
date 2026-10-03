@@ -330,9 +330,6 @@ impl Workspace {
             spawn_failures: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
-            inflight_asks: Mutex::new(HashMap::new()),
-            peer_stats: Mutex::new(HashMap::new()),
-            peer_failure_at: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
@@ -579,24 +576,6 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
-    }
-
-    /// Give `slot` the peer counters a badge draws from, as the delivery
-    /// path's own bumps would have left them. Test-only.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_peer_stats(
-        &self,
-        slot: &SessionSlot,
-        stats: forge_primitives::PeerInflightStats,
-    ) {
-        self.peer_stats.lock().insert(slot.clone(), stats);
-    }
-
-    /// Stamp when `slot`'s failure counter last moved, as the delivery path
-    /// would have. Test-only.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn seed_test_peer_failure_at(&self, slot: &SessionSlot, at: std::time::SystemTime) {
-        self.peer_failure_at.lock().insert(slot.clone(), at);
     }
 
     /// Advertise `commands` and `agents` for `slot`, registering its

@@ -50,7 +50,7 @@ import {
   type CallStatus,
   type KindRow,
 } from './families';
-import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
+import { blocksOf, bodyOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 import { firstLine, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -108,47 +108,90 @@ export interface Notice {
   sub?: string;
 }
 
-/** The lane a peer message draws on: the traffic's own three words. */
-export type MessageKind = 'ask' | 'message' | 'reply';
+/**
+ * Which row a peer card draws as: a message's direction, a failure, or the
+ * verb whose answer the row holds.
+ *
+ * **Direction is carried by the words, and the mark reinforces them.** The
+ * lane is one, so the row's own word is what says which way a message went;
+ * a verb's card says what it is by its title rather than by a direction at
+ * all.
+ */
+export type PeerRow = 'sent' | 'arrived' | 'failed' | 'whoami' | 'list';
 
-/** The reader's own seat, for the two facts a message row compares against. */
+/**
+ * The reader's own SEAT, which is the slot the page is drawing: the label is
+ * part of it, because a worker and its own lead are two seats of one project.
+ *
+ * The org is what a counterparty's tag is compared against; the whole slot is
+ * what tells a row whether it is the seat being read.
+ */
 export interface Self {
   org: string;
   project: string;
+  label: string;
 }
 
-/** One peer message, as the envelope it arrived in or the call that sent it. */
+/** Where this session sits, as `agents__whoami` answers it. */
+export interface SeatFacts {
+  org: string;
+  project: string;
+  label: string;
+  path: string;
+  status: string;
+}
+
+/** One seat a `list` row opens onto. */
+export interface SeatRow {
+  /** The org the seat's project belongs to, which is part of its address. */
+  org: string;
+  label: string;
+  project: string;
+  /** The one clause that says what the seat is for. */
+  what: string;
+  /** The worker's own activity; empty for a project's own agent, which has none. */
+  liveness: string;
+}
+
+/** One peer message or verb card, as the envelope it arrived in or the call that produced it. */
 export interface PeerCard {
   /**
-   * The wire's own id for the message: the envelope's, or the `tool_use` id of
-   * the call that sent it. It is what a view names the group by, so a handle
+   * The wire's own id: the envelope's `m-…`, or the `tool_use` id of the call
+   * that produced the card. It is what a view names the group by, so a handle
    * never has to be derived from a name two messages can share.
    */
   id: string;
-  peer: string;
-  body: string;
+  /** The row it draws as. */
+  row: PeerRow;
   /**
-   * Which lane it draws on, never which way it travelled: direction is not
-   * drawn, so a question this session sent and one it received both read
-   * `ask`.
+   * Who the row is about: the counterparty's seat for a message, and the
+   * verb's own word (`whoami`, `list`) for a card that answers one.
    */
-  kind: MessageKind;
-  /** Whether the counterparty is in this project, which the row's mark says. */
-  here: boolean;
+  peer: string;
+  /** The message itself, or a failure's reason; empty for the verb cards. */
+  body: string;
   /** The counterparty's org, shown only when it is not the reader's own. */
   org: string | null;
   /**
-   * What became of the message: a send with no answer yet is still out, one
-   * whose result came back in error did not arrive, and an envelope that
-   * arrived is done.
+   * What became of the call: a send with no result yet is still out, one whose
+   * result came back in error did not arrive, and an envelope that arrived is
+   * done.
    */
   status: CallStatus;
+  /**
+   * A send's own answer, which the row opens onto: the id the server returned
+   * and the seat it went to.
+   */
+  ack: string | null;
+  /** What a `whoami` row opens onto, when its answer has arrived and parsed. */
+  seat: SeatFacts | null;
+  /** What a `list` row opens onto, one row per reachable seat. */
+  seats: SeatRow[];
 }
 
-/** One lane of peer traffic: its kind, and the messages that arrived as it. */
+/** One lane of peer traffic: every card, in the order the turn produced them. */
 export interface MessageLane {
   tag: 'message';
-  kind: MessageKind;
   cards: PeerCard[];
 }
 
@@ -650,36 +693,35 @@ function sender(rest: string): { from: string; org: string } | null {
   return { from: rest.slice(1, name), org: rest.slice(name + 8, org) };
 }
 
-/** The project an address names: `project/label` is a worker, a bare name an own agent. */
-function projectOf(address: string): string {
-  const cut = address.lastIndexOf('/');
-  return cut === -1 ? address : address.slice(0, cut);
-}
-
 /**
- * One peer message, with the two facts its row compares against the reader.
+ * One peer message, with the one fact its row compares against the reader.
  *
  * `self` is the seat the page draws, and `null` when the fold runs without one
  * (the turn-opening probe): with no reader to compare against, the
- * counterparty draws as in this project and carries no org tag.
+ * counterparty carries no org tag.
  */
 function peerCard(one: {
   id: string;
+  row: PeerRow;
   peer: string;
   body: string;
-  kind: MessageKind;
   org: string | null;
   self: Self | null;
   status: CallStatus;
+  ack?: string | null;
+  seat?: SeatFacts | null;
+  seats?: SeatRow[];
 }): PeerCard {
   return {
     id: one.id,
+    row: one.row,
     peer: one.peer,
     body: one.body,
-    kind: one.kind,
-    here: one.self === null || projectOf(one.peer) === one.self.project,
     org: one.org !== null && (one.self === null || one.org !== one.self.org) ? one.org : null,
     status: one.status,
+    ack: one.ack ?? null,
+    seat: one.seat ?? null,
+    seats: one.seats ?? [],
   };
 }
 
@@ -747,9 +789,15 @@ function isSlackId(value: string): boolean {
  * draws as the reader's own turn, which is a thing that looks like content
  * rather than like a bug.
  *
+ * **Three of the arms below are the shapes a transcript recorded, not shapes
+ * anything emits now**: the `Question`/`Reply` headers and the `Ask … failed
+ * to deliver` notice belong to a session recorded before the peer surface
+ * collapsed to one verb, and reopening it replays that history through this
+ * same fold. They resolve to the rows the one verb produces.
+ *
  * The header is everything between `[` and the first `]`, which matters for
- * the two kinds that carry a trailer: a question ends `- reply with ...` and
- * a reply ends `to your earlier ask`, both inside the brackets.
+ * the recorded kinds that carry a trailer: a question ends `- reply with ...`
+ * and a reply ends `to your earlier ask`, both inside the brackets.
  */
 function inbound(text: string, self: Self | null): Envelope | null {
   if (!text.startsWith('[')) return null;
@@ -761,13 +809,11 @@ function inbound(text: string, self: Self | null): Envelope | null {
   // their own spacing and are read below.
   const body = tail.startsWith('\n\n') ? tail.slice(2) : '';
 
-  for (const [prefix, lane] of [
-    ['Question id=', 'ask'],
-    ['Message id=', 'message'],
-    ['Reply id=', 'reply'],
-  ] as const) {
-    if (!header.startsWith(prefix)) continue;
-    const spec = header.slice(prefix.length);
+  const message = header.startsWith('Message id=');
+  const recordedQuestion = header.startsWith('Question id=');
+  const recordedReply = header.startsWith('Reply id=');
+  if (message || recordedQuestion || recordedReply) {
+    const spec = header.slice(header.indexOf('=') + 1);
     const at = spec.indexOf(' from agent ');
     if (at === -1) return null;
     const who = sender(spec.slice(at + ' from agent '.length));
@@ -776,9 +822,9 @@ function inbound(text: string, self: Self | null): Envelope | null {
       kind: 'peer',
       card: peerCard({
         id: spec.slice(0, at),
+        row: 'arrived',
         peer: who.from,
         body,
-        kind: lane,
         org: who.org,
         self,
         status: 'completed',
@@ -786,19 +832,31 @@ function inbound(text: string, self: Self | null): Envelope | null {
     };
   }
 
-  if (header.startsWith('Ask id=')) {
-    const to = after(header.slice('Ask id='.length), ' to agent ');
-    if (to === null || !header.includes('failed to deliver:')) return null;
-    const who = sender(to);
+  // The target of a failure, from either the current header or a recorded one.
+  const failed = header.startsWith('Message to agent ')
+    ? header.slice('Message to agent '.length)
+    : header.startsWith('Ask id=')
+      ? after(header.slice('Ask id='.length), ' to agent ')
+      : null;
+  if (failed !== null && header.includes('failed to deliver:')) {
+    const who = sender(failed);
     if (who === null) return null;
-    const reason = after(to, 'failed to deliver:') ?? '';
+    const reason = (after(failed, 'failed to deliver:') ?? '').trim();
     return {
-      kind: 'notice',
-      notice: {
-        severity: 'warning',
-
-        text: `'${who.from}' (${who.org}) failed to deliver: ${reason.trim()}`.trimEnd(),
-      },
+      kind: 'peer',
+      card: peerCard({
+        // No id of its own. Two failures from one seat in a turn are ordinary -
+        // a bucket of parked messages is acked one notice per message, and a
+        // resumed transcript replays them - so the fold keys this card by the
+        // frame and block it arrived in rather than by a name two cards share.
+        id: '',
+        row: 'failed',
+        peer: who.from,
+        body: reason,
+        org: who.org,
+        self,
+        status: 'failed',
+      }),
     };
   }
 
@@ -870,13 +928,185 @@ function inbound(text: string, self: Self | null): Envelope | null {
   return null;
 }
 
+/** How one message-sending tool's input names its target and its body. */
+interface MessageTool {
+  /** The input key carrying the message. */
+  body: string;
+  /** Where the target sits: a slot's address, or a bare name. */
+  target: 'address' | 'name' | 'label';
+}
+
+/**
+ * Every tool a message card draws for.
+ *
+ * `agents__send_message` is the live one; the six below it are what a
+ * transcript recorded before the verbs were folded holds, and reopening one
+ * draws those rows again. Each recorded name kept its own input shape, so the
+ * table carries the shape rather than assuming the live one.
+ */
+const MESSAGE_TOOLS: Readonly<Record<string, MessageTool>> = {
+  mcp__forge__agents__send_message: { body: 'message', target: 'address' },
+  // replay-only: agents__ask
+  mcp__forge__agents__ask: { body: 'prompt', target: 'address' },
+  // replay-only: agents__tell
+  mcp__forge__agents__tell: { body: 'message', target: 'address' },
+  // replay-only: peers__ask_agent
+  mcp__forge__peers__ask_agent: { body: 'prompt', target: 'name' },
+  // replay-only: peers__tell_agent
+  mcp__forge__peers__tell_agent: { body: 'message', target: 'name' },
+  // replay-only: workers__ask
+  mcp__forge__workers__ask: { body: 'question', target: 'label' },
+  // replay-only: workers__tell
+  mcp__forge__workers__tell: { body: 'message', target: 'label' },
+};
+
+/** The JSON a tool result carries, when its text is JSON at all. */
+function resultJson(result: Block | undefined): unknown {
+  if (result === undefined) return null;
+  for (const part of bodyOf(result.content)) {
+    if (part.kind !== 'text') continue;
+    try {
+      return JSON.parse(part.text) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * What a result said in prose, which is where a refusal puts its reason.
+ *
+ * A tool that answers with JSON has nothing here to read; one that refuses
+ * answers with the CLI's own sentence, and that sentence is what a failure row
+ * has to show rather than the input it was called with.
+ */
+function resultText(result: Block | undefined): string | null {
+  if (result === undefined) return null;
+  for (const part of bodyOf(result.content)) {
+    if (part.kind !== 'text') continue;
+    const text = part.text.trim();
+    if (text !== '') return text;
+  }
+  return null;
+}
+
+/** The id and seat a send's own answer carries, as the row's ack line reads them. */
+function sendAck(result: Block | undefined): string | null {
+  const answer = obj(resultJson(result));
+  const id = str(answer, 'id');
+  const to = obj(answer['to']);
+  const org = str(to, 'org');
+  const project = str(to, 'project');
+  const label = str(to, 'label');
+  if (id === null || org === null || project === null || label === null) return null;
+  return `id ${id} \u{b7} to ${org}/${project}/${label}`;
+}
+
+/** Where this session sits, from what `whoami` answered. */
+function seatFacts(result: Block | undefined): SeatFacts | null {
+  const answer = obj(resultJson(result));
+  const slot = obj(answer['slot']);
+  const org = str(slot, 'org');
+  const project = str(slot, 'project');
+  const label = str(slot, 'label');
+  if (org === null || project === null || label === null) return null;
+  return {
+    org,
+    project,
+    label,
+    path: str(answer, 'path') ?? '',
+    status: str(answer, 'status') ?? '',
+  };
+}
+
+/**
+ * The seats a `list` answer carries, in the order the server returned them.
+ *
+ * **Two row shapes arrive in one array** - a project's own agent and a worker,
+ * each with its own snapshot fields - and nothing in the answer labels which
+ * is which, so the slot's own label does: `lead` is the project's agent, and
+ * anything else is a worker and carries the charter it was spawned with. A row
+ * whose slot will not read is dropped rather than drawn as a nameless row.
+ *
+ * **What a row says it is for is the reader's own address, read three ways.**
+ * Only the seat the page is DRAWING names itself - the whole slot, so a worker
+ * reading its own project's list does not call its siblings `this session`. A
+ * project's own agent is the reader's if it is the seat being read, the
+ * reader's own project's if only the project matches, and another project's
+ * otherwise; every other row is a worker and carries the phrase of its charter.
+ *
+ * **What a row is for and its liveness both depend on the shape.** A
+ * project's agent has no activity to report, so its liveness is empty; a
+ * worker's comes from `activity`, which is the axis that keeps moving, not
+ * from the spawn outcome `status` freezes at `Running`.
+ */
+function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
+  const answer = resultJson(result);
+  if (!Array.isArray(answer)) return [];
+  const rows: SeatRow[] = [];
+  for (const entry of answer) {
+    const one = obj(entry);
+    const slot = obj(one['slot']);
+    const label = str(slot, 'label');
+    const project = str(slot, 'project');
+    if (label === null || project === null) continue;
+    const org = str(slot, 'org') ?? '';
+    // The reader's own address, read twice: the whole slot is the seat the
+    // page is drawing, and the org and project alone are the one it sits in.
+    const inMyProject = self !== null && org === self.org && project === self.project;
+    const mySeat = inMyProject && self !== null && self.label === label;
+    const agent = label === 'lead';
+    rows.push({
+      org,
+      label,
+      project,
+      what: mySeat
+        ? 'this session'
+        : agent
+          ? inMyProject
+            ? "the project's own agent"
+            : 'another project'
+          : phrase(str(one, 'charter') ?? ''),
+      liveness: agent ? '' : lower(str(one, 'activity') ?? str(one, 'status') ?? ''),
+    });
+  }
+  return rows;
+}
+
+/**
+ * A phrase-sized cut of `text`, for the one clause a seat row says it is for.
+ *
+ * The budget is the terminal's own collapsed-row one: a charter's first line
+ * is a sentence, and a row that shows the whole of it stops reading as a row.
+ */
+function phrase(text: string): string {
+  const line = firstLine(text);
+  return line.length > 60 ? `${line.slice(0, 60).trimEnd()}\u{2026}` : line;
+}
+
+/**
+ * The wire's own word for a state, as a row prints it.
+ *
+ * `SessionLifecycleState` and `WorkerLiveness` serialize their variants as
+ * they are spelled in Rust - `Running`, `Idle` - where `PeerLiveness` is
+ * snake_case, so one row's liveness read `Running` beside another's `running`.
+ */
+function lower(word: string): string {
+  return word.charAt(0).toLowerCase() + word.slice(1);
+}
+
 /**
  * The peer card an outbound call draws, when it is one.
  *
- * **Each name carries its own input shape, and a call with no target is not a
- * card at all.** A reply goes to whoever asked, so it carries no target: the
- * server's own answer is `None`, which draws the call as the tool row it is
- * rather than as a peer block with a nameless peer.
+ * **The card IS the row**: a call that draws one is not drawn as a tool row as
+ * well, which is what keeps a lane's rows one per event rather than two.
+ *
+ * Each name carries its own input and answer shape. A send names a target and
+ * answers with the id it went out under; `whoami` answers with this seat's
+ * facts and `list` with the seats it can reach, and neither names a target at
+ * all. A message call with no readable target is not a card - every send names
+ * one - so it draws as the tool row it would have been.
  */
 function outbound(
   name: string,
@@ -886,28 +1116,60 @@ function outbound(
   id: string,
 ): PeerCard | null {
   const fields = obj(input);
-  const ask =
-    name.endsWith('__ask') || name.endsWith('__ask_agent') || name.endsWith('__workers__ask');
-  const lane: MessageKind = ask ? 'ask' : 'message';
   const status = messageStatus(result);
 
-  if (name === 'mcp__forge__agents__ask' || name === 'mcp__forge__agents__tell') {
-    const peer = address(fields);
+  const send = MESSAGE_TOOLS[name];
+  if (send !== undefined) {
+    const peer =
+      send.target === 'address'
+        ? address(fields)
+        : send.target === 'name'
+          ? str(fields, 'target')
+          : str(fields, 'label');
     if (peer === null) return null;
-    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
-    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
+    const failed = status === 'failed';
+    return peerCard({
+      id,
+      // A send whose own result came back in error never reached anybody, so
+      // its row is the failure row rather than a second row beside it.
+      row: failed ? 'failed' : 'sent',
+      peer,
+      // **A failure says what went wrong, not what was sent.** The row's own
+      // words read `failed to deliver: <reason>`, and the reason is the
+      // refusal the call came back with. A refusal with no words leaves the
+      // tail off rather than putting the message under it, which would say the
+      // words arrived.
+      body: failed ? (resultText(result) ?? '') : (str(fields, send.body) ?? ''),
+      org: null,
+      self,
+      status,
+      ack: sendAck(result),
+    });
   }
-  if (name === 'mcp__forge__peers__ask_agent' || name === 'mcp__forge__peers__tell_agent') {
-    const peer = str(fields, 'target');
-    if (peer === null) return null;
-    const body = str(fields, ask ? 'prompt' : 'message') ?? '';
-    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
+
+  if (name === 'mcp__forge__agents__whoami') {
+    return peerCard({
+      id,
+      row: 'whoami',
+      peer: 'whoami',
+      body: '',
+      org: null,
+      self,
+      status,
+      seat: seatFacts(result),
+    });
   }
-  if (name === 'mcp__forge__workers__ask' || name === 'mcp__forge__workers__tell') {
-    const peer = str(fields, 'label');
-    if (peer === null) return null;
-    const body = str(fields, ask ? 'question' : 'message') ?? '';
-    return peerCard({ id, peer, body, kind: lane, org: null, self, status });
+  if (name === 'mcp__forge__agents__list') {
+    return peerCard({
+      id,
+      row: 'list',
+      peer: 'list',
+      body: '',
+      org: null,
+      self,
+      status,
+      seats: seatRows(result, self),
+    });
   }
   return null;
 }
@@ -1544,15 +1806,12 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         continue;
       }
       statuses.push(item.card.status);
-      // One lane per kind, not one per run: a lane's word is what a view opens
-      // its leaves by, and two lanes of the same kind would give two lanes the
-      // same word, which a keyed list refuses at mount.
-      const held = traffic.find((entry) => entry.lane.kind === item.card.kind);
+      // One lane for every peer card: the direction and the verb are the ROW's
+      // business rather than the lane's, so splitting the lane per kind would
+      // give two lanes one word apiece and read as two systems.
+      const held = traffic[0];
       if (held === undefined) {
-        traffic.push({
-          lane: { tag: 'message', kind: item.card.kind, cards: [item.card] },
-          at: index,
-        });
+        traffic.push({ lane: { tag: 'message', cards: [item.card] }, at: index });
       } else {
         held.lane.cards.push(item.card);
         held.at = index;

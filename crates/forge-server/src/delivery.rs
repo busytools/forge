@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn every_delivery_forges_prose_the_parser_reads_back() {
         use crate::envelope::PeerInboundKind;
-        use forge_workspace::{CorrelationId, GotifyNotification, WrappedKind, WrappedPrompt};
+        use forge_workspace::{GotifyNotification, MessageId, WrappedKind, WrappedPrompt};
 
         let slot = SessionSlot::new("TestOrg", "forge", "lead");
         let cases = [
@@ -142,7 +142,7 @@ mod tests {
                 SessionUpdate::PeerEnvelopeAppended {
                     key: slot.clone(),
                     wrapped: WrappedPrompt {
-                        correlation_id: CorrelationId("q-7f3a92e0".to_owned()),
+                        id: MessageId("m-7f3a92e0".to_owned()),
                         kind: WrappedKind::Message,
                         sender_name: "terminal-cleanups".to_owned(),
                         sender_org: "Busytools".to_owned(),
