@@ -329,9 +329,11 @@ wrong volume with nothing said about it.
 
 With `enabled = true`, forge fetches, verifies and loads the models on
 the preflight screen before forge hands over. A first run
-downloads 3.07 GB, resumable and SHA-256 verified; later runs re-hash
-what is on disk, which takes a few seconds, then load the weights.
-Pressing `esc` during a download keeps what has landed and quits.
+downloads 3.07 GB, resumable and SHA-256 verified; a later run re-hashes
+only a file that has changed since its digest was recorded, about a
+second for the pair, and checks an unchanged one with a stat. Then the
+weights load. Pressing `esc` during a download keeps what has landed
+and quits.
 
 The model files themselves are not configurable. Each carries a URL, a
 byte length and a digest, and a hand-edited one is a file nothing can
@@ -594,10 +596,12 @@ threads, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
 
-The one counterexample is dictation diagnostics: with dictation
-enabled, each take's audio and transcripts are kept as plain files
+Dictation keeps two things outside the database, both machine-local
+and never synced: each take's audio and transcripts, as plain files
 under `<app-support>/dictate-diagnostics/` - voice recordings outside
-the database - with the same machine-local, never-synced caveat.
+the database - and the record of verified model digests under
+`<app-support>/dictate-digests/`, which is what lets a boot over
+unchanged models skip re-hashing them.
 
 `<app-support>` is `~/Library/Application Support/forge-tui` on macOS
 and `$XDG_DATA_HOME/forge-tui` on Linux.

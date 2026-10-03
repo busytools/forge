@@ -1,9 +1,11 @@
 //! Model fetch: download, resume, and verify before use.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest, Sha256};
 
@@ -62,9 +64,14 @@ pub enum Progress {
 /// the two now interleave: a caller keeping per-transfer state must key
 /// it on [`Progress`]'s `file`.
 ///
-/// Known cost: every call re-hashes each file end to end, measured at
-/// 1.8 s/GiB in release. An unoptimised build measures 34 s/GiB, which
-/// reads as a hang rather than as the profile.
+/// Hashing is skipped for a file that has not changed since it was last
+/// verified, when [`Config::digest_cache_dir`] names a place to keep
+/// that record: the check becomes the stat it already needs. Without that
+/// directory every call re-hashes each file end to end, measured here at
+/// 0.55 s/GiB in release and 4.2 s/GiB unoptimised - the second reads as
+/// a hang rather than as the profile. sha2 0.11, which this tree has
+/// pinned since the sweep that moved it, is about four times faster than
+/// the 0.10 before it.
 pub fn prepare(
     cfg: &Config,
     mut on_progress: impl FnMut(Progress) -> ControlFlow<()>,
@@ -74,6 +81,10 @@ pub fn prepare(
 
     let specs: Vec<&ModelSpec> =
         std::iter::once(&cfg.asr_model).chain(cfg.normalizer.as_ref()).collect();
+    let cache = DigestCache::load(cfg.digest_cache_dir.as_deref());
+    // A reference, so each worker closure captures that rather than the
+    // value, and this one can still write the record out below.
+    let cache = &cache;
     let (report_tx, reports) = mpsc::channel::<Report>();
 
     let outcomes: Vec<Result<(), Error>> = std::thread::scope(|scope| {
@@ -101,7 +112,7 @@ pub fn prepare(
                         }
                         verdict.recv().unwrap_or(ControlFlow::Break(()))
                     };
-                    ensure(dir, spec, &mut announce_to_driver)
+                    ensure(dir, spec, cache, &mut announce_to_driver)
                 })
             })
             .collect();
@@ -118,6 +129,11 @@ pub fn prepare(
             .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
             .collect()
     });
+
+    // Written after the join, so a record updated by either worker is
+    // included, and written even when one model failed: what verified is
+    // worth keeping.
+    cache.save();
 
     // In spec order, so which failure a caller sees does not depend on
     // which thread lost the race.
@@ -141,11 +157,198 @@ pub(crate) fn models_dir(cfg: &Config) -> Result<PathBuf, Error> {
     }
 }
 
-fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
+/// The record of verified digests inside
+/// [`Config::digest_cache_dir`].
+const DIGEST_CACHE_FILE: &str = "verified.json";
+
+/// The record's own version. A file written by a layout this build does
+/// not know is ignored rather than misread.
+const DIGEST_CACHE_VERSION: u32 = 1;
+
+/// What one file's last verification saw.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct DigestRecord {
+    size: u64,
+    /// Modification time in nanoseconds since the epoch. Size and mtime
+    /// are the whole key, so they are stored together and compared
+    /// together.
+    mtime_ns: u64,
+    sha256: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DigestFile {
+    version: u32,
+    records: HashMap<PathBuf, DigestRecord>,
+}
+
+/// Remembers which digest each model file had when it was last verified,
+/// so a file that has not changed since is not read end to end again.
+///
+/// The state a record is keyed on is the file's size and modification
+/// time, both from the stat a verification needs anyway. When either
+/// moves, the record no longer covers the file and the full SHA-256 runs
+/// again. Bytes replaced without moving either are taken on the recorded
+/// digest: that is the trade for a boot without a 3.07 GB read, and every
+/// real replacement - a download, a copy, an edit - moves the mtime.
+///
+/// An `Err` here is never fatal. A record that cannot be read, or a
+/// directory that cannot be written, costs a hash on the next run rather
+/// than a failed one.
+struct DigestCache {
+    /// `None` disables the cache entirely, which is what a caller with
+    /// no machine-local directory of its own to put it in gets.
+    file: Option<PathBuf>,
+    inner: Mutex<CacheInner>,
+}
+
+#[derive(Default)]
+struct CacheInner {
+    records: HashMap<PathBuf, DigestRecord>,
+    /// Whether anything was added since the last read, so a run that
+    /// changed nothing does not rewrite the file.
+    changed: bool,
+}
+
+impl DigestCache {
+    /// Read the record beside `dir`, or start an empty one.
+    fn load(dir: Option<&Path>) -> Self {
+        let Some(file) = dir.map(|dir| dir.join(DIGEST_CACHE_FILE)) else {
+            return Self { file: None, inner: Mutex::new(CacheInner::default()) };
+        };
+        let records = match fs::read_to_string(&file) {
+            Ok(raw) => match serde_json::from_str::<DigestFile>(&raw) {
+                Ok(parsed) if parsed.version == DIGEST_CACHE_VERSION => parsed.records,
+                Ok(parsed) => {
+                    tracing::warn!(
+                        event_name = "dictate_digest_record_layout_unknown",
+                        path = %file.display(),
+                        version = parsed.version,
+                        "digest record is a layout this build does not read; every model is hashed this run"
+                    );
+                    HashMap::new()
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "dictate_digest_record_unreadable",
+                        path = %file.display(),
+                        %error,
+                        "digest record is unreadable; every model is hashed this run"
+                    );
+                    HashMap::new()
+                }
+            },
+            // Absent is the first run, which is not a problem to report.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_digest_record_read_failed",
+                    path = %file.display(),
+                    %error,
+                    "digest record could not be read; every model is hashed this run"
+                );
+                HashMap::new()
+            }
+        };
+        Self { file: Some(file), inner: Mutex::new(CacheInner { records, changed: false }) }
+    }
+
+    /// Whether this file, at exactly this state, held these bytes when it
+    /// was last verified. A digest recorded under a different spec is not
+    /// a hit: re-hashing is what turns that into a mismatch the caller
+    /// can act on.
+    fn hit(&self, file: &Path, spec: &ModelSpec) -> bool {
+        let Some((size, mtime_ns)) = state_of(file) else { return false };
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.records.get(file).is_some_and(|record| {
+            record.size == size
+                && record.mtime_ns == mtime_ns
+                && record.sha256.eq_ignore_ascii_case(&spec.sha256)
+        })
+    }
+
+    /// Record a digest computed over `file` while it was in `state`.
+    ///
+    /// `state` is the caller's, taken before the hash: a stat here could
+    /// see a write that landed after the read and store the new state
+    /// against the old bytes, which the next boot would then skip.
+    fn record(&self, file: &Path, state: Option<(u64, u64)>, digest: &str) {
+        if self.file.is_none() {
+            return;
+        }
+        let Some((size, mtime_ns)) = state else { return };
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner
+            .records
+            .insert(file.to_path_buf(), DigestRecord { size, mtime_ns, sha256: digest.to_owned() });
+        inner.changed = true;
+    }
+
+    /// Write the record back, best effort.
+    fn save(&self) {
+        let Some(path) = self.file.as_deref() else { return };
+        let records = {
+            let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+            if !inner.changed {
+                return;
+            }
+            inner.records.clone()
+        };
+        let body = match serde_json::to_string_pretty(&DigestFile {
+            version: DIGEST_CACHE_VERSION,
+            records,
+        }) {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_digest_record_serialize_failed",
+                    %error,
+                    "digest record could not be serialised; not written"
+                );
+                return;
+            }
+        };
+        let written =
+            path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(path, body));
+        if let Err(error) = written {
+            tracing::warn!(
+                event_name = "dictate_digest_record_write_failed",
+                path = %path.display(),
+                %error,
+                "digest record could not be written; the next run hashes what this one did"
+            );
+        }
+    }
+}
+
+/// The state a record is keyed on: length and modification time. `None`
+/// when the file cannot be stat'ed, which leaves the caller to report
+/// whatever is wrong with it.
+fn state_of(path: &Path) -> Option<(u64, u64)> {
+    let metadata = fs::metadata(path).ok()?;
+    let since_epoch = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((metadata.len(), u64::try_from(since_epoch.as_nanos()).ok()?))
+}
+
+fn ensure(
+    dir: &Path,
+    spec: &ModelSpec,
+    cache: &DigestCache,
+    on_progress: &mut Reporter<'_>,
+) -> Result<(), Error> {
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
+        // Nothing is announced before this: a file whose state matches its
+        // record is not checked again, and a "verifying" row that lives
+        // for one stat is noise.
+        if cache.hit(&target, spec) {
+            announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
+            return Ok(());
+        }
         announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
-        verify(&target, spec, on_progress)?;
+        let state = state_of(&target);
+        let digest = verify(&target, spec, on_progress)?;
+        cache.record(&target, state, &digest);
         announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
         return Ok(());
     }
@@ -157,10 +360,15 @@ fn ensure(dir: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resul
     // read takes seconds, and a caller left on "100%" reads it as a hang.
     announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
 
-    if let Err(failure) = verify(&partial, spec, on_progress) {
-        return Err(discard_unusable_partial(&partial, failure));
-    }
-    fs::rename(&partial, &target).map_err(|source| Error::Io { path: target, source })?;
+    let state = state_of(&partial);
+    let digest = match verify(&partial, spec, on_progress) {
+        Ok(digest) => digest,
+        Err(failure) => return Err(discard_unusable_partial(&partial, failure)),
+    };
+    fs::rename(&partial, &target).map_err(|source| Error::Io { path: target.clone(), source })?;
+    // One inode moved, so the bytes just hashed are the bytes now at
+    // `target`, still in the state that was read before them.
+    cache.record(&target, state, &digest);
     announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
     Ok(())
 }
@@ -207,7 +415,10 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
 /// `ETag`: HuggingFace answers with a chunked xet etag that is a
 /// different value from the file's SHA-256, so trusting it would reject
 /// a perfectly good file forever.
-fn verify(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<(), Error> {
+///
+/// Returns the digest it computed, for a caller recording it against the
+/// state the file is in.
+fn verify(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<String, Error> {
     let actual =
         fs::metadata(path).map_err(|source| Error::Io { path: path.into(), source })?.len();
     if actual != spec.size {
@@ -222,7 +433,7 @@ fn verify(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Resu
             actual: digest,
         });
     }
-    Ok(())
+    Ok(digest)
 }
 
 fn sha256(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<String, Error> {
@@ -1093,6 +1304,274 @@ mod tests_download {
         assert!(
             !partial.exists(),
             "a partial that cannot ever verify must be discarded, or every later resume inherits it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_digest_cache {
+    use super::*;
+    use crate::{ConfigBuilder, ModelSpec};
+    use std::fs;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, SystemTime};
+
+    const BODY: &[u8] = b"the complete model weights";
+
+    /// A spec whose URL is guaranteed unreachable, so any code path that
+    /// reaches the network fails loudly as [`Error::Http`] instead of
+    /// quietly repairing what the test changed.
+    fn offline_spec(file: &str, body: &[u8]) -> ModelSpec {
+        ModelSpec {
+            file: file.into(),
+            url: "http://127.0.0.1:1/unreachable".into(),
+            size: body.len() as u64,
+            sha256: hex::encode(Sha256::digest(body)),
+        }
+    }
+
+    fn config_with(models: &Path, digests: &Path, asr: ModelSpec) -> Config {
+        ConfigBuilder::new()
+            .models_dir(models)
+            .digest_cache_dir(digests)
+            .asr_model(asr)
+            .normalizer(None)
+            .build()
+    }
+
+    fn config(models: &Path, digests: &Path) -> Config {
+        config_with(models, digests, offline_spec("asr.gguf", BODY))
+    }
+
+    fn tag(progress: &Progress) -> &'static str {
+        match progress {
+            Progress::Verifying { .. } => "verifying",
+            Progress::Downloading { .. } => "downloading",
+            Progress::Ready { .. } => "ready",
+        }
+    }
+
+    fn prepare_ok(cfg: &Config) -> Vec<&'static str> {
+        let mut reported = Vec::new();
+        prepare(cfg, |progress| {
+            reported.push(tag(&progress));
+            ControlFlow::Continue(())
+        })
+        .expect("prepare must succeed");
+        reported
+    }
+
+    /// Deny reads on a file without moving its size or its mtime, so a
+    /// path that returns without reading it proves the hash was skipped
+    /// and a path that reads it fails instead of quietly succeeding.
+    fn deny_reads(path: &Path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    fn allow_reads(path: &Path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// Move a file's mtime without touching its bytes.
+    fn touch_mtime(path: &Path, when: SystemTime) {
+        fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    fn mtime(path: &Path) -> SystemTime {
+        fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_verified_file_is_not_read_again() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        let cfg = config(models.path(), digests.path());
+
+        assert_eq!(
+            prepare_ok(&cfg),
+            ["verifying", "ready"],
+            "a file with no record yet must be hashed this run"
+        );
+
+        deny_reads(&file);
+        assert_eq!(
+            prepare_ok(&cfg),
+            ["ready"],
+            "a file whose size and mtime match its record must not be read again, and the run \
+             must still report it ready"
+        );
+        allow_reads(&file);
+    }
+
+    #[test]
+    fn a_moved_mtime_is_hashed_again() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        let cfg = config(models.path(), digests.path());
+        prepare_ok(&cfg);
+
+        // Identical bytes delivered under a new mtime: a copy, or a
+        // re-download. The state moved, so the record no longer covers it.
+        touch_mtime(&file, SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000));
+        deny_reads(&file);
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a file whose mtime moved must be read again");
+        assert!(
+            matches!(err, Error::Io { .. }),
+            "the re-read must actually open the file, got: {err:?}"
+        );
+
+        allow_reads(&file);
+        assert_eq!(
+            prepare_ok(&cfg),
+            ["verifying", "ready"],
+            "and once re-verified it is usable again"
+        );
+    }
+
+    #[test]
+    fn a_size_change_is_rejected_with_the_mtime_restored() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        let cfg = config(models.path(), digests.path());
+        prepare_ok(&cfg);
+
+        // One byte longer, mtime put back to what the record holds, so
+        // the size is the only field that can reject it.
+        let recorded = mtime(&file);
+        fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"!").unwrap();
+        touch_mtime(&file, recorded);
+        assert_eq!(
+            mtime(&file),
+            recorded,
+            "this filesystem cannot restore an mtime exactly, so this test cannot isolate the size"
+        );
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a file a byte longer than its record must not be accepted");
+        assert!(
+            matches!(err, Error::SizeMismatch { .. }),
+            "the size, not the digest, is what rejects it, got: {err:?}"
+        );
+    }
+
+    /// A build that pins a new digest for a re-released model, over a
+    /// file already on disk: the record covers the file's state, not the
+    /// spec, so a moved spec must re-hash rather than report the old file
+    /// ready under a digest this build no longer blesses.
+    #[test]
+    fn a_moved_spec_digest_is_not_a_hit() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        prepare_ok(&config(models.path(), digests.path()));
+
+        let mut moved = offline_spec("asr.gguf", BODY);
+        moved.sha256 = hex::encode(Sha256::digest(b"what the re-release weights are"));
+        assert_eq!(
+            moved.size,
+            BODY.len() as u64,
+            "only the digest may differ, or this test is about the size instead"
+        );
+
+        let err = prepare(&config_with(models.path(), digests.path(), moved), |_| {
+            ControlFlow::Continue(())
+        })
+        .expect_err("a file whose record covers another digest must not be reported ready");
+
+        assert!(
+            matches!(err, Error::HashMismatch { .. }),
+            "the moved spec must be what rejects it, and by the digest it pins, got: {err:?}"
+        );
+    }
+
+    /// The direction that has to keep working: a file whose bytes were
+    /// replaced is caught, because every real replacement moves the
+    /// mtime with it.
+    #[test]
+    fn a_corrupted_file_whose_mtime_moved_is_still_rejected() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        let cfg = config(models.path(), digests.path());
+        prepare_ok(&cfg);
+
+        fs::write(&file, vec![b'x'; BODY.len()]).unwrap();
+        touch_mtime(&file, SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
+
+        let err = prepare(&cfg, |_| ControlFlow::Continue(()))
+            .expect_err("a file whose bytes changed must not be taken on trust");
+        assert!(
+            matches!(err, Error::HashMismatch { .. }),
+            "the digest, not the size, is what rejects it, got: {err:?}"
+        );
+    }
+
+    /// The trade this cache makes, pinned so it stays a decision: bytes
+    /// replaced without moving the size or the mtime are taken on the
+    /// recorded digest. Size and mtime are the whole key, which is what
+    /// buys a boot without a 3.07 GB read; a download, a copy and an
+    /// edit all move the mtime.
+    #[test]
+    fn same_size_and_mtime_is_taken_on_trust() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+        let cfg = config(models.path(), digests.path());
+        prepare_ok(&cfg);
+
+        let recorded = mtime(&file);
+        fs::write(&file, vec![b'x'; BODY.len()]).unwrap();
+        touch_mtime(&file, recorded);
+
+        assert_eq!(
+            prepare_ok(&cfg),
+            ["ready"],
+            "a state that matches the record is not re-read, whatever the bytes are"
+        );
+    }
+
+    /// The cache is an optimisation: a record that cannot be read, or a
+    /// directory that cannot be written, must cost a hash rather than
+    /// the run.
+    #[test]
+    fn an_unusable_cache_record_costs_a_hash_not_the_run() {
+        let models = tempfile::tempdir().unwrap();
+        let digests = tempfile::tempdir().unwrap();
+        let file = models.path().join("asr.gguf");
+        fs::write(&file, BODY).unwrap();
+
+        fs::write(digests.path().join("verified.json"), b"{ not json").unwrap();
+        assert_eq!(
+            prepare_ok(&config(models.path(), digests.path())),
+            ["verifying", "ready"],
+            "an unreadable record must fall back to hashing, not fail"
+        );
+
+        let absent = digests.path().join("nothing-here-yet");
+        assert_eq!(
+            prepare_ok(&config(models.path(), &absent)),
+            ["verifying", "ready"],
+            "a record directory that does not exist yet must be created, not refused"
+        );
+
+        let blocked = tempfile::tempdir().unwrap();
+        let not_a_directory = blocked.path().join("a-file");
+        fs::write(&not_a_directory, b"").unwrap();
+        assert_eq!(
+            prepare_ok(&config(models.path(), &not_a_directory)),
+            ["verifying", "ready"],
+            "a record path that cannot be written must not fail the run"
         );
     }
 }
