@@ -1057,11 +1057,11 @@ describe('the seat the client holds between visits', () => {
 });
 
 /**
- * The fields the merge still takes from a poll - the process walk, the
- * composer's three lists and the record's own dispatch answer - are the reason
- * a page cannot simply follow the stream for every field: no frame this build
- * handles carries them. A slow read is what keeps them honest, and a field
- * leaves the list when a handler for its frame lands.
+ * The fields the merge still takes from a poll - the composer's three lists
+ * and the record's own dispatch answer - are the reason a page cannot simply
+ * follow the stream for every field: no frame this build handles carries them.
+ * A slow read is what keeps them honest, and a field leaves the list when a
+ * handler for its frame lands.
  *
  * The clock is faked here and nowhere else in this file, and the socket cases
  * above need the real one, so each case below starts and ends its own.
@@ -1107,7 +1107,7 @@ describe('the slow read for the fields still unfed', () => {
    * again - and arms it without reading on the way in, which is the burst this
    * whole change exists to delete. A poll armed once at the seat's creation
    * and dropped with the first reader leaves every seat shown later drawing
-   * the process walk and the working tree as they were when it was last read.
+   * the file list and the catalogue as they were when it was last read.
    */
   it('arms the poll again when the seat is shown again', () => {
     const connection = drivable();
@@ -1130,7 +1130,7 @@ describe('the slow read for the fields still unfed', () => {
 
   /**
    * **Every field still on the merge's list moves on a poll, and there are
-   * five.** One pinned would leave four silent if an edit dropped them from
+   * four.** One pinned would leave three silent if an edit dropped them from
    * the list believing them fed.
    */
   it('takes every field still unfed from what the poll answered with', () => {
@@ -1141,17 +1141,6 @@ describe('the slow read for the fields still unfed', () => {
       moved: (wire: SessionRecord) => unknown;
       expect: unknown;
     }[] = [
-      {
-        what: 'process walk',
-        stale: {
-          processes: { processes: [], scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 } },
-        },
-        fresh: {
-          processes: { processes: [], scanned_at: { secs_since_epoch: 2, nanos_since_epoch: 0 } },
-        },
-        moved: (wire) => wire.processes?.scanned_at.secs_since_epoch,
-        expect: 2,
-      },
       {
         what: 'dispatch answer',
         stale: { has_dispatches: false },
@@ -1207,10 +1196,22 @@ describe('the slow read for the fields still unfed', () => {
    * field that left the merge's list.** A poll's answer is encoded before a
    * frame lands and applied after it, so a field the merge still took from
    * that answer is a pushed row the next read puts back. One field pinned
-   * would leave the other four unguarded, which is how a restore of one of
+   * would leave the others unguarded, which is how a restore of one of
    * them to the list could ship green.
    */
   it('does not let a poll answer put a pushed row back', () => {
+    const walk = {
+      processes: [
+        {
+          pid: 41,
+          parent_pid: 40,
+          name: 'cargo',
+          command: 'cargo nextest run',
+          memory_bytes: 1,
+        },
+      ],
+      scanned_at: { secs_since_epoch: 2, nanos_since_epoch: 0 },
+    };
     const monitor = {
       tool_use_id: 'm1',
       task_id: null,
@@ -1290,6 +1291,15 @@ describe('the slow read for the fields still unfed', () => {
         frame: { background_tasks_changed: { key: LEAD, tasks: [task] } },
         moved: (wire) => wire.background_tasks.length,
         fresh: 1,
+      },
+      {
+        what: 'process walk',
+        stale: {
+          processes: { processes: [], scanned_at: { secs_since_epoch: 1, nanos_since_epoch: 0 } },
+        },
+        frame: { processes_changed: { key: LEAD, snapshot: walk } },
+        moved: (wire) => wire.processes?.scanned_at.secs_since_epoch,
+        fresh: 2,
       },
     ];
 

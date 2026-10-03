@@ -368,7 +368,7 @@ function mcpFrom(value: unknown): McpServers | null {
   };
 }
 
-function processesFrom(value: unknown): ProcessSnapshot | null {
+export function processesFrom(value: unknown): ProcessSnapshot | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   return {

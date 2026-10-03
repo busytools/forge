@@ -538,6 +538,11 @@ pub struct Workspace {
     /// the read goes to the file.
     #[cfg(any(test, feature = "testing"))]
     test_user_preferences: Mutex<Option<serde_json::Value>>,
+    /// Test-only stand-in for a seat's live `claude` pid, so a fixture seat's
+    /// held loop walks a real process tree with no CLI behind it. A seat with
+    /// no entry reads the pid off its own handle, as production does.
+    #[cfg(any(test, feature = "testing"))]
+    test_claude_pid: Mutex<std::collections::HashMap<SessionSlot, u32>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`, the account key
@@ -1523,6 +1528,8 @@ impl Workspace {
             test_extra_projects: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "testing"))]
             test_user_preferences: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_claude_pid: Mutex::new(std::collections::HashMap::new()),
         };
         if let Some(prober) = cli_version_prober {
             workspace.start_cli_version_probe(prober);
@@ -6568,6 +6575,12 @@ impl Workspace {
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
     pub fn claude_pid(&self, key: &SessionSlot) -> Option<u32> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            if let Some(seeded) = self.test_claude_pid.lock().get(key) {
+                return Some(*seeded);
+            }
+        }
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
     }
 

@@ -379,6 +379,7 @@ impl Workspace {
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
+            test_claude_pid: Mutex::new(HashMap::new()),
         };
         (Arc::new(workspace), update_rx)
     }
@@ -389,6 +390,13 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_user_preferences(&self, preferences: serde_json::Value) {
         *self.test_user_preferences.lock() = Some(preferences);
+    }
+
+    /// Give a fixture seat a live `claude` pid, so its held loop walks a real
+    /// process tree with no CLI behind it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_claude_pid(&self, key: &SessionSlot, pid: u32) {
+        self.test_claude_pid.lock().insert(key.clone(), pid);
     }
 }
 

@@ -1123,6 +1123,18 @@ pub enum SessionUpdate {
         servers: Vec<McpServerStatus>,
         error: Option<String>,
     },
+    /// The seat's process tree moved, as the whole walk the core holds.
+    ///
+    /// **Pushed rather than read.** The walk is a `sysinfo` refresh and the
+    /// terminal runs it once a second for the seat a person is on; the core
+    /// now walks the same second for every seat a view is showing, and this
+    /// carries the answer to whoever is drawing it. Emitted only when the
+    /// tree's own entries moved - a walk that found the same processes says
+    /// nothing.
+    ProcessesChanged {
+        key: SessionSlot,
+        snapshot: forge_agent::env::processes::ProcessSnapshot,
+    },
     /// The seat's monitors moved, as the whole set the core holds.
     ///
     /// **Pushed rather than read.** The set changes on discrete task frames -
@@ -1427,6 +1439,7 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
             | Self::BackgroundTasksChanged { key, .. }
             | Self::PeerEnvelopeAppended { key, .. }
@@ -1553,6 +1566,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::ProcessesChanged { key, snapshot } => f
+                .debug_struct("ProcessesChanged")
+                .field("key", key)
+                .field("count", &snapshot.processes.len())
+                .finish(),
             Self::MonitorsChanged { key, monitors } => f
                 .debug_struct("MonitorsChanged")
                 .field("key", key)
