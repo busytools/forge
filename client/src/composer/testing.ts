@@ -69,7 +69,7 @@ export function take(over: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
-/** A permission request as the core offers one, which is what the dock draws. */
+/** A permission request for the dock, hand-written: the option ids are this test's, not the core's. */
 export function permissionAsk(toolId = 'tu-1'): unknown {
   return {
     kind: 'permission',
