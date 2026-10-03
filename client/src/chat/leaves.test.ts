@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { leafOf, opensByDefault } from './leaves';
+import { leafOf, opensByDefault, type CallBody } from './leaves';
 
 /** A result block as the wire shapes one, which is where a tool's answer arrives. */
 const answered = (content: string): { type: string; content: string } => ({
@@ -190,6 +190,88 @@ describe('what opens without being asked', () => {
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
     expect(opensByDefault(bash.name, bash.body), 'a call with no diff never opens itself').toBe(
       false,
+    );
+  });
+});
+
+/**
+ * How many times anything walked a string through its character iterator while
+ * `fn` ran.
+ *
+ * The reader below reads each hunk line by its mark, and one way of writing it
+ * walks the whole line: `const [mark, ...rest] = line` iterates the string into
+ * one array entry and one string per character, which on the line this was
+ * measured against - 439,612 characters - is some 440,000 allocations for that
+ * one line. The fold re-reads every hunk of a turn on every frame the seat
+ * emits, so the count is the assertion rather than an elapsed time. It sees the
+ * iterator only: a `line.split('')` rewrite is the same allocation class and
+ * would pass at 0.
+ */
+function stringSteps(fn: () => void): number {
+  const native = String.prototype[Symbol.iterator];
+  let steps = 0;
+  String.prototype[Symbol.iterator] = function (this: string): StringIterator<string> {
+    const held = native.call(this);
+    const counting = {
+      next: (): IteratorResult<string> => {
+        steps += 1;
+        return held.next();
+      },
+    };
+    // The declared iterator type carries helper methods a spread never calls;
+    // `next` is the whole of what the reader under test walks it with.
+    return counting as unknown as StringIterator<string>;
+  };
+  try {
+    fn();
+  } finally {
+    String.prototype[Symbol.iterator] = native;
+  }
+  return steps;
+}
+
+describe('what one hunk line costs to read', () => {
+  it('reads a line by its mark, with no character-iterator walk', () => {
+    // Not hypothetical: two Edit results in the inbox-triage transcript carry
+    // lines this size in their `structuredPatch` (439,612 characters), and
+    // reading them that way was 23% of the client's busy time while the seat
+    // streams (seat mirror, 2026-10-03).
+    const long = 'x'.repeat(200_000);
+    let body: CallBody[] = [];
+    const steps = stringSteps(() => {
+      const leaf = leafOf(
+        't1',
+        'Edit',
+        { file_path: '/x/a.rs' },
+        answered('The file /x/a.rs has been updated.'),
+        {
+          structuredPatch: [
+            {
+              oldStart: 1,
+              oldLines: 3,
+              newStart: 1,
+              newLines: 3,
+              lines: [`+${long}`, `-${long}`, ` ${long}`],
+            },
+          ],
+        },
+      );
+      body = leaf.body;
+    });
+
+    expect(steps, 'a line is read with no character-iterator walk').toBe(0);
+    const [hunk] = body;
+    if (hunk?.kind !== 'hunk') throw new Error('the row drew no hunk');
+    expect(
+      hunk.lines.map((line) => [line.kind, line.text.length]),
+      'each line read by its mark, its text whole',
+    ).toEqual([
+      ['add', long.length],
+      ['del', long.length],
+      ['ctx', long.length + 1],
+    ]);
+    expect(hunk.lines[0]?.text, 'and a change loses its mark, which the row draws itself').toBe(
+      long,
     );
   });
 });
