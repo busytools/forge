@@ -147,6 +147,20 @@ describe('what opens without being asked', () => {
       'a mutation over the bound starts closed, and one click still opens it',
     ).toBe(false);
 
+    // The unit is rows, not newlines: a real diff carried a 441,094-character
+    // line, which a newline count reads as one line and the drawing wraps into
+    // ~245,000px of rows. Counting newlines let exactly that shape through.
+    const oneLongLine = leafOf(
+      't3',
+      'Edit',
+      { file_path: '/x/gen.rs', old_string: 'x'.repeat(441_094), new_string: 'y'.repeat(441_094) },
+      answered('The file /x/gen.rs has been updated.'),
+    );
+    expect(
+      opensByDefault(oneLongLine.name, oneLongLine.body),
+      'a few enormous lines are rows in the hundreds of thousands, and stay closed',
+    ).toBe(false);
+
     const bash = leafOf('t2', 'Bash', { command: 'ls' }, answered('a.rs\nb.rs'));
     expect(opensByDefault(bash.name, bash.body), 'a call with no diff never opens itself').toBe(
       false,

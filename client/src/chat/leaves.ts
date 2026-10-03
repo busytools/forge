@@ -152,22 +152,41 @@ export function opensByDefault(name: string, body: CallBody[]): boolean {
   return isEdit(name) && drawnDiffLines(body) <= OPEN_DIFF_LINES;
 }
 
-/** The most diff lines a mutation's row draws without being asked. */
+/** The most diff rows a mutation's row draws without being asked. */
 const OPEN_DIFF_LINES = 2000;
 
-/** The lines a body's diff pieces would draw, counted as the row draws them. */
+/**
+ * The rows a body's diff pieces would draw, counted as the ROW draws them.
+ *
+ * **Rows, not newlines.** The drawing wraps, so a file of a few enormous lines
+ * draws hundreds of thousands of pixels: one real diff carried a 441,094
+ * character line, which a newline count reads as one. Counting the wrapped
+ * rows is the unit the layout cost is actually in.
+ */
 function drawnDiffLines(body: CallBody[]): number {
   let lines = 0;
   for (const piece of body) {
     if (piece.kind === 'diff') {
-      lines += piece.old === '' ? 0 : piece.old.split('\n').length;
-      lines += piece.new === '' ? 0 : piece.new.split('\n').length;
+      lines += wrappedRows(piece.old) + wrappedRows(piece.new);
     } else if (piece.kind === 'hunk') {
-      lines += piece.lines.length;
+      for (const line of piece.lines) lines += wrappedRows(line.text);
     }
   }
   return lines;
 }
+
+/** The rows a block of text draws once wrapped, at the diff's own text column. */
+function wrappedRows(text: string): number {
+  if (text === '') return 0;
+  let rows = 0;
+  for (const line of text.split('\n')) {
+    rows += Math.max(1, Math.ceil(line.length / DIFF_COLUMNS));
+  }
+  return rows;
+}
+
+/** Roughly the diff's text column at a wide window; the bound only needs its order. */
+const DIFF_COLUMNS = 76;
 
 /** Whether a call's body is a source file the page colours. */
 export function readsSource(name: string): boolean {
