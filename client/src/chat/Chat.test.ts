@@ -887,6 +887,25 @@ describe('the reader own words before the core has them', () => {
     );
   });
 
+  it('draws a mid-turn send that was REFUSED, because the pile never saw it', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    // Posted into a running seat, so the pile would have drawn it - but the
+    // dispatch was refused, so no queued row exists anywhere. The suppression
+    // is for the WAITING state alone: a failure has to be visible, or the
+    // words are lost behind a row that never comes.
+    echoes.post(key, 'queued but refused', true);
+    echoes.refuse(key, 'the socket closed mid-send');
+    flushSync();
+
+    expect(drawn(), 'a refused send draws wherever it was sent from').toContain(
+      'queued but refused',
+    );
+    expect(drawn(), 'and the row says why').toContain('not sent · the socket closed mid-send');
+  });
+
   it('stops when a page read carries the words, which is where a dropped send lands', () => {
     // The other end of a turn: a read rebuilds the turn with the reader's own
     // words at its head, which is the shape a send that outlived a dropped
