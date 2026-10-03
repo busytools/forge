@@ -75,12 +75,18 @@ impl SystemOneClient {
             SystemOneError::InvalidResponse(format!("response did not parse: {err}"))
         })?;
         let ResponseEnvelope { model, mut answers, usage } = envelope;
-        let answer = if answers.len() == 1 { answers.remove(QUESTION_KEY) } else { None };
-        let Some(answer) = answer else {
-            let keys: Vec<&String> = answers.keys().collect();
-            return Err(SystemOneError::InvalidResponse(format!(
-                "response answers {keys:?} do not match the requested question `{QUESTION_KEY}`"
-            )));
+        let answer = match (answers.len(), answers.remove(QUESTION_KEY)) {
+            (1, Some(answer)) => answer,
+            (1, None) => {
+                return Err(SystemOneError::InvalidResponse(format!(
+                    "response answers are not keyed `{QUESTION_KEY}`, the one question requested"
+                )));
+            }
+            (count, _) => {
+                return Err(SystemOneError::InvalidResponse(format!(
+                    "response carries {count} answers where exactly one was requested"
+                )));
+            }
         };
         validate_answer(question, &answer).map_err(SystemOneError::InvalidResponse)?;
         Ok(AskOutcome { model, answer, usage })
@@ -439,6 +445,26 @@ mod tests {
             .await
             .expect_err("a mismatched answer key is an error");
 
-        assert!(invalid_response(err).contains("requested question"));
+        let detail = invalid_response(err);
+        assert!(detail.contains("not keyed `q`"), "the wording names what came instead: {detail}");
+        assert!(detail.contains("requested"), "and what was asked for: {detail}");
+    }
+
+    /// Extra answers beside the requested one: the wording must name the
+    /// count, not dress up the present key as the problem.
+    #[tokio::test]
+    async fn multiple_answers_are_an_invalid_response() {
+        let body = r#"{"model":"m","answers":{"q":{"type":"noul","noul":0.5},"extra":{"type":"noul","noul":0.1}},"usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let (base, _) = spawn_server(200, body, None).await;
+        let client = client_for(&base, Some("k"));
+
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("extra answers are an error");
+
+        let detail = invalid_response(err);
+        assert!(detail.contains("carries 2 answers"), "the wording names the count: {detail}");
+        assert!(detail.contains("exactly one was requested"), "{detail}");
     }
 }
