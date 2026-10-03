@@ -232,11 +232,13 @@ export function blocksOf(content: unknown): Block[] {
  * Read off only where the call failed - the terminal's own gate (Failed |
  * Killed): a completed result that merely quotes the tags (a Read of the
  * source that emits them) draws verbatim, and unwrapping it would rewrite what
- * the tool actually said. The reading is the terminal's
- * `extract_tool_use_error_message`, ASCII-lowercased the way its own scanner
- * is: JS `toLowerCase()` is length-changing on some non-ASCII letters, and the
- * index arithmetic would then slice the original at shifted offsets. The first
- * line is the message; the rest is the detail under it.
+ * the tool actually said. The extraction matches the terminal's
+ * `extract_tool_use_error_message` - the tag search is ASCII-lowercased the
+ * way its own scanner is, because JS `toLowerCase()` is length-changing on
+ * some non-ASCII letters and the index arithmetic would then slice the
+ * original at shifted offsets (`trim()`'s whitespace sets diverge on U+0085
+ * and U+FEFF, which no real payload carries). The first line is the message;
+ * the rest is the detail under it.
  */
 function toolUseError(text: string): { message: string; detail: string } | null {
   const lower = text.replace(/[A-Z]/g, (ch) => ch.toLowerCase());

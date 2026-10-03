@@ -239,6 +239,32 @@ describe('what a call body draws', () => {
       detail: '',
     });
   });
+
+  it('reads the tag without letting a non-ASCII letter shift it', () => {
+    // **`toLowerCase()` is not a safe scan.** U+0130 lowercases to two code
+    // units, so indices taken off a lowercased copy slice the original at
+    // shifted offsets - the terminal's scanner is ASCII-lowercasing for
+    // exactly this reason. Measured against the old form this payload reads
+    // `sg<` (the İ before the tag pulls every index one to the right and the
+    // close marker leaks into the words); the length-preserving scan reads
+    // `msg`, which is what the payload says.
+    const dotted = leafOf(
+      't9',
+      'Bash',
+      { command: 'run it' },
+      {
+        type: 'tool_result',
+        content: 'İ<tool_use_error>msg</tool_use_error>',
+        is_error: true,
+      },
+    );
+
+    expect(dotted.body.at(-1), 'the tag is read where it actually sits').toEqual({
+      kind: 'error',
+      message: 'msg',
+      detail: '',
+    });
+  });
 });
 
 describe('what opens without being asked', () => {
