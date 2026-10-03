@@ -199,6 +199,23 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 pub(crate) type ParkedSlackDraft =
     (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
 
+/// What the last spawn handed `Agent::spawn` as its listing.
+///
+/// Three cases, because a lead's listing and a spawn that never ran are
+/// different answers and one option would merge them. Test-only: a
+/// stand-in replaces the spawn call outright, so this is the only way a
+/// test sees what the real spawn was given.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone)]
+pub enum RecordedListing {
+    /// No spawn has run since the workspace was built.
+    None,
+    /// A spawn ran and handed no listing: a lead's own case.
+    NoListing,
+    /// A spawn ran and handed this worker's listing.
+    Listed(forge_agent::WorkerListing),
+}
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -241,6 +258,12 @@ pub struct Workspace {
     /// spawn runs always.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
+    /// The worker listing the last spawn handed `Agent::spawn`, written by
+    /// the spawn and read by a test that cannot see the call: a stand-in
+    /// replaces `Agent::spawn` entirely, so its argument is otherwise
+    /// unobservable.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_listing: Mutex<RecordedListing>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -1441,6 +1464,8 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_listing: Mutex::new(RecordedListing::None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -2010,13 +2035,23 @@ impl Workspace {
             )
         };
 
+        // Derived once, so what a test records is the very value the spawn is
+        // handed rather than a second reading of the slot.
+        let worker_listing = self.worker_listing_for(&session_slot);
+        #[cfg(any(test, feature = "testing"))]
+        {
+            *self.test_spawn_listing.lock() = match &worker_listing {
+                Some(listing) => RecordedListing::Listed(listing.clone()),
+                None => RecordedListing::NoListing,
+            };
+        }
         let spawn_agent = || {
             forge_agent::Agent::spawn(
                 account_dir.clone(),
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
-                self.worker_listing_for(&session_slot),
+                worker_listing,
             )
         };
         // A test that installed a stand-in reads the settings this spawn
