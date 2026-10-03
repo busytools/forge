@@ -56,6 +56,7 @@ const refusedBash = (): ToolLeaf => ({
   note: null,
   body: [{ kind: 'error', message: 'Command failed with exit code 2', detail: '' }],
   mutation: null,
+  decision: null,
   skill: null,
   image: null,
   imageNote: null,
