@@ -73,11 +73,10 @@ pub enum PromptMode {
 }
 
 impl PromptState {
-    /// Construct from a wire `PermissionRequest`. Appends a
+    /// Construct from a wire `PermissionRequest`, appending a
     /// forge-synthesized "Tell the agent something else" escape hatch as
-    /// the last option, but only when the wire didn't already include
-    /// a Notes-kind option, which the `claude` CLI's permission UI
-    /// supplies for some tools.
+    /// the last option when the request carries none - the core's own
+    /// synthesizer supplies it in production.
     pub fn from_permission(tool_id: String, request: PermissionRequest) -> Self {
         let mut options = request.options;
         let already_has_notes = options.iter().any(|o| {
