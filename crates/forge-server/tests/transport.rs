@@ -1313,6 +1313,74 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     );
 }
 
+/// A refused subscribe disturbs nothing another connection is holding.
+///
+/// Connection A is showing a seat; the seat's session ends; connection B
+/// subscribes to the same seat - its hold is refused, and the record is
+/// answered - and B leaves. The session comes back, the tree moves, and A is
+/// told.
+///
+/// **This is the end-to-end shape of the steal the hold answer closed.** The
+/// release is counted per seat, so a connection that gives back a hold it
+/// never took spends one another connection is still using. A seat whose
+/// session is gone has its loop idle rather than gone, so the steal shows
+/// here: A's hold spent is A's loop stopped, and nothing announces after the
+/// session returns.
+#[tokio::test]
+async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
+    let (url, fleet, state, _root) = a_repo_server().await;
+    let repo =
+        state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
+
+    let mut a = connect(&url).await;
+    send(&mut a, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
+        .await;
+    snapshot_answering(&mut a).await;
+
+    // The session ends under A's hold. Its id leaving the header is what says
+    // the core has let it go, rather than a sleep hoping it has.
+    state
+        .surface
+        .dispatch(Command::CloseSession { session_key: lead_seat() })
+        .expect("the seat's session closes");
+    for _ in 0..200 {
+        if state.surface.header(&lead_seat()).session_id.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        state.surface.header(&lead_seat()).session_id.is_none(),
+        "the seat's session is gone, so a second subscribe is refused a hold",
+    );
+
+    // B subscribes to the same seat: refused a hold, and answered a record.
+    let mut b = connect(&url).await;
+    send(&mut b, ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true })
+        .await;
+    let (_, data, _) = snapshot_answering(&mut b).await;
+    assert_eq!(
+        data["slot"]["label"], "lead",
+        "a seat with no session is ANSWERED rather than refused outright: {data}",
+    );
+    // B leaves the way a page leaving does: unsubscribing, which is the path
+    // that gives holds back one at a time.
+    send(&mut b, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    drop(b);
+
+    // The session comes back, and the tree moves under it.
+    fleet.start("TestOrg", "proj").expect("the project starts again");
+    for edit in 1..12 {
+        std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
+        if let Some(ServerMessage::Update { update }) = next_server_within(&mut a, 700).await
+            && matches!(*update, SessionUpdate::WorkChanged { .. })
+        {
+            return;
+        }
+    }
+    panic!("A's hold did not survive B's visit: its seat stopped being scanned");
+}
+
 /// A seat whose tree is a real repository, with its session started - the
 /// store rides the seat's own record, so a seat nothing runs behind is not
 /// held at all.

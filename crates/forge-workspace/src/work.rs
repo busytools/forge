@@ -211,16 +211,6 @@ impl HeldSeats {
             held.remove(slot);
         }
     }
-
-    /// Let the whole seat go, whatever its count was.
-    ///
-    /// For a loop that stops itself because the seat's session ended: the
-    /// store it wrote to is gone, and leaving the count standing would hand
-    /// the next viewer an entry whose loop no longer exists - a seat that is
-    /// held, watched by nobody, and never scanned again.
-    fn forget(&self, slot: &SessionSlot) {
-        self.lock().remove(slot);
-    }
 }
 
 impl Workspace {
@@ -363,6 +353,9 @@ fn spawn_work_watch(
         // of those moving cannot change the row this loop watches for.
         let (changes, _watch) = start_change_watch(PathBuf::from(cwd), true);
         let mut announced = announced;
+        // Whether the last poke found the seat's session gone, so the quiet
+        // spell is reported once rather than once a second.
+        let mut quiet = false;
         let mut poke = tokio::time::interval(POKE_INTERVAL);
         poke.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -370,24 +363,27 @@ fn spawn_work_watch(
                 _ = &mut stopped => return,
                 _ = poke.tick() => {}
             }
-            // A seat whose session ENDED while it was held has nothing left to
-            // store or announce, and the poke would otherwise run to the end
-            // of the process for a seat that is not there - a `gh` lookup
-            // apiece. The loop is the thing to stop, not the tick.
+            // **A seat whose session ended goes quiet, and does not go away.**
+            // There is nothing to store or announce for a session that is not
+            // there, so the rule refuses and the scan never runs - which is
+            // what stops the burn. But the LOOP stays, and so does the hold:
+            // a session that comes back under the same seat resumes being
+            // scanned under the viewer that was already showing it, with no
+            // re-subscribe and no entry whose loop has gone.
             if workspace.domain_session_for(&slot).is_none() {
-                tracing::debug!(
-                    target: "forge_workspace::work",
-                    event_name = "work_watch_stopped",
-                    slot = %slot.display(),
-                    reason = "session_gone",
-                    "the seat's session ended under its loop, so nothing is watched",
-                );
-                // The seat is also let go, count and all: the store it wrote
-                // to is gone, and a count left standing would hand the next
-                // viewer an entry whose loop no longer exists.
-                workspace.held_work_seats.forget(&slot);
-                return;
+                if !quiet {
+                    quiet = true;
+                    tracing::debug!(
+                        target: "forge_workspace::work",
+                        event_name = "work_watch_quiet",
+                        slot = %slot.display(),
+                        reason = "session_gone",
+                        "the seat's session ended under its loop, so nothing is scanned until it returns",
+                    );
+                }
+                continue;
             }
+            quiet = false;
             // Whatever the watch reported since the last look is one mark:
             // the tree moved, which is all a scan decision needs.
             let mut dirty = false;
@@ -644,15 +640,16 @@ provider = "anthropic"
         );
     }
 
-    /// A session that ends under a held seat stops being watched, and the
-    /// seat is let go with it.
+    /// A session that ends under a held seat goes quiet, and the hold stands.
     ///
     /// The burn this prevents has a second entrance: the store rides the
     /// seat's record, so a seat whose session ended has nowhere to write, and
     /// the rule would read "nothing has scanned this" on every poke - a `gh`
-    /// lookup apiece, announcing a tree for a seat that is not there.
+    /// lookup apiece, announcing a tree for a seat that is not there. What
+    /// must NOT happen is the seat being let go: the viewer is still showing
+    /// it, and a session that comes back resumes being scanned under them.
     #[tokio::test]
-    async fn a_session_ending_stops_the_seat_being_watched() {
+    async fn a_session_ending_quiets_the_seat_without_letting_it_go() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
@@ -661,16 +658,25 @@ provider = "anthropic"
 
         workspace.release_session_with_cascade(&seat);
 
-        // The loop's next poke lets the seat go; the edit that follows says
-        // nothing, which is the loop being gone rather than quiet.
+        // A move under the dead session says nothing: the rule refuses, so
+        // nothing is scanned and nothing is announced.
         std::fs::write(dir.path().join("kept.txt"), "after the session").expect("write");
         assert!(
             tokio::time::timeout(Duration::from_secs(3), updates.recv()).await.is_err(),
             "a seat whose session ended must not announce anything",
         );
         assert!(
-            workspace.held_work_seats.lock().is_empty(),
-            "and it is let go, count and all, so the next hold starts a fresh loop",
+            !workspace.held_work_seats.lock().is_empty(),
+            "and the hold stands, so the session coming back is scanned under it",
+        );
+
+        // The session returns: the tree moves again, and this time it is told.
+        workspace.register_domain_session(seat.clone(), None);
+        let told = std::fs::write(dir.path().join("kept.txt"), "the session is back").is_ok();
+        let announced = tokio::time::timeout(Duration::from_secs(3), updates.recv()).await.is_ok();
+        assert!(
+            announced,
+            "a session that comes back under a held seat resumes being scanned (write ok: {told})",
         );
     }
 
