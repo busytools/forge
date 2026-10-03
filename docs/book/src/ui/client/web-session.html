@@ -409,14 +409,14 @@
      draws 1.25em. The rule under the header comes with it: it sat clear of the
      row below because that padding was holding it there. */
   .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
-  /* A data cell breaks a long token rather than widening the table past the
-     column: the terminal stacks a table its grid cannot hold, and wrapping keeps
-     the table the shape it is - while a header that may break anywhere has a
-     one-character minimum and is sliced by a neighbouring column's demand for
-     width, so the header resets what it would otherwise inherit. A table whose
-     own header words do not fit the column still exceeds it; stacking is the
-     terminal's answer to that and not this one. */
-  .prose td { overflow-wrap: anywhere; }
+  /* A data cell keeps its longest word, so no column is sliced below one:
+     `anywhere` gives the cell a one-character minimum, and wherever the table
+     outgrows the column the auto layout takes a short column down to it
+     (measured: the five-character `#1662` drew on three lines at a 500px
+     window). The price is a token wider than the column can hold sending the
+     table past the column instead of breaking inside a cell - the stance the
+     header rule already takes. */
+  .prose td { overflow-wrap: break-word; }
   .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
     border-bottom: 1px solid var(--line); }
   .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
