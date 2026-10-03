@@ -5596,6 +5596,65 @@ provider = "anthropic"
         ));
     }
 
+    /// A prompt is recorded on the seat as waiting, announced with its words,
+    /// and sent under the SAME id - which is the whole mechanism: the CLI's
+    /// lifecycle frames carry only the id and the state, so the row and the
+    /// frames are one thing by id or not at all.
+    #[tokio::test]
+    async fn executing_a_prompt_records_and_announces_it() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("qp", "/tmp/qp");
+        let key = SessionSlot::from_str_for_test("qp-lead");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        // A connected seat: the id is what the prompt is addressed to, and a
+        // task that never connected drops the send rather than recording it.
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("qp-session"));
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        task.execute_command(Command::Prompt {
+            key: key.clone(),
+            text: "the queued words".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        let rows = domain.lock().prompt_queue.clone();
+        assert_eq!(rows.len(), 1, "the prompt is on the seat's queue");
+        assert_eq!(rows[0].text, "the queued words");
+        assert_eq!(rows[0].source, PromptSource::You);
+
+        let sent = agent_rx.try_recv().expect("the prompt reaches the agent");
+        let forge_primitives::AgentCommand::PromptWithImages { uuid, .. } = sent else {
+            panic!("expected a prompt, got {sent:?}");
+        };
+        assert_eq!(
+            uuid, rows[0].uuid,
+            "the recorded row and the frame share one id, which is what the lifecycle frames resolve against",
+        );
+
+        let announced: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::PromptQueued { uuid: announced, text, .. }
+                    if announced == &rows[0].uuid && text == "the queued words"
+            )),
+            "the row's words ride the announcement, because no lifecycle frame carries them: {announced:?}",
+        );
+    }
+
     /// `Command::Cancel` reaches the agent's command dispatcher.
     #[test]
     fn execute_cancel_forwards_to_handle() {

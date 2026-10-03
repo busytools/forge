@@ -313,6 +313,18 @@ impl Fleet {
     /// running rather than as one nothing is behind. A stub: nothing answers
     /// the commands it is sent, and a caller that holds the receiver it hands
     /// back reads what was asked.
+    /// Put a prompt in a seat's queue exactly as a dispatch leaves it: the row
+    /// a client attaching mid-queue reads, with no dispatch to drive.
+    pub fn seed_queued_prompt(
+        &self,
+        slot: &SessionSlot,
+        uuid: &str,
+        source: forge_workspace::protocol::PromptSource,
+        text: &str,
+    ) {
+        self.workspace.seed_queued_prompt(slot, uuid, source, text);
+    }
+
     pub fn install_agent(
         &self,
         org: &str,

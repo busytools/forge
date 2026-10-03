@@ -242,6 +242,44 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }
 
+/// The queue is a fact about the seat, so the read has to carry it: a client
+/// that attached mid-queue - a fresh load, a refresh, a seat switch - has
+/// nothing else to draw the waiting prompts from, and two attached clients
+/// have to agree about them.
+///
+/// The updates speak only on a change, which is why this asserts the SNAPSHOT
+/// rather than the stream: a queue that crossed only as an update would draw
+/// nothing here, and nothing would say so.
+#[tokio::test]
+async fn a_seats_queue_is_on_the_snapshot_a_client_attaches_to() {
+    let (url, fleet) = a_server().await;
+    // Seeded as a dispatch leaves the seat, because this asserts the READ:
+    // that the row crosses the wire at all. The dispatch-to-record path has
+    // its own test beside the session task.
+    fleet.seed_queued_prompt(
+        &lead_seat(),
+        "p-1",
+        forge_workspace::protocol::PromptSource::You,
+        "hello",
+    );
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(lead_seat()), |data| {
+        data["state"]["queue"].as_array().is_some_and(|rows| {
+            rows.len() == 1
+                && rows[0]["text"] == "hello"
+                && rows[0]["source"] == "you"
+                && rows[0]["uuid"] == "p-1"
+        })
+    })
+    .await;
+
+    assert!(
+        held,
+        "a prompt queued before the client attached is on the seat's read, not only on the stream",
+    );
+}
+
 /// A prompt aimed at a seat.
 fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
     Command::Prompt {
