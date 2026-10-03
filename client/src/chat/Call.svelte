@@ -60,7 +60,9 @@
 
   /** The hits a search call came back with, or `null` when this is not one. */
   const hits = $derived(
-    SEARCHES.has(call.name)
+    // A failed search carries no hits: its reason must draw through the
+    // pieces, not be swallowed by a hits path that has nothing to list.
+    SEARCHES.has(call.name) && !call.body.some((piece) => piece.kind === 'error')
       ? searchHits(call.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('\n'))
       : null,
   );
@@ -274,6 +276,18 @@
     {#if piece.kind === 'image'}
       <div class="term">
         image{#if piece.mime}{' \u{b7} '}{piece.mime}{/if}{#if piece.uri}{' \u{b7} '}{piece.uri}{/if}
+      </div>
+    {:else if piece.kind === 'error'}
+      <!-- A failed call's reason, in the caption chrome rather than a box of
+           its own: what happened first, the detail under it. The CLI's
+           envelope was read off in the fold, so only the words arrive here -
+           and the command leads its own failure the way it leads a settled
+           one, or the reason says nothing about what failed. -->
+      <div class="errhint">
+        {#if call.command !== null}<span class="pfx">$</span>
+          {call.command}<br />{/if}
+        <div class="m">{piece.message}</div>
+        {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />

@@ -17,6 +17,8 @@ import { headline, stripEscapes, toolName } from './text';
 /** What a call's row opens on. */
 export type CallBody =
   | { kind: 'text'; text: string }
+  /** A failed call's own words, the CLI's envelope read off in the fold. */
+  | { kind: 'error'; message: string; detail: string }
   | { kind: 'diff'; old: string; new: string }
   | { kind: 'hunk'; header: string; lines: HunkLine[] }
   | { kind: 'image'; mime: string | null; uri: string | null };
@@ -223,22 +225,60 @@ export function blocksOf(content: unknown): Block[] {
 }
 
 /**
+ * The CLI's own envelope off a FAILED tool result, read in the fold.
+ *
+ * **The tag is addressed to the model, not to a reader**: it is how a failed
+ * tool's message crosses the wire, and drawn raw it is a wall under the diff.
+ * Read off only where the call failed - the terminal's own gate (Failed |
+ * Killed): a completed result that merely quotes the tags (a Read of the
+ * source that emits them) draws verbatim, and unwrapping it would rewrite what
+ * the tool actually said. The extraction matches the terminal's
+ * `extract_tool_use_error_message` - the tag search is ASCII-lowercased the
+ * way its own scanner is, because JS `toLowerCase()` is length-changing on
+ * some non-ASCII letters and the index arithmetic would then slice the
+ * original at shifted offsets (`trim()`'s whitespace sets diverge on U+0085
+ * and U+FEFF, which no real payload carries). The first line is the message;
+ * the rest is the detail under it.
+ */
+function toolUseError(text: string): { message: string; detail: string } | null {
+  const lower = text.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+  const open = '<tool_use_error>';
+  const start = lower.indexOf(open);
+  if (start === -1) return null;
+  const end = lower.indexOf('</tool_use_error>', start + open.length);
+  if (end === -1) return null;
+  const inner = text.slice(start + open.length, end).trim();
+  if (inner === '') return null;
+  const at = inner.indexOf('\n');
+  return at === -1
+    ? { message: inner, detail: '' }
+    : { message: inner.slice(0, at).trim(), detail: inner.slice(at + 1).trim() };
+}
+
+/**
  * What a call's result recorded, from the shapes a tool result arrives in.
  *
  * The content is a string for most tools and a block array for a few, and both
  * are read here: a result drawn as nothing is a row that expands to an empty
- * box.
+ * box. `failed` is the call's own settle: only there is the CLI's error
+ * envelope read off (see `toolUseError`), and a completed result draws
+ * verbatim, tags and all.
  */
-export function bodyOf(content: unknown): CallBody[] {
+export function bodyOf(content: unknown, failed = false): CallBody[] {
   if (typeof content === 'string') {
     const text = stripEscapes(content);
-    return text.trim() === '' ? [] : [{ kind: 'text', text }];
+    if (text.trim() === '') return [];
+    const said = failed ? toolUseError(text) : null;
+    return [said === null ? { kind: 'text', text } : { kind: 'error', ...said }];
   }
   const out: CallBody[] = [];
   for (const block of blocksOf(content)) {
     if (block.type === 'text' && typeof block.text === 'string') {
       const text = stripEscapes(block.text);
-      if (text.trim() !== '') out.push({ kind: 'text', text });
+      if (text.trim() !== '') {
+        const said = failed ? toolUseError(text) : null;
+        out.push(said === null ? { kind: 'text', text } : { kind: 'error', ...said });
+      }
     }
     if (block.type === 'image') {
       // The wire nests both under `source`, which is the shape a user turn's
@@ -503,7 +543,7 @@ export function leafOf(
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
-    body: drawnBody(name, body, result),
+    body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
     mutation: marksOf(name, input, body, record),
     skill: null,
     image: imageOf(result),
@@ -541,9 +581,14 @@ function imageOf(result: Block | undefined): { mime: string; data: string } | nu
  * never say why. Where there is no diff the text is all there is, and either
  * way the call still settles on its result.
  */
-function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
+function drawnBody(
+  name: string,
+  body: CallBody[],
+  result: Block | undefined,
+  failed: boolean,
+): CallBody[] {
   if (result === undefined) return body;
-  const answered = bodyOf(result.content);
+  const answered = bodyOf(result.content, failed);
   if (result.is_error !== true && isEdit(name) && body.some((part) => part.kind !== 'text')) {
     return body;
   }
