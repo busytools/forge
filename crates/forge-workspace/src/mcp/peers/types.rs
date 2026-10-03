@@ -1,14 +1,9 @@
 //! Wire-shape types for the peer-coordination MCP feature.
 //!
 //! These types are workspace-internal - only `forge-workspace`
-//! (the tool impls, the workspace's inflight tracking, the spawn-
-//! routing handlers) references them. Kept out of `forge-primitives`
-//! because they never cross a crate boundary (primitives is for
-//! cross-crate wire types only).
-//!
-//! The one truly cross-crate peer type - `PeerInflightStats` -
-//! stays in `forge-primitives` because the TUI reads it through
-//! `SessionUpdate::PeerInflightStatsChanged`.
+//! (the tool impls and the spawn-routing handlers) references them. Kept
+//! out of `forge-primitives` because they never cross a crate boundary
+//! (primitives is for cross-crate wire types only).
 //!
 //! ## Identity model
 //!
@@ -21,9 +16,8 @@
 //! ## Wire wrapping
 //!
 //! Every peer message that hits a recipient's chat is wrapped with a
-//! prose header carrying: correlation id, sender identity,
-//! and (for asks) reply instructions. The recipient's LLM reads this
-//! header as part of its prompt context;
+//! prose header carrying the send's id and the sender's identity. The
+//! recipient's LLM reads this header as part of its prompt context;
 //! `forge_server::envelope::detect_inbound` matches the bracket prefix
 //! and the recipient's TUI renders the envelope as a styled peer block
 //! (`forge-tui::ui::peer_block`).
@@ -36,53 +30,29 @@ use uuid::Uuid;
 
 use crate::SessionSlot;
 
-/// Typed correlation id for an ask or tell. Format:
-/// `q-XXXXXXXX` for asks, `t-XXXXXXXX` for tells, where `XXXXXXXX`
-/// is 8 lowercase hex characters drawn from a fresh `Uuid::new_v4`.
-/// Generated once at the sender's tool impl; threaded through the
-/// wrapper text the recipient sees, then echoed back via
-/// `in_reply_to` on the recipient's `agents__tell` reply.
+/// Typed id for one send. Format `m-XXXXXXXX`, where `XXXXXXXX` is 8
+/// lowercase hex characters drawn from a fresh `Uuid::new_v4`.
+///
+/// Minted once at the sender's tool impl and threaded through the wrapper
+/// text both sides read. It names the SEND - traceability for the echo the
+/// sender gets back - never a conversation, which is why nothing parses it
+/// off an inbound envelope to match it against outstanding state.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct CorrelationId(pub String);
+pub struct MessageId(pub String);
 
-impl CorrelationId {
-    /// Mint a new ask correlation id (prefix `q-`).
-    pub fn new_ask() -> Self {
-        Self(format!("q-{}", hex_8()))
-    }
-
-    /// Mint a new tell correlation id (prefix `t-`).
-    pub fn new_tell() -> Self {
-        Self(format!("t-{}", hex_8()))
+impl MessageId {
+    /// Mint an id for one send.
+    pub fn mint() -> Self {
+        Self(format!("m-{}", hex_8()))
     }
 
     /// Borrow as a `&str` for logging / formatting.
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// Validate an LLM-supplied correlation id at the tool boundary.
-    /// Format: `q-` or `t-` prefix + 8 lowercase hex characters.
-    /// Returns None on any deviation - tools reject the call with
-    /// is_error instead of letting a malformed id miss the inflight
-    /// map silently (which would degrade a Reply to a Message and
-    /// hide the actual problem).
-    pub fn from_external(s: &str) -> Option<Self> {
-        if s.len() != 10 {
-            return None;
-        }
-        let prefix_ok = s.starts_with("q-") || s.starts_with("t-");
-        if !prefix_ok {
-            return None;
-        }
-        if !s[2..].chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
-            return None;
-        }
-        Some(Self(s.to_owned()))
-    }
 }
 
-impl std::fmt::Display for CorrelationId {
+impl std::fmt::Display for MessageId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -92,6 +62,20 @@ fn hex_8() -> String {
     let uuid = Uuid::new_v4();
     let s = uuid.simple().to_string();
     s[..8].to_owned()
+}
+
+/// The name a seat is shown by in an envelope header: the project for a
+/// project's own agent, `project/label` for a worker.
+///
+/// One home, because a seat must name itself the same way whether it is
+/// sending or being addressed - two spellings would render one worker as
+/// two senders.
+pub fn seat_name(slot: &SessionSlot) -> String {
+    if slot.is_lead() {
+        slot.project().to_owned()
+    } else {
+        format!("{}/{}", slot.project(), slot.label())
+    }
 }
 
 /// Liveness of a project's own agent, as `agents__list` reports it.
@@ -116,26 +100,18 @@ pub enum PeerFailureReason {
     TargetConnectionFailed,
 }
 
-/// The tell-tool an inbound Question expects its reply through. One
-/// family now carries every ask, so the envelope names one tool
-/// whatever the sender was.
-pub const REPLY_TOOL: &str = "agents__tell";
-
-/// Wire kind of a peer message.
+/// Wire kind of a peer message. One conversational kind, because every
+/// send is the same thing; the two notices are failures rather than
+/// conversation and stay separate so a view can style them as such.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WrappedKind {
-    /// `agents__ask` from sender. Recipient replies with
-    /// `in_reply_to` set to this id.
-    Question,
-    /// Unsolicited `agents__tell` from sender (no reply expected),
-    /// OR a degraded reply where `in_reply_to` didn't resolve.
+    /// `agents__send_message` from sender. No reply is expected - a reply
+    /// is just another message - so the envelope asks for nothing back.
     Message,
-    /// `agents__tell` that's a reply to an earlier ask.
-    Reply,
-    /// forge-synthesised notice landing in the CALLER's chat when
-    /// delivery to the target failed (target crashed mid-flight,
-    /// session connection closed).
+    /// forge-synthesised notice landing in the SENDER's chat when a
+    /// message parked for a sleeping project never landed, because the
+    /// spawn it was waiting on failed.
     DeliveryFailureNotice,
     /// forge-synthesised notice landing in the LEAD's chat when a
     /// worker's spawn failed asynchronously (subprocess crashed
@@ -145,26 +121,10 @@ pub enum WrappedKind {
     WorkerSpawnFailedNotice,
 }
 
-/// One in-flight peer ask tracked at the workspace level. Lives in
-/// `Workspace.inflight_asks` keyed by `correlation_id`; presence in
-/// the map is the lifecycle signal - the entry is removed on reply
-/// (`complete_inflight_ask`) or target-failure
-/// (`expire_inflight_ask_failed`).
-#[derive(Clone, Debug)]
-pub struct InflightAsk {
-    pub correlation_id: CorrelationId,
-    pub caller: SessionSlot,
-    pub target_project: String,
-    /// Session stamped with this ask's `IncomingPlus1` at delivery
-    /// (`None` until delivered) so expiry can clear the target's
-    /// incoming badge, not just the caller's outgoing.
-    pub target_session: Option<SessionSlot>,
-}
-
 /// The complete content of an outgoing or inbound peer message.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WrappedPrompt {
-    pub correlation_id: CorrelationId,
+    pub id: MessageId,
     pub kind: WrappedKind,
     pub sender_name: String,
     pub sender_org: String,
@@ -178,30 +138,17 @@ impl WrappedPrompt {
     /// looks for.
     pub fn to_prose(&self) -> String {
         match self.kind {
-            WrappedKind::Question => format!(
-                "[Question id={} from agent '{}' (org '{}') - reply with {} in_reply_to={}]\n\n{}",
-                self.correlation_id,
-                self.sender_name,
-                self.sender_org,
-                REPLY_TOOL,
-                self.correlation_id,
-                self.body,
-            ),
             WrappedKind::Message => format!(
                 "[Message id={} from agent '{}' (org '{}')]\n\n{}",
-                self.correlation_id, self.sender_name, self.sender_org, self.body,
-            ),
-            WrappedKind::Reply => format!(
-                "[Reply id={} from agent '{}' (org '{}') to your earlier ask]\n\n{}",
-                self.correlation_id, self.sender_name, self.sender_org, self.body,
+                self.id, self.sender_name, self.sender_org, self.body,
             ),
             WrappedKind::DeliveryFailureNotice => format!(
-                "[Ask id={} to agent '{}' (org '{}') failed to deliver: {}]",
-                self.correlation_id, self.sender_name, self.sender_org, self.body,
+                "[Message to agent '{}' (org '{}') failed to deliver: {}]",
+                self.sender_name, self.sender_org, self.body,
             ),
             WrappedKind::WorkerSpawnFailedNotice => format!(
                 "[Worker '{}' spawn failed id={}: {}]",
-                self.sender_name, self.correlation_id, self.body,
+                self.sender_name, self.id, self.body,
             ),
         }
     }
@@ -220,12 +167,6 @@ pub struct PeerStatus {
     pub path: PathBuf,
     /// Current liveness - `Running` / `Sleeping`.
     pub status: PeerLiveness,
-    /// Count of asks this session has received from peers that
-    /// haven't been replied to yet.
-    pub in_flight_incoming: usize,
-    /// Count of asks this session has sent to peers that haven't
-    /// received a reply yet.
-    pub in_flight_outgoing: usize,
     /// When the session was first spawned in this forge process,
     /// or `None` if currently sleeping.
     pub spawned_at: Option<SystemTime>,
@@ -236,55 +177,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn correlation_id_new_ask_has_q_prefix() {
-        let id = CorrelationId::new_ask();
-        assert!(id.as_str().starts_with("q-"), "expected q- prefix, got: {id}");
+    fn message_id_has_the_m_prefix() {
+        let id = MessageId::mint();
+        assert!(id.as_str().starts_with("m-"), "expected m- prefix, got: {id}");
         assert_eq!(id.as_str().len(), 10);
     }
 
     #[test]
-    fn correlation_id_new_tell_has_t_prefix() {
-        let id = CorrelationId::new_tell();
-        assert!(id.as_str().starts_with("t-"));
-        assert_eq!(id.as_str().len(), 10);
+    fn message_id_two_sends_are_unique() {
+        assert_ne!(MessageId::mint(), MessageId::mint());
     }
 
     #[test]
-    fn correlation_id_from_external_validates_shape() {
-        assert_eq!(
-            CorrelationId::from_external("q-abcd1234"),
-            Some(CorrelationId("q-abcd1234".to_owned())),
-        );
-        assert_eq!(
-            CorrelationId::from_external("t-deadbeef"),
-            Some(CorrelationId("t-deadbeef".to_owned())),
-        );
-        assert_eq!(CorrelationId::from_external("x-abcd1234"), None);
-        assert_eq!(CorrelationId::from_external("qabcd1234"), None);
-        assert_eq!(CorrelationId::from_external("q-abc"), None);
-        assert_eq!(CorrelationId::from_external("q-abcd12345"), None);
-        assert_eq!(CorrelationId::from_external("q-ABCD1234"), None);
-        assert_eq!(CorrelationId::from_external("q-zzzzzzzz"), None);
-        assert_eq!(CorrelationId::from_external(""), None);
+    fn message_id_display_matches_inner_string() {
+        let id = MessageId("m-abcd1234".to_owned());
+        assert_eq!(id.to_string(), "m-abcd1234");
     }
 
     #[test]
-    fn correlation_id_two_asks_are_unique() {
-        let a = CorrelationId::new_ask();
-        let b = CorrelationId::new_ask();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn correlation_id_display_matches_inner_string() {
-        let id = CorrelationId("q-abcd1234".to_owned());
-        assert_eq!(id.to_string(), "q-abcd1234");
-    }
-
-    #[test]
-    fn correlation_id_hex_chars_are_lowercase() {
+    fn message_id_hex_chars_are_lowercase() {
         for _ in 0..50 {
-            let id = CorrelationId::new_ask();
+            let id = MessageId::mint();
             let hex_part = &id.as_str()[2..];
             assert!(hex_part.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
         }
@@ -292,13 +205,7 @@ mod tests {
 
     fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: CorrelationId(match kind {
-                WrappedKind::Question
-                | WrappedKind::Reply
-                | WrappedKind::DeliveryFailureNotice
-                | WrappedKind::WorkerSpawnFailedNotice => "q-7f3a92e0".to_owned(),
-                WrappedKind::Message => "t-c45a8f12".to_owned(),
-            }),
+            id: MessageId("m-7f3a92e0".to_owned()),
             kind,
             sender_name: sender.to_owned(),
             sender_org: org.to_owned(),
@@ -307,56 +214,37 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_prompt_question_prose_names_the_reply_tool() {
-        // One family carries every ask, so the envelope names one tool
-        // whatever project the sender lives in.
-        let w =
-            wrapper(WrappedKind::Question, "forge", "Personal", "What's the test setup look like?");
-        let prose = w.to_prose();
-        assert!(prose.starts_with(
-            "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with agents__tell in_reply_to=q-7f3a92e0]",
-        ));
-        assert!(prose.ends_with("What's the test setup look like?"));
-    }
-
-    #[test]
-    fn wrapped_prompt_message_prose_matches_mockup() {
+    fn wrapped_prompt_message_prose_is_the_bare_header() {
+        // Every send is one kind now, so the header carries the id, the
+        // sender and nothing else - no kind word, no reply instruction.
         let w = wrapper(
             WrappedKind::Message,
-            "forge",
-            "Personal",
+            "forge/steward",
+            "Busytools",
             "FYI I just pushed the rewriter cleanup.",
         );
-        let prose = w.to_prose();
-        assert!(prose.starts_with("[Message id=t-c45a8f12 from agent 'forge' (org 'Personal')]"));
-    }
-
-    #[test]
-    fn wrapped_prompt_reply_prose_matches_mockup() {
-        let w = wrapper(
-            WrappedKind::Reply,
-            "gateway-backend",
-            "Gateway",
-            "We use pgtemp for postgres fixtures.",
+        assert_eq!(
+            w.to_prose(),
+            "[Message id=m-7f3a92e0 from agent 'forge/steward' (org 'Busytools')]\n\n\
+             FYI I just pushed the rewriter cleanup.",
         );
-        let prose = w.to_prose();
-        assert!(prose.starts_with(
-            "[Reply id=q-7f3a92e0 from agent 'gateway-backend' (org 'Gateway') to your earlier ask]",
-        ));
     }
 
     #[test]
     fn wrapped_prompt_delivery_failure_notice_prose() {
+        // The failure names the message that did not land, not an ask:
+        // nothing is outstanding any more, so the header has no id.
         let w = wrapper(
             WrappedKind::DeliveryFailureNotice,
             "gateway-liq-bot",
             "Gateway",
             "target session connection lost",
         );
-        let prose = w.to_prose();
-        assert!(prose.starts_with(
-            "[Ask id=q-7f3a92e0 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target session connection lost",
-        ));
+        assert_eq!(
+            w.to_prose(),
+            "[Message to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: \
+             target session connection lost]",
+        );
     }
 
     /// #146: WorkerSpawnFailedNotice prose carries the label as
@@ -373,7 +261,7 @@ mod tests {
         let prose = w.to_prose();
         assert_eq!(
             prose,
-            "[Worker 'reviewer' spawn failed id=q-7f3a92e0: Failed to resolve base branch \"HEAD\": git rev-parse failed]",
+            "[Worker 'reviewer' spawn failed id=m-7f3a92e0: Failed to resolve base branch \"HEAD\": git rev-parse failed]",
         );
     }
 

@@ -13,10 +13,22 @@ use crate::mcp::peers::types::{PeerFailureReason, WrappedPrompt};
 /// delivers it.
 #[derive(Default)]
 pub(crate) struct ParkedForSlot {
-    pub peer: Vec<WrappedPrompt>,
+    pub peer: Vec<ParkedPeer>,
     pub cron: Vec<crate::crons::PendingCron>,
     pub gotify: Vec<GotifyNotification>,
     pub slack: Vec<forge_primitives::slack::SlackMessage>,
+}
+
+/// One peer message waiting for its slot to connect, with the seat that
+/// sent it.
+///
+/// The sender rides here for the DELIVERY ACK alone: if the spawn this
+/// waited on fails, the bucket is dropped and the sender is told. It is
+/// not outstanding-ask tracking - nothing looks an entry up by id, and
+/// nothing here survives the delivery.
+pub(crate) struct ParkedPeer {
+    pub(crate) sender: SessionSlot,
+    pub(crate) wrapped: WrappedPrompt,
 }
 
 /// Parked payloads, one bucket per slot.
@@ -25,8 +37,18 @@ pub(crate) type ParkedMap = HashMap<SessionSlot, ParkedForSlot>;
 impl crate::Workspace {
     /// Park a peer prompt for `slot`, drained by the session that next
     /// connects as that slot.
-    pub(crate) fn park_peer_prompt(&self, slot: &SessionSlot, wrapped: WrappedPrompt) {
-        self.parked_by_slot.lock().entry(slot.clone()).or_default().peer.push(wrapped);
+    pub(crate) fn park_peer_prompt(
+        &self,
+        slot: &SessionSlot,
+        sender: &SessionSlot,
+        wrapped: WrappedPrompt,
+    ) {
+        self.parked_by_slot
+            .lock()
+            .entry(slot.clone())
+            .or_default()
+            .peer
+            .push(ParkedPeer { sender: sender.clone(), wrapped });
     }
 
     /// Park a fired cron prompt for `slot`, missed-marked when it came
@@ -63,18 +85,19 @@ impl crate::Workspace {
         self.parked_by_slot.lock().remove(slot).unwrap_or_default()
     }
 
-    /// Drop everything parked for `slot`, failing each peer ask so its
-    /// caller gets the delivery-failure notice rather than waiting out the
-    /// timeout. A peer ask is the only parked payload with a caller, so the
-    /// Gotify and Slack drops have no recipient and are logged.
+    /// Drop everything parked for `slot`, acknowledging each peer message
+    /// back to its sender so a message that never landed is not left
+    /// looking delivered. The parked message is the only payload with a
+    /// sender, so the Gotify and Slack drops have no one to tell and are
+    /// logged instead.
     pub(crate) fn expire_parked_for_slot(
         self: &Arc<Self>,
         slot: &SessionSlot,
         reason: PeerFailureReason,
     ) {
         let Some(parked) = self.parked_by_slot.lock().remove(slot) else { return };
-        for wrapped in parked.peer {
-            self.expire_inflight_ask_failed(&wrapped.correlation_id, reason);
+        for entry in parked.peer {
+            self.notice_undelivered_message(&entry.sender, slot, reason);
         }
         for notification in parked.gotify {
             tracing::warn!(
@@ -105,18 +128,21 @@ impl crate::Workspace {
 mod tests {
     use super::ParkedForSlot;
     use crate::SessionSlot;
-    use crate::mcp::peers::types::{
-        CorrelationId, InflightAsk, PeerFailureReason, WrappedKind, WrappedPrompt,
-    };
+    use crate::mcp::peers::types::{MessageId, PeerFailureReason, WrappedKind, WrappedPrompt};
+    use crate::protocol::SessionUpdate;
 
     fn slot(label: Option<&str>) -> SessionSlot {
         SessionSlot::for_label("TestOrg", "parked-proj", label)
     }
 
-    fn wrapped(correlation_id: &CorrelationId, body: &str) -> WrappedPrompt {
+    fn sender() -> SessionSlot {
+        SessionSlot::for_label("TestOrg", "sender-proj", None)
+    }
+
+    fn wrapped(id: &MessageId, body: &str) -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: correlation_id.clone(),
-            kind: WrappedKind::Question,
+            id: id.clone(),
+            kind: WrappedKind::Message,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: body.to_owned(),
@@ -128,12 +154,12 @@ mod tests {
     #[test]
     fn a_parked_payload_lands_on_the_slots_connect() {
         let (ws, _rx) = crate::Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
-        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
+        let id = MessageId::mint();
+        ws.park_peer_prompt(&slot(None), &sender(), wrapped(&id, "are you up?"));
 
         let taken = ws.take_parked_for_slot(&slot(None));
         assert_eq!(taken.peer.len(), 1, "the slot's own connect takes its bucket");
-        assert_eq!(taken.peer[0].correlation_id, id, "and it is the payload that was parked");
+        assert_eq!(taken.peer[0].wrapped.id, id, "and it is the payload that was parked");
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),
             "the take drains: a second connect does not re-deliver",
@@ -145,8 +171,8 @@ mod tests {
     #[test]
     fn one_bucket_holds_every_kind() {
         let (ws, _rx) = crate::Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
-        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
+        let id = MessageId::mint();
+        ws.park_peer_prompt(&slot(None), &sender(), wrapped(&id, "are you up?"));
         ws.park_cron(&slot(None), "morning reminder".to_owned(), true);
 
         let taken: ParkedForSlot = ws.take_parked_for_slot(&slot(None));
@@ -161,8 +187,8 @@ mod tests {
     #[test]
     fn a_workers_parked_payload_is_not_the_leads() {
         let (ws, _rx) = crate::Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
-        ws.park_peer_prompt(&slot(Some("planner")), wrapped(&id, "planner"));
+        let id = MessageId::mint();
+        ws.park_peer_prompt(&slot(Some("planner")), &sender(), wrapped(&id, "planner"));
 
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),
@@ -181,9 +207,10 @@ mod tests {
     #[test]
     fn a_parked_payload_is_not_drained_across_orgs() {
         let (ws, _rx) = crate::Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
+        let id = MessageId::mint();
         ws.park_peer_prompt(
             &SessionSlot::lead("OtherOrg", "parked-proj"),
+            &sender(),
             wrapped(&id, "elsewhere"),
         );
 
@@ -193,30 +220,36 @@ mod tests {
         );
     }
 
-    /// A spawn that never connects expires what it parked: the peer ask is
-    /// failed so its caller gets a delivery-failure notice instead of
-    /// waiting out the timeout, and the bucket does not survive to leak
-    /// into a later session.
+    /// A spawn that never connects expires what it parked: the sender is
+    /// told its message never landed, and the bucket does not survive to
+    /// leak into a later session.
+    ///
+    /// This is the delivery-ack path, and it is the whole reason the
+    /// parked entry carries a sender - with the ask registry gone, nothing
+    /// else knows who to tell.
     #[test]
-    fn expiring_a_slot_fails_its_parked_asks() {
-        let (ws, _rx) = crate::Workspace::testing_stub();
-        let id = CorrelationId::new_ask();
-        ws.park_peer_prompt(&slot(None), wrapped(&id, "are you up?"));
-        ws.inflight_asks.lock().insert(
-            id.clone(),
-            InflightAsk {
-                correlation_id: id.clone(),
-                caller: SessionSlot::from_str_for_test("asker"),
-                target_project: "parked-proj".to_owned(),
-                target_session: None,
-            },
-        );
+    fn expiring_a_slot_acknowledges_its_parked_messages_to_the_sender() {
+        let (ws, mut rx) = crate::Workspace::testing_stub();
+        let id = MessageId::mint();
+        ws.park_peer_prompt(&slot(None), &sender(), wrapped(&id, "are you up?"));
 
         ws.expire_parked_for_slot(&slot(None), PeerFailureReason::TargetConnectionFailed);
 
+        let mut echo = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+                echo = Some((key, wrapped));
+            }
+        }
+        let (key, notice) = echo.expect("the notice is painted for the sender");
+        assert_eq!(key, sender(), "the notice lands on the sender, not the target");
         assert!(
-            !ws.inflight_asks.lock().contains_key(&id),
-            "the undelivered ask is failed, not left waiting",
+            matches!(notice.kind, WrappedKind::DeliveryFailureNotice),
+            "and it is the delivery failure, not a peer message",
+        );
+        assert_eq!(
+            notice.sender_name, "parked-proj",
+            "the notice names the seat that never took the message",
         );
         assert!(
             ws.take_parked_for_slot(&slot(None)).peer.is_empty(),

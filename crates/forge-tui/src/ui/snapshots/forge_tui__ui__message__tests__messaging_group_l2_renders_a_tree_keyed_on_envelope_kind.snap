@@ -3,8 +3,7 @@ source: crates/forge-tui/src/ui/message.rs
 expression: "render_lines_to_strings(&lines).join(\"\\n\")"
 ---
   ✓ 3 messages   click or ctrl+x to expand
-  ├─ ⤵ message
-  │  ├─ steward · the window is lost
-  │  └─ planner · picking up the migration
-  └─ ⤵ reply
+  └─ ⤵ message
+     ├─ steward · the window is lost
+     ├─ planner · picking up the migration
      └─ tester · take the render half

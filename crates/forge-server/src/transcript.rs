@@ -172,9 +172,9 @@ pub struct PeerCard {
     /// True when it arrived rather than was sent.
     pub inbound: bool,
     /// What kind of traffic it is, which the group draws as its rows:
-    /// `question`, `message` or `reply` inbound, `ask` or `tell` outbound.
-    /// The direction survives in [`Self::inbound`]; this is the kind, and
-    /// the two are not the same question.
+    /// `message` for a peer message, or a failure kind for a notice. The
+    /// direction survives in [`Self::inbound`]; this is the kind, and the
+    /// two are not the same question.
     pub kind: &'static str,
 }
 
@@ -1128,14 +1128,8 @@ fn text_unit(assistant: bool, text: &str) -> TextUnit {
 /// a silent turn.
 fn inbound_unit(text: &str) -> Option<ChatUnit> {
     match detect_inbound(text)? {
-        PeerInboundKind::Question { from, body, .. } => {
-            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "question" }))
-        }
         PeerInboundKind::Message { from, body, .. } => {
             Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "message" }))
-        }
-        PeerInboundKind::Reply { from, body, .. } => {
-            Some(ChatUnit::PeerCard(PeerCard { peer: from, body, inbound: true, kind: "reply" }))
         }
         PeerInboundKind::Gotify { app, title, message, priority } => {
             let severity = if priority >= GOTIFY_ELEVATED_PRIORITY {
@@ -1184,11 +1178,8 @@ fn notice(severity: NoticeSeverity, source: &'static str, text: &str) -> ChatUni
 
 /// The card an outbound peer call draws, if it is one.
 fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
-    let (peer, body, kind) = match detect_outbound_call(name, input)? {
-        PeerOutboundKind::Ask { target, body } => (target, body, "ask"),
-        PeerOutboundKind::Tell { target, body } => (target, body, "tell"),
-    };
-    Some(PeerCard { peer, body, inbound: false, kind })
+    let PeerOutboundKind { target, body } = detect_outbound_call(name, input)?;
+    Some(PeerCard { peer: target, body, inbound: false, kind: "message" })
 }
 
 /// One call as a transcript holds it: the wire's name and input, the title
@@ -1670,7 +1661,7 @@ mod tests {
         let question = tool_call_named("AskUserQuestion");
         let peer = assistant(vec![ContentBlock::ToolUse {
             id: "toolu_peer".to_owned(),
-            name: "mcp__forge__agents__tell".to_owned(),
+            name: "mcp__forge__agents__send_message".to_owned(),
             input: serde_json::json!({"project": "companies", "message": "did it land?"}),
         }]);
         let edit = tool_call("edit");
@@ -2602,13 +2593,13 @@ mod tests {
     #[test]
     fn peer_traffic_is_a_card_and_not_a_turn_or_a_call() {
         let arrived = user(vec![ContentBlock::Text {
-            text: "[Message id=t-1 from agent 'companies' (org 'Busytools')]\n\nis the cron issue filed?"
+            text: "[Message id=m-1 from agent 'companies' (org 'Busytools')]\n\nis the cron issue filed?"
                 .to_owned(),
         }]);
         let sent = assistant(vec![ContentBlock::ToolUse {
             id: "toolu_ask".to_owned(),
-            name: "mcp__forge__agents__ask".to_owned(),
-            input: serde_json::json!({"project": "forge", "prompt": "did it land?"}),
+            name: "mcp__forge__agents__send_message".to_owned(),
+            input: serde_json::json!({"project": "forge", "message": "did it land?"}),
         }]);
 
         let inbound = render_units(&[arrived]);

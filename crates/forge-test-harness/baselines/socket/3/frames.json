@@ -1,0 +1,180 @@
+{
+  "server_message": {
+    "Devices": "devices",
+    "Error": "error",
+    "Greeting": "greeting",
+    "Page": "page",
+    "Reply": "reply",
+    "Snapshot": "snapshot",
+    "Update": "update"
+  },
+  "session_update": {
+    "AccountsChanged": "accounts_changed",
+    "AuthRequired": "auth_required",
+    "CatalogLoaded": "catalog_loaded",
+    "ChatAppended": "chat_appended",
+    "CliVersionChanged": "cli_version_changed",
+    "Connected": "connected",
+    "ConnectionFailed": "connection_failed",
+    "ContextUsageSnapshot": "context_usage_snapshot",
+    "CronPromptAppended": "cron_prompt_appended",
+    "DictateAvailability": "dictate_availability",
+    "DictateDevicePin": "dictate_device_pin",
+    "DictateEnded": "dictate_ended",
+    "DictateLevel": "dictate_level",
+    "DictateOverrides": "dictate_overrides",
+    "DictateProgress": "dictate_progress",
+    "DictateStarted": "dictate_started",
+    "DictateTranscribing": "dictate_transcribing",
+    "FatalError": "fatal_error",
+    "ForgeAccountIdentity": "forge_account_identity",
+    "GotifyNotificationAppended": "gotify_notification_appended",
+    "HistoryReplayed": "history_replayed",
+    "HookObservation": "hook_observation",
+    "McpOperationError": "mcp_operation_error",
+    "McpSnapshot": "mcp_snapshot",
+    "Notice": "notice",
+    "OauthCredentialsSnapshot": "oauth_credentials_snapshot",
+    "PeerEnvelopeAppended": "peer_envelope_appended",
+    "PendingInteractionResolved": "pending_interaction_resolved",
+    "PermissionRequest": "permission_request",
+    "PluginsCliActionFailed": "plugins_cli_action_failed",
+    "PluginsCliActionSucceeded": "plugins_cli_action_succeeded",
+    "PluginsInventoryRefreshFailed": "plugins_inventory_refresh_failed",
+    "PluginsInventoryUpdated": "plugins_inventory_updated",
+    "PluginsRollbackFailed": "plugins_rollback_failed",
+    "PluginsRollbackSucceeded": "plugins_rollback_succeeded",
+    "PluginsUpdateRunFinished": "plugins_update_run_finished",
+    "PluginsUpdateRunProgress": "plugins_update_run_progress",
+    "PromptQueuedWhileBusy": "prompt_queued_while_busy",
+    "QuestionRequest": "question_request",
+    "ReviewActivityNotice": "review_activity_notice",
+    "RuntimeReloadCompleted": "runtime_reload_completed",
+    "RuntimeReloadFailed": "runtime_reload_failed",
+    "ServiceStatus": "service_status",
+    "SessionReplaced": "session_replaced",
+    "SessionsListed": "sessions_listed",
+    "SetModeFailed": "set_mode_failed",
+    "SetModelFailed": "set_model_failed",
+    "SlackDraftResolved": "slack_draft_resolved",
+    "SlackMessageAppended": "slack_message_appended",
+    "SlackPostPending": "slack_post_pending",
+    "SlashCommandError": "slash_command_error",
+    "Spawning": "spawning",
+    "StatusSnapshot": "status_snapshot",
+    "TurnCancelled": "turn_cancelled",
+    "TurnComplete": "turn_complete",
+    "TurnError": "turn_error",
+    "WorkerStatusChanged": "worker_status_changed"
+  },
+  "subject": {
+    "Home": "home",
+    "Session": "session",
+    "Usage": "usage"
+  },
+  "command": {
+    "Cancel": "cancel",
+    "CloseSession": "close_session",
+    "CloseWorker": "close_worker",
+    "DeliverGotifyMessage": "deliver_gotify_message",
+    "DeliverPeerPrompt": "deliver_peer_prompt",
+    "DeliverWorkerPrompt": "deliver_worker_prompt",
+    "DeliverWorkerPromptToLead": "deliver_worker_prompt_to_lead",
+    "DespawnWorker": "despawn_worker",
+    "DictateStart": "dictate_start",
+    "DictateStop": "dictate_stop",
+    "NewSession": "new_session",
+    "OpenUrl": "open_url",
+    "Prompt": "prompt",
+    "ReconnectMcpServer": "reconnect_mcp_server",
+    "RemoveReviewThread": "remove_review_thread",
+    "ReplayConversation": "replay_conversation",
+    "ResetDictateOverrides": "reset_dictate_overrides",
+    "RespondPermission": "respond_permission",
+    "RespondQuestion": "respond_question",
+    "RespondSlackPost": "respond_slack_post",
+    "ResumeSession": "resume_session",
+    "SaveReviewThreads": "save_review_threads",
+    "SetDictateDevice": "set_dictate_device",
+    "SetDictateOverride": "set_dictate_override",
+    "SetMode": "set_mode",
+    "SetModel": "set_model",
+    "SetReviewThreadStatus": "set_review_thread_status",
+    "SpawnProject": "spawn_project",
+    "SpawnSession": "spawn_session",
+    "SpawnWorker": "spawn_worker",
+    "StartDefault": "start_default",
+    "SubmitReview": "submit_review",
+    "ToggleMcpServer": "toggle_mcp_server",
+    "UpsertReviewThread": "upsert_review_thread"
+  },
+  "client_message": {
+    "Command": "command",
+    "Devices": "devices",
+    "More": "more",
+    "Subscribe": "subscribe",
+    "Unsubscribe": "unsubscribe"
+  },
+  "payload_sampled": {
+    "ChatAppended": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "chat_appended"
+      ],
+      "/update/chat_appended": [
+        "key",
+        "msg",
+        "origin"
+      ],
+      "/update/chat_appended/key": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/update/chat_appended/msg": [
+        "hook_event",
+        "hook_id",
+        "hook_name",
+        "session_id",
+        "subtype",
+        "type",
+        "uuid"
+      ]
+    },
+    "Devices": {
+      "": [
+        "configured",
+        "devices",
+        "kind"
+      ],
+      "/devices[]": [
+        "id",
+        "is_default",
+        "name"
+      ]
+    },
+    "Page": {
+      "": [
+        "conversation",
+        "cursor",
+        "kind",
+        "turns"
+      ],
+      "/conversation": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/turns[]": [
+        "key",
+        "messages"
+      ],
+      "/turns[]/messages[]": [
+        "type"
+      ]
+    }
+  }
+}

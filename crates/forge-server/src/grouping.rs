@@ -35,7 +35,7 @@ use crate::peer_outbound::{PeerOutboundKind, detect_outbound};
 ///   folds like one.
 /// - Tools rendered as an agent block
 ///   ([`crate::peer_outbound::detect_outbound`] match set:
-///   agents__ask / agents__tell).
+///   agents__send_message and the retired names a replay carries).
 ///
 /// `tc.hidden == true` (chat-suppressed: Task* / AskUserQuestion while
 /// unanswered / Schedule* / Cron*) is NOT a breaker - hidden tools
@@ -119,12 +119,14 @@ pub(crate) fn renders_as_lifecycle_block_parts(
 /// card). Name-based because `detect_outbound` matches by
 /// `sdk_tool_name` literal. Mirror its match set exactly.
 pub(crate) fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
-    // The four retired names below are replay-only, matching what a
-    // transcript recorded before the rename holds; see `detect_outbound`.
+    // The six retired names below are replay-only, matching what a
+    // transcript recorded before the verbs were folded holds; see
+    // `detect_outbound`.
     matches!(
         sdk_tool_name,
-        "mcp__forge__agents__ask"
-            | "mcp__forge__agents__tell"
+        "mcp__forge__agents__send_message"
+            | "mcp__forge__agents__ask" // replay-only: agents__ask
+            | "mcp__forge__agents__tell" // replay-only: agents__tell
             | "mcp__forge__peers__ask_agent" // replay-only: peers__ask_agent
             | "mcp__forge__peers__tell_agent" // replay-only: peers__tell_agent
             | "mcp__forge__workers__ask" // replay-only: workers__ask
@@ -246,8 +248,6 @@ pub(crate) fn wire_row(sdk_tool_name: &str) -> (KindRow, String) {
 pub fn inbound_kind_row(kind: &PeerInboundKind) -> Option<(KindRow, &'static str, bool)> {
     let row = match kind {
         PeerInboundKind::Message { .. } => (KindRow::Inbound, "message", false),
-        PeerInboundKind::Question { .. } => (KindRow::Inbound, "question", false),
-        PeerInboundKind::Reply { .. } => (KindRow::Inbound, "reply", false),
         PeerInboundKind::DeliveryFailure { .. } => (KindRow::Inbound, "failed", true),
         PeerInboundKind::WorkerSpawnFailed { .. } => (KindRow::Inbound, "spawn failed", true),
         // External events, never agent traffic - excluded from grouping.
@@ -259,11 +259,8 @@ pub fn inbound_kind_row(kind: &PeerInboundKind) -> Option<(KindRow, &'static str
 }
 
 /// Sibling of [`inbound_kind_row`] for outbound calls.
-pub fn outbound_kind_row(kind: &PeerOutboundKind) -> (KindRow, &'static str) {
-    match kind {
-        PeerOutboundKind::Ask { .. } => (KindRow::Outbound, "ask"),
-        PeerOutboundKind::Tell { .. } => (KindRow::Outbound, "tell"),
-    }
+pub fn outbound_kind_row(_kind: &PeerOutboundKind) -> (KindRow, &'static str) {
+    (KindRow::Outbound, "message")
 }
 
 /// The body text a leaf row previews, per envelope kind. The external-event
@@ -271,10 +268,7 @@ pub fn outbound_kind_row(kind: &PeerOutboundKind) -> (KindRow, &'static str) {
 /// returns `None` for all three, so none ever becomes a leaf.
 pub fn inbound_body(kind: &PeerInboundKind) -> &str {
     match kind {
-        PeerInboundKind::Message { body, .. }
-        | PeerInboundKind::Question { body, .. }
-        | PeerInboundKind::Reply { body, .. }
-        | PeerInboundKind::Slack { body, .. } => body,
+        PeerInboundKind::Message { body, .. } | PeerInboundKind::Slack { body, .. } => body,
         PeerInboundKind::DeliveryFailure { reason, .. }
         | PeerInboundKind::WorkerSpawnFailed { reason, .. } => reason,
         PeerInboundKind::Gotify { message, .. } => message,
@@ -732,11 +726,12 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                 MessageBlock::ToolCall(tc) if !tc.hidden => {
                     if let Some(kind) = detect_outbound(tc) {
                         let (row, label) = outbound_kind_row(&kind);
-                        let (target, body) = match &kind {
-                            PeerOutboundKind::Ask { target, body }
-                            | PeerOutboundKind::Tell { target, body } => (target, body.as_str()),
-                        };
-                        summary.tally_peer(row, label, kind_row_target(target, body), false);
+                        summary.tally_peer(
+                            row,
+                            label,
+                            kind_row_target(&kind.target, &kind.body),
+                            false,
+                        );
                         update_aggregate(&mut any_status, tc.status);
                         if leader_id.is_none() {
                             leader_id = Some(GroupId::from_leader_id(tc.id.clone()));
@@ -1074,17 +1069,21 @@ mod tests {
             !is_run_breaker(&tool_call_block("x", "Monitor")),
             "a Monitor with no parseable input paints an ordinary card and folds",
         );
-        for name in ["mcp__forge__agents__ask", "mcp__forge__agents__tell"] {
+        for name in ["mcp__forge__agents__send_message"] {
             assert!(
                 is_run_breaker(&tool_call_block("x", name)),
                 "{name} renders as an agent block and MUST break runs",
             );
         }
         // A pre-rename card in a resumed transcript renders the same way,
-        // so it has to break runs the same way. All four retired names:
+        // so it has to break runs the same way. All six retired names:
         // this set mirrors `detect_outbound`'s, and a name covered on one
         // side and not the other is how the two drift apart.
         for name in [
+            // replay-only: agents__ask
+            "mcp__forge__agents__ask",
+            // replay-only: agents__tell
+            "mcp__forge__agents__tell",
             // replay-only: peers__ask_agent
             "mcp__forge__peers__ask_agent",
             // replay-only: peers__tell_agent
@@ -1821,7 +1820,7 @@ mod tests {
         let blocks = vec![
             tool_call_block("a", "Read"),
             tool_call_block("b", "Read"),
-            tool_call_block("c", "mcp__forge__agents__ask"),
+            tool_call_block("c", "mcp__forge__agents__send_message"),
             tool_call_block("d", "Read"),
             tool_call_block("e", "Read"),
         ];
@@ -1908,37 +1907,28 @@ mod tests {
         format!("{prefix}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn outbound_peer_block(target: &str, kind: &str) -> MessageBlock {
-        // `kind` is "Tell" or "Ask"; map to the matching MCP tool name
-        // + raw_input shape that `peer_block::detect_outbound` keys on.
-        let (sdk_tool_name, body_key) = match kind {
-            "Tell" => ("mcp__forge__agents__tell", "message"),
-            "Ask" => ("mcp__forge__agents__ask", "prompt"),
-            other => panic!("unknown outbound kind {other:?}; use Tell|Ask"),
-        };
-        let mut block = tool_call_block(&next_fixture_id("tu-out"), sdk_tool_name);
+    /// An outbound peer card. The second argument is the fixture's own
+    /// label for the peer: one verb carries every send now, so it no
+    /// longer selects a tool, and two peers are told apart by their
+    /// targets.
+    fn outbound_peer_block(target: &str, _kind: &str) -> MessageBlock {
+        let mut block =
+            tool_call_block(&next_fixture_id("tu-out"), "mcp__forge__agents__send_message");
         if let MessageBlock::ToolCall(tc) = &mut block {
             tc.raw_input = Some(serde_json::json!({
                 "project": target,
-                body_key: "body",
+                "message": "body",
             }));
         }
         block
     }
 
-    fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
-        // `kind` is "Question" | "Message" | "Reply". Use the
-        // wrapper-prose shape `crate::envelope::detect_inbound` matches.
-        let id = next_fixture_id("t");
-        let header = match kind {
-            "Question" => format!("[Question id={id} from agent '{from}' (org 'forge')]"),
-            "Message" => format!("[Message id={id} from agent '{from}' (org 'forge')]"),
-            "Reply" => {
-                format!("[Reply id={id} from agent '{from}' (org 'forge')]")
-            }
-            other => panic!("unknown inbound kind {other:?}"),
-        };
-        let text = format!("{header}\n\nbody");
+    /// An inbound peer envelope. The second argument is the fixture's own
+    /// label for the peer: one header shape carries every message now, so
+    /// it no longer selects a shape.
+    fn inbound_peer_block(from: &str, _kind: &str) -> MessageBlock {
+        let id = next_fixture_id("m");
+        let text = format!("[Message id={id} from agent '{from}' (org 'forge')]\n\nbody");
         MessageBlock::Text(TextBlock::from_complete(&text))
     }
 
@@ -1995,7 +1985,7 @@ mod tests {
         );
         for leader in &leaders {
             assert!(
-                leader.as_str().starts_with("inbound-t-"),
+                leader.as_str().starts_with("inbound-m-"),
                 "leader must come from the envelope id, not the block index; got {leader:?}",
             );
         }
@@ -2170,9 +2160,9 @@ mod tests {
         assert_eq!(segment.summary.total(), 3);
     }
 
-    /// The kind is the ENVELOPE KIND, so a run mixing Tell, Ask, Reply
-    /// and Message produces four kind lines, each holding its own
-    /// messages in order.
+    /// The kind is the ENVELOPE KIND, so a run mixing outbound sends and
+    /// inbound messages produces two kind lines - one per direction's kind
+    /// word - each holding its own messages in order.
     #[test]
     fn messaging_group_tallies_one_kind_line_per_envelope_kind() {
         let messages = vec![assistant_message_with_blocks(vec![
@@ -2189,10 +2179,10 @@ mod tests {
             .collect();
         let RenderUnit::MessagingGroup { segment, .. } = groups[0] else { unreachable!() };
         let labels: Vec<&str> = segment.summary.lines.iter().map(|l| l.label.as_str()).collect();
-        assert_eq!(labels, vec!["tell", "reply", "ask", "message"], "one line per kind, in order");
+        assert_eq!(labels, vec!["message", "message"], "one line per direction, in order");
         for line in &segment.summary.lines {
-            assert_eq!(line.count, 1);
-            assert_eq!(line.targets.len(), 1, "every message keeps its own leaf row");
+            assert_eq!(line.count, 2, "both directions carry two sends");
+            assert_eq!(line.targets.len(), 2, "every message keeps its own leaf row");
         }
     }
 

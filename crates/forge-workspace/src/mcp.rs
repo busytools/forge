@@ -167,10 +167,15 @@ mod tests {
         registered_names(kind).into_iter().filter(|name| name.starts_with("agents__")).collect()
     }
 
-    /// The eleven names the agents family replaces. None may survive:
-    /// an alias would leave two names for one verb in the shipped text,
+    /// The names the agents family has retired. None may survive: an
+    /// alias would leave two names for one verb in the shipped text,
     /// which is the confusion the merge exists to remove.
-    const OLD_NAMES: [&str; 11] = [
+    ///
+    /// Two waves. The eleven `peers__*` / `workers__*` verbs the family
+    /// replaced, and the two the family then folded into
+    /// `agents__send_message` - a reply is another message, so the split
+    /// between them was never a thing a message had to be.
+    const OLD_NAMES: [&str; 13] = [
         "peers__whoami",
         "peers__list_agents",
         "peers__tell_agent",
@@ -182,6 +187,8 @@ mod tests {
         "workers__ask",
         "workers__despawn",
         "workers__update",
+        "agents__tell",
+        "agents__ask",
     ];
 
     /// Every group that is any-caller: both session kinds manage their
@@ -217,16 +224,15 @@ mod tests {
     ];
 
     #[test]
-    fn a_lead_sees_all_eight() {
+    fn a_lead_sees_all_seven() {
         assert_eq!(
             agents_tools(SessionKind::Lead),
             [
-                "agents__ask",
                 "agents__capacity",
                 "agents__despawn",
                 "agents__list",
+                "agents__send_message",
                 "agents__spawn",
-                "agents__tell",
                 "agents__update",
                 "agents__whoami",
             ],
@@ -234,17 +240,17 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_sees_only_the_shared_four() {
+    fn a_worker_sees_only_the_shared_three() {
         // The role gate: a worker gains the cross-project reach the
         // merge adds, and must NOT gain a lead-only verb with it.
         assert_eq!(
             agents_tools(SessionKind::Worker),
-            ["agents__ask", "agents__list", "agents__tell", "agents__whoami"],
+            ["agents__list", "agents__send_message", "agents__whoami"],
         );
     }
 
     #[test]
-    fn the_eleven_old_names_are_gone() {
+    fn the_retired_names_are_gone() {
         for kind in [SessionKind::Lead, SessionKind::Worker] {
             let names = registered_names(kind);
             for old in OLD_NAMES {

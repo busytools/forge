@@ -480,17 +480,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::extensions::apply_rollback_failure(app, &plugin_id, &message, snapshot);
             });
         }
-        SessionUpdate::PeerInflightStatsChanged { key, stats } => {
-            if let Some(session) = app.session_mut(&key) {
-                // Track when the failure counters last incremented so
-                // the projects_pane render can fade those indicators
-                // after 60 s.
-                if stats.delivery_failed > session.peer_badges.delivery_failed {
-                    session.peer_badges_last_failure_at = Some(std::time::Instant::now());
-                }
-                session.peer_badges = stats;
-            }
-        }
         SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } => {
             // A worker's review turn ended; drop the batched tally into the
             // reviewer's (submit-origin) session chat. No-op if that session

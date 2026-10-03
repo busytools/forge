@@ -5,21 +5,19 @@
 //! 1. **Inbound rendering**. Draw the envelope
 //!    `forge_server::envelope::detect_inbound` parses out of the
 //!    bracket-wrapped prose `forge_workspace` injects into user-turn text
-//!    (e.g. `[Question id=q-... from agent 'forge' (org 'Personal') -
-//!    reply with agents__tell in_reply_to=q-...]\n\n<body>`) as a
-//!    styled block in place of the default user-message
-//!    bubble. Catches the five agent kinds the workspace produces
-//!    (`Question`, `Message`, `Reply`, `DeliveryFailure`,
-//!    `WorkerSpawnFailed`) plus the `Gotify`, `Cron` and `Slack`
-//!    blocks, which render with their own chrome (glyph + source
-//!    label).
+//!    (e.g. `[Message id=m-... from agent 'forge' (org 'Personal')]\n\n<body>`)
+//!    as a styled block in place of the default user-message
+//!    bubble. Catches the three agent kinds the workspace produces
+//!    (`Message`, `DeliveryFailure`, `WorkerSpawnFailed`) plus the
+//!    `Gotify`, `Cron` and `Slack` blocks, which render with their own
+//!    chrome (glyph + source label).
 //!
 //! 2. **Outbound rendering**. Replace the default tool_use card for
-//!    `mcp__forge__agents__ask` / `agents__tell` with a one-line
+//!    `mcp__forge__agents__send_message` with a one-line
 //!    `▶ Verb name` row + a body preview pulled from the tool
 //!    arguments. The other `agents__*` verbs are NOT handled here -
-//!    they render as standard tool cards because they're lifecycle,
-//!    roster and reply calls, not new outbound comms.
+//!    they render as standard tool cards because they're lifecycle
+//!    and roster calls, not outbound comms.
 //!
 //! Pure rendering - no I/O, no state. The outbound kind is resolved
 //! fresh on each call and not cached (the arguments are small, and
@@ -76,16 +74,6 @@ pub(crate) fn render_inbound_with_metas(
     copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Vec<Line<'static>> {
     match kind {
-        PeerInboundKind::Question { from, body, .. } => render_block(
-            "Question",
-            from,
-            None,
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-            copy_rows,
-        ),
         PeerInboundKind::Message { from, body, .. } => render_block(
             "Message",
             from,
@@ -96,18 +84,8 @@ pub(crate) fn render_inbound_with_metas(
             collapsed,
             copy_rows,
         ),
-        PeerInboundKind::Reply { from, body, .. } => render_block(
-            "Reply",
-            from,
-            None,
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-            copy_rows,
-        ),
         PeerInboundKind::DeliveryFailure { target, reason, .. } => render_block(
-            "Ask",
+            "Message",
             target,
             Some(NoticeModifier::Undeliverable),
             reason,
@@ -157,11 +135,8 @@ pub(crate) fn render_outbound_with_metas(
     copy_rows: &mut Vec<crate::ui::copy::CopyRowMeta>,
 ) -> Vec<Line<'static>> {
     match kind {
-        PeerOutboundKind::Ask { target, body } => {
-            render_block("Ask", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
-        }
-        PeerOutboundKind::Tell { target, body } => {
-            render_block("Tell", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
+        PeerOutboundKind { target, body } => {
+            render_block("Message", target, None, body, OUTBOUND_GLYPH, false, collapsed, copy_rows)
         }
     }
 }
@@ -504,8 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn render_inbound_question_full_shape() {
-        let kind = PeerInboundKind::Question {
+    fn render_inbound_message_full_shape() {
+        let kind = PeerInboundKind::Message {
+            id: "m-7f3a92e0".into(),
             from: "planner".into(),
             org: "Personal".into(),
             body: "Is the seam plan ready?".into(),
@@ -513,7 +489,7 @@ mod tests {
         let lines = render_inbound(&kind, false, false);
         let s = render_lines_to_strings(&lines);
         assert!(s[0].contains("\u{25B6}"), "header has ▶ glyph: {:?}", s[0]);
-        assert!(s[0].contains("Question planner"), "verb + name: {:?}", s[0]);
+        assert!(s[0].contains("Message planner"), "verb + name: {:?}", s[0]);
         assert!(!s[0].contains("Personal"), "org suppressed: {:?}", s[0]);
         assert!(s.last().unwrap().contains("Is the seam plan ready?"));
     }
@@ -521,6 +497,7 @@ mod tests {
     #[test]
     fn render_inbound_suppress_header_drops_verb_line() {
         let kind = PeerInboundKind::Message {
+            id: "m-1".into(),
             from: "implementer".into(),
             org: "Personal".into(),
             body: "PR #187 open.".into(),
@@ -535,6 +512,7 @@ mod tests {
     #[test]
     fn render_inbound_collapsed_shows_summary_with_hint() {
         let kind = PeerInboundKind::Message {
+            id: "m-1".into(),
             from: "planner".into(),
             org: "Personal".into(),
             body: "first line\nsecond line".into(),
@@ -550,6 +528,7 @@ mod tests {
     #[test]
     fn render_inbound_expanded_keeps_full_body() {
         let kind = PeerInboundKind::Message {
+            id: "m-1".into(),
             from: "planner".into(),
             org: "Personal".into(),
             body: "one\ntwo\nthree".into(),
@@ -562,34 +541,17 @@ mod tests {
     }
 
     #[test]
-    fn render_outbound_ask_shape() {
-        let kind = PeerOutboundKind::Ask {
-            target: "planner".into(),
-            body: "Is the seam plan ready?".into(),
-        };
+    fn render_outbound_message_shape() {
+        let kind = PeerOutboundKind { target: "planner".into(), body: "Is it ready?".into() };
         let lines = render_outbound(&kind, false);
         let s = render_lines_to_strings(&lines);
-        assert!(s[0].contains("Ask planner"), "verb + target: {:?}", s[0]);
+        assert!(s[0].contains("Message planner"), "verb + target: {:?}", s[0]);
         assert!(s[0].contains("\u{25B6}"), "▶ glyph: {:?}", s[0]);
     }
 
     #[test]
-    fn render_outbound_tell_shape() {
-        let kind = PeerOutboundKind::Tell {
-            target: "planner".into(),
-            body: "FYI: PR #187 is open.".into(),
-        };
-        let lines = render_outbound(&kind, false);
-        let s = render_lines_to_strings(&lines);
-        assert!(s[0].contains("Tell planner"));
-    }
-
-    #[test]
-    fn render_outbound_ask_includes_outbound_directional_glyph() {
-        let kind = PeerOutboundKind::Ask {
-            target: "planner".into(),
-            body: "Is the seam plan ready?".into(),
-        };
+    fn render_outbound_message_includes_outbound_directional_glyph() {
+        let kind = PeerOutboundKind { target: "planner".into(), body: "FYI.".into() };
         let lines = render_outbound(&kind, false);
         let s = render_lines_to_strings(&lines);
         assert!(
@@ -600,42 +562,12 @@ mod tests {
     }
 
     #[test]
-    fn render_outbound_tell_includes_outbound_directional_glyph() {
-        let kind = PeerOutboundKind::Tell {
-            target: "planner".into(),
-            body: "FYI: PR #187 is open.".into(),
-        };
-        let lines = render_outbound(&kind, false);
-        let s = render_lines_to_strings(&lines);
-        assert!(
-            s[0].contains('\u{2934}'),
-            "outbound glyph ⤴ U+2934 must appear in header: {:?}",
-            s[0]
-        );
-    }
-
-    #[test]
-    fn render_inbound_question_includes_inbound_directional_glyph() {
-        let kind = PeerInboundKind::Question {
+    fn render_inbound_message_includes_inbound_directional_glyph() {
+        let kind = PeerInboundKind::Message {
+            id: "m-1".into(),
             from: "alice".into(),
             org: "org".into(),
             body: "what?".into(),
-        };
-        let lines = render_inbound(&kind, false, false);
-        let s = render_lines_to_strings(&lines);
-        assert!(
-            s[0].contains('\u{2935}'),
-            "inbound glyph ⤵ U+2935 must appear in header: {:?}",
-            s[0]
-        );
-    }
-
-    #[test]
-    fn render_inbound_reply_includes_inbound_directional_glyph() {
-        let kind = PeerInboundKind::Reply {
-            from: "alice".into(),
-            org: "org".into(),
-            body: "answer".into(),
         };
         let lines = render_inbound(&kind, false, false);
         let s = render_lines_to_strings(&lines);
@@ -665,6 +597,7 @@ mod tests {
     #[test]
     fn render_inbound_suppress_header_drops_directional_glyph_too() {
         let kind = PeerInboundKind::Message {
+            id: "m-1".into(),
             from: "implementer".into(),
             org: "Personal".into(),
             body: "PR ready.".into(),
@@ -982,9 +915,11 @@ mod tests {
             .expect("a messaging group")
     }
 
-    fn inbound_block(kind: &str, from: &str, body: &str) -> crate::app::MessageBlock {
+    fn inbound_block(_kind: &str, from: &str, body: &str) -> crate::app::MessageBlock {
+        // One header shape carries every message now, so `_kind` is the
+        // fixture's own label for the peer rather than a shape selector.
         crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
-            "[{kind} id=t-{from} from agent '{from}' (org 'forge')]\n\n{body}"
+            "[Message id=m-{from} from agent '{from}' (org 'forge')]\n\n{body}"
         )))
     }
 
@@ -1036,13 +971,13 @@ mod tests {
             '\u{280B}',
             80,
         ));
-        let reply_row = rendered.iter().find(|l| l.contains("reply")).expect("a reply kind row");
+        let kind_row = rendered.iter().find(|l| l.contains("message")).expect("a kind row");
         assert!(
-            !reply_row.contains("tester"),
-            "the peer belongs on its own leaf, not inline on the kind row; got {reply_row:?}",
+            !kind_row.contains("tester"),
+            "the peer belongs on its own leaf, not inline on the kind row; got {kind_row:?}",
         );
         assert!(
-            rendered.iter().any(|l| l.contains("tester") && !l.contains("reply")),
+            rendered.iter().any(|l| l.contains("tester") && !l.contains("message")),
             "and the leaf exists separately; got {rendered:?}",
         );
     }

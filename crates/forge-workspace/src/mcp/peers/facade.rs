@@ -24,77 +24,22 @@
 
 use std::sync::{Arc, Weak};
 
-use forge_primitives::PeerInflightStats;
-
 use crate::mcp::peers::types::{PeerLiveness, PeerStatus, WrappedPrompt};
 use tracing::warn;
 
 use crate::SessionSlot;
-use crate::protocol::{Command, SessionUpdate};
+use crate::protocol::Command;
 use crate::workspace::Workspace;
-
-/// What `deliver_peer_prompt` returns on success - whether the target
-/// session was already running (prompt sent immediately) or asleep
-/// (workspace dispatched a SpawnProject and buffered the prompt for
-/// delivery once Connected fires).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TargetStatus {
-    /// Target was running; the wrapped prompt has been dispatched via
-    /// the workspace command bus and will land in the next turn.
-    Delivered,
-    /// Target was sleeping; a `Command::SpawnProject` is in flight and
-    /// the wrapped prompt is parked for target's owner for delivery on
-    /// `AgentEvent::Connected` (drained in C11).
-    QueuedForSpawn,
-}
 
 /// Why a `deliver_peer_prompt` call failed synchronously.
 ///
-/// Async delivery failures (target session crashes mid-flight) flow
-/// through `Workspace::expire_target_inflight` and surface to the
-/// caller via a synthetic `DeliveryFailureNotice` wrapper - not
-/// through this enum.
+/// An async failure - a message parked for a sleeping project whose spawn
+/// then fails - is not reported here: it reaches the sender later as a
+/// delivery notice through [`crate::Workspace::notice_undelivered_message`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
     UnknownTarget { name: String },
-}
-
-/// Why delivering a Reply straight to the asker's session failed.
-/// Reply delivery bypasses name/label resolution (the asker is
-/// addressed by `SessionSlot`), so the only failure mode is a caller
-/// session that closed before the reply could land.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ReplyDeliverError {
-    /// The asker's session closed before its reply could be delivered.
-    CallerSessionGone,
-}
-
-impl ReplyDeliverError {
-    /// LLM-facing sentence explaining why the reply could not land.
-    /// The agents tell handler's reply path renders it.
-    pub(crate) fn user_message(&self) -> String {
-        match self {
-            ReplyDeliverError::CallerSessionGone => {
-                "the original asker's session is no longer available, so your reply could not be \
-                 delivered."
-                    .to_owned()
-            }
-        }
-    }
-}
-
-/// Per-session counter delta the tools push into the workspace's
-/// `peer_stats` map. The workspace then emits
-/// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer can
-/// update the sidebar peer-activity badge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PeerStatsDelta {
-    OutgoingPlus1,
-    OutgoingMinus1,
-    IncomingPlus1,
-    IncomingMinus1,
-    DeliveryFailedPlus1,
 }
 
 /// The narrow workspace-state surface peer-coordination tools call
@@ -112,29 +57,17 @@ pub trait WorkspaceFacade: Send + Sync {
 
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
-    /// Synchronous return is the immediate decision:
-    /// - `Ok(Delivered)` - target is running; `Command::DeliverPeerPrompt`
-    ///   has been dispatched and will land as a `Command::Prompt` on
-    ///   target's SessionTask in the next dispatch cycle.
-    /// - `Ok(QueuedForSpawn)` - target is sleeping; a
-    ///   `Command::SpawnProject` is in flight and the wrapped prompt
-    ///   is parked for target's owner for delivery on
-    ///   `AgentEvent::Connected`.
-    /// - `Err(UnknownTarget)` - target not in forge.toml.
-    ///
-    /// The actual buffer + dispatch logic lives in `spawn.rs`'s
-    /// `Command::DeliverPeerPrompt` handler (lands in C11).
+    /// Synchronous return is the immediate decision: `Ok(())` means
+    /// `Command::DeliverPeerPrompt` has been dispatched, and whether the
+    /// target was running or asleep is that handler's business (it either
+    /// dispatches a `Command::Prompt` or parks the prompt and spawns).
+    /// `Err(UnknownTarget)` - target not in forge.toml.
     fn deliver_peer_prompt(
         &self,
         caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
-    ) -> Result<TargetStatus, DeliverError>;
-
-    /// Apply a delta to `peer_stats[key]` and emit
-    /// `SessionUpdate::PeerInflightStatsChanged` so the TUI reducer
-    /// can update the sidebar peer-activity badge.
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta);
+    ) -> Result<(), DeliverError>;
 }
 
 /// Production impl. Holds a `Weak<Workspace>` rather than
@@ -176,23 +109,17 @@ fn lead_for(
 impl WorkspaceFacade for ProdWorkspaceFacade {
     fn list_peers(&self) -> Vec<PeerStatus> {
         let Some(ws) = self.0.upgrade() else { return Vec::new() };
-        let projects = ws.list_projects();
-        let stat_counters = ws.peer_stats.lock();
-        projects
+        ws.list_projects()
             .into_iter()
             .map(|view| {
                 let (lead, running) = lead_for(&ws, &view);
                 let liveness = if running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
-                let counts = stat_counters.get(&lead).cloned().unwrap_or_default();
-                let spawned_at = ws.session_last_activity(&lead);
                 PeerStatus {
                     name: view.name,
                     org: view.org,
                     path: view.path,
                     status: liveness,
-                    in_flight_incoming: counts.incoming,
-                    in_flight_outgoing: counts.outgoing,
-                    spawned_at,
+                    spawned_at: ws.session_last_activity(&lead),
                 }
             })
             .collect()
@@ -201,27 +128,20 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
     fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
         let ws = self.0.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
-        // Liveness + stats key off the LEAD's session, not the
-        // caller's: `PeerStatus` represents project-level peer
-        // identity. A worker calling `whoami` sees its project's
-        // peer identity (the same identity another peer would see
-        // when targeting this project), not its own session - the
-        // lead-only match the pre-#298 impl gated on was wrong
-        // because workers also legitimately ask "who am I as a
-        // peer?".
-        let stat_counters = ws.peer_stats.lock();
-        let counts = stat_counters.get(&cx.lead).cloned().unwrap_or_default();
+        // Liveness keys off the LEAD's session, not the caller's:
+        // `PeerStatus` represents project-level peer identity. A worker
+        // calling `whoami` sees its project's peer identity (the same
+        // identity another peer would see when targeting this project),
+        // not its own session - the lead-only match the pre-#298 impl
+        // gated on was wrong because workers also legitimately ask "who
+        // am I as a peer?".
         let status = if cx.lead_running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
-        let spawned_at = ws.session_last_activity(&cx.lead);
-        drop(stat_counters);
         Some(PeerStatus {
             name: cx.project_name,
             org: cx.project_org,
             path: cx.project_path,
             status,
-            in_flight_incoming: counts.incoming,
-            in_flight_outgoing: counts.outgoing,
-            spawned_at,
+            spawned_at: ws.session_last_activity(&cx.lead),
         })
     }
 
@@ -230,22 +150,13 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
-    ) -> Result<TargetStatus, DeliverError> {
+    ) -> Result<(), DeliverError> {
         let Some(ws) = self.0.upgrade() else {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         };
-        let project = ws
-            .list_projects()
-            .into_iter()
-            .find(|v| v.name == target_project)
-            .ok_or_else(|| DeliverError::UnknownTarget { name: target_project.to_owned() })?;
-        // Probing the target project's lead by its slot, so a live
-        // worker cannot shadow it.
-        let target_status = if lead_for(&ws, &project).1 {
-            TargetStatus::Delivered
-        } else {
-            TargetStatus::QueuedForSpawn
-        };
+        if !ws.list_projects().iter().any(|v| v.name == target_project) {
+            return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
+        }
         if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {
             caller: caller.clone(),
             target_project: target_project.to_owned(),
@@ -254,56 +165,10 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             warn!(
                 target: "forge_workspace::mcp::peers",
                 error = ?err,
-                "Command::DeliverPeerPrompt dispatch failed; tool will still report immediate decision"
+                "Command::DeliverPeerPrompt dispatch failed; tool will still report the send"
             );
         }
-        Ok(target_status)
-    }
-
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
-        let Some(ws) = self.0.upgrade() else { return };
-        let stats_snapshot = {
-            let mut stats = ws.peer_stats.lock();
-            let entry = stats.entry(key.clone()).or_default();
-            apply_delta(entry, delta);
-            entry.clone()
-        };
-        // The mark a failure draws is transient, so its instant is held with
-        // the count: a view reading the counts alone cannot tell a failure
-        // that just happened from one the terminal dropped a minute ago.
-        if matches!(delta, PeerStatsDelta::DeliveryFailedPlus1) {
-            ws.peer_failure_at.lock().insert(key.clone(), std::time::SystemTime::now());
-        }
-        let _ = ws.update_sender().send(SessionUpdate::PeerInflightStatsChanged {
-            key: key.clone(),
-            stats: stats_snapshot,
-        });
-    }
-}
-
-fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
-    // `saturating_sub` floors at 0, but reaching 0 from a Minus1 path
-    // means our bookkeeping ran a Minus without a matching Plus - a
-    // logic bug worth surfacing instead of swallowing.
-    fn sub(name: &str, field: &mut usize) {
-        if *field == 0 {
-            tracing::warn!(
-                target: "forge_workspace::mcp::peers::facade",
-                counter = name,
-                "peer stats underflow - Minus1 without matching Plus1 (bookkeeping bug)",
-            );
-        } else {
-            *field -= 1;
-        }
-    }
-    match delta {
-        PeerStatsDelta::OutgoingPlus1 => stats.outgoing = stats.outgoing.saturating_add(1),
-        PeerStatsDelta::OutgoingMinus1 => sub("outgoing", &mut stats.outgoing),
-        PeerStatsDelta::IncomingPlus1 => stats.incoming = stats.incoming.saturating_add(1),
-        PeerStatsDelta::IncomingMinus1 => sub("incoming", &mut stats.incoming),
-        PeerStatsDelta::DeliveryFailedPlus1 => {
-            stats.delivery_failed = stats.delivery_failed.saturating_add(1);
-        }
+        Ok(())
     }
 }
 
@@ -318,8 +183,6 @@ pub struct MockWorkspaceFacade {
     pub peers: parking_lot::Mutex<Vec<PeerStatus>>,
     /// Captured calls to `deliver_peer_prompt`.
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionSlot, String, WrappedPrompt)>>,
-    /// Captured calls to `bump_inflight_stats`.
-    pub bump_calls: parking_lot::Mutex<Vec<(SessionSlot, PeerStatsDelta)>>,
     /// If set, `deliver_peer_prompt` returns this error instead of
     /// running the normal lookup path. Lets tests force-test the
     /// failure surface.
@@ -359,7 +222,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         caller: &SessionSlot,
         target_project: &str,
         wrapped: WrappedPrompt,
-    ) -> Result<TargetStatus, DeliverError> {
+    ) -> Result<(), DeliverError> {
         if let Some(err) = self.force_deliver_error.lock().clone() {
             return Err(err);
         }
@@ -367,26 +230,15 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         if !known {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         }
-        let target_status = self.peers.lock().iter().find(|p| p.name == target_project).map_or(
-            TargetStatus::QueuedForSpawn,
-            |p| match p.status {
-                PeerLiveness::Running => TargetStatus::Delivered,
-                PeerLiveness::Sleeping => TargetStatus::QueuedForSpawn,
-            },
-        );
         self.deliver_calls.lock().push((caller.clone(), target_project.to_owned(), wrapped));
-        Ok(target_status)
-    }
-
-    fn bump_inflight_stats(&self, key: &SessionSlot, delta: PeerStatsDelta) {
-        self.bump_calls.lock().push((key.clone(), delta));
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::peers::types::{CorrelationId, WrappedKind};
+    use crate::mcp::peers::types::{MessageId, WrappedKind};
     use std::path::PathBuf;
 
     fn fake_key(s: &str) -> SessionSlot {
@@ -402,16 +254,14 @@ mod tests {
             org: "TestOrg".to_owned(),
             path: PathBuf::from(format!("/tmp/{name}")),
             status: liveness,
-            in_flight_incoming: 0,
-            in_flight_outgoing: 0,
             spawned_at: None,
         }
     }
 
     fn fake_wrapped() -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: CorrelationId::new_ask(),
-            kind: WrappedKind::Question,
+            id: MessageId::mint(),
+            kind: WrappedKind::Message,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),
@@ -440,34 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn mock_deliver_running_target_returns_delivered() {
+    fn mock_deliver_known_target_records_the_call() {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Running));
         let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
-        assert_eq!(result, Ok(TargetStatus::Delivered));
+        assert_eq!(mock.deliver_peer_prompt(&caller, "beta", fake_wrapped()), Ok(()));
         assert_eq!(mock.deliver_calls.lock().len(), 1);
-    }
-
-    #[test]
-    fn mock_deliver_sleeping_target_returns_queued() {
-        let mock = MockWorkspaceFacade::new();
-        mock.peers.lock().push(fake_peer("beta", PeerLiveness::Sleeping));
-        let caller = fake_key("alpha");
-        let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped());
-        assert_eq!(result, Ok(TargetStatus::QueuedForSpawn));
-    }
-
-    #[test]
-    fn mock_bump_stats_captures_calls() {
-        let mock = MockWorkspaceFacade::new();
-        let key = fake_key("alpha");
-        mock.bump_inflight_stats(&key, PeerStatsDelta::OutgoingPlus1);
-        mock.bump_inflight_stats(&key, PeerStatsDelta::OutgoingMinus1);
-        let calls = mock.bump_calls.lock();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].1, PeerStatsDelta::OutgoingPlus1);
-        assert_eq!(calls[1].1, PeerStatsDelta::OutgoingMinus1);
     }
 
     #[test]
@@ -480,18 +308,6 @@ mod tests {
         let identity = mock.whoami(&fake_key("alpha"));
         assert!(identity.is_some());
         assert_eq!(identity.unwrap().name, "alpha");
-    }
-
-    #[test]
-    fn apply_delta_saturates() {
-        let mut stats = PeerInflightStats::default();
-        apply_delta(&mut stats, PeerStatsDelta::OutgoingMinus1);
-        assert_eq!(stats.outgoing, 0, "underflow should saturate at 0");
-        apply_delta(&mut stats, PeerStatsDelta::OutgoingPlus1);
-        apply_delta(&mut stats, PeerStatsDelta::OutgoingPlus1);
-        assert_eq!(stats.outgoing, 2);
-        apply_delta(&mut stats, PeerStatsDelta::DeliveryFailedPlus1);
-        assert_eq!(stats.delivery_failed, 1);
     }
 
     #[test]
@@ -520,7 +336,7 @@ mod lead_resolution_tests {
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
     use crate::workspace::Workspace;
-    use crate::{CorrelationId, SessionSlot, WorkerEntry, WrappedPrompt};
+    use crate::{MessageId, SessionSlot, WorkerEntry, WrappedPrompt};
     use forge_primitives::WorkerLiveness;
     use std::time::SystemTime;
 
@@ -582,8 +398,8 @@ mod lead_resolution_tests {
 
     fn wrapped() -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: CorrelationId::new_ask(),
-            kind: WrappedKind::Question,
+            id: MessageId::mint(),
+            kind: WrappedKind::Message,
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),

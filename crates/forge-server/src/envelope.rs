@@ -1,42 +1,39 @@
 //! Envelope parsing for the bracket-wrapped prose `forge_workspace`
 //! injects into user-turn text, plus the Slack mrkdwn converter.
 //!
-//! Eight header shapes: the five peer kinds the workspace produces
-//! (`Question`, `Message`, `Reply`, `DeliveryFailure`,
-//! `WorkerSpawnFailed`) and the `Gotify`, `Cron` and `Slack` external
-//! sources. Nothing here renders or holds state.
+//! Six header shapes: the three peer kinds the workspace produces
+//! (`Message`, `DeliveryFailure`, `WorkerSpawnFailed`) and the
+//! `Gotify`, `Cron` and `Slack` external sources. Nothing here renders
+//! or holds state.
+//!
+//! **Three of the parser's arms are replay-only.** The `Question` and
+//! `Reply` headers and the `Ask ... failed to deliver` header are what a
+//! transcript recorded before the peer surface collapsed to one verb
+//! holds, and resuming replays that history through this same parser -
+//! so the shapes still resolve to the kinds they always did, and those
+//! rows keep drawing as peer blocks rather than as raw bracket text.
 
 /// One inbound peer block parsed from the user-turn text.
 ///
-/// Wire envelopes carry several fields (correlation id, originating
-/// org) that the previous chrome surfaced as DIM meta chunks. The
-/// redesigned chat block hides those by default - the parser still
-/// skips past them in the prefix, but the type only retains what the
-/// renderer or chat-streak grouping reads.
+/// Wire envelopes carry fields (the send's id, the originating org) that
+/// the previous chrome surfaced as DIM meta chunks. The redesigned chat
+/// block hides those by default - the parser still retains them, and the
+/// id is what the chat-streak grouping keys a messaging group on.
 #[derive(Debug)]
 pub enum PeerInboundKind {
-    Question {
-        from: String,
-        org: String,
-        body: String,
-    },
-    Message {
-        from: String,
-        org: String,
-        body: String,
-    },
-    Reply {
-        from: String,
-        org: String,
-        body: String,
-    },
-    /// `[Ask id=... to agent 'X' (org 'Y') failed to deliver: <reason>]`
-    /// Caller-side delivery failure (spawn / connection / channel).
-    DeliveryFailure {
-        target: String,
-        org: String,
-        reason: String,
-    },
+    /// `[Message id=m-... from agent 'X' (org 'Y')]\n\n<body>`
+    ///
+    /// Every peer message is this one kind: a reply is just another
+    /// message, so there is nothing left for a second kind to say.
+    Message { id: String, from: String, org: String, body: String },
+    /// `[Message to agent 'X' (org 'Y') failed to deliver: <reason>]`
+    /// Sender-side delivery failure: a message parked for a sleeping
+    /// project whose spawn then failed.
+    ///
+    /// The older `[Ask id=... to agent 'X' ... failed to deliver: ...]`
+    /// shape parses to this same kind, so a replayed transcript still
+    /// draws its failure.
+    DeliveryFailure { target: String, org: String, reason: String },
     /// `[Worker '<label>' spawn failed id=<id>: <reason>]`
     /// Lead-side notice that a team worker's async spawn failed
     /// (subprocess crashed inside the `--worktree` machinery before
@@ -45,29 +42,19 @@ pub enum PeerInboundKind {
     /// row because it's a workspace-generated lifecycle event, not a
     /// peer comm - touching its render shape is out of scope for
     /// #189.
-    WorkerSpawnFailed {
-        label: String,
-        reason: String,
-    },
+    WorkerSpawnFailed { label: String, reason: String },
     /// `[Gotify - app 'X', priority N]\n<title>\n<message>` - an inbound
     /// external Gotify notification delivered as a user turn. Rendered
     /// with distinct chrome (the ◈ gotify glyph, `Gotify` source label) so it
     /// reads as an external event, not agent traffic. Never groups with
     /// peer envelopes (see [`PeerInboundKind::peer_sender_identity`]).
-    Gotify {
-        app: String,
-        title: String,
-        message: String,
-        priority: u8,
-    },
+    Gotify { app: String, title: String, message: String, priority: u8 },
     /// `[Cron]\n\n<prompt>` - a durable cron that fired into this session,
     /// delivered as a user turn. Rendered with the ◴ cron glyph + a `Cron`
     /// source label so it reads as a scheduled internal event, not agent
     /// traffic. Never groups with peer envelopes (see
     /// [`PeerInboundKind::peer_sender_identity`]).
-    Cron {
-        prompt: String,
-    },
+    Cron { prompt: String },
     /// `[Slack - workspace 'X', <channel>] id ... ts ...` then one
     /// `<author>: <text> [ts ...]` line per delivered message - a
     /// conversation's news, delivered as a user turn. Rendered with the
@@ -97,10 +84,7 @@ impl PeerInboundKind {
     /// string and naturally groups with adjacent lead-local envelopes.
     pub fn org(&self) -> &str {
         match self {
-            Self::Question { org, .. }
-            | Self::Message { org, .. }
-            | Self::Reply { org, .. }
-            | Self::DeliveryFailure { org, .. } => org,
+            Self::Message { org, .. } | Self::DeliveryFailure { org, .. } => org,
             Self::WorkerSpawnFailed { .. }
             | Self::Gotify { .. }
             | Self::Cron { .. }
@@ -114,9 +98,7 @@ impl PeerInboundKind {
     /// messaging group - the grouping predicates key off `Some(..)` here.
     pub fn peer_sender_identity(&self) -> Option<&str> {
         match self {
-            Self::Question { from, .. } | Self::Message { from, .. } | Self::Reply { from, .. } => {
-                Some(from)
-            }
+            Self::Message { from, .. } => Some(from),
             Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
             Self::Gotify { .. } | Self::Cron { .. } | Self::Slack { .. } => None,
@@ -156,24 +138,40 @@ pub fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     // are valid.
     let body = after_bracket.strip_prefix("\n\n").unwrap_or("").to_owned();
 
-    if let Some(rest) = header.strip_prefix("Question id=") {
-        let (_id, rest) = take_until(rest, " from agent ")?;
+    if let Some(rest) = header.strip_prefix("Message id=") {
+        let (id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::Question { from, org, body });
+        return Some(PeerInboundKind::Message { id: id.to_owned(), from, org, body });
     }
 
-    if let Some(rest) = header.strip_prefix("Message id=") {
-        let (_id, rest) = take_until(rest, " from agent ")?;
+    // replay-only: the Question/Reply headers of a transcript recorded
+    // before the peer surface collapsed to one verb. Both resolve to the
+    // one kind that replaced them.
+    if let Some(rest) = header.strip_prefix("Question id=") {
+        let (id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::Message { from, org, body });
+        return Some(PeerInboundKind::Message { id: id.to_owned(), from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Reply id=") {
-        let (_id, rest) = take_until(rest, " from agent ")?;
+        let (id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::Reply { from, org, body });
+        return Some(PeerInboundKind::Message { id: id.to_owned(), from, org, body });
     }
 
+    if let Some(rest) = header.strip_prefix("Message to agent ")
+        && header.contains("failed to deliver:")
+    {
+        let (target, org, trailing) = extract_from_agent_after_with_trailer(rest)?;
+        let reason = trailing
+            .split_once("failed to deliver:")
+            .map(|(_, after)| after.trim().to_owned())
+            .unwrap_or_default();
+        return Some(PeerInboundKind::DeliveryFailure { target, org, reason });
+    }
+
+    // replay-only: the delivery-failure header of a transcript recorded
+    // before the peer surface collapsed to one verb.
     if let Some(rest) = header.strip_prefix("Ask id=") {
         // Caller-side delivery failure - `to agent 'X' (org 'Y') failed to deliver: <reason>`
         if let Some(rest_to) = rest_after_id(rest, " to agent ")
@@ -403,25 +401,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_question_inbound() {
-        let text = "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with agents__tell in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
-        let kind = detect_inbound(text).expect("question");
-        match kind {
-            PeerInboundKind::Question { from, org, body } => {
-                assert_eq!(from, "forge");
-                assert_eq!(org, "Personal");
-                assert_eq!(body, "What's the test setup?");
-            }
-            other => panic!("expected Question, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn detect_message_inbound() {
-        let text = "[Message id=t-c45a8f12 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI rewriter cleanup just landed.";
+    fn detect_message_inbound_carries_the_send_id() {
+        let text = "[Message id=m-c45a8f12 from agent 'gateway-backend' (org 'Gateway')]\n\nFYI rewriter cleanup just landed.";
         let kind = detect_inbound(text).expect("message");
         match kind {
-            PeerInboundKind::Message { from, org, body } => {
+            PeerInboundKind::Message { id, from, org, body } => {
+                assert_eq!(id, "m-c45a8f12", "the send's id rides the envelope");
                 assert_eq!(from, "gateway-backend");
                 assert_eq!(org, "Gateway");
                 assert_eq!(body, "FYI rewriter cleanup just landed.");
@@ -430,29 +415,66 @@ mod tests {
         }
     }
 
+    /// A transcript recorded before the peer surface collapsed to one verb
+    /// holds `Question` and `Reply` headers. Resume replays that history
+    /// through this same parser, so both still resolve - to the one kind
+    /// that replaced them.
     #[test]
-    fn detect_reply_inbound() {
-        let text = "[Reply id=q-7f3a92e0 from agent 'gateway-backend' (org 'Gateway') to your earlier ask]\n\nWe use pgtemp for ephemeral postgres in CI.";
-        let kind = detect_inbound(text).expect("reply");
-        match kind {
-            PeerInboundKind::Reply { from, org, body } => {
+    fn detect_question_and_reply_replay_as_the_one_message_kind() {
+        // The header a transcript recorded before the collapse holds, down
+        // to the retired tool name inside it.
+        let question = concat!(
+            "[Question id=q-7f3a92e0 from agent 'forge' (org 'Personal') - reply with ",
+            // replay-only: agents__tell
+            "agents__tell",
+            " in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?",
+        );
+        match detect_inbound(question).expect("a recorded question still parses") {
+            PeerInboundKind::Message { id, from, org, body } => {
+                assert_eq!(id, "q-7f3a92e0");
+                assert_eq!(from, "forge");
+                assert_eq!(org, "Personal");
+                assert_eq!(body, "What's the test setup?");
+            }
+            other => panic!("expected Message, got {other:?}"),
+        }
+
+        let reply = "[Reply id=q-7f3a92e0 from agent 'gateway-backend' (org 'Gateway') to your earlier ask]\n\nWe use pgtemp for ephemeral postgres in CI.";
+        match detect_inbound(reply).expect("a recorded reply still parses") {
+            PeerInboundKind::Message { from, org, body, .. } => {
                 assert_eq!(from, "gateway-backend");
                 assert_eq!(org, "Gateway");
                 assert_eq!(body, "We use pgtemp for ephemeral postgres in CI.");
             }
-            other => panic!("expected Reply, got {other:?}"),
+            other => panic!("expected Message, got {other:?}"),
         }
     }
 
     #[test]
     fn detect_delivery_failure_inbound() {
-        let text = "[Ask id=q-d31fa8a3 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target spawn failed: all pinned accounts are rate-limited]\n\n";
+        let text = "[Message to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target spawn failed: all pinned accounts are rate-limited]";
         let kind = detect_inbound(text).expect("delivery failure");
         match kind {
             PeerInboundKind::DeliveryFailure { target, org, reason } => {
                 assert_eq!(target, "gateway-liq-bot");
                 assert_eq!(org, "Gateway");
                 assert!(reason.contains("rate-limited"), "reason carries failure detail: {reason}");
+            }
+            other => panic!("expected DeliveryFailure, got {other:?}"),
+        }
+    }
+
+    /// The failure header a transcript recorded before the collapse holds
+    /// still parses, so a replayed transcript draws it rather than the raw
+    /// bracket prose.
+    #[test]
+    fn a_recorded_ask_failure_still_parses_as_a_delivery_failure() {
+        let text = "[Ask id=q-d31fa8a3 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target spawn failed]\n\n";
+        match detect_inbound(text).expect("a recorded failure still parses") {
+            PeerInboundKind::DeliveryFailure { target, org, reason } => {
+                assert_eq!(target, "gateway-liq-bot");
+                assert_eq!(org, "Gateway");
+                assert!(reason.contains("target spawn failed"), "reason: {reason}");
             }
             other => panic!("expected DeliveryFailure, got {other:?}"),
         }
@@ -482,10 +504,14 @@ mod tests {
     #[test]
     fn inbound_envelope_id_covers_every_header_shape() {
         let cases: &[(&str, Option<&str>)] = &[
+            ("[Message id=m-1a2b from agent 'lead' (org 'forge')]\n\nbody", Some("m-1a2b")),
+            // replay-only: a transcript recorded before the collapse.
             ("[Question id=q-1a2b from agent 'lead' (org 'forge')]\n\nbody", Some("q-1a2b")),
-            ("[Message id=t-1a2b from agent 'lead' (org 'forge')]\n\nbody", Some("t-1a2b")),
-            ("[Reply id=t-9f8e from agent 'lead' (org 'forge')]\n\nbody", Some("t-9f8e")),
+            ("[Reply id=m-9f8e from agent 'lead' (org 'forge')]\n\nbody", Some("m-9f8e")),
+            // replay-only: the failure header recorded before the collapse.
             ("[Ask id=q-77 to agent 'x' (org 'forge') failed to deliver: gone]\n\n", Some("q-77")),
+            // A failure header names no send id, so it keys positionally.
+            ("[Message to agent 'x' (org 'forge') failed to deliver: gone]", None),
             ("[Worker 'runner' spawn failed id=w-5: boom]", Some("w-5")),
             // The label is caller-supplied and precedes the id, so the
             // `id=` anchor has to be the space-prefixed one or a label

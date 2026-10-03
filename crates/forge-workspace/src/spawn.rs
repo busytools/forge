@@ -10,7 +10,6 @@ use std::sync::Arc;
 use forge_agent::client::SessionLaunchSettings;
 
 use crate::mcp::gotify::types::GotifyNotification;
-use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{
     Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
@@ -334,7 +333,7 @@ pub(crate) fn handle_spawn_project(
 /// prompt as a regular `Command::Prompt`.
 pub(crate) fn handle_deliver_peer_prompt(
     workspace: &Arc<Workspace>,
-    _caller: SessionSlot,
+    caller: SessionSlot,
     target_project: String,
     wrapped: WrappedPrompt,
 ) {
@@ -357,17 +356,6 @@ pub(crate) fn handle_deliver_peer_prompt(
         });
 
     if let Some(target_key) = target_running_key {
-        // Bump the target's incoming badge only for `Question`
-        // wrappers. Badges count pending asks awaiting reply; every
-        // other kind (tells, replies, delivery-failure notices) has no
-        // matching decrement, so bumping would grow the counter
-        // without bound.
-        if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
-            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
-            facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
-            workspace.stamp_inflight_target(&wrapped.correlation_id, &target_key);
-        }
-
         // Fire the typed peer-envelope echo BEFORE the LLM-side
         // dispatch so the user-turn block renders in the right
         // order regardless of which event the TUI reducer drains
@@ -403,8 +391,13 @@ pub(crate) fn handle_deliver_peer_prompt(
     };
 
     // The lead's own first `Connected` drains the bucket, so the park
-    // must land BEFORE the spawn.
-    workspace.park_peer_prompt(&crate::SessionSlot::lead(&target.org, &target.name), wrapped);
+    // must land BEFORE the spawn. The sender rides beside the payload so a
+    // spawn that never connects can acknowledge the message back to it.
+    workspace.park_peer_prompt(
+        &crate::SessionSlot::lead(&target.org, &target.name),
+        &caller,
+        wrapped,
+    );
 
     // Dispatch SpawnProject. Move target_project
     // into the command rather than cloning (it's the last use).
@@ -1364,7 +1357,7 @@ pub(crate) fn handle_spawn_worker(
                     "spawn_worker: label already live; skipping duplicate spawn",
                 );
                 let _ = return_to.send(Err(format!(
-                    "a worker labeled '{label}' is already live (session {existing_session}); message it with agents__tell / agents__ask or close it first (one live worker per label)"
+                    "a worker labeled '{label}' is already live (session {existing_session}); message it with agents__send_message or close it first (one live worker per label)"
                 )));
             }
             LiveWorkerRefusal::AtCap { live, cap } => {
@@ -1610,12 +1603,6 @@ pub(crate) fn handle_spawn_worker(
 /// The `Removed` event is the caller's to emit via
 /// [`emit_worker_removed`]: the despawn path only learns what became
 /// of the worktree after this returns.
-///
-/// Worker-bound asks whose `target_project` composite
-/// (`<project_key>::<label>`) names the torn-down worker are expired
-/// via `Workspace::expire_inflight_for_closed_worker` so their
-/// caller's LLM receives a `DeliveryFailureNotice` instead of
-/// waiting forever for a reply.
 fn teardown_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
@@ -1642,7 +1629,6 @@ fn teardown_worker(
     // Per-row close must only affect the worker being closed, so the
     // narrower call is the one to read here.
     workspace.release_session(&entry.slot);
-    workspace.expire_inflight_for_closed_worker(project_key, label);
     // A payload parked for this label while it was still spawning has no
     // session left to drain it.
     workspace.expire_parked_for_slot(
@@ -1861,7 +1847,6 @@ pub(crate) fn handle_despawn_worker(
         workspace.remove_slack_subscriptions_for_worker(project_key, label);
         workspace.stop_slack_subsystem_if_idle();
         workspace.delete_crons_for_worker(project_key, label);
-        workspace.expire_inflight_for_closed_worker(project_key, label);
         if let Some(view) = project_view.as_ref() {
             workspace.expire_parked_for_slot(
                 &SessionSlot::worker(&view.org, &view.name, label),
@@ -2114,12 +2099,12 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// hasn't finished its Connected handshake (no `session_id` yet). Returns
 /// `Some(wrapped)` when the target IS connected (caller delivers now), or
 /// `None` when it parked (the target's Connected handler drains the
-/// bucket, doing the bump + render + dispatch). Mirrors
-/// the sleeping-peer buffering in `handle_deliver_peer_prompt` so the
-/// bump bookkeeping happens exactly once, at real delivery time.
+/// bucket, doing the render + dispatch). Mirrors the sleeping-peer
+/// buffering in `handle_deliver_peer_prompt`, sender included so an
+/// expired bucket can still acknowledge the message.
 fn buffer_prompt_until_connected(
     workspace: &Arc<Workspace>,
-    slot: &crate::SessionSlot,
+    sender: &crate::SessionSlot,
     target_key: &SessionSlot,
     wrapped: WrappedPrompt,
 ) -> Option<WrappedPrompt> {
@@ -2131,19 +2116,19 @@ fn buffer_prompt_until_connected(
     if domain.lock().session_id.is_some() {
         return Some(wrapped);
     }
-    workspace.park_peer_prompt(slot, wrapped);
+    workspace.park_peer_prompt(target_key, sender, wrapped);
     None
 }
 
 pub(crate) fn handle_deliver_worker_prompt(
     workspace: &Arc<Workspace>,
-    _caller: SessionSlot,
+    caller: SessionSlot,
     project_key: &ProjectKey,
     target_label: &str,
     wrapped: WrappedPrompt,
 ) {
     // Latest-spawned matching label wins (mirrors the addressing rule
-    // in agents__tell / agents__ask).
+    // in agents__send_message).
     let Some(entry) = workspace
         .list_live_workers(project_key)
         .into_iter()
@@ -2156,10 +2141,6 @@ pub(crate) fn handle_deliver_worker_prompt(
             label = %target_label,
             "deliver_worker_prompt: no matching live worker (target gone since dispatch)"
         );
-        // Expire the asks routed at this worker so their callers get
-        // the DeliveryFailureNotice instead of waiting the 30-min
-        // timeout for a target that no longer exists.
-        workspace.expire_inflight_for_closed_worker(project_key, target_label);
         return;
     };
     let target_key = entry.slot.clone();
@@ -2167,10 +2148,10 @@ pub(crate) fn handle_deliver_worker_prompt(
     // A worker addressed before it finishes its Connected handshake has
     // no session_id yet, so a bare Command::Prompt would be dropped by
     // execute_command_via_handle. Park it for the worker's label instead -
-    // its Connected handler drains the bucket (bump + render + dispatch)
-    // exactly like the sleeping-peer path. Skips the tag retry / stamp /
-    // dispatch below.
-    let Some(wrapped) = buffer_prompt_until_connected(workspace, &target_key, &target_key, wrapped)
+    // its Connected handler drains the bucket (render + dispatch)
+    // exactly like the sleeping-peer path. Skips the tag retry / dispatch
+    // below.
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, &caller, &target_key, wrapped)
     else {
         return;
     };
@@ -2205,14 +2186,6 @@ pub(crate) fn handle_deliver_worker_prompt(
                 "deliver_worker_prompt: project view missing; skipping tag retry"
             );
         }
-    }
-
-    // Bump target's incoming counter for Question kind only (matches
-    // peer behavior - the sidebar badge tracks awaiting-reply asks).
-    if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
-        facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
-        workspace.stamp_inflight_target(&wrapped.correlation_id, &target_key);
     }
 
     // Fire the typed peer-envelope echo BEFORE the LLM-side dispatch
@@ -2251,7 +2224,7 @@ pub(crate) fn handle_deliver_worker_prompt(
 /// authorized to make.
 pub(crate) fn handle_deliver_worker_prompt_to_lead(
     workspace: &Arc<Workspace>,
-    _caller: SessionSlot,
+    caller: SessionSlot,
     target_lead_key: &SessionSlot,
     wrapped: WrappedPrompt,
 ) {
@@ -2271,17 +2244,10 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     // Same pre-Connect guard as the sibling-worker path: if the lead
     // hasn't stamped its session_id yet, buffer for its Connected drain
     // rather than dispatching a Command::Prompt that would be dropped.
-    let Some(wrapped) =
-        buffer_prompt_until_connected(workspace, target_lead_key, target_lead_key, wrapped)
+    let Some(wrapped) = buffer_prompt_until_connected(workspace, &caller, target_lead_key, wrapped)
     else {
         return;
     };
-
-    if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
-        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
-        facade.bump_inflight_stats(target_lead_key, PeerStatsDelta::IncomingPlus1);
-        workspace.stamp_inflight_target(&wrapped.correlation_id, target_lead_key);
-    }
 
     let text = wrapped.to_prose();
     push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped);
@@ -2600,7 +2566,7 @@ provider = "anthropic"
 
     fn fixture_wrapped() -> WrappedPrompt {
         WrappedPrompt {
-            correlation_id: crate::mcp::peers::types::CorrelationId::new_tell(),
+            id: crate::mcp::peers::types::MessageId::mint(),
             kind: crate::mcp::peers::types::WrappedKind::Message,
             sender_name: "forge".to_owned(),
             sender_org: "Default".to_owned(),
@@ -2683,82 +2649,16 @@ provider = "anthropic"
 
         // The sleeping branch parks the envelope for the project's lead
         // under `(org, project, None)`. EXACTLY ONE bucket holds our
-        // wrapped prompt - assert on the typed correlation id as well, so
-        // a mis-keyed parking cannot pass by parking twice.
-        let parked = workspace
-            .parked_by_slot
-            .lock()
+        // wrapped prompt - assert on the id as well, so a mis-keyed
+        // parking cannot pass by parking twice.
+        let parked = workspace.parked_by_slot.lock();
+        let bucket = parked
             .get(&crate::SessionSlot::lead("Default", "gateway-backend"))
-            .map(|parked| parked.peer.clone())
-            .unwrap_or_default();
-        assert_eq!(parked.len(), 1, "the project's lead bucket holds the wrapped prompt");
+            .expect("the project's lead bucket");
+        assert_eq!(bucket.peer.len(), 1, "the project's lead bucket holds the wrapped prompt");
         assert_eq!(
-            parked[0].correlation_id, w.correlation_id,
+            bucket.peer[0].wrapped.id, w.id,
             "and it is the payload that was handed to the delivery",
-        );
-    }
-
-    /// Closes #308 Fix B: tells (Message kind) are intentionally NOT
-    /// bumped through the peer-stats sidebar badge. Badges represent
-    /// pending asks awaiting reply, not generic activity. The
-    /// `if matches!(wrapped.kind, WrappedKind::Question)` gate at
-    /// spawn.rs:209 / :757 / :818 must stay in place; this test
-    /// regression-locks the end-state invariant by driving the
-    /// tell-dispatch path and asserting `workspace.peer_stats` stays
-    /// empty.
-    #[tokio::test]
-    async fn tell_dispatch_does_not_bump_peer_stats() {
-        let dir = tempdir().expect("tempdir");
-        fs::write(
-            forge_toml_path(dir.path()),
-            r#"
-[[orgs]]
-name = "Default"
-accounts = ["Stargate"]
-
-[[orgs.projects]]
-name = "forge"
-path = "~/Projects/forge"
-auto_start = true
-
-[[orgs.projects]]
-name = "gateway-backend"
-path = "~/Projects/gateway-backend"
-auto_start = false
-
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        )
-        .expect("write forge.toml");
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
-
-        let caller = SessionSlot::from_str_for_test("caller-tell");
-        let w = fixture_wrapped(); // WrappedKind::Message (tell)
-
-        handle_deliver_peer_prompt(&workspace, caller, "gateway-backend".to_owned(), w);
-
-        // Drain the update channel - the spawn path may emit other
-        // events (ProjectSpawned, ConfigDirsChanged, etc.) but it MUST
-        // NOT emit `PeerInflightStatsChanged` for a tell.
-        while let Ok(update) = rx.try_recv() {
-            assert!(
-                !matches!(update, SessionUpdate::PeerInflightStatsChanged { .. }),
-                "tells (Message kind) must NOT bump peer_stats; got: {update:?}"
-            );
-        }
-        // End-state invariant: the workspace's per-session peer_stats
-        // map carries no entry for any session as a side-effect of a
-        // tell.
-        assert!(
-            workspace.peer_stats.lock().is_empty(),
-            "tells must NOT add any per-session peer_stats entry; \
-             got: {:?}",
-            workspace.peer_stats.lock(),
         );
     }
 
@@ -5460,7 +5360,7 @@ provider = "anthropic"
 
     /// `handle_deliver_worker_prompt` is a no-op when the target
     /// label has no live worker. Mirrors the close_worker_unknown
-    /// branch - the upstream Tool gate (agents__tell facade)
+    /// branch - the upstream Tool gate (agents__send_message facade)
     /// rejects synchronously; the spawn handler is defence in depth.
     #[tokio::test]
     async fn deliver_worker_prompt_unknown_label_is_noop() {
@@ -6065,44 +5965,6 @@ provider = "anthropic"
         assert!(
             value.contains("EnterWorktree") && value.contains("ExitWorktree"),
             "opting into interactive must not lift the worktree-hop denial, got {value:?}",
-        );
-    }
-
-    /// Regression for C4: closing a worker must expire every
-    /// inflight ask whose `target_project` composite names that
-    /// worker. Pre-fix `target_project` carried the bare label,
-    /// which never matched the project-name path in
-    /// `expire_target_inflight` and the asks leaked forever. The
-    /// new `expire_inflight_for_closed_worker` keyed on
-    /// `<project_key>::<label>` covers worker-bound traffic.
-    #[tokio::test]
-    async fn close_worker_expires_inflight_asks_addressed_to_it() {
-        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
-        let (workspace, _rx) = Workspace::testing_stub();
-        let project = ProjectKey::new("forge");
-        workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
-
-        // Stamp an inflight ask using the same composite the workers
-        // Ask Tool would produce.
-        let cid = CorrelationId::new_ask();
-        let composite =
-            crate::mcp::workers::worker_target_project_key(project.as_str(), "reviewer");
-        workspace.inflight_asks.lock().insert(
-            cid.clone(),
-            InflightAsk {
-                correlation_id: cid.clone(),
-                caller: SessionSlot::from_str_for_test("lead-uuid"),
-                target_project: composite,
-                target_session: None,
-            },
-        );
-        assert_eq!(workspace.inflight_asks.lock().len(), 1);
-
-        handle_close_worker(&workspace, &project, "reviewer");
-
-        assert!(
-            workspace.inflight_asks.lock().is_empty(),
-            "ask must be expired when the worker it targets closes"
         );
     }
 

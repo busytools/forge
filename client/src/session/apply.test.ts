@@ -698,7 +698,6 @@ const EVERY_VARIANT = [
   'plugins_update_run_finished',
   'plugins_rollback_succeeded',
   'plugins_rollback_failed',
-  'peer_inflight_stats_changed',
   'worker_status_changed',
   'peer_envelope_appended',
   'gotify_notification_appended',

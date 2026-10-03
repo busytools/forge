@@ -94,8 +94,6 @@ mod tests {
             org: org.to_owned(),
             path: PathBuf::from(format!("/tmp/{name}")),
             status: PeerLiveness::Sleeping,
-            in_flight_incoming: 0,
-            in_flight_outgoing: 0,
             spawned_at: None,
         }
     }

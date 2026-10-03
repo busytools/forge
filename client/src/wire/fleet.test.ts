@@ -299,7 +299,6 @@ describe('what one update asks of the fleet', () => {
       { question_request: { key: LEAD } },
       { pending_interaction_resolved: { key: LEAD } },
       { worker_status_changed: {} },
-      { peer_inflight_stats_changed: { key: LEAD } },
     ];
     for (const update of redraws) {
       expect(fleetNews(update as SessionUpdate), JSON.stringify(update)).toEqual({

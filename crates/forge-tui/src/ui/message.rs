@@ -1239,7 +1239,7 @@ fn append_assistant_tool_block(
         return;
     }
     // Agent outbound (#114) - replace the default tool_use card for
-    // `mcp__forge__agents__ask` / `agents__tell` with a styled agent
+    // `mcp__forge__agents__send_message` with a styled agent
     // block in the same tool-card shape (status icon + kind label +
     // tree body).
     // Collapse state follows the standard tool-call rule: per-tc
@@ -1271,7 +1271,7 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        // Outbound agent-tool blocks (agents__ask / agents__tell) follow
+        // Outbound agent-tool blocks (agents__send_message) follow
         // the global collapse directive via the unified
         // `resolve_collapsed_bool`. Per-block click override wins;
         // absent falls through to `tools_collapsed`. The invariant:
@@ -3522,7 +3522,7 @@ mod tests {
     fn peer_run_across_user_and_assistant() -> Vec<ChatMessage> {
         let mut outbound = make_tool_call_info(
             "toolu_tell_steward",
-            "mcp__forge__agents__tell",
+            "mcp__forge__agents__send_message",
             crate::agent::model::ToolCallStatus::Completed,
             "",
         );
@@ -3669,7 +3669,7 @@ mod tests {
 
         let outbound = render_one(&mut messages, 1);
         assert!(
-            outbound.iter().any(|l| l.contains("Tell steward")),
+            outbound.iter().any(|l| l.contains("Message steward")),
             "assistant turn renders its standalone peer card; got {outbound:?}",
         );
 
@@ -3692,7 +3692,7 @@ mod tests {
         let outbound = |id: &str, target: &str| {
             let mut tc = make_tool_call_info(
                 id,
-                "mcp__forge__agents__tell",
+                "mcp__forge__agents__send_message",
                 crate::agent::model::ToolCallStatus::Completed,
                 "",
             );
@@ -3737,7 +3737,7 @@ mod tests {
         let outbound = |id: &str, target: &str| {
             let mut tc = make_tool_call_info(
                 id,
-                "mcp__forge__agents__tell",
+                "mcp__forge__agents__send_message",
                 crate::agent::model::ToolCallStatus::Completed,
                 "",
             );
@@ -5010,9 +5010,11 @@ mod tests {
     /// `contains` probes, so only the full shape holds the decision.
     #[test]
     fn messaging_group_l2_renders_a_tree_keyed_on_envelope_kind() {
-        let envelope = |kind: &str, from: &str, body: &str| {
+        // One inbound kind now, so the label the fixture passes is its own
+        // name for the peer: every header is the same shape.
+        let envelope = |_kind: &str, from: &str, body: &str| {
             MessageBlock::Text(TextBlock::from_complete(&format!(
-                "[{kind} id=t-{from} from agent '{from}' (org 'forge')]\n\n{body}"
+                "[Message id=m-{from} from agent '{from}' (org 'forge')]\n\n{body}"
             )))
         };
         let mut msg = ChatMessage::new_peer_envelope(
