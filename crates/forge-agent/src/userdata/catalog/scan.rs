@@ -352,16 +352,6 @@ fn project_dir_for(config_dir: &Path, project_path: &str) -> PathBuf {
 /// at 16 keeps fd pressure low while still saturating an SSD.
 const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 
-/// List sessions. When `directory` is `Some`, scans that project dir;
-/// when `None`, scans every project directory under `config_dir`'s
-/// `projects/` tree. Per-file lite reads run on the tokio blocking
-/// pool with bounded concurrency (capped at 16 concurrent reads);
-/// results are sorted by `last_modified` descending and pagination
-/// applies at the end.
-///
-/// # Panics
-///
-/// Never - filesystem errors fall through and produce an empty Vec.
 /// True when `info` represents a worker session: one whose transcript
 /// carries a `forge:worker:<label>` tag.
 pub fn should_exclude_worker_tag(info: &SDKSessionInfo) -> bool {
@@ -383,6 +373,19 @@ pub enum Workers {
     Only(String),
 }
 
+/// List sessions. When `directory` is `Some`, scans that project dir;
+/// when `None`, scans every project directory under `config_dir`'s
+/// `projects/` tree. Per-file lite reads run on the tokio blocking
+/// pool with bounded concurrency (capped at 16 concurrent reads);
+/// results are sorted by `last_modified` descending and pagination
+/// applies at the end. `workers` decides which worker-tagged rows may
+/// appear, and it lands BEFORE the cap: a listing is never shortened by
+/// rows it would not have carried.
+///
+/// # Panics
+///
+/// Never - filesystem errors fall through and produce an empty Vec.
+///
 /// `tag_cache` carries the previous run's tag scans so an unchanged
 /// transcript is not re-read end to end. `None` reads every byte of
 /// every file, which is what a caller with no store must do.
@@ -1528,41 +1531,63 @@ mod tests {
         assert!(!should_exclude_worker_tag(&untagged));
     }
 
+    /// A one-row transcript, tagged when `tag` is given.
+    fn transcript(tag: Option<&str>) -> String {
+        use std::fmt::Write as _;
+        let mut body = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\
+                        \"message\":{\"content\":\"hi\"}}\n"
+            .to_owned();
+        if let Some(tag) = tag {
+            let _ = writeln!(body, "{{\"type\":\"tag\",\"tag\":\"{tag}\"}}");
+        }
+        body
+    }
+
+    /// The listing's ids, in the order the scan answered them.
+    fn session_ids(entries: &[SDKSessionInfo]) -> Vec<String> {
+        entries.iter().map(|info| info.session_id.clone()).collect()
+    }
+
+    /// The scan's directory for `cwd`, which the listing reads.
+    fn dir_for(config: &Path, cwd: &str) -> PathBuf {
+        projects_dir_for(config).join(project_key_for_directory(Some(cwd)))
+    }
+
+    /// An explicit mtime, so an ordering assertion does not rest on files
+    /// written inside the same millisecond.
+    fn set_age(path: &Path, seconds: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds.max(1));
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for its mtime")
+            .set_modified(when)
+            .expect("set its mtime");
+    }
+
     /// A listing is the seat's own sessions. A worker's label is what it
     /// can resume, and the directory cannot answer that alone: a non-git
     /// worker shares the project root with its lead, so the two seats'
     /// transcripts sit in one directory. Catches a filter that hides
-    /// every worker tag whatever the seat, and one that keeps another
-    /// label's sessions.
+    /// every worker tag whatever the seat, one that keeps another label's
+    /// sessions, and one that matches a label by prefix - `alpha` must not
+    /// offer `alpha-2`'s sessions, which a resume would adopt as its own.
     #[tokio::test]
     async fn a_listing_keeps_the_seats_own_sessions_and_no_others() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().join("project");
         fs::create_dir_all(&cwd).unwrap();
         let cwd = cwd.to_string_lossy().into_owned();
-        let dir = projects_dir_for(tmp.path()).join(project_key_for_directory(Some(&cwd)));
+        let dir = dir_for(tmp.path(), &cwd);
         fs::create_dir_all(&dir).unwrap();
-        let body = |tag: Option<&str>| {
-            use std::fmt::Write as _;
-            let mut body = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\
-                            \"message\":{\"content\":\"hi\"}}\n"
-                .to_owned();
-            if let Some(tag) = tag {
-                let _ = writeln!(body, "{{\"type\":\"tag\",\"tag\":\"{tag}\"}}");
-            }
-            body
-        };
-        write_session_jsonl(&dir, "lead-own", &body(None));
-        write_session_jsonl(&dir, "alpha-own", &body(Some("forge:worker:alpha")));
-        write_session_jsonl(&dir, "beta-own", &body(Some("forge:worker:beta")));
-
-        let ids = |entries: &[SDKSessionInfo]| -> Vec<String> {
-            entries.iter().map(|info| info.session_id.clone()).collect()
-        };
+        write_session_jsonl(&dir, "lead-own", &transcript(None));
+        write_session_jsonl(&dir, "alpha-own", &transcript(Some("forge:worker:alpha")));
+        write_session_jsonl(&dir, "alpha-2-own", &transcript(Some("forge:worker:alpha-2")));
+        write_session_jsonl(&dir, "beta-own", &transcript(Some("forge:worker:beta")));
 
         let lead = list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Hidden, None).await;
         assert_eq!(
-            ids(&lead),
+            session_ids(&lead),
             vec!["lead-own"],
             "a lead's listing is the project's own sessions, never its workers'"
         );
@@ -1571,9 +1596,37 @@ mod tests {
             list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Only("alpha".to_owned()), None)
                 .await;
         assert_eq!(
-            ids(&worker),
+            session_ids(&worker),
             vec!["alpha-own"],
-            "a worker's listing is the sessions its own label ran"
+            "a worker's listing is the sessions its own label ran, not its prefix kin's"
+        );
+    }
+
+    /// The worker filter lands BEFORE the cap, so a listing is never
+    /// shortened by rows it would not have carried. Catches the cap-first
+    /// order: with the newest transcript a worker's, a cap of one spends
+    /// its single slot on that row and answers nothing.
+    #[tokio::test]
+    async fn the_cap_is_applied_to_the_rows_the_listing_carries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let dir = dir_for(tmp.path(), &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let held = write_session_jsonl(&dir, "lead-own", &transcript(None));
+        // The worker's row is the newest, so a cap spent before the filter
+        // lands on it and the listing comes back empty.
+        let newest =
+            write_session_jsonl(&dir, "alpha-own", &transcript(Some("forge:worker:alpha")));
+        set_age(&held, 600);
+        set_age(&newest, 60);
+
+        let capped = list_sessions(tmp.path(), Some(&cwd), Some(1), 0, Workers::Hidden, None).await;
+        assert_eq!(
+            session_ids(&capped),
+            vec!["lead-own"],
+            "the cap must be spent on the rows the listing carries"
         );
     }
 

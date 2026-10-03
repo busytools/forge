@@ -2016,9 +2016,7 @@ impl Workspace {
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
-                // This seat's own label, so its resume listing can keep the
-                // sessions it ran; a lead has none.
-                (!session_slot.is_lead()).then(|| session_slot.label().to_owned()),
+                self.worker_listing_for(&session_slot),
             )
         };
         // A test that installed a stand-in reads the settings this spawn
@@ -5739,6 +5737,23 @@ impl Workspace {
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+
+    /// Where a worker seat lists its own sessions from, or `None` for a
+    /// lead.
+    ///
+    /// The directory is [`Self::cwd_for_session`]'s: a worker's worktree,
+    /// composed from the live registry. The launching cwd is the wrong
+    /// answer for a fresh git worker - it launches in the project root
+    /// with `--worktree <label>`, so its transcripts land in the
+    /// worktree's project dir and a listing read from the root finds none
+    /// of them (#245's layer, one read over).
+    fn worker_listing_for(&self, slot: &SessionSlot) -> Option<forge_agent::WorkerListing> {
+        if slot.is_lead() {
+            return None;
+        }
+        let dir = self.cwd_for_session(slot)?;
+        Some(forge_agent::WorkerListing { label: slot.label().to_owned(), dir: dir.into() })
     }
 
     /// The cwd to pass `claude --resume` for the session at
@@ -14730,6 +14745,41 @@ mod git_scan_cwd_tests {
     // process cwd and derives the JSONL location against the wrong
     // git root (the bug documented in #245).
     // ---------------------------------------------------------------
+
+    /// A worker's listing is read from its worktree, and a lead has none of
+    /// its own. A fresh git worker launches in the project root while its
+    /// transcripts land in the worktree's project dir, so the launching cwd
+    /// is #245's trap one read over. Catches a listing composed from that
+    /// cwd (the worker's own sessions missing from its own list) and one
+    /// answered for a lead.
+    #[test]
+    fn worker_listing_is_the_workers_worktree_and_a_lead_has_none() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let root = "/tmp/test-listing";
+        ws.seed_test_project("listing-proj", root);
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(root)),
+        );
+        // The slot's label is the worker's label, which is what its tag
+        // carries: the two are one string in production.
+        let worker = SessionSlot::worker("TestOrg", "listing-proj", "reviewer");
+        ws.insert_live_worker(&project_key, worker_entry("reviewer", &worker, true));
+
+        let listing = ws.worker_listing_for(&worker).expect("a worker has a listing of its own");
+        assert_eq!(
+            listing.label, "reviewer",
+            "the listing carries the label the worker's transcripts do",
+        );
+        assert_eq!(
+            listing.dir,
+            std::path::PathBuf::from(root).join(".claude/worktrees/reviewer"),
+            "the listing must be read from the worker's worktree, not the cwd it launches in",
+        );
+        assert!(
+            ws.worker_listing_for(&SessionSlot::lead("TestOrg", "listing-proj")).is_none(),
+            "a lead lists from the cwd it launches in, so it has no listing to carry",
+        );
+    }
 
     #[test]
     fn resume_cwd_for_slot_returns_worktree_for_git_worker_with_no_catalog_cwd() {

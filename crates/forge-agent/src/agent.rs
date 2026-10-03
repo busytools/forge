@@ -284,6 +284,18 @@ pub enum AgentError {
 /// Agent factory - wraps a private `ForgeSdkBridge` behind a channel API.
 pub struct Agent;
 
+/// Where a worker seat's own sessions are listed from.
+///
+/// The label its transcripts carry, and the directory holding them - its
+/// worktree. A fresh git worker does NOT launch there: it launches in the
+/// project root with `--worktree <label>`, so a listing read from the
+/// launching cwd finds none of the worker's own sessions.
+#[derive(Debug, Clone)]
+pub struct WorkerListing {
+    pub label: String,
+    pub dir: PathBuf,
+}
+
 impl Agent {
     /// Construct a test stub: `AgentHandle` backed by a fresh
     /// ForgeSdkBridge that's never actually driven (no `new_session`
@@ -328,9 +340,9 @@ impl Agent {
     /// carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`
     /// `env` - stamped onto the spawned subprocess
-    /// alongside `CLAUDE_CONFIG_DIR`. `worker_label` is the seat's own
-    /// worker label, `None` for a lead, and narrows the seat's resume
-    /// listing to the sessions that seat ran. Returns a
+    /// alongside `CLAUDE_CONFIG_DIR`. `worker_listing` is the seat's own
+    /// worker directory and label, `None` for a lead, and it is where the
+    /// seat's resume listing is read from. Returns a
     /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
     pub fn spawn(
@@ -338,10 +350,10 @@ impl Agent {
         display_name: Option<String>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
-        worker_label: Option<String>,
+        worker_listing: Option<WorkerListing>,
     ) -> AgentHandle {
         let bridge =
-            ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env, worker_label);
+            ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env, worker_listing);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

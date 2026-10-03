@@ -275,7 +275,7 @@ pub(crate) async fn spawn_session(
 
     let config_dir = bridge.config_dir();
     let display_name = bridge.display_name();
-    let worker_label = bridge.worker_label();
+    let worker_listing = bridge.worker_listing();
     let extra_mcp_servers = bridge.extra_mcp_servers();
     let sdk_server_names: Vec<String> =
         extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
@@ -345,7 +345,7 @@ pub(crate) async fn spawn_session(
         id.resumed(),
         &config_dir,
         display_name.as_deref(),
-        worker_label.as_deref(),
+        worker_listing.as_ref(),
     )
     .await;
 
@@ -408,7 +408,7 @@ async fn emit_connected(
     resume_id: Option<&str>,
     config_dir: &Path,
     display_name: Option<&str>,
-    worker_label: Option<&str>,
+    worker_listing: Option<&crate::agent::WorkerListing>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -490,7 +490,7 @@ async fn emit_connected(
 
     if event_tx
         .send(AgentEvent::SessionsListed {
-            sessions: list_recent_sessions(config_dir, cwd, worker_label).await,
+            sessions: list_recent_sessions(config_dir, cwd, worker_listing).await,
         })
         .is_err()
     {
@@ -553,28 +553,31 @@ pub(crate) fn load_history_messages(
     forge_primitives::ConversationHistory { messages: synthesized, compaction_count }
 }
 
-/// The sessions a seat can move onto: its own cwd's transcripts, narrowed
-/// to what the seat itself ran.
+/// The sessions a seat can move onto: its own directory's transcripts,
+/// narrowed to what the seat itself ran.
 ///
-/// A lead's seat is the project's own sessions. A worker's seat is the
-/// sessions tagged for its label - cwd alone cannot separate the two,
-/// because a non-git worker shares the project root with its lead.
+/// A lead's seat is the project's own sessions, read from the cwd it
+/// launches in. A worker's seat is the sessions tagged for its label, read
+/// from its own directory - not from its cwd, which a fresh git worker
+/// spends in the project root, and not by cwd alone, which a non-git
+/// worker shares with its lead.
 async fn list_recent_sessions(
     config_dir: &Path,
     cwd: &str,
-    worker_label: Option<&str>,
+    worker_listing: Option<&crate::agent::WorkerListing>,
 ) -> Vec<forge_primitives::SessionListEntry> {
     use crate::userdata::catalog::scan::{Workers, list_sessions};
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
-    let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    let workers = match worker_label {
-        Some(label) => Workers::Only(label.to_owned()),
-        None => Workers::Hidden,
+    let (dir, workers) = match worker_listing {
+        Some(worker) => {
+            (Some(worker.dir.to_string_lossy().into_owned()), Workers::Only(worker.label.clone()))
+        }
+        None => (if cwd.is_empty() { None } else { Some(cwd.to_owned()) }, Workers::Hidden),
     };
     // One project's recent sessions, off the boot path, and this crate
     // holds no store to cache into.
-    list_sessions(config_dir, dir, Some(MAX_RECENT), 0, workers, None)
+    list_sessions(config_dir, dir.as_deref(), Some(MAX_RECENT), 0, workers, None)
         .await
         .into_iter()
         .map(|info| SessionListEntry {
@@ -3568,9 +3571,34 @@ mod tests {
 
 #[cfg(test)]
 mod tests_resume_listing {
-    use super::list_recent_sessions;
+    use super::{list_recent_sessions, set_test_sdk_binary};
+    use crate::agent::WorkerListing;
+    use crate::client::{AgentEvent, SessionLaunchSettings};
+    use crate::forge_sdk_bridge::ForgeSdkBridge;
     use forge_primitives::SessionListEntry;
+    use std::collections::HashMap;
     use std::fs;
+    use std::path::Path;
+    use std::time::Duration;
+
+    /// A one-row transcript, tagged when `tag` is given.
+    fn write_transcript(config: &Path, dir: &str, id: &str, tag: Option<&str>) {
+        use std::fmt::Write as _;
+        let listing = forge_sdk::projects_dir_for(config)
+            .join(crate::userdata::catalog::scan::project_key_for_directory(Some(dir)));
+        fs::create_dir_all(&listing).expect("mkdir");
+        let mut body = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\
+                        \"message\":{\"content\":\"hi\"}}\n"
+            .to_owned();
+        if let Some(tag) = tag {
+            let _ = writeln!(body, "{{\"type\":\"tag\",\"tag\":\"{tag}\"}}");
+        }
+        fs::write(listing.join(format!("{id}.jsonl")), body).expect("write");
+    }
+
+    fn ids(entries: Vec<SessionListEntry>) -> Vec<String> {
+        entries.into_iter().map(|entry| entry.session_id).collect()
+    }
 
     /// The seat's own sessions are what it can resume, and the seat alone
     /// knows which those are: a non-git worker shares the project root
@@ -3583,25 +3611,8 @@ mod tests_resume_listing {
         let cwd = config.path().join("project");
         fs::create_dir_all(&cwd).expect("mkdir");
         let cwd = cwd.to_string_lossy().into_owned();
-        let dir = forge_sdk::projects_dir_for(config.path())
-            .join(crate::userdata::catalog::scan::project_key_for_directory(Some(&cwd)));
-        fs::create_dir_all(&dir).expect("mkdir");
-        let body = |tag: Option<&str>| {
-            use std::fmt::Write as _;
-            let mut body = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\
-                            \"message\":{\"content\":\"hi\"}}\n"
-                .to_owned();
-            if let Some(tag) = tag {
-                let _ = writeln!(body, "{{\"type\":\"tag\",\"tag\":\"{tag}\"}}");
-            }
-            body
-        };
-        fs::write(dir.join("lead-own.jsonl"), body(None)).expect("write");
-        fs::write(dir.join("alpha-own.jsonl"), body(Some("forge:worker:alpha"))).expect("write");
-
-        let ids = |entries: Vec<SessionListEntry>| -> Vec<String> {
-            entries.into_iter().map(|entry| entry.session_id).collect()
-        };
+        write_transcript(config.path(), &cwd, "lead-own", None);
+        write_transcript(config.path(), &cwd, "alpha-own", Some("forge:worker:alpha"));
 
         let lead = list_recent_sessions(config.path(), &cwd, None).await;
         assert_eq!(
@@ -3610,8 +3621,63 @@ mod tests_resume_listing {
             "a lead lists the project's own sessions, never a worker's"
         );
 
-        let worker = list_recent_sessions(config.path(), &cwd, Some("alpha")).await;
+        let worker = list_recent_sessions(
+            config.path(),
+            &cwd,
+            Some(&WorkerListing { label: "alpha".to_owned(), dir: cwd.clone().into() }),
+        )
+        .await;
         assert_eq!(ids(worker), vec!["alpha-own"], "a worker lists the sessions its own label ran");
+    }
+
+    /// A worker's listing is read from the directory the bridge was handed,
+    /// not from the cwd the session launches in: a fresh git worker
+    /// launches in the project root while its transcripts live in its
+    /// worktree. Catches a session that ignores the bridge's listing and
+    /// reads the launching cwd (whose rows are the lead's, or none of the
+    /// worker's at all).
+    #[tokio::test]
+    async fn a_workers_listing_comes_from_the_bridge_directory_not_the_launch_cwd() {
+        set_test_sdk_binary(Some(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+                .to_owned(),
+        ));
+        let config = tempfile::tempdir().expect("tempdir");
+        let launch = config.path().join("root");
+        let worktree = launch.join(".claude/worktrees/alpha");
+        fs::create_dir_all(&worktree).expect("mkdir");
+        let launch = launch.to_string_lossy().into_owned();
+        let worktree = worktree.to_string_lossy().into_owned();
+        write_transcript(config.path(), &launch, "root-own", None);
+        write_transcript(config.path(), &worktree, "alpha-own", Some("forge:worker:alpha"));
+
+        let bridge = ForgeSdkBridge::new(
+            config.path().to_owned(),
+            None,
+            Vec::new(),
+            HashMap::new(),
+            Some(WorkerListing { label: "alpha".to_owned(), dir: worktree.into() }),
+        );
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+        bridge.new_session(None, launch, SessionLaunchSettings::default()).expect("dispatch");
+
+        let listed = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = events.recv().await {
+                if let AgentEvent::SessionsListed { sessions } = event {
+                    return Some(sessions);
+                }
+            }
+            None
+        })
+        .await
+        .expect("the listing arrives promptly")
+        .expect("a listing was emitted");
+
+        assert_eq!(
+            ids(listed),
+            vec!["alpha-own"],
+            "the listing must be read from the worker's own directory"
+        );
     }
 }
 
