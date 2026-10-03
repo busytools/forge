@@ -218,6 +218,7 @@ describe('what a call body draws', () => {
     // where the wrapped refusals of the forge tools arrive.
     const failed = leafOf(
       't8',
+      // replay-only: agents__tell
       'mcp__forge__agents__tell',
       { label: 'companies', message: 'picking it up' },
       {
