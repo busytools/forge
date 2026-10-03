@@ -80,6 +80,8 @@
   let list: VListHandle | null = $state(null);
   /** Where the column last left the reader, which its own pin's echo cannot disarm. */
   let placed: number | null = null;
+  /** The conversation `placed` belongs to, so a re-run of the same seat keeps it. */
+  let placedFor: string | null = null;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -285,6 +287,8 @@
     const which = seat;
     const open = connection;
     let entry = untrack(() => live.get(which));
+    /** Whether this run carries a conversation the column did not already hold. */
+    let fresh = false;
     // A seat reopened on another connection is a different conversation, so the
     // one held goes with the socket that carried it.
     if (entry !== undefined && entry.connection !== open) {
@@ -311,10 +315,19 @@
         },
       };
       live.set(which, entry);
+      fresh = true;
     }
     working = entry.chat;
-    // The placement belonged to the conversation that is going.
-    placed = null;
+    // The placement belonged to the conversation that is going: a new seat, or
+    // the same seat on another connection.
+    //
+    // **A re-run that changes neither is not a conversation change**, and the
+    // placement is a fact about the reader's element rather than about the
+    // read - so clearing it here is what let the landing's own pin read as an
+    // un-pinned column and switch the follow off mid-open (measured on the
+    // switch into the giant seat: the reader left 175,859px above the foot).
+    if (fresh || which !== placedFor) placed = null;
+    placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;

@@ -96,10 +96,10 @@ function stub() {
       send({ kind: 'page', conversation: seat, turns, cursor: null });
     },
     /** One frame arriving on the seat, the way a running turn's do. */
-    frame(): void {
+    frame(text = 'a line arriving'): void {
       send({
         kind: 'update',
-        update: { chat_appended: { key: LEAD, msg: said('a line arriving') } },
+        update: { chat_appended: { key: LEAD, msg: said(text) } },
       });
     },
     /** A prompt the reader sends, as the CLI echoes it back on the seat. */
@@ -346,6 +346,53 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the pin left the reader at the foot it could see').toEqual([
+      { asked: ASKED + 400, landed: FOOT + 400 },
+      { asked: ASKED + 400, landed: FOOT + 400 },
+    ]);
+  });
+
+  it('keeps following when a read lands between the pin and its own echo', async () => {
+    // **Measured on the switch into the giant seat (2026-10-03): the follow
+    // turned itself off mid-open and left the reader 175,859px above the
+    // foot.** The column's own effect was re-running while the seat was
+    // unchanged - the live page ran it again with the seat, the slot and the
+    // connection all identical - and each re-run cleared the placement the
+    // landing's pin had just recorded. The pin's echo then read as a reader
+    // who had moved, and the follow switched itself off mid-landing.
+    //
+    // This drives one shape of that re-run: the same three parts, handed
+    // over as a fresh object.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+    clear();
+
+    // The same seat, handed over again.
+    seat.set({ ...LEAD });
+    flushSync();
+    await settle();
+
+    // The pin's own echo, with the content that arrived before it dispatched:
+    // the pin landed on the total as the list had it, and the reader is above
+    // the foot that newer total has - having moved nobody.
+    setElement(TOTAL + 400, VIEWPORT);
+    list()?.scrolledTo(FOOT, TOTAL + 400, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the landing is the column moving the reader, not the reader moving').toEqual([
       { asked: ASKED + 400, landed: FOOT + 400 },
       { asked: ASKED + 400, landed: FOOT + 400 },
     ]);
