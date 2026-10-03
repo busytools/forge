@@ -612,7 +612,8 @@
      row per frame, with what it printed behind the row's own open - a
      session-start hook prints the boilerplate it injects into the session, so a
      run drawn whole beneath its turn would bury it. */
-  details.hookrow > summary .ev { color: var(--muted); }
+  details.hookrow > summary .ev { color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   details.inboundrow > summary .ev { color: var(--muted); }
   details.inboundrow > summary .ev.warn { color: var(--warn); }
 
@@ -1700,7 +1701,7 @@ docs: Render the message body into rows.</div>
 
       <div class="mine">
         <div class="prose">
-          <p>And a hook's own run, closed on the hook and the first line of what it printed. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
+          <p>And a hook's own run, closed on the hook and its own words - the markdown it injects drawn with its block marks off and its inline marks rendered, a JSON envelope read through to the context it carries - clipped to the one line the row has, with the whole output behind the open. A failed one's mark rides the closed row the way the failed chip's does, and a name that carries no event draws its event beside it.</p>
         </div>
       </div>
 

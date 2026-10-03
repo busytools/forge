@@ -984,8 +984,11 @@ details.hooks > summary .st.err { color: var(--bad); }
    frames the CLI sends while one hook runs fold to a row per run rather than a
    row per frame, with what it printed behind the row's own open - a
    session-start hook prints the boilerplate it injects into the session, so a
-   run drawn whole beneath its turn would bury it. */
-details.hookrow > summary .ev { color: var(--muted); }
+   run drawn whole beneath its turn would bury it. The tail is the hook's words
+   joined, so it is clamped to its one line the way a row's name is, the whole
+   output staying behind the open. */
+details.hookrow > summary .ev { color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated. */
 details.inboundrow > summary .ev { color: var(--muted); }

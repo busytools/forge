@@ -55,7 +55,7 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the hook run row', () => {
-  it("names the hook and the output's first line on the closed row", () => {
+  it('names the hook and its own words on the closed row', () => {
     const body = draw();
     const said = summaryWords(body);
 
@@ -63,12 +63,8 @@ describe('the hook run row', () => {
     // repeating "hook" would be the second telling the lane exists to end.
     expect(said, 'the name, and nothing ahead of it').toMatch(/^SessionStart:startup/);
     expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
-    expect(said, 'and the first line of what it printed, without opening it').toContain(
-      'capture-line-1',
-    );
-    expect(said, 'with only that line, the rest of the output staying in the body').not.toContain(
-      'capture-line-2',
-    );
+    expect(said, 'and what it printed, joined, without opening it').toContain('capture-line-1');
+    expect(said, 'every line of it, not only the first').toContain('capture-line-2');
     expect(
       summaryOf(draw({ body: null })),
       'a run that printed nothing carries no tail',
@@ -86,6 +82,60 @@ describe('the hook run row', () => {
     // answer to "is this open" is what the chip's own defect was.
     expect(body.match(/#i-chev/g), 'exactly one disclosure chevron').toHaveLength(1);
     expect(body, 'and it is the shared one the sheets turn').toContain('class="ic arw"');
+  });
+
+  /**
+   * The tail is what the hook SAID, not what it printed: a session-start hook
+   * prints markdown it injects, whose block marks cannot draw on one line, or
+   * a JSON envelope whose braces are punctuation rather than words (Ved,
+   * 2026-10-03).
+   */
+  it("draws the tail as the hook's words, marks and envelope read through", () => {
+    // A heading's marker would land as raw `##` where the words should be.
+    const markdown = summaryWords(draw({ body: '## The PR review gate\n\n- one\n- two\n' }));
+    expect(markdown, "the heading's own words").toContain('The PR review gate');
+    expect(markdown, 'without the block mark that cannot draw').not.toContain('##');
+    expect(markdown, "and the list's own lines").toContain('one');
+
+    // Inline marks still draw, the way the body and a thought's line do.
+    expect(
+      draw({ body: 'the **fold** joins, `cargo check` runs' }),
+      'inline marks rendered',
+    ).toContain('<strong>fold</strong>');
+
+    // The envelope the CLI reads: its braces are not the hook's words.
+    const envelope = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: 'git_platform: github, cli: gh',
+      },
+    });
+    const inner = summaryWords(draw({ body: envelope }));
+    expect(inner, 'the context the envelope carried').toContain('git_platform: github, cli: gh');
+    expect(inner, 'and none of its punctuation').not.toContain('{');
+
+    // A message for the reader rides the same envelope, and an envelope whose
+    // text is empty is a hook that said nothing: no tail rather than a brace.
+    const message = JSON.stringify({ systemMessage: 'the tree is dirty' });
+    expect(summaryWords(draw({ body: message })), "the envelope's own message").toContain(
+      'the tree is dirty',
+    );
+    const empty = JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    });
+    expect(
+      summaryOf(draw({ body: empty })),
+      'an envelope that carried nothing carries no tail',
+    ).not.toContain('class="ev"');
+
+    // **And the tail is one line whatever the output weighs.** The thought
+    // row's own line is the precedent: the words joined, the layout's
+    // ellipsis where they run out, the whole of it behind the open.
+    for (const [what, sheet] of sheets()) {
+      expect(sheet, `${what} holds the row's tail to one line`).toMatch(
+        /details\.hookrow > summary \.ev \{[^}]*overflow: hidden[^}]*text-overflow: ellipsis[^}]*white-space: nowrap/,
+      );
+    }
   });
 
   /**
@@ -470,7 +520,7 @@ const BODY_PROPERTIES = [
   'white-space',
 ];
 
-const ROW_PROPERTIES = ['color'];
+const ROW_PROPERTIES = ['color', 'overflow', 'text-overflow', 'white-space'];
 
 /**
  * Every class token a selector names, wherever inside the selector it sits.

@@ -1,6 +1,8 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
+  import { renderInlineProse } from './prose';
+  import { joinedLine } from './text';
   import type { HookRun } from './units';
 
   /**
@@ -10,27 +12,66 @@
    * **The terminal draws nothing for this**, which is why the shape is the
    * client's to choose rather than a parity port: its arm for the three frames
    * is a no-op. The row is a tool row like any other - the lane says the kind,
-   * the mark says whether the run exited clean, and the name and the first line
-   * of what it printed read as the call's own title does - because a hook IS
-   * work the session ran, and anything else makes it a second system inside
-   * the group.
+   * the mark says whether the run exited clean, and the name and the hook's own
+   * words read as the call's own title does - because a hook IS work the
+   * session ran, and anything else makes it a second system inside the group.
    *
-   * It is never clipped: a hook's output is long and secondary, so the row
-   * collapses the whole of it rather than shortening it - the closed row's tail
-   * is the output's own first line - and a summary standing in for the rest
-   * would be the drop rule 25 forbids.
+   * **What the hook printed is not what it said.** A session-start hook prints
+   * the markdown it injects - whose headings and lists are marks a one-line row
+   * cannot draw, so the line read `## The PR review gate` - or a JSON envelope
+   * the CLI reads, whose braces are punctuation and whose text sits inside it,
+   * so the line read `{` (Ved, 2026-10-03).
+   *
+   * The body still carries the output VERBATIM behind the row's own open - a
+   * hook's output is long and secondary, and a summary standing in for it would
+   * be the drop rule 25 forbids - while the tail is the words joined, drawn as
+   * the thought row's own line is: inline marks rendered, the layout's ellipsis
+   * where they run out.
    */
   let { run }: { run: HookRun } = $props();
 
-  /** The output's first non-blank line, which is the closed row's tail. */
-  const headline = $derived(firstLine(run.body));
+  /** The closed row's tail: the hook's own words in one line, or null where it said nothing. */
+  const tail = $derived(hookTail(run.body));
 
-  function firstLine(body: string | null): string | null {
+  function hookTail(body: string | null): string | null {
     if (body === null) return null;
-    for (const line of body.split('\n')) {
-      if (line.trim() !== '') return line.trim();
+    const said = hookWords(body);
+    return said.trim() === '' ? null : renderInlineProse(joinedLine(said));
+  }
+
+  /**
+   * What a hook's output says.
+   *
+   * An envelope the CLI reads carries its text in `additionalContext` (the
+   * context it injects) or `systemMessage` (the line it shows the reader), at
+   * the top level or inside `hookSpecificOutput`; anything that parses as no
+   * object is its own words.
+   */
+  function hookWords(body: string): string {
+    const text = body.trim();
+    if (!text.startsWith('{')) return body;
+    let held: unknown;
+    try {
+      held = JSON.parse(text);
+    } catch {
+      return body;
     }
-    return null;
+    if (held === null || typeof held !== 'object' || Array.isArray(held)) return body;
+    const fields = held as Record<string, unknown>;
+    const inner = fields['hookSpecificOutput'];
+    const levels: Array<Record<string, unknown>> = [
+      ...(inner !== null && typeof inner === 'object' && !Array.isArray(inner)
+        ? [inner as Record<string, unknown>]
+        : []),
+      fields,
+    ];
+    for (const key of ['additionalContext', 'systemMessage']) {
+      for (const level of levels) {
+        const said = level[key];
+        if (typeof said === 'string' && said.trim() !== '') return said;
+      }
+    }
+    return '';
   }
 </script>
 
@@ -45,8 +86,13 @@
       >{run.name}{#if run.event !== null}
         ({run.event}){/if}</span
     >
-    {#if headline !== null}
-      <span class="ev">{headline}</span>
+    {#if tail !== null}
+      <!--
+        The row's rendered line, which the module produced from escaped input:
+        the same renderer the body and a thought's line use, raw HTML off.
+      -->
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      <span class="ev">{@html tail}</span>
     {/if}
     <Chevron />
   </summary>
