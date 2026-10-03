@@ -166,7 +166,10 @@
   function retry(): void {
     const held = echoes.of(seat);
     if (held === undefined) return;
-    echoes.post(seat, held.words);
+    // The newest turn's own state, which is what says whether this send starts
+    // a turn: one retried into a turn already running is not taken by it, so
+    // the mark holds until the words themselves arrive.
+    echoes.post(seat, held.words, newestTurn?.running === true);
     try {
       // Fire-and-forget like the composer's own send: the outcome rides the
       // subscription rather than a reply, so there is nothing to await.

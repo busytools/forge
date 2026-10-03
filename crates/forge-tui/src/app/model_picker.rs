@@ -6,9 +6,9 @@
 //! highlighted model; `esc` closes without switching. Rows are
 //! snapshotted at open together with the session they came from; a
 //! commit whose session is no longer active is refused (the rows are
-//! stale), and a session reporting no models never opens the picker
-//! (the `/model` submit falls back to the current-model
-//! info line).
+//! stale), and a session reporting no models never opens the picker -
+//! the submit reaches the core, which answers with the command's usage
+//! line.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_workspace::SessionSlot;

@@ -2,7 +2,6 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
@@ -10,11 +9,6 @@ const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
-    /// `None` when no session is bound. The file lives in the
-    /// workspace's shared config dir, and nothing can name that before
-    /// a spawn. There is deliberately no fallback: this path is also
-    /// what a saved setting is written back to.
-    pub settings: Option<PathBuf>,
     /// `None` when no project root resolved, which is the launchpad
     /// boot. There is deliberately no fallback path: a cwd-derived one
     /// would make the launch directory shape forge's settings.
@@ -23,7 +17,6 @@ pub struct SettingsPaths {
 }
 
 pub struct LoadedSettingsDocuments {
-    pub paths: SettingsPaths,
     pub settings_document: Value,
     pub local_settings_document: Value,
     pub preferences_document: Value,
@@ -31,9 +24,8 @@ pub struct LoadedSettingsDocuments {
 
 /// Workspace-backed entry point into the bridge's settings reader.
 /// Holds a borrowed `&Workspace` plus the active session's
-/// `&SessionSlot` so `load` / `resolve_paths` can ask the workspace
-/// for the bridge's documents + config_dir without TUI ever holding
-/// an `AgentHandle` directly.
+/// `&SessionSlot` so `load` can ask the workspace for the bridge's
+/// documents without TUI ever holding an `AgentHandle` directly.
 #[derive(Clone, Copy)]
 pub struct WorkspaceBridge<'a> {
     pub workspace: &'a Arc<forge_workspace::Workspace>,
@@ -45,7 +37,7 @@ pub fn load(
     project_root: Option<&Path>,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<LoadedSettingsDocuments, String> {
-    let paths = resolve_paths(home_override, project_root, bridge)?;
+    let paths = resolve_paths(home_override, project_root)?;
 
     // Production path delegates to the workspace facade so the same
     // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere.
@@ -77,12 +69,7 @@ pub fn load(
         ),
     };
 
-    Ok(LoadedSettingsDocuments {
-        paths,
-        settings_document,
-        local_settings_document,
-        preferences_document,
-    })
+    Ok(LoadedSettingsDocuments { settings_document, local_settings_document, preferences_document })
 }
 
 fn read_bool(document: &Value, path: &[&str]) -> Result<Option<bool>, ()> {
@@ -145,7 +132,6 @@ pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root: Option<&Path>,
-    bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
@@ -153,24 +139,7 @@ fn resolve_paths(
         dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
     };
 
-    // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR - delegate to the workspace facade so the
-    // env var is resolved in exactly one place. The home_override
-    // case (used by tests) and the no-bridge case (early init /
-    // disconnected) both bypass the workspace, and neither can name
-    // the session's config dir, so neither produces a path.
-    let settings = match (home_override, bridge) {
-        (None, Some(bridge)) => {
-            forge_server::surface::ViewSurface::new(Arc::clone(bridge.workspace))
-                .roster()
-                .config_dir(bridge.key)
-                .map(|dir| dir.join(SETTINGS_FILENAME))
-        }
-        (Some(_), _) | (None, None) => None,
-    };
-
     Ok(SettingsPaths {
-        settings,
         local_settings: project_root
             .map(|root| root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME)),
         preferences: home.join(PREFERENCES_FILENAME),
@@ -309,12 +278,13 @@ mod tests {
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
-        assert_eq!(loaded.paths.settings, None, "no session to name a config dir");
+
+        let paths = resolve_paths(Some(dir.path()), Some(dir.path())).expect("paths");
         assert_eq!(
-            loaded.paths.local_settings,
+            paths.local_settings,
             Some(dir.path().join(".claude").join("settings.local.json"))
         );
-        assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
+        assert_eq!(paths.preferences, dir.path().join(".claude.json"));
     }
 
     /// The bridge arm - the one a live session takes - reads the root the
@@ -424,7 +394,7 @@ mod tests {
         let loaded = load(Some(dir.path()), None, None).expect("load");
 
         assert!(
-            loaded.paths.local_settings.is_none(),
+            resolve_paths(Some(dir.path()), None).expect("paths").local_settings.is_none(),
             "an empty root must not become a relative local-settings path",
         );
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
@@ -433,8 +403,7 @@ mod tests {
     /// `settings.json` lives in the session's config dir, which is
     /// per-account. Nothing can name it before a spawn, so a boot with
     /// no session applies no user settings document rather than reading
-    /// the default config dir's, which belongs to another account. The
-    /// path goes with it: nothing may write that file back either.
+    /// the default config dir's, which belongs to another account.
     #[test]
     fn load_without_a_session_applies_no_user_settings_document() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -449,6 +418,5 @@ mod tests {
             Value::Object(Map::new()),
             "no session, no user settings document",
         );
-        assert!(loaded.paths.settings.is_none(), "and no path to write one back to");
     }
 }

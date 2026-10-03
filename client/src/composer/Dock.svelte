@@ -8,6 +8,7 @@
 
   let {
     ask,
+    ownKey = null,
     slot,
     connection,
     depth = 1,
@@ -21,6 +22,15 @@
     answered = false,
   }: {
     ask: Ask;
+    /**
+     * The prompt's own identity, which the composer computes (`ownKeyOf`).
+     *
+     * The record is replaced on every frame and on the session poll, so `ask`
+     * is a fresh object while the prompt is the same one - the dock keys its
+     * keyboard-taking on this rather than on that object, so a re-render is
+     * not a new prompt.
+     */
+    ownKey?: string | null;
     slot: SessionSlot;
     connection: Pick<Connection, 'dispatch'>;
     /** How many prompts wait behind this one, which the queue line states. */
@@ -189,8 +199,16 @@
   // swap from one question to the next - so an effect keyed on the element
   // alone never re-ran and the keys were dead at the start of every question
   // after the first.
+  //
+  // **Keyed on the prompt's own identity, not on the object a record mints for
+  // it.** The record is replaced on every frame and on the session poll, and a
+  // re-render of the SAME prompt used to hand the dock the keyboard again: a
+  // reader typing in the notes row lost the caret to the option list
+  // mid-sentence, and the rest of their typing went to the listbox. While that
+  // box is open the caret is the reader's, so this leaves it where they put it.
   $effect(() => {
-    void ask.request;
+    void ownKey;
+    if (notesOpen) return;
     if (listbox !== null) listbox.focus({ preventScroll: true });
   });
 

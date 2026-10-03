@@ -848,7 +848,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too');
+    echoes.post(key, 'and run the gate too', false);
     flushSync();
     expect(drawn(), 'the words are drawn before the core has them').toContain(
       'and run the gate too',
@@ -880,7 +880,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and the gate again');
+    echoes.post(key, 'and the gate again', false);
     flushSync();
     expect(drawn(), 'the row is up before the read lands').toContain('and the gate again');
 
@@ -896,7 +896,7 @@ describe('the reader own words before the core has them', () => {
       'Nothing said yet',
     );
 
-    echoes.post(key, 'start here');
+    echoes.post(key, 'start here', false);
     flushSync();
     expect(drawn(), 'the first thing the seat says is the reader own words').toContain(
       'start here',
@@ -909,7 +909,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too');
+    echoes.post(key, 'and run the gate too', false);
     echoes.refuse(key, 'the session is not running');
     flushSync();
     expect(drawn(), 'the words stay where they were sent from').toContain('and run the gate too');

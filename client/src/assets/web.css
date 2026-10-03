@@ -870,6 +870,11 @@ details.leaf.running > summary { color: var(--text); }
    every line of a new file. */
 .dif.added { grid-template-columns: 34px 22px 1fr; }
 .dif.added .on { display: none; }
+/* The two sides a call's own input carries, which have no position in the file:
+   there are no numbers to draw, so the columns for them follow the numbers off
+   the row rather than sitting empty. Declared after `.dif.added` so a
+   position-less create takes this template, not that one's. */
+.dif.bare { grid-template-columns: 22px 1fr; }
 .dif .ln .l { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
 .dif .ln.a .l { background: var(--add-bg); }
 .dif .ln.d .l { background: var(--del-bg); }

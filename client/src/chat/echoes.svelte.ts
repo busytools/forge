@@ -33,7 +33,16 @@ import { queuedWords } from './units';
  * reader's words off the screen for the length of the turn.
  */
 export type Echo =
-  | { state: 'sending'; words: string }
+  /**
+   * On its way, and what the seat was doing when it was posted.
+   *
+   * `running` records whether a turn was already in flight at that moment: a
+   * turn that was already there says the core had accepted something else, so
+   * the next turn going in flight is not this send being taken. A send wrongly
+   * read as taken cannot be refused any more - `refuse` rewrites only what is
+   * still on its way - so the refusal would be lost in silence.
+   */
+  | { state: 'sending'; words: string; running: boolean }
   | { state: 'taken'; words: string }
   | { state: 'failed'; words: string; why: string };
 
@@ -52,9 +61,13 @@ export class Echoes {
    * A second send takes the first one's place: one row carries what the reader
    * is waiting on, and the first send's own row arrives from the wire as soon
    * as the core has it.
+   *
+   * `running` is whether the seat already had a turn in flight when the send
+   * left, which is what tells a send that started a turn from one that landed
+   * in a turn already running.
    */
-  post(key: string, words: string): void {
-    this.#held.set(key, { state: 'sending', words });
+  post(key: string, words: string, running: boolean): void {
+    this.#held.set(key, { state: 'sending', words, running });
   }
 
   /**
@@ -63,10 +76,15 @@ export class Echoes {
    * The mark goes and the words stay. This is the whole of "it is sent" - the
    * row is the reader's own message from here until the conversation carries
    * its own copy of it.
+   *
+   * Only a send that STARTED the turn is taken here. One posted into a turn
+   * already running is settled by the conversation carrying its words, or by a
+   * refusal - never by a turn it did not begin, which would take it past the
+   * point where a refusal can still reach it.
    */
   take(key: string): void {
     const held = this.#held.get(key);
-    if (held === undefined || held.state !== 'sending') return;
+    if (held === undefined || held.state !== 'sending' || held.running) return;
     this.#held.set(key, { state: 'taken', words: held.words });
   }
 
@@ -94,21 +112,6 @@ export class Echoes {
     const out: string[] = [];
     for (const [key, echo] of this.#held) if (echo.state === 'sending') out.push(key);
     return out;
-  }
-
-  /**
-   * The reader has left this seat, which gives up its send.
-   *
-   * A send still on its way belongs to the seat being looked at: the words are
-   * the core's now and its own row arrives where they are going, so a mark
-   * saying otherwise on a seat nobody is watching has nothing left to clear it
-   * - the refusal would have been read against the seat on screen. What has
-   * already failed stays: that row is the reader's, with the reason on it.
-   */
-  leave(key: string): void {
-    for (const [held, echo] of this.#held) {
-      if (held !== key && echo.state === 'sending') this.#held.delete(held);
-    }
   }
 
   /** The core has the words, or the reader has given up on them. */

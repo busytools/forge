@@ -533,13 +533,19 @@ function imageOf(result: Block | undefined): { mime: string; data: string } | nu
  * The result's own text repeats the diff's path and carries the CLI's note on
  * the file state, which is an instruction to the model rather than anything a
  * reader acts on; the terminal draws the diff and returns there for both `Edit`
- * and `Write` (`build_tool_result_fields`). Where there is no diff the text is
- * all there is, and either way the call still settles on its result.
+ * and `Write` (`build_tool_result_fields`). A failed mutation is the other way
+ * round: its text is the reason nothing changed - "String to replace not found
+ * in file", "File has not been read yet" - and the terminal keeps it (its guard
+ * is `if !is_error`), so a row that dropped it would say the edit failed and
+ * never say why. Where there is no diff the text is all there is, and either
+ * way the call still settles on its result.
  */
 function drawnBody(name: string, body: CallBody[], result: Block | undefined): CallBody[] {
   if (result === undefined) return body;
   const answered = bodyOf(result.content);
-  if (isEdit(name) && body.some((part) => part.kind !== 'text')) return body;
+  if (result.is_error !== true && isEdit(name) && body.some((part) => part.kind !== 'text')) {
+    return body;
+  }
   return [...body, ...answered];
 }
 

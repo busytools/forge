@@ -80,6 +80,39 @@ describe('the row one call draws', () => {
     expect(drawn, 'and none of the caption either').not.toContain('Multiply');
   });
 
+  it('draws the text a result carried beside the picture, not instead of it', () => {
+    // A screenshot result carries the path it was saved to (and a PDF read its
+    // provenance) as a text block of the same result. The picture drew from an
+    // exclusive branch, so that text reached the page nowhere.
+    const drawn = render(Call, {
+      props: {
+        open: true,
+        call: {
+          id: 'toolu_shot_text',
+          row: { kind: 'family', family: 'read' },
+          name: 'Read',
+          title: '/tmp/playwright/shot.png',
+          command: null,
+          status: 'completed',
+          note: null,
+          body: [
+            { kind: 'text', text: 'Saved to /tmp/playwright/shot.png' },
+            { kind: 'image', mime: 'image/png', uri: null },
+          ],
+          mutation: null,
+          skill: null,
+          image: { mime: 'image/png', data: 'AAAA' },
+          imageNote: 'original 100x100, displayed at 100x100.',
+        } as ToolLeaf,
+      },
+    }).body;
+
+    expect(drawn, 'the picture draws').toContain('data:image');
+    expect(drawn, 'and the text the same result carried draws with it').toContain(
+      'Saved to /tmp/playwright/shot.png',
+    );
+  });
+
   it('draws a backgrounded call notice in the box its own result drew', () => {
     const drawn = boxes(
       render(Call, {

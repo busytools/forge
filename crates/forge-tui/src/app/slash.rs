@@ -101,8 +101,7 @@ pub(crate) fn push_system_message(app: &mut App, text: impl Into<String>) {
 /// Push an info-severity system message - the success / status
 /// variant. `push_system_message` (severity `None`) renders as
 /// red Error per `system_severity_from_role`; use this for non-
-/// error feedback like `/mode` / `/model` / `/effort` no-arg
-/// getters and successful "Set X to Y" confirmations.
+/// error feedback like the `/spinner` confirmation.
 pub(super) fn push_system_info(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.push_message_tracked(ChatMessage::new(
