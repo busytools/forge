@@ -98,7 +98,11 @@ describe('reading the three primitives', () => {
 
     const drifted = JSON.stringify({
       model: 'm',
-      answer: { type: 'choice', choice: 'payments', probabilities: { payments: 'many' } },
+      answer: {
+        type: 'choice',
+        choice: 'payments',
+        probabilities: { payments: 0.84, frontend: 'many' },
+      },
     });
     expect(
       decisionOf('mcp__forge__systemone__ask_choice', {}, result(drifted))?.answer,

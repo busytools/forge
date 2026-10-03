@@ -26,6 +26,7 @@ describe('the block one decision draws', () => {
     expect(body, 'and the other side, derived, as a value of its own').toContain('>0.07<');
     expect(body, 'the number carries the sure tone').toContain('num sure');
     expect(body, 'and the side that won carries the mark').toContain('opt win');
+    expect(body, 'the derived side fills at the rounded grain').toContain('width:7%');
   });
 
   it('tones a coin flip without changing the words', () => {
@@ -116,9 +117,24 @@ describe('the block one decision draws', () => {
     expect(body, 'the model').toContain('jev-1.13.0');
     expect(body, 'the tokens').toContain('280 in - 20 out');
     expect(body, 'and the cost').toContain('$0.00001176');
+    expect(
+      drawn({ usage: { input_tokens: 280, output_tokens: 20, cost: null } }),
+      'no cost segment where the provider reported none',
+    ).not.toContain('$');
 
     expect(drawn({ usage: null }), 'no usage reported, no footer drawn').not.toContain(
       'class="foot"',
     );
+  });
+
+  it('leaves no separator behind for a result that named no model', () => {
+    const body = drawn({
+      model: '',
+      usage: { input_tokens: 280, output_tokens: 20, cost: 0.00001176 },
+    });
+    expect(
+      [...body.matchAll(/class="sep"/g)],
+      'one separator, between the tokens and the cost',
+    ).toHaveLength(1);
   });
 });
