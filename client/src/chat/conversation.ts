@@ -721,6 +721,15 @@ export class Chat {
         // took any error as its own would draw a refused subscription, or a
         // refused command, as a conversation this forge will not answer for.
         if (message.what !== 'more') return;
+        // **And a refusal for ANOTHER seat is not this conversation's.** The
+        // connection is shared, so every chat hears every error: a background
+        // seat's refusal - the everyday no-session-yet state, re-asking every
+        // couple of seconds - would otherwise drain THIS seat's count of asks
+        // and let the restore run in the middle of a prepend it must leave
+        // alone. A seatless refusal, from a server that predates the field, is
+        // read the old way: it is this seat's.
+        if (message.seat !== undefined && subjectKey({ session: message.seat }) !== this.key)
+          return;
         // A refused ask is answered by no page at all, so the ask it belongs to
         // is over - and a count of asks this conversation was told to forget is
         // spent on pages that are never coming.
@@ -976,12 +985,20 @@ export class Chat {
    * ask has to go out after the swap rather than before it.
    */
   private replaced(): void {
-    if (this.inFlight !== null) this.abandoned += 1;
+    const held = this.inFlight !== null;
+    if (held) this.abandoned += 1;
     this.inFlight = null;
     // The occupant that left took its answer with it, and nothing about the new
     // one is known until its own record or frames say.
     this.turnRunning = false;
     this.inner.set(NOTHING);
+    // **The swap forgot an ask too, and it has to say so.** The reset above
+    // zeroes the count the column drains against, so a column that was holding
+    // an ask keeps holding it - the drain never fires, `shift` stays armed for
+    // the life of the seat, and the observer's restore never runs for a parked
+    // reader (measured: the offset left at 50 where the row above them had
+    // moved it to 290).
+    if (held) this.forgot();
     this.clearRetry();
     this.ask(null);
   }

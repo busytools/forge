@@ -156,6 +156,25 @@ function stub() {
     page(turns: unknown[], seat: SessionSlot = LEAD, cursor: string | null = null): void {
       send({ kind: 'page', conversation: seat, turns, cursor });
     },
+    /** The seat changes occupant under the column, the way `/new` lands. */
+    replaced(): void {
+      send({
+        kind: 'update',
+        update: { session_replaced: { key: LEAD, session_id: 'new-occupant' } },
+      });
+    },
+    /**
+     * A refusal of an ask. `seat` is what the server names where the refusal is
+     * about a seat; an older server names none.
+     */
+    refuse(seat?: SessionSlot): void {
+      send({
+        kind: 'error',
+        what: 'more',
+        why: 'forge holds no session for this seat',
+        ...(seat === undefined ? {} : { seat }),
+      } as ServerMessage);
+    },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
       send({
@@ -571,6 +590,99 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(element.offset, 'the row carried them down once the ask was drained').toBe(250);
+  });
+
+  /**
+   * **An occupant swap forgets an ask too, and has to say so.** The swap resets
+   * the conversation (a page for it can name no occupant), and that reset
+   * zeroes the count the column drains against - so without the swap reporting
+   * its forgotten ask, the column keeps holding one, `shift` stays armed for
+   * the life of the seat, and the observer's restore never runs for a parked
+   * reader (measured: the offset left at 50 where the row above them had moved
+   * it to 290).
+   */
+  it('reports the ask an occupant swap forgot, so the drain fires', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    // Parked near the top with an ask in flight, then the seat changes
+    // occupant under them and the new one's page lands.
+    layOut(40);
+    readerAt(50);
+    await settle();
+    server.replaced();
+    await settle();
+    // **Two pages, because a swap is owed one it must drop**: a page carries
+    // neither an id nor an occupant, so the count of asks told to forget is
+    // what tells the old occupant's late answer from the new one's, and the
+    // first page after a swap is spent on it. No cursor on the new occupant's
+    // page: nothing above it, so the re-park below asks for nothing and only
+    // the swap's forgotten ask is in play.
+    server.page([spoken('stale1'), spoken('stale2')]);
+    await settle();
+    server.page([spoken('o1'), spoken('o2'), spoken('o3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    layOut(40, 280);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the row carried them down once the swap was drained').toBe(290);
+  });
+
+  /**
+   * **And a refusal for another seat is not this seat's.** Every chat on the
+   * shared connection hears every error, and a background seat's refusal is the
+   * everyday no-session-yet state, re-asked every couple of seconds - draining
+   * this seat's count on it would let the restore run in the middle of a
+   * prepend it must leave alone. Both directions: the other seat's refusal
+   * leaves this count armed, and this seat's own drains it.
+   */
+  it("keeps another seat's refusal out of this seat's count", async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, 'c1');
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // A background seat's refusal, then a row above the reader grows.
+    server.refuse(OTHER);
+    await settle();
+    layOut(40, 280);
+    resized();
+    await settle();
+    expect(element.offset, 'the ask this seat is holding is still armed').toBe(50);
+
+    // This seat's own refusal drains it, and the observer's path restores.
+    server.refuse(LEAD);
+    await settle();
+    resized();
+    await settle();
+    expect(element.offset, 'the row carried them down once their own refusal landed').toBe(290);
   });
 
   it('brings the reader back for their own prompt', async () => {

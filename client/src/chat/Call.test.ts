@@ -26,19 +26,14 @@ const boxes = (body: string): string[] =>
 
 describe('the row one call draws', () => {
   /**
-   * **The row carries the fold's own name, not the wire id alone.** The
-   * column's anchor scans by `data-k`, and an id-less `tool_use` leaves the
-   * wire id empty - two such rows would carry one key and the lookup takes the
-   * first match. The lane hands the fold's key down for it; this pins both
-   * halves, the key where it comes and the id as the fallback.
+   * **The row carries the fold's own name, not the wire id.** Two id-less
+   * `tool_use` calls leave the wire id empty, so the lane hands the fold's key
+   * down and the row draws that: keys stay unique, which is what the column's
+   * anchor would need of them.
    */
-  it("carries the fold's key on the row, and the wire id where none came", () => {
+  it("carries the fold's key on the row", () => {
     const named = render(Call, { props: { call: backgrounded(null), k: 'f7' } }).body;
     expect(named, "the fold's own name for the row").toContain('data-k="call-f7"');
-    const wire = render(Call, { props: { call: backgrounded(null) } }).body;
-    expect(wire, 'the wire id, where the lane handed no key').toContain(
-      'data-k="call-toolu_012ygCheCDa6s8YmU5JxxVp2"',
-    );
   });
 
   it("opens onto the skill a Skill call loaded, which is the row's right data", () => {
@@ -47,6 +42,7 @@ describe('the row one call draws', () => {
     // opens onto that instead.
     const drawn = render(Call, {
       props: {
+        k: 'toolu_skill',
         call: {
           id: 'toolu_skill',
           row: { kind: 'family', family: 'skill' },
@@ -75,6 +71,7 @@ describe('the row one call draws', () => {
     // refuses to draw.
     const drawn = render(Call, {
       props: {
+        k: 'toolu_shot',
         call: {
           id: 'toolu_shot',
           row: { kind: 'family', family: 'read' },
@@ -103,6 +100,7 @@ describe('the row one call draws', () => {
     const drawn = render(Call, {
       props: {
         open: true,
+        k: 'toolu_shot_text',
         call: {
           id: 'toolu_shot_text',
           row: { kind: 'family', family: 'read' },
@@ -133,6 +131,7 @@ describe('the row one call draws', () => {
     const drawn = boxes(
       render(Call, {
         props: {
+          k: 'bg-notice',
           call: backgrounded({
             text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
             tone: 'sum',
@@ -157,6 +156,7 @@ describe('the row one call draws', () => {
     const drawn = boxes(
       render(Call, {
         props: {
+          k: 'bg-two',
           call: {
             ...call,
             body: [
@@ -177,12 +177,12 @@ describe('the row one call draws', () => {
     // The one thing a backgrounded call's own launch result cannot say: that
     // result is a clean one.
     const running = render(Call, {
-      props: { call: { ...backgrounded(null), status: 'in_progress' } },
+      props: { k: 'bg-running', call: { ...backgrounded(null), status: 'in_progress' } },
     }).body;
 
     expect(running, 'the row carries the running class').toContain('class="leaf running"');
     expect(
-      render(Call, { props: { call: backgrounded(null) } }).body,
+      render(Call, { props: { k: 'bg-clean', call: backgrounded(null) } }).body,
       'and a settled call does not',
     ).not.toContain('class="leaf running"');
   });

@@ -24,19 +24,24 @@
   let {
     call,
     open = false,
-    k = null,
+    k,
   }: {
     call: ToolLeaf;
     open?: boolean;
     /**
-     * The fold's own name for this row, which the column's anchor scans by.
+     * The fold's own name for this row, which the row draws in `data-k`.
      *
-     * **Where it is absent the wire's id stands in, and an id-less call leaves
-     * `call-` alone** - which is why the lane hands the fold's key down: two
-     * such rows would carry one key, and the anchor's lookup takes the first
-     * match it finds.
+     * **Required, and the wire id would not do**: an id-less `tool_use` leaves
+     * it empty, and two such rows would carry one key. The lane hands the
+     * fold's key down.
+     *
+     * **The column's anchor does not look this far down today**: its scan
+     * takes the first row whose box crosses the viewport's top, and the unit
+     * row enclosing this one always comes first in document order - so this
+     * key is for a finer hold than the unit's, not the one in force, and
+     * nothing is spent on it while the scan stops at the unit.
      */
-    k?: string | null;
+    k: string;
   } = $props();
 
   /**
@@ -146,7 +151,7 @@
   class="leaf"
   class:running={call.status === 'in_progress'}
   bind:open={opened}
-  data-k={`call-${k ?? call.id}`}
+  data-k={`call-${k}`}
 >
   <summary>
     {#if call.status === 'completed'}
