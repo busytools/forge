@@ -1363,6 +1363,17 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
 /// literal.
 const API_RETRY_SUBTYPE: &str = "api_retry";
 
+/// What one event MOVED in the domain's two whole sets.
+///
+/// **A set that did not change is not news.** Both move whole and on discrete
+/// frames, and every frame of a busy seat reaches this fold - so a viewer
+/// redrawing on each one would pay for nothing, and the answer is taken by
+/// comparing the sets the fold was handed with the ones it left.
+pub(crate) struct Moved {
+    pub monitors: bool,
+    pub background_tasks: bool,
+}
+
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
 /// I/O, no async, no sends. Called from inside
 /// [`SessionTask::translate_event`] under the domain's lock.
@@ -1371,18 +1382,9 @@ const API_RETRY_SUBTYPE: &str = "api_retry";
 /// (`session_id`) plus the facts a view reads through the view
 /// surface. Operational state a view renders from the update stream
 /// itself (lifecycle, cwd, account info) stays on the view.
-/// What one event MOVED in the domain's two whole sets.
 ///
-/// **A set that did not change is not news.** Both move whole and on discrete
-/// frames, and every frame of a busy seat reaches this fold - so a viewer
-/// redrawing on each one would pay for nothing, and the answer is taken by
-/// comparing the sets the fold was handed with the ones it left.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Moved {
-    pub monitors: bool,
-    pub background_tasks: bool,
-}
-
+/// The answer is what the caller announces, so it is the sets as they stand
+/// AFTER the fold rather than an opinion about the event.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) -> Moved {
     let held_monitors = domain.monitors.clone();
     let held_tasks = domain.background_tasks.clone();
@@ -3618,6 +3620,31 @@ provider = "anthropic"
             0,
             "and a frame that moves nothing says nothing",
         );
+
+        // A STATUS-ONLY change is a move too, and it is the one the shared
+        // comparison has to catch on its own: the record's id is untouched,
+        // so nothing but the status separates a settle from a repeat.
+        task.translate_event(sdk_message(task_updated("t-mon", "completed")));
+        let settled = announced_monitors(&mut updates);
+        assert_eq!(settled.len(), 1, "settling a monitor announces the settled set");
+        assert_eq!(
+            settled[0][0].status,
+            forge_primitives::MonitorStatus::Completed,
+            "with the status the frame gave it",
+        );
+        task.translate_event(sdk_message(task_updated("t-mon", "completed")));
+        assert_eq!(
+            announced_monitors(&mut updates).len(),
+            0,
+            "and the same settle again, on a record already settled, says nothing",
+        );
+
+        // The notification is the last frame a monitor sends, and the drain
+        // that empties the set is a move like any other.
+        task.translate_event(sdk_message(task_notification("t-mon")));
+        let drained = announced_monitors(&mut updates);
+        assert_eq!(drained.len(), 1, "the drain announces");
+        assert!(drained[0].is_empty(), "with the empty set, which is what the core now holds");
     }
 
     /// The background registry is the CLI's whole set on every change, so a
