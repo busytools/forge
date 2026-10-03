@@ -376,7 +376,9 @@ describe('the conversation the chat draws', () => {
     }
     await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
 
-    expect(draws, 'the burst is one painted state, not a replay').toBeLessThan(5);
+    // Exactly one: `< 5` would tolerate a partial replay, which is the shape
+    // the defect had - several draws of the same burst's states.
+    expect(draws, 'the burst is one painted state, not a replay').toBe(1);
     expect(
       JSON.stringify(get(chat.value)),
       'and nothing in it is dropped: the last frame is in the drawn record',

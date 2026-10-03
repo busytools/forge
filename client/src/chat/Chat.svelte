@@ -736,9 +736,11 @@
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the
     // row under their top edge is what the column holds their place by from
-    // here on. Read off this event's own arithmetic, not the record: the
-    // follow flag is the fold's to publish on a painted frame, so a scroll
-    // that has just disarmed it would read the stale side of that write.
+    // here on. Read off this event's own arithmetic rather than the record:
+    // the record's follow flag is the fold's, this disarm publishes at once,
+    // and a STREAM fold that engages the follow - a prompt frame - lands a
+    // painted frame later - so a capture that read the record would depend on
+    // which side of that timing it caught.
     if (!foot) captureAnchor();
     if (offset < REACH) loadOlder();
   }
