@@ -75,12 +75,12 @@
   <div class="fg-body">
     <div class="fg-left">
       <div class="fg-org">Busytools</div>
-      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">forge</span><span class="badges">&#183;2&#8593;&#183;1&#8595;</span></div>
-      <div class="fg-w"><span>planner</span><span class="badges">&#183;1&#8593;</span></div>
-      <div class="fg-w"><span>implementer</span><span class="badges"></span></div>
-      <div class="fg-w"><span>reviewer</span><span class="badges"></span></div>
-      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">gateway-backend</span><span class="badges">&#183;1&#8595;<span class="to">&#183;1&#8987;&#65038;</span></span></div>
-      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">gateway-liq-bot</span><span class="badges"><span class="df">&#183;1&#10007;</span></span></div>
+      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">forge</span></div>
+      <div class="fg-w"><span>planner</span></div>
+      <div class="fg-w"><span>implementer</span></div>
+      <div class="fg-w"><span>reviewer</span></div>
+      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">gateway-backend</span></div>
+      <div class="fg-p"><span class="run">&#10307;</span><span class="nm">gateway-liq-bot</span></div>
       <div class="fg-org">Personal</div>
       <div class="fg-p"><span class="idle">&#9675;</span><span class="idle">dotfiles</span><span class="badges">4h</span></div>
       <div class="fg-p"><span class="run">&#10307;</span><span class="nm">playground</span><span class="badges"></span></div>
@@ -91,12 +91,12 @@
       <div class="fg-scroll">
 
         <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10548;</span><span class="v">Tell planner</span></div>
+          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10548;</span><span class="v">Message planner</span></div>
           <div class="fg-bb">&#9492;&#9472; Re-stating tight: #178 go option A, #179+#180 brainstorm, #182 opt-in.</div>
         </div>
 
         <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10548;</span><span class="v">Ask planner</span></div>
+          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10548;</span><span class="v">Message planner</span></div>
           <div class="fg-bb">&#9492;&#9472; Is the seam plan ready for the workspace.rs split?</div>
         </div>
 
@@ -108,28 +108,13 @@
         </div>
 
         <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Reply planner</span></div>
-          <div class="fg-bb">&#9492;&#9472; Yes - seam plan attached, six carve-outs roughly 300 LOC each. Sign-of...</div>
-        </div>
-
-        <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Question data-modules</span></div>
+          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Message data-modules</span></div>
           <div class="fg-bb">&#9492;&#9472; Should I proceed with the runner upgrade now or wait for CI to drain?</div>
         </div>
 
         <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Ask planner</span><span class="mod">- &#9888;&#65038; timed out</span></div>
-          <div class="fg-bb">&#9492;&#9472; was: "Is the seam plan ready for the workspace.rs split?"</div>
-        </div>
-
-        <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Tell planner</span><span class="mod">- &#9888;&#65038; undeliverable</span></div>
-          <div class="fg-bb">&#9492;&#9472; reason: target sleeping</div>
-        </div>
-
-        <div class="fg-blk">
-          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Reply planner</span><span class="mod">- &#9888;&#65038; late</span></div>
-          <div class="fg-bb">&#9492;&#9472; Sorry for the delay - the original ask had already expired.</div>
+          <div class="fg-bh"><span class="mk">&#9654;</span><span class="dir">&#10549;</span><span class="v">Message planner</span><span class="mod">- &#9888;&#65038; undeliverable</span></div>
+          <div class="fg-bb">&#9492;&#9472; target session connection lost</div>
         </div>
 
       </div>
@@ -175,19 +160,12 @@
     </div>
 
     <div class="fg-pane" style="width:452px;">
-      <div class="fg-ph">ROSTER AND PEER BADGES</div>
+      <div class="fg-ph">ROSTER</div>
       <div class="fg-pb">
-        <div class="fg-cap">The badge cluster sits between the row name and its close button, one badge per counter; a zero is omitted and a failure badge fades 60s after the counter last moved.</div>
-        <table class="fg-tbl">
-          <tr><td>&#183;N&#8593;</td><td>asks this session sent that are still awaiting a reply</td><td>dim</td></tr>
-          <tr><td>&#183;N&#8595;</td><td>asks this session received that are still awaiting our reply</td><td>dim</td></tr>
-          <tr><td>&#183;N&#8987;&#65038;</td><td>asks this session sent that timed out</td><td>warning</td></tr>
-          <tr><td>&#183;N&#10007;</td><td>asks this session sent that failed to deliver</td><td>error</td></tr>
-        </table>
+        <div class="fg-cap">A row carries its name and, when it is live, its spinner or its last-activity age - a worker's row nests under the project it belongs to.</div>
         <div class="fg-lbl" style="padding-top:14px;">What each call does</div>
-        <div class="fg-kv"><span class="k">agents__list</span><span>every project's own agent with its liveness and in-flight counters, plus the caller's own live workers</span></div>
-        <div class="fg-kv"><span class="k">agents__tell</span><span>fire and forget; a reply to a still-open ask closes it</span></div>
-        <div class="fg-kv"><span class="k">agents__ask</span><span>the ask goes in-flight; the reply lands as a synthetic user turn</span></div>
+        <div class="fg-kv"><span class="k">agents__list</span><span>every project's own agent with its liveness, plus the caller's own live workers</span></div>
+        <div class="fg-kv"><span class="k">agents__send_message</span><span>one verb for every send, a reply included: fire and forget, answering with the id it went out under</span></div>
         <div class="fg-kv"><span class="k">agents__spawn</span><span>lead only, and durable: the worker survives a forge restart until it is despawned</span></div>
         <div class="fg-cap" style="margin-top:12px;">Every <span style="font-family:ui-monospace,Menlo,monospace;">mcp__forge__*</span> call is auto-approved, so an ask or a tell shows the styled block rather than a tool card.</div>
       </div>

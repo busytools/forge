@@ -242,7 +242,7 @@ describe('one turn folded into the units a view draws', () => {
     // lane the call above it opened, and the lane that took the latest row
     // draws last - so the message lane sits above a family still working.
     const peer = [
-      said([use('toolu_p', 'mcp__forge__agents__tell', { project: 'x', message: 'hi' })]),
+      said([use('toolu_p', 'mcp__forge__agents__send_message', { project: 'x', message: 'hi' })]),
     ];
 
     const units = fold([call('read', 0), ...peer, call('read', 1)]);
@@ -534,7 +534,10 @@ describe('one turn folded into the units a view draws', () => {
     // this unit when the batch split.
     const tell = (n: number): unknown =>
       said([
-        use(`toolu_tell_${n}`, 'mcp__forge__agents__tell', { project: 'x', message: `m${n}` }),
+        use(`toolu_tell_${n}`, 'mcp__forge__agents__send_message', {
+          project: 'x',
+          message: `m${n}`,
+        }),
       ]);
 
     const units = fold([
@@ -560,7 +563,11 @@ describe('one turn folded into the units a view draws', () => {
     // empty string, where two such batches in one turn would collide. Three
     // sources build a card: a call, a header, and a queued prompt's envelope.
     const call = said([
-      { type: 'tool_use', name: 'mcp__forge__agents__tell', input: { project: 'x', message: 'm' } },
+      {
+        type: 'tool_use',
+        name: 'mcp__forge__agents__send_message',
+        input: { project: 'x', message: 'm' },
+      },
     ]);
     const envelope = heard([text("[Question id= from agent 'x' (org 'y')]\n\npicking it up")]);
     const queued = heard([
@@ -801,12 +808,14 @@ describe('one turn folded into the units a view draws', () => {
     expect(traffic(group)[0]?.cards.length).toBe(2);
   });
 
-  it('gives each kind of peer traffic its own lane, in the order they arrived', () => {
+  it('reads a recorded question and reply as the one message row they became', () => {
+    // A transcript recorded before the verbs were folded holds `Question` and
+    // `Reply` headers, and reopening it replays them through this same fold.
     // Both trailers end with a clause inside the bracket - a question names the
     // tool to answer with, a reply says what it answers - so a matcher anchored
     // on the org clause's `)]` never fires and the envelope draws as the
     // reader's own turn: the orange panel with a raw header on screen.
-    const ask = heard([
+    const question = heard([
       text(
         "[Question id=q-1 from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=q-1]\n\nis the cron issue filed?",
       ),
@@ -816,44 +825,34 @@ describe('one turn folded into the units a view draws', () => {
         "[Reply id=t-2 from agent 'planner' (org 'Busytools') to your earlier ask]\n\ntaking the render half",
       ),
     ]);
-    const message = heard([text("[Message id=t-3 from agent 'steward' (org 'Busytools')]\n\nFYI")]);
+    const message = heard([text("[Message id=m-3 from agent 'steward' (org 'Busytools')]\n\nFYI")]);
 
-    const [group] = fold([ask, reply, message]);
+    const [group] = fold([question, reply, message]);
     const lanes = traffic(group);
 
-    // A question draws on the ask lane whatever the wire calls it: the lane
-    // word is the traffic's own, and both directions of a question share it.
-    expect(lanes.map((lane) => lane.kind)).toEqual(['ask', 'reply', 'message']);
-    expect(lanes.map((lane) => lane.cards.length)).toEqual([1, 1, 1]);
+    expect(lanes.length, 'every card draws on the one lane').toBe(1);
+    expect(lanes[0]?.cards.length).toBe(3);
+    expect(lanes[0]?.cards.map((card) => card.row)).toEqual(['arrived', 'arrived', 'arrived']);
     expect(lanes[0]?.cards[0]?.body).toBe('is the cron issue filed?');
     expect(lanes[0]?.cards[0]?.peer).toBe('steward');
   });
 
-  it('keeps one lane per kind however the kinds interleave', () => {
-    // **Merged by kind, not by run**, which is what the terminal's own tally
-    // draws - a lane per row and label over the whole group - and what keeps a
-    // lane's word unique. Two lanes both headed `ask` collide on the key a view
-    // opens the lane's leaves by, and Svelte refuses a duplicate key at mount:
-    // the whole turn stops drawing, with nothing in an SSR render to show it.
-    const ask = (id: string): unknown =>
-      heard([
-        text(
-          `[Question id=${id} from agent 'steward' (org 'Busytools') - reply with agents__tell in_reply_to=${id}]\n\nis it filed?`,
-        ),
-      ]);
-    const message = heard([text("[Message id=t-m from agent 'steward' (org 'Busytools')]\n\nFYI")]);
+  it('keeps every row on the one lane however the messages interleave', () => {
+    // **One lane, not one per envelope kind**, which is what the row's own
+    // words carry now: two lanes of one kind would give two lanes the same
+    // word, which a keyed list refuses at mount - the whole turn stops
+    // drawing, with nothing in an SSR render to show it.
+    const message = (id: string, body: string): unknown =>
+      heard([text(`[Message id=${id} from agent 'steward' (org 'Busytools')]\n\n${body}`)]);
 
-    const [group] = fold([ask('q-1'), message, ask('q-2')]);
+    const [group] = fold([message('m-1', 'one'), message('m-2', 'two'), message('m-3', 'three')]);
     const lanes = traffic(group);
 
+    expect(lanes.length, 'one lane however many rows it took').toBe(1);
     expect(
-      lanes.map((lane) => lane.kind),
-      'one lane per kind, and the ask lane took the latest row so it draws last',
-    ).toEqual(['message', 'ask']);
-    expect(
-      lanes.map((lane) => lane.cards.length),
-      'with both asks on the one lane',
-    ).toEqual([1, 2]);
+      lanes[0]?.cards.map((card) => card.body),
+      'in the order they arrived',
+    ).toEqual(['one', 'two', 'three']);
   });
 
   it('carries the id the message arrived with, which is what names its group', () => {
@@ -861,19 +860,19 @@ describe('one turn folded into the units a view draws', () => {
     // this shape, and the wire's own id is the one field that separates two
     // messages from one sender.
     const arrived = heard([
-      text("[Message id=t-9c1 from agent 'forge/steward' (org 'Busytools')]\n\nhi"),
+      text("[Message id=m-9c1 from agent 'forge/steward' (org 'Busytools')]\n\nhi"),
     ]);
     const sent = said([
       {
         type: 'tool_use',
         id: 'toolu_01Bg',
-        name: 'mcp__forge__agents__ask',
-        input: { project: 'forge', label: 'steward', prompt: 'hi' },
+        name: 'mcp__forge__agents__send_message',
+        input: { project: 'forge', label: 'steward', message: 'hi' },
       },
     ]);
     const cardOf = (units: Unit[]): { id?: string } | undefined => traffic(units[0])[0]?.cards[0];
 
-    expect(cardOf(fold([arrived]))?.id, 'an envelope is named by its own id').toBe('t-9c1');
+    expect(cardOf(fold([arrived]))?.id, 'an envelope is named by its own id').toBe('m-9c1');
     expect(cardOf(fold([sent]))?.id, 'and a call by the id the wire gave it').toBe('toolu_01Bg');
   });
 
@@ -887,8 +886,8 @@ describe('one turn folded into the units a view draws', () => {
         {
           type: 'tool_use',
           id,
-          name: 'mcp__forge__agents__ask',
-          input: { project: 'forge', label: 'steward', prompt: 'is it filed?' },
+          name: 'mcp__forge__agents__send_message',
+          input: { project: 'forge', label: 'steward', message: 'is it filed?' },
         },
       ]);
     const answer = (id: string, failed: boolean): unknown =>
@@ -932,12 +931,12 @@ describe('one turn folded into the units a view draws', () => {
     const cards = traffic(group)[0]?.cards ?? [];
 
     expect(
-      cards.map((card) => card.here),
-      'this project, then not',
-    ).toEqual([true, false, false]);
+      cards.map((card) => card.peer),
+      'every row names the seat it is about',
+    ).toEqual(['forge/steward', 'gateway-backend', 'gateway-backend']);
     expect(
       cards.map((card) => card.org),
-      'the org only where it is not the reader own',
+      'and tags the org only where it is not the reader own',
     ).toEqual([null, null, 'Gateway']);
   });
 
@@ -1018,18 +1017,38 @@ describe('one turn folded into the units a view draws', () => {
     expect(rows[0]?.body).toBe('the gate is green');
   });
 
-  it('draws a failed delivery and a failed spawn as warnings', () => {
+  it('draws a failed delivery as the outgoing row it belongs to, and a failed spawn as a warning', () => {
     const delivery = heard([
-      text("[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"),
+      text("[Message to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"),
     ]);
     const spawn = heard([text("[Worker 'planner' spawn failed id=w-1: ENOENT]")]);
 
     const units = fold([delivery, spawn]);
-    expect(kinds(units)).toEqual(['notice', 'notice']);
-    expect(units[0]?.kind === 'notice' ? units[0].notice.severity : null).toBe('warning');
-    expect(units[0]?.kind === 'notice' ? units[0].notice.text : '').toContain('channel closed');
+    expect(kinds(units), 'the failure joins the peer lane; the spawn is a notice').toEqual([
+      'group',
+      'notice',
+    ]);
+    const card = traffic(units[0])[0]?.cards[0];
+    expect(card?.row, 'the delivery keeps the outgoing row, warn-toned').toBe('failed');
+    expect(card?.peer).toBe('companies');
+    expect(card?.status).toBe('failed');
+    expect(card?.body, 'the words carry what went wrong').toContain('channel closed');
     expect(units[1]?.kind === 'notice' ? units[1].notice.severity : null).toBe('warning');
     expect(units[1]?.kind === 'notice' ? units[1].notice.text : '').toContain('ENOENT');
+  });
+
+  it('reads a recorded failure header as the same failed row', () => {
+    // A transcript recorded before the verbs were folded holds the `Ask …`
+    // header; reopening it draws the failure it always drew.
+    const recorded = heard([
+      text("[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"),
+    ]);
+
+    const [group] = fold([recorded]);
+    const card = traffic(group)[0]?.cards[0];
+    expect(card?.row).toBe('failed');
+    expect(card?.peer).toBe('companies');
+    expect(card?.body).toContain('channel closed');
   });
 
   it('draws a question the assistant asked, with what was answered', () => {

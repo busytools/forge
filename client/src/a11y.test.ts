@@ -181,8 +181,9 @@ describe('axe over the rendered pages', () => {
               },
               uuid: 'r1',
             },
-            // Peer traffic is a disclosure per message now, so the check runs
-            // over the message rows too: a lane, a mark and a leaf that opens.
+            // Peer traffic is a disclosure per row now, so the check runs over
+            // every row kind the lane draws: an arrival, a send with the ack
+            // its result carried, a failure, and the two verb cards.
             {
               type: 'user',
               message: {
@@ -190,11 +191,84 @@ describe('axe over the rendered pages', () => {
                 content: [
                   {
                     type: 'text',
-                    text: "[Message id=t-a11y from agent 'forge/steward' (org 'Busytools')]\n\npicking it up",
+                    text: "[Message id=m-a11y from agent 'forge/steward' (org 'Busytools')]\n\npicking it up",
                   },
                 ],
               },
               uuid: 'p1',
+            },
+            {
+              type: 'assistant',
+              message: {
+                id: 'm2',
+                role: 'assistant',
+                model: 'claude-opus-5',
+                content: [
+                  {
+                    type: 'tool_use',
+                    id: 's1',
+                    name: 'mcp__forge__agents__send_message',
+                    input: {
+                      org: 'Busytools',
+                      project: 'forge',
+                      label: 'steward',
+                      message: 'the render half is done',
+                    },
+                  },
+                  {
+                    type: 'tool_use',
+                    id: 's2',
+                    name: 'mcp__forge__agents__whoami',
+                    input: {},
+                  },
+                  {
+                    type: 'tool_use',
+                    id: 's3',
+                    name: 'mcp__forge__agents__list',
+                    input: {},
+                  },
+                ],
+              },
+            },
+            {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 's1',
+                    content:
+                      '{"status":"sent","id":"m-7f3a92e0","to":{"org":"Busytools","project":"forge","label":"steward"}}',
+                  },
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 's2',
+                    content:
+                      '{"name":"forge","org":"Busytools","path":"/tmp/forge","status":"running","slot":{"org":"Busytools","project":"forge","label":"lead"}}',
+                  },
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 's3',
+                    content:
+                      '[{"label":"lead","project":"forge","path":"/tmp/forge","status":"running","slot":{"org":"Busytools","project":"forge","label":"lead"}}]',
+                  },
+                ],
+              },
+              uuid: 'r2',
+            },
+            {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: "[Message to agent 'companies' (org 'Busytools') failed to deliver: channel closed]",
+                  },
+                ],
+              },
+              uuid: 'p2',
             },
             // A hook's own run is a disclosure as well - a summary that opens
             // onto the whole of what the hook printed - so the check runs over
@@ -224,9 +298,18 @@ describe('axe over the rendered pages', () => {
         },
       },
     }).body;
-    // The peer mark is the one glyph no other row on this turn draws, so it is
-    // what says the message row was really there for the check.
-    expect(html, 'the peer message drew, so axe saw it').toContain('i-bot');
+    // The peer lane is the one place these marks are drawn, and each row kind
+    // carries its own - so together they say every row was really there for
+    // the check.
+    for (const [mark, what] of [
+      ['i-bot', 'the lane'],
+      ['i-inbox', 'the arrival'],
+      ['i-plane', 'the send and the failure'],
+      ['i-badge', 'whoami'],
+      ['i-users', 'list'],
+    ] as const) {
+      expect(html, `${what} drew, so axe saw it`).toContain(mark);
+    }
     // **What axe audits here is the row CLOSED.** Everything inside a closed
     // `<details>` is out of the tree axe walks, which is the state the row is
     // drawn in until a reader opens it and so the state worth checking - the

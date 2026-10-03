@@ -915,6 +915,13 @@ details.leaf > summary .st.sk { color: var(--dim); }
 /* peer traffic, drawn as tool rows: the mark says who is talking, the label who */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
 details.leaf > summary .k { color: var(--text); font-weight: 700; }
+/* The direction word that leads a message row, muted so the seat the row is
+   about stays the subject, and the row's own word for a verb card. */
+details.leaf > summary .dir { color: var(--dim); margin-right: 5px; flex: none; }
+/* A failure keeps the outgoing row and takes the warning tone: the words say
+   what happened and the colour says it went wrong. */
+details.leaf > summary .tn.warn { color: var(--warn); }
+details.leaf > summary .tn.warn .k { color: var(--warn); }
 details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
 .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);

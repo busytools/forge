@@ -16,12 +16,15 @@
     InboundKind,
     InboundLeaf,
     Lane,
-    MessageKind,
     PeerCard,
+    PeerRow,
   } from './units';
 
   /** A thought as its lane draws it: the words, and the row's line rendered. */
   type DrawnThought = { key: string; text: string; lead: string };
+
+  /** A peer row's title, in the three parts the row draws: lead, name, tail. */
+  type DrawnTitle = { lead: string; name: string; tail: string };
 
   /**
    * A stretch of the turn's work: a lane per tool family, per kind of peer
@@ -75,9 +78,9 @@
           }
         : lane.tag === 'message'
           ? {
-              key: `m:${lane.kind}`,
-              glyph: glyphOf(lane.kind),
-              label: lane.kind,
+              key: 'm:peer',
+              glyph: 'bot',
+              label: 'peer',
               calls: [] as CallLeaf[],
               cards: lane.cards,
               thoughts: [] as DrawnThought[],
@@ -130,9 +133,44 @@
     return kind === 'cron' ? 'schedules' : kind;
   }
 
-  /** The glyph a message lane leads with: two lanes share the inbound arrow. */
-  function glyphOf(kind: MessageKind): string {
-    return kind === 'ask' ? 'question' : 'in';
+  /**
+   * The mark a peer row carries.
+   *
+   * **The words carry the direction; the mark reinforces them.** A message is
+   * a plane flying out or an inbox filling up, a failure keeps the outgoing
+   * mark it belongs to, and the two verb cards mark themselves.
+   */
+  function markOf(row: PeerRow): string {
+    switch (row) {
+      case 'sent':
+      case 'failed':
+        return 'plane';
+      case 'arrived':
+        return 'inbox';
+      case 'whoami':
+        return 'badge';
+      case 'list':
+        return 'users';
+    }
+  }
+
+  /**
+   * A peer row's title: the direction words, the failure's own sentence, or
+   * the verb's card.
+   */
+  function titleOf(card: PeerCard): DrawnTitle {
+    switch (card.row) {
+      case 'sent':
+        return { lead: 'sent to', name: card.peer, tail: firstLine(card.body) };
+      case 'arrived':
+        return { lead: 'from', name: card.peer, tail: firstLine(card.body) };
+      case 'failed':
+        return { lead: '', name: card.peer, tail: `failed to deliver: ${card.body}` };
+      case 'whoami':
+        return { lead: '', name: 'whoami', tail: 'where this session sits' };
+      case 'list':
+        return { lead: '', name: 'list', tail: 'who you can send to' };
+    }
   }
 
   /** Whether a call's body is drawn without being asked for: a mutation's diff, while it is small enough to draw. */
@@ -152,10 +190,16 @@
         <Call call={call.leaf} open={opens(call.leaf)} />
       {/each}
       {#each lane.cards as card (card.id)}
+        {@const title = titleOf(card)}
         <details class="leaf">
           <summary>
-            <Icon name={card.here ? 'bot' : 'away'} class="mk" />
-            <span class="tn"><span class="k">{card.peer}</span> &#183; {firstLine(card.body)}</span>
+            <Icon name={markOf(card.row)} class="mk" />
+            <span class="tn" class:warn={card.row === 'failed'}>
+              {#if title.lead !== ''}<span class="dir">{title.lead}</span>{/if}<span class="k"
+                >{title.name}</span
+              >
+              &#183; {title.tail}
+            </span>
             {#if card.org !== null}<span class="org">{card.org}</span>{/if}
             <Chevron />
           </summary>
@@ -163,6 +207,32 @@
             <div class="pbody">
               {#each paragraphs(card.body) as paragraph, at (at)}
                 <p>{paragraph}</p>
+              {/each}
+              {#if card.ack !== null}
+                <div class="kv"><span class="k">sent</span><span class="v">{card.ack}</span></div>
+              {/if}
+              {#if card.seat !== null}
+                <div class="kv">
+                  <span class="k">org</span><span class="v">{card.seat.org}</span>
+                </div>
+                <div class="kv">
+                  <span class="k">project</span><span class="v">{card.seat.project}</span>
+                </div>
+                <div class="kv">
+                  <span class="k">label</span><span class="v">{card.seat.label}</span>
+                </div>
+                <div class="kv">
+                  <span class="k">path</span><span class="v">{card.seat.path}</span>
+                </div>
+                <div class="kv">
+                  <span class="k">status</span><span class="v">{card.seat.status}</span>
+                </div>
+              {/if}
+              {#each card.seats as seat (seat.label)}
+                <div class="kv">
+                  <span class="k">{seat.label}</span>
+                  <span class="v">{seat.project} &#183; {seat.what} &#183; {seat.liveness}</span>
+                </div>
               {/each}
             </div>
           </div>

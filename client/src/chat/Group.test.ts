@@ -4,54 +4,66 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import Group from './Group.svelte';
-import type { Lane, MessageKind, PeerCard } from './units';
+import type { Lane, PeerCard } from './units';
 
 const card = (over: Partial<PeerCard> = {}): PeerCard => ({
-  id: 't-1',
+  id: 'm-1',
+  row: 'arrived',
   peer: 'forge/steward',
   body: 'picking up the render half now.',
-  kind: 'message',
-  here: true,
   org: null,
   status: 'completed',
+  ack: null,
+  seat: null,
+  seats: [],
   ...over,
 });
 
-const lane = (kind: MessageKind, cards: PeerCard[]): Lane => ({ tag: 'message', kind, cards });
+/** One peer lane: every card draws on the one lane, whichever row it is. */
+const lane = (cards: PeerCard[]): Lane => ({ tag: 'message', cards });
 
 const draw = (lanes: Lane[]): string => render(Group, { props: { lanes } }).body;
 
-describe('a lane of peer messages, drawn as tool rows', () => {
+describe('a lane of peer traffic, drawn as tool rows', () => {
   it('draws a lone message as its lane and its card, with no summary over them', () => {
     // There is no count and no disclosure around a group: the lane's own row
     // and the message under it are the whole of what it draws.
-    const one = draw([lane('message', [card()])]);
+    const one = draw([lane([card()])]);
 
     expect(one, 'the lane drew').toContain('class="knd"');
+    expect(one, 'under the peer lane word').toContain('>peer<');
     expect(one, 'and the card under it').toContain('picking up the render half now.');
   });
 
-  it('draws a lane per kind, and the ask lane is the one that leads with the question mark', () => {
+  it('draws every row on the one lane, whatever direction it went', () => {
     const drawn = draw([
-      lane('ask', [card({ kind: 'ask', peer: 'cli-version', here: false })]),
-      lane('reply', [card({ kind: 'reply' })]),
-      lane('message', [card()]),
+      lane([
+        card({ row: 'sent', peer: 'forge/steward' }),
+        card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend', org: 'Granite' }),
+        card({ id: 'm-3', row: 'whoami', peer: 'whoami' }),
+        card({ id: 'm-4', row: 'list', peer: 'list' }),
+      ]),
     ]);
 
-    // Two lanes share the inbound arrow because both are usually something
-    // arriving; the lane word is what separates them.
-    expect(drawn.match(/>ask</g)?.length, 'ask draws its own lane').toBe(1);
-    expect(drawn, 'the ask lane leads with the question glyph').toContain('i-question');
-    expect(drawn.match(/>message</g)?.length, 'and message its own').toBe(1);
-    expect(drawn, 'the other two lanes carry the inbound arrow').toContain('i-in');
+    expect(drawn.match(/>peer</g)?.length, 'one lane, not one per kind').toBe(1);
   });
 
-  it('marks who is talking, and tags the org only when the card carries one', () => {
-    const theirs = card({ peer: 'gateway-backend', here: false, org: 'Gateway' });
-    const drawn = draw([lane('message', [card(), theirs])]);
+  it('carries the direction in the words, and the mark reinforces it', () => {
+    const drawn = draw([
+      lane([card({ row: 'sent' }), card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend' })]),
+    ]);
 
-    expect(drawn, 'a counterparty in this project').toContain('i-bot');
-    expect(drawn, 'and one somewhere else').toContain('i-away');
+    expect(drawn, 'the outgoing row says which way it went').toContain('>sent to</span>');
+    expect(drawn, 'and carries the plane').toContain('href="#i-plane"');
+    expect(drawn, 'the arriving row says where it came from').toContain('>from</span>');
+    expect(drawn, 'and carries the inbox').toContain('href="#i-inbox"');
+  });
+
+  it('tags the org only when the counterparty is outside the reader own', () => {
+    const drawn = draw([
+      lane([card(), card({ id: 'm-2', peer: 'gateway-backend', org: 'Gateway' })]),
+    ]);
+
     expect(drawn, 'the org the fold left on the card').toContain('>Gateway<');
     expect(
       drawn.match(/class="org"/g)?.length,
@@ -62,7 +74,7 @@ describe('a lane of peer messages, drawn as tool rows', () => {
   it('labels the message with its sender and its first line, and opens onto the body', () => {
     const body =
       'pgtemp, spawned per test binary rather than per test.\n\n' + 'The fixture is the example.';
-    const drawn = draw([lane('message', [card({ body })])]);
+    const drawn = draw([lane([card({ body })])]);
 
     expect(drawn, 'the sender is the label the reader would have passed').toContain(
       '<span class="k">forge/steward</span>',
@@ -70,13 +82,72 @@ describe('a lane of peer messages, drawn as tool rows', () => {
     // The label, up to the chevron that closes the summary: a body sits in the
     // DOM whether or not the row is open, so the whole render cannot say what
     // the row previews.
-    const at = drawn.indexOf('<span class="tn">');
+    const at = drawn.indexOf('<span class="tn"');
     const label = drawn.slice(at, drawn.indexOf('<svg', at));
     expect(label, 'the label previews the first line').toContain(
       'pgtemp, spawned per test binary rather than per test.',
     );
     expect(label, 'and not the rest of the body').not.toContain('The fixture is the example.');
     expect(drawn.match(/<p>/g)?.length, 'blank lines break the body into paragraphs').toBe(2);
+  });
+
+  it('opens a send onto the ack its own result carried', () => {
+    const drawn = draw([
+      lane([card({ row: 'sent', ack: 'id m-7f3a92e0 · to Busytools/forge/w1' })]),
+    ]);
+
+    expect(drawn, 'the ack is on the row').toContain('id m-7f3a92e0');
+    expect(drawn, 'and names the seat it went to').toContain('to Busytools/forge/w1');
+  });
+
+  it('draws a failed delivery as the outgoing row, warn-toned', () => {
+    const drawn = draw([
+      lane([card({ row: 'failed', peer: 'companies', body: 'channel closed', status: 'failed' })]),
+    ]);
+
+    expect(drawn, 'the row says what happened, in the words').toContain(
+      'failed to deliver: channel closed',
+    );
+    expect(drawn, 'and keeps the outgoing mark').toContain('href="#i-plane"');
+    expect(drawn, 'with the warning tone on the title').toContain('class="tn warn"');
+  });
+
+  it('opens whoami onto this seat and list onto the seats it can reach', () => {
+    const drawn = draw([
+      lane([
+        card({
+          row: 'whoami',
+          peer: 'whoami',
+          seat: {
+            org: 'Busytools',
+            project: 'forge',
+            label: 'lead',
+            path: '/tmp/forge',
+            status: 'running',
+          },
+        }),
+        card({
+          id: 'm-2',
+          row: 'list',
+          peer: 'list',
+          seats: [
+            {
+              label: 'lead',
+              project: 'forge',
+              what: "the project's own agent",
+              liveness: 'running',
+            },
+            { label: 'w1', project: 'forge', what: 'review the diff', liveness: 'running' },
+          ],
+        }),
+      ]),
+    ]);
+
+    expect(drawn, 'whoami says what it is').toContain('whoami');
+    expect(drawn, 'and opens onto the seat').toContain('>Busytools<');
+    expect(drawn, 'its path').toContain('/tmp/forge');
+    expect(drawn, 'the list row names each seat').toContain('>w1<');
+    expect(drawn, 'with what it is for').toContain('review the diff');
   });
 });
 
