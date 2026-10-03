@@ -841,9 +841,9 @@ impl SessionTask {
                 };
                 // A worker's mission lives in its conversation, so a
                 // `/new` that emptied it would leave the worker running
-                // with no idea what it is for. The TUI builds the launch
-                // settings for a `/new` and knows nothing of the charter,
-                // so re-deliver the one the store holds for this slot.
+                // with no idea what it is for. The launch settings for a
+                // `/new` are built without it, so re-deliver the charter
+                // the store holds for this slot.
                 //
                 // Workers only. A lead's own instructions are appended to
                 // its prompt by the spawn, and the store holds no charter
