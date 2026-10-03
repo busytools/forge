@@ -60,8 +60,10 @@ pub struct SessionRecord {
     #[serde(default)]
     pub is_git_repo: Option<bool>,
     /// The MCP families the spawn's allowlist restricted this worker to,
-    /// exactly as the lead wrote them. `None` means every family, so a
-    /// row written before the field existed keeps its full surface.
+    /// canonicalised by the tool that wrote it (wire order, no
+    /// duplicates - both `agents__spawn` and `agents__update` validate).
+    /// `None` means every family, so a row written before the field
+    /// existed keeps its full surface.
     #[serde(default)]
     pub mcp_families: Option<Vec<String>>,
 }

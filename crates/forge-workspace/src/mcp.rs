@@ -145,7 +145,34 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
             parsed
         })
         .collect();
+    if requested.is_empty() {
+        // A row nothing valid survives from is corrupt, not a selection
+        // of nothing: fail open to every family the way an unreadable
+        // row does, never to agents-only beside six withheld lines.
+        tracing::warn!(
+            target: "forge_workspace::mcp",
+            event_name = "mcp_family_row_all_unknown",
+            "every stored mcp family name was unselectable; reading the row as every family",
+        );
+        return McpFamily::all();
+    }
     requested
+}
+
+/// The effective set: the stored selection resolved, then narrowed by
+/// what this forge's config can actually inject - the same gates the
+/// build applies, so the prompt's withheld lines cannot drift from the
+/// tools the session really gets. `[systemone]` off is the one config
+/// gate that removes a family outright today.
+pub(crate) fn effective_mcp_families(
+    stored: Option<&[String]>,
+    systemone_available: bool,
+) -> BTreeSet<McpFamily> {
+    let mut families = resolve_mcp_families(stored);
+    if !systemone_available {
+        families.remove(&McpFamily::Systemone);
+    }
+    families
 }
 
 /// The canonical stored form of a selection: names in wire order,
@@ -570,21 +597,79 @@ mod tests {
     /// One line per withheld family, in wire order; the present family
     /// gets none, and nothing withheld means no lines at all.
     #[test]
-    fn withheld_lines_name_each_missing_family_once() {
+    fn withheld_lines_are_pinned_verbatim() {
+        let none: BTreeSet<McpFamily> = BTreeSet::new();
+        assert_eq!(
+            withheld_family_lines(&none),
+            [
+                "This session has no `review__*` tools. Review threads for your work are handled through your lead - ask it to relay findings or to post your replies.",
+                "This session has no `cron__*` tools. You cannot schedule durable work; ask your lead to set up any recurring task.",
+                "This session has no `tasks__*` tools. The project task list is not yours to edit; report status to your lead instead.",
+                "This session has no `gotify__*` tools. Notifications from Gotify do not reach you; your lead carries anything urgent.",
+                "This session has no `slack__*` tools. Channel reads and posts go through your lead.",
+                "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.",
+            ],
+        );
+
         let slack_only: BTreeSet<McpFamily> = [McpFamily::Slack].into_iter().collect();
         let lines = withheld_family_lines(&slack_only);
         assert_eq!(lines.len(), 5, "five of the six families are withheld");
-        assert!(lines[0].contains("review__"), "wire order leads with review: {}", lines[0]);
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("systemone__") && line.contains("route it to your lead")),
-            "the systemone line routes decisions to the lead: {lines:?}"
-        );
         for line in &lines {
             assert!(!line.contains("slack__"), "the present family gets no line: {line}");
         }
         assert!(withheld_family_lines(&McpFamily::all()).is_empty(), "nothing withheld, no lines");
+    }
+
+    /// The config gate reaches the EFFECTIVE set - what the build injects
+    /// and what the prompt composer sees - so a selected-but-disabled
+    /// systemone reads as withheld on both.
+    #[test]
+    fn the_config_gate_reaches_the_effective_set() {
+        let selected = vec!["systemone".to_owned(), "tasks".to_owned()];
+        assert_eq!(
+            effective_mcp_families(Some(&selected), true),
+            [McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
+        );
+        assert_eq!(
+            effective_mcp_families(Some(&selected), false),
+            [McpFamily::Tasks].into_iter().collect(),
+            "a disabled [systemone] cannot be part of the effective set",
+        );
+
+        let all_without_config = effective_mcp_families(None, false);
+        assert!(!all_without_config.contains(&McpFamily::Systemone));
+        assert_eq!(all_without_config.len(), 5, "every other family stays");
+    }
+
+    /// The config gate reaches the COMPOSER too: a selected-but-disabled
+    /// systemone produces its withheld line, which is what the spawn
+    /// description promises a worker it was not given.
+    #[test]
+    fn a_disabled_systemone_still_produces_its_withheld_line() {
+        let selected = vec!["systemone".to_owned()];
+        let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
+        assert!(
+            !withheld_family_lines(&effective_mcp_families(Some(&selected), true)).contains(&line),
+            "with the section on, the family is present and gets no line",
+        );
+        assert!(
+            withheld_family_lines(&effective_mcp_families(Some(&selected), false)).contains(&line),
+            "[systemone] off is withheld for the worker's prompt as well as its tools",
+        );
+    }
+
+    /// A stored row holding only unselectable names is corrupt, not a
+    /// selection of nothing: it fails open to every family the way an
+    /// unreadable row does, never to agents-only beside six withheld
+    /// lines.
+    #[test]
+    fn an_all_corrupt_selection_fails_open() {
+        let corrupt = vec!["bogus".to_owned(), "agents".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&corrupt)),
+            McpFamily::all(),
+            "a row nothing valid survives from reads as absent",
+        );
     }
 
     /// The family set and the systemone client are independent gates: a
