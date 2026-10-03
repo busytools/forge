@@ -319,13 +319,25 @@ mod tests {
     #[tokio::test]
     async fn ask_noul_omits_absent_usage_from_the_output() {
         let mock = Arc::new(MockSystemOneFacade::new());
-        *mock.result.lock() = Some(Ok(AskOutcome { model: "m".to_owned(), answer: Answer::Noul { noul: 0.5 }, usage: None }));
+        *mock.result.lock() = Some(Ok(AskOutcome {
+            model: "m".to_owned(),
+            answer: Answer::Noul { noul: 0.5 },
+            usage: None,
+        }));
         let tool = AskNoul { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
 
-        assert!(!out.is_error, "a usage-less answer is still a delivered decision: {}", out.blocks[0].text);
-        assert!(!out.blocks[0].text.contains("usage"), "no invented usage block: {}", out.blocks[0].text);
+        assert!(
+            !out.is_error,
+            "a usage-less answer is still a delivered decision: {}",
+            out.blocks[0].text
+        );
+        assert!(
+            !out.blocks[0].text.contains("usage"),
+            "no invented usage block: {}",
+            out.blocks[0].text
+        );
         assert!(out.blocks[0].text.contains("\"noul\":0.5"), "{}", out.blocks[0].text);
     }
 
@@ -436,12 +448,20 @@ mod tests {
         let mock = Arc::new(MockSystemOneFacade::new());
         let answer = Answer::Score {
             score: 1.79,
-            probabilities: Some([("0".to_owned(), 0.1), ("1".to_owned(), 0.3), ("2".to_owned(), 0.6)].into_iter().collect()),
-            confidence: Some(0.5),
-            legend: Some(
-                [("0".to_owned(), "Routine".to_owned()), ("1".to_owned(), "Soon".to_owned()), ("2".to_owned(), "Urgent".to_owned())]
+            probabilities: Some(
+                [("0".to_owned(), 0.1), ("1".to_owned(), 0.3), ("2".to_owned(), 0.6)]
                     .into_iter()
                     .collect(),
+            ),
+            confidence: Some(0.5),
+            legend: Some(
+                [
+                    ("0".to_owned(), "Routine".to_owned()),
+                    ("1".to_owned(), "Soon".to_owned()),
+                    ("2".to_owned(), "Urgent".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
             ),
         };
         *mock.result.lock() = Some(Ok(outcome(answer)));
@@ -476,7 +496,11 @@ mod tests {
 
         let wide: serde_json::Map<String, serde_json::Value> =
             (0..255).map(|index| (format!("o{index}"), serde_json::Value::Null)).collect();
-        let out = choice.call(input(serde_json::json!({"state": "x", "instructions": "Which?", "criteria": wide}))).await;
+        let out = choice
+            .call(input(
+                serde_json::json!({"state": "x", "instructions": "Which?", "criteria": wide}),
+            ))
+            .await;
         assert!(!out.is_error, "255 options are accepted: {}", out.blocks[0].text);
 
         let score = AskScore { facade: mock.clone() };
@@ -562,7 +586,11 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("System One request failed: connection refused"), "{}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains("System One request failed: connection refused"),
+            "{}",
+            out.blocks[0].text
+        );
     }
 
     #[tokio::test]

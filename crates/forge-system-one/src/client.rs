@@ -62,9 +62,9 @@ impl SystemOneClient {
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
-        let response = request.send().await.map_err(transport_or_timeout)?;
+        let response = request.send().await.map_err(|err| transport_or_timeout(&err))?;
         let status = response.status();
-        let text = response.text().await.map_err(transport_or_timeout)?;
+        let text = response.text().await.map_err(|err| transport_or_timeout(&err))?;
         if !status.is_success() {
             return Err(SystemOneError::Http {
                 status: status.as_u16(),
@@ -96,7 +96,7 @@ impl SystemOneClient {
 /// A request failure reads as a timeout wherever it struck - the send
 /// or the body read - so a stalled connection never surfaces as a
 /// decode error.
-fn transport_or_timeout(err: reqwest::Error) -> SystemOneError {
+fn transport_or_timeout(err: &reqwest::Error) -> SystemOneError {
     if err.is_timeout() {
         SystemOneError::Timeout
     } else {
@@ -322,7 +322,8 @@ mod tests {
     /// timeout - not as a transport failure.
     #[tokio::test]
     async fn a_stalled_body_read_times_out() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
         let addr = listener.local_addr().expect("bound address");
         let hold = tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
@@ -410,7 +411,10 @@ mod tests {
         let (base, _) = spawn_server(500, &body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("500 is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("500 is an error");
 
         let (_, text) = http_error(err);
         assert!(text.starts_with("START "), "{text}");
@@ -427,7 +431,10 @@ mod tests {
         let (base, _) = spawn_server(500, &body, None).await;
         let client = client_for(&base, Some("k"));
 
-        let err = client.ask(&serde_json::json!("x"), &noul_question()).await.expect_err("500 is an error");
+        let err = client
+            .ask(&serde_json::json!("x"), &noul_question())
+            .await
+            .expect_err("500 is an error");
 
         let (_, text) = http_error(err);
         assert!(text.starts_with('A'), "{text}");
