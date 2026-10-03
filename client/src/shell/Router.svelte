@@ -78,7 +78,7 @@
          missing column from a quiet one. It is also where the composer's
          presence decides whether this client can answer the prompts it
          shows; absent it, the seat is subscribed as an observer. -->
-    <Session slot={route.slot} {connection} wire={home.wire}>
+    <Session slot={route.slot} {connection} wire={home.wire} mark={settings.mark}>
       {#snippet conversation(props)}
         <Chat {...props} />
       {/snippet}

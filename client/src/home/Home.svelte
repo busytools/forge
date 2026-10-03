@@ -2,6 +2,7 @@
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import Row from '../components/Row.svelte';
+  import { PROTOCOL_VERSION } from '../protocol';
   import type { HomeWire } from '../wire/home';
   import { countsOf, homeView } from './view';
 
@@ -49,6 +50,9 @@
       <!-- The forge build serving the socket, not this app's own version:
            the header states which forge is running. -->
       <b>v{view.header.version}</b>
+      <!-- What this app speaks on the socket: the client and a server that
+           disagrees on it refuse each other, so it reads beside the builds. -->
+      {' \u{b7} '}socket {PROTOCOL_VERSION}
       {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}
       {#if view.header.update}{' \u{b7} '}<span class="upd"
           >{'\u{2191}'} v{view.header.update} available</span

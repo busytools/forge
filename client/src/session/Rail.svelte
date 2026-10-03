@@ -143,6 +143,7 @@
     {/if}
     <div class="vers">
       <div class="v">forge v{foot.versions.forge}</div>
+      <div class="v">socket v{foot.versions.socket}</div>
       {#if foot.versions.claude !== null}
         <div class="v">
           <!-- The space between the version and the arrow is part of the row,

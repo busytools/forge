@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Gate, HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
@@ -62,6 +63,15 @@ describe('the home page as it draws', () => {
    * an ordinary machine whose CLI is current reads `claude 2.1.280 · up
    * v2.1.280 available`.
    */
+  /**
+   * The socket protocol reads with the two builds it binds: the client and a
+   * server that disagrees on it refuse each other (`socket.ts` checks the
+   * greeting), so the number belongs where a mismatch would be looked for.
+   */
+  it('names the socket protocol in the header', () => {
+    expect(draw(), 'the protocol this app speaks').toContain(`socket ${PROTOCOL_VERSION}`);
+  });
+
   it('announces an update only when the published version is newer', () => {
     expect(draw({ wire: withCli('2.1.280', '2.1.290') })).toContain('available');
     expect(
