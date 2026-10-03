@@ -7,6 +7,7 @@
   import { slotOf } from '../protocol';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
+  import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
@@ -435,7 +436,7 @@
     // that prompt's lifecycle frames only under a client-supplied uuid, and
     // the queued row the core echoes back carries the same id - so this send,
     // its row and its frames are one thing by id, never by order or text.
-    const uuid = crypto.randomUUID();
+    const uuid = mintPromptId();
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
