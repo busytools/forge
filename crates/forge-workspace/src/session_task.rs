@@ -206,6 +206,18 @@ impl SessionTask {
                     tasks: guard.background_tasks.clone(),
                 });
             }
+            if moved.commands {
+                self.emit(SessionUpdate::SlashCommandsChanged {
+                    key: self.key.clone(),
+                    commands: guard.available_commands.clone(),
+                });
+            }
+            if moved.agents {
+                self.emit(SessionUpdate::SubagentsChanged {
+                    key: self.key.clone(),
+                    subagents: guard.available_agents.clone(),
+                });
+            }
             if moved.processes {
                 self.emit(SessionUpdate::ProcessesChanged {
                     key: self.key.clone(),
@@ -1388,6 +1400,8 @@ pub(crate) struct Moved {
     pub monitors: bool,
     pub background_tasks: bool,
     pub processes: bool,
+    pub commands: bool,
+    pub agents: bool,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1405,6 +1419,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_monitors = domain.monitors.clone();
     let held_tasks = domain.background_tasks.clone();
     let held_walk = domain.process_snapshot.is_some();
+    let held_commands = domain.available_commands.clone();
+    let held_agents = domain.available_agents.clone();
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1640,6 +1656,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         monitors: domain.monitors != held_monitors,
         background_tasks: domain.background_tasks != held_tasks,
         processes: held_walk && domain.process_snapshot.is_none(),
+        commands: domain.available_commands != held_commands,
+        agents: domain.available_agents != held_agents,
     }
 }
 
@@ -3605,6 +3623,110 @@ provider = "anthropic"
             }
         }
         announced
+    }
+
+    /// The command catalogues these updates announced, in the order they went out.
+    fn announced_commands(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<Vec<forge_primitives::runtime::AvailableCommand>> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::SlashCommandsChanged { commands, .. } = update {
+                announced.push(commands);
+            }
+        }
+        announced
+    }
+
+    /// The agent catalogues these updates announced, in the order they went out.
+    fn announced_agents(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<Vec<forge_primitives::runtime::AvailableAgent>> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::SubagentsChanged { subagents, .. } = update {
+                announced.push(subagents);
+            }
+        }
+        announced
+    }
+
+    /// The `/` menu's catalogue moves on the frames that can move it - a turn's
+    /// init and a plugin reload's `commands_changed` - and a frame that leaves
+    /// it as it was says nothing.
+    ///
+    /// **The no-move half is what a turn's init makes necessary.** The CLI
+    /// re-fires init every turn, so the case the composer would pay for most
+    /// often is the same list again.
+    #[test]
+    fn a_command_catalogue_that_moved_is_announced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(sdk_message(init_frame(&["/help"], &[])));
+        let announced = announced_commands(&mut updates);
+        assert_eq!(announced.len(), 1, "the init that fills the catalogue announces it");
+        assert_eq!(
+            announced[0],
+            task.domain.lock().available_commands,
+            "and what it announces is what the core holds",
+        );
+
+        task.translate_event(sdk_message(result_message("success", false)));
+        task.translate_event(sdk_message(init_frame(&["/help"], &[])));
+        assert_eq!(
+            announced_commands(&mut updates).len(),
+            0,
+            "a turn's init repeating the same list is not a move, so nothing is announced",
+        );
+
+        task.translate_event(sdk_message(forge_primitives::Message::CommandsChanged {
+            commands: vec![serde_json::json!({"name": "/reload", "description": "Reloaded"})],
+            uuid: "cmd-uuid".to_owned(),
+            session_id: "s".to_owned(),
+        }));
+        let reloaded = announced_commands(&mut updates);
+        assert_eq!(reloaded.len(), 1, "the reload's list is a move");
+        assert_eq!(reloaded[0], task.domain.lock().available_commands);
+    }
+
+    /// The agent catalogue moves on the one frame that carries it, and an init
+    /// that advertises what the last turn did says nothing.
+    #[test]
+    fn an_agent_catalogue_that_moved_is_announced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(sdk_message(init_frame(&[], &["reviewer"])));
+        let announced = announced_agents(&mut updates);
+        assert_eq!(announced.len(), 1, "the init that fills the catalogue announces it");
+        assert_eq!(
+            announced[0],
+            task.domain.lock().available_agents,
+            "and what it announces is what the core holds",
+        );
+
+        task.translate_event(sdk_message(result_message("success", false)));
+        task.translate_event(sdk_message(init_frame(&[], &["reviewer"])));
+        assert_eq!(
+            announced_agents(&mut updates).len(),
+            0,
+            "an init repeating the same catalogue is not a move, so nothing is announced",
+        );
+
+        task.translate_event(sdk_message(result_message("success", false)));
+        task.translate_event(sdk_message(init_frame(&[], &["reviewer", "researcher"])));
+        let grown = announced_agents(&mut updates);
+        assert_eq!(grown.len(), 1, "an agent the CLI started advertising is a move");
+        assert_eq!(grown[0], task.domain.lock().available_agents);
     }
 
     /// The monitor set moves on discrete task frames, so the frame that moved

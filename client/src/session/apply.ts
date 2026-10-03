@@ -139,6 +139,18 @@ export const HANDLERS: Record<string, Apply> = {
     return processes === null ? held : { ...held, processes };
   },
 
+  // The CLI's catalogues, each carried whole under the frame's own name. They
+  // are the rows `sessionFrom` keeps raw, so the same `list` narrows both.
+  slash_commands_changed: (held, payload) => ({
+    ...held,
+    slash_commands: list(payload['commands']),
+  }),
+
+  subagents_changed: (held, payload) => ({
+    ...held,
+    subagents: list(payload['subagents']),
+  }),
+
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
@@ -331,16 +343,11 @@ export const IGNORED: readonly string[] = [
  * only these from it. That is what keeps a poll from reverting a pushed row,
  * since an answer is encoded before a frame lands and applied after it.
  *
- * Four remain: the CLI's catalogue pair, the composer's file list and the
- * record's own dispatch answer. Each pushed set left this list as its handler
- * landed, and this list is what retires the tick once nothing is on it.
+ * Two remain: the composer's file list and the record's own dispatch answer.
+ * Each pushed set left this list as its handler landed, and this list is what
+ * retires the tick once nothing is on it.
  */
-export const UNFED: readonly (keyof SessionRecord)[] = [
-  'has_dispatches',
-  'slash_commands',
-  'subagents',
-  'file_index',
-];
+export const UNFED: readonly (keyof SessionRecord)[] = ['has_dispatches', 'file_index'];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */
 export function applyUpdate(held: SessionRecord, update: SessionUpdate): SessionRecord {

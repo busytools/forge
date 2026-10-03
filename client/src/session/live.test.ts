@@ -1057,8 +1057,8 @@ describe('the seat the client holds between visits', () => {
 });
 
 /**
- * The fields the merge still takes from a poll - the composer's three lists
- * and the record's own dispatch answer - are the reason a page cannot simply
+ * The fields the merge still takes from a poll - the composer's file list and
+ * the record's own dispatch answer - are the reason a page cannot simply
  * follow the stream for every field: no frame this build handles carries them.
  * A slow read is what keeps them honest, and a field leaves the list when a
  * handler for its frame lands.
@@ -1130,8 +1130,8 @@ describe('the slow read for the fields still unfed', () => {
 
   /**
    * **Every field still on the merge's list moves on a poll, and there are
-   * four.** One pinned would leave three silent if an edit dropped them from
-   * the list believing them fed.
+   * two.** One pinned would leave the other silent if an edit dropped it from
+   * the list believing it fed.
    */
   it('takes every field still unfed from what the poll answered with', () => {
     const cases: {
@@ -1147,20 +1147,6 @@ describe('the slow read for the fields still unfed', () => {
         fresh: { has_dispatches: true },
         moved: (wire) => wire.has_dispatches,
         expect: true,
-      },
-      {
-        what: 'command catalogue',
-        stale: { slash_commands: [] },
-        fresh: { slash_commands: [{ name: 'compact' }] },
-        moved: (wire) => wire.slash_commands.length,
-        expect: 1,
-      },
-      {
-        what: 'agent catalogue',
-        stale: { subagents: [] },
-        fresh: { subagents: [{ name: 'reviewer' }] },
-        moved: (wire) => wire.subagents.length,
-        expect: 1,
       },
       {
         what: 'file list',
@@ -1300,6 +1286,20 @@ describe('the slow read for the fields still unfed', () => {
         frame: { processes_changed: { key: LEAD, snapshot: walk } },
         moved: (wire) => wire.processes?.scanned_at.secs_since_epoch,
         fresh: 2,
+      },
+      {
+        what: 'command catalogue',
+        stale: { slash_commands: [] },
+        frame: { slash_commands_changed: { key: LEAD, commands: [{ name: 'compact' }] } },
+        moved: (wire) => wire.slash_commands.length,
+        fresh: 1,
+      },
+      {
+        what: 'agent catalogue',
+        stale: { subagents: [] },
+        frame: { subagents_changed: { key: LEAD, subagents: [{ name: 'reviewer' }] } },
+        moved: (wire) => wire.subagents.length,
+        fresh: 1,
       },
     ];
 

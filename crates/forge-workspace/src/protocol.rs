@@ -1167,6 +1167,25 @@ pub enum SessionUpdate {
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },
+    /// The `/` menu's catalogue moved, as the whole list the core holds.
+    ///
+    /// **Pushed rather than read.** The CLI advertises it on a turn's init and
+    /// re-sends it when a plugin changes it (`commands_changed`), so the frame
+    /// that moved it announces it and a turn's init repeating the same list
+    /// says nothing.
+    SlashCommandsChanged {
+        key: SessionSlot,
+        commands: Vec<forge_primitives::runtime::AvailableCommand>,
+    },
+    /// The agent-type catalogue moved, as the whole list the core holds.
+    ///
+    /// **Pushed rather than read.** The CLI advertises it on a turn's init,
+    /// once per turn, so this is that one frame - and an init that repeats the
+    /// list the last turn advertised says nothing.
+    SubagentsChanged {
+        key: SessionSlot,
+        subagents: Vec<forge_primitives::runtime::AvailableAgent>,
+    },
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
@@ -1439,6 +1458,8 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::SlashCommandsChanged { key, .. }
+            | Self::SubagentsChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
             | Self::BackgroundTasksChanged { key, .. }
@@ -1566,6 +1587,16 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::SlashCommandsChanged { key, commands } => f
+                .debug_struct("SlashCommandsChanged")
+                .field("key", key)
+                .field("count", &commands.len())
+                .finish(),
+            Self::SubagentsChanged { key, subagents } => f
+                .debug_struct("SubagentsChanged")
+                .field("key", key)
+                .field("count", &subagents.len())
+                .finish(),
             Self::ProcessesChanged { key, snapshot } => f
                 .debug_struct("ProcessesChanged")
                 .field("key", key)
