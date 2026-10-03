@@ -707,6 +707,26 @@ describe('the box', () => {
     });
   });
 
+  /**
+   * A seat switch leaves the keyboard in the box, which is the page's resting
+   * focus (#1669): nothing on a switch steals the caret. The composer stays
+   * mounted across a switch, so the field a reader was typing in is the field
+   * they are typing in still - and that is exactly what this pins, that no
+   * effect keyed on the seat grabs the keyboard or lets it go. A remount would
+   * re-run the mount's own focus effect and the caret would never reach the
+   * body, which is the draft tests' ground rather than this one's.
+   */
+  it('leaves the keyboard in the box across a seat switch', () => {
+    const harness = open();
+    expect(document.activeElement, 'the box starts with the keyboard').toBe(field());
+
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+
+    expect(document.activeElement, 'and still has it after the switch').toBe(field());
+  });
+
   it('names the slash command a turn is still working on', () => {
     const harness = open();
     type('/compact');
@@ -789,6 +809,24 @@ describe('the key', () => {
     );
     flushSync();
   }
+
+  it('brings the keyboard to the box before the take starts', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    // The reader's hands are elsewhere - a rail link, the mic button, the body
+    // - and the shortcut is meant to move the focus to the box first, so the
+    // transcript lands where the keys would (#1669's third transition).
+    field().blur();
+    expect(document.activeElement, 'the control starts with the caret off the box').not.toBe(
+      field(),
+    );
+
+    key('ControlRight', 'keydown');
+    expect(document.activeElement, 'the start brings the keyboard to the box').toBe(field());
+    expect(harness.sent, 'and only then starts listening').toHaveLength(1);
+  });
 
   it('starts a take on the bound key, and transcribes it when the key is held', () => {
     vi.useFakeTimers();
