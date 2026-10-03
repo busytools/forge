@@ -234,7 +234,13 @@
               {#each card.seats as seat (`${seat.org}/${seat.project}/${seat.label}`)}
                 <div class="kv">
                   <span class="k">{seat.label}</span>
-                  <span class="v">{seat.project} &#183; {seat.what} &#183; {seat.liveness}</span>
+                  <!-- A project's own agent has no activity to report, so its
+                       row is two facts and no trailing separator. -->
+                  <span class="v"
+                    >{seat.project} &#183; {seat.what}{seat.liveness === ''
+                      ? ''
+                      : ` \u{b7} ${seat.liveness}`}</span
+                  >
                 </div>
               {/each}
             </div>

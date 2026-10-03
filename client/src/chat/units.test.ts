@@ -1103,7 +1103,7 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual(['lead', 'reviewer', 'client-dev', 'lead']);
     expect(
       seats.map((seat) => seat.what),
-      'the reader own seat alone names itself',
+      "the reader's own seat alone names itself",
     ).toEqual([
       "the project's own agent",
       'this session',
@@ -1114,6 +1114,30 @@ describe('one turn folded into the units a view draws', () => {
       seats.map((seat) => seat.liveness),
       'a worker carries its activity, lowercased; an agent carries none',
     ).toEqual(['', 'idle', 'running', '']);
+
+    // **The same four rows read by a LEAD**, which is what pins both halves of
+    // the comparison. The reader's label is `lead` here, so a comparison on the
+    // label alone would call `companies`' agent the seat being read; and its
+    // project's workers share the org and project, so a comparison on those
+    // alone would call all three of them that.
+    const [asLead] = fold([call, answer], {
+      org: 'Busytools',
+      project: 'forge',
+      label: 'lead',
+    });
+    const leadSeats = traffic(asLead)[0]?.cards[0]?.seats ?? [];
+
+    expect(
+      leadSeats[3]?.what,
+      "a row sharing the reader's label but not its project is another project, so the label alone is not the seat",
+    ).toBe('another project');
+    expect(
+      leadSeats.slice(1, 3).map((seat) => seat.what),
+      "and the reader's project's workers are not the seat either, so org and project alone are not it",
+    ).toEqual([
+      'review the diff',
+      'Hold the client loop for this stretch of work, from the fold\u{2026}',
+    ]);
   });
 
   it('shows the refusal a failed send came back with, not the message that was sent', () => {

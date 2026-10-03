@@ -167,6 +167,70 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     expect(drawn, "and a project that is not the reader's says that").toContain('another project');
   });
 
+  it('draws an agent row as two facts and a worker row as three', () => {
+    // A project's own agent has no activity to report, so its row carries the
+    // seat and what it is for - and a row that printed the third clause
+    // unconditionally ended in a dangling separator.
+    const drawn = draw([
+      lane([
+        card({
+          id: 'm-1',
+          row: 'list',
+          peer: 'list',
+          seats: [
+            {
+              org: 'Busytools',
+              label: 'lead',
+              project: 'forge',
+              what: 'this session',
+              liveness: '',
+            },
+            {
+              org: 'Busytools',
+              label: 'w1',
+              project: 'forge',
+              what: 'review the diff',
+              liveness: 'idle',
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    const values = [...drawn.matchAll(/<span class="v">(.*?)<\/span>/g)].map(
+      (match) => match[1] ?? '',
+    );
+    expect(values[0], "the agent's row is its project and what it is for").toContain(
+      'forge \u{b7} this session',
+    );
+    expect(values[0], 'with nothing dangling after it').not.toContain('this session \u{b7}');
+    expect(values[1], "and the worker's keeps its activity").toContain(
+      'forge \u{b7} review the diff \u{b7} idle',
+    );
+  });
+
+  it('draws a failure with no reason as the row alone, and never the message sent', () => {
+    // A refusal that carried no words has nothing to put under the row, and
+    // falling back to the sent text would say the words arrived. Pinned here
+    // because the fold's own test does not draw.
+    const drawn = draw([
+      lane([
+        card({
+          id: 'm-1',
+          row: 'failed',
+          peer: 'companies',
+          body: '',
+          status: 'failed',
+        }),
+      ]),
+    ]);
+
+    const at = drawn.indexOf('<span class="tn');
+    const title = drawn.slice(at, drawn.indexOf('<svg', at));
+    expect(title, 'the row says what happened').toContain('failed to deliver:');
+    expect(title, 'and carries no message under it').not.toContain('picking it up');
+  });
+
   /**
    * **Every project's own agent is labelled `lead`**, so the ordinary
    * unfiltered `list` - the documented health check - carries two rows with

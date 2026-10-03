@@ -541,10 +541,10 @@ mod tests_options_build {
         let pred = opts.auto_approve_tool.expect("predicate stored");
         assert!(pred("mcp__forge__agents__whoami"));
         assert!(pred("mcp__forge__agents__send_message"));
+        assert!(pred("mcp__forge__agents__list"));
         // The lead-only verbs live under the same `mcp__forge__`
         // namespace - auto-approve must cover them with one predicate.
         assert!(pred("mcp__forge__agents__spawn"));
-        assert!(pred("mcp__forge__agents__list"));
         assert!(pred("mcp__forge__agents__capacity"));
         assert!(pred("mcp__forge__agents__update"));
         assert!(pred("mcp__forge__agents__despawn"));

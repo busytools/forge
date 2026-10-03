@@ -1036,10 +1036,10 @@ function seatFacts(result: Block | undefined): SeatFacts | null {
  * reader's own project's if only the project matches, and another project's
  * otherwise; every other row is a worker and carries the phrase of its charter.
  *
- * **Two of the four facts depend on the shape.** A project's agent has no
- * activity to report, so its liveness is empty; a worker's comes from
- * `activity`, which is the axis that keeps moving, not from the spawn outcome
- * `status` freezes at `Running`.
+ * **What a row is for and its liveness both depend on the shape.** A
+ * project's agent has no activity to report, so its liveness is empty; a
+ * worker's comes from `activity`, which is the axis that keeps moving, not
+ * from the spawn outcome `status` freezes at `Running`.
  */
 function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
   const answer = resultJson(result);

@@ -380,7 +380,7 @@ mod tests {
         // cannot pass; the second is a floor, so an empty listing cannot.
         assert!(
             !files.is_empty() && files.len() == listed,
-            "read {} of {listed} tracked .rs/.md files, so the scan is not the tree it claims",
+            "read {} of {listed} tracked source files, so the scan is not the tree it claims",
             files.len(),
         );
         assert!(
