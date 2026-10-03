@@ -1655,8 +1655,12 @@ pub enum DispatchError {
     /// A Slack answer named a draft the registry does not hold. Its own
     /// word rather than [`Self::NoPromptWaiting`]'s: a draft is answered by
     /// its own id and names no tool call, and this line is drawn where the
-    /// dock stood.
-    #[error("that Slack draft is no longer waiting: it has been answered, or it expired")]
+    /// dock stood. The three endings are the whole set a draft can have -
+    /// answered, expired, or its asking session gone - so the line names
+    /// them rather than guessing which one.
+    #[error(
+        "that Slack draft is no longer waiting: it has been answered, it expired, or its asking session went away"
+    )]
     NoDraftWaiting { key: SessionSlot, id: Uuid },
 }
 

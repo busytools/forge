@@ -269,7 +269,7 @@ async fn handle_client(
                         send(
                             socket,
                             ServerMessage::Error {
-                                what: "dispatch".to_owned(),
+                                what: refusal_tag(&refusal).to_owned(),
                                 why: refusal.to_string(),
                             },
                         )
@@ -511,18 +511,12 @@ async fn dispatch_answering(
         other => match state.surface.dispatch(other) {
             Ok(()) => Ok(()),
             Err(refusal) => {
-                // A refusal names the operation it is about: `dispatch` alone
-                // cannot tell a client which of its commands was refused, and
-                // an answer to a draft that is gone has to be drawn where
-                // that draft's dock stood rather than as whatever else the
-                // client had in flight.
-                let what = match &refusal {
-                    DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
-                    _ => "dispatch",
-                };
                 send(
                     socket,
-                    ServerMessage::Error { what: what.to_owned(), why: refusal.to_string() },
+                    ServerMessage::Error {
+                        what: refusal_tag(&refusal).to_owned(),
+                        why: refusal.to_string(),
+                    },
                 )
                 .await
             }
@@ -547,6 +541,19 @@ fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>
             configured: catalog.configured,
         },
         Err(why) => ServerMessage::Error { what: "devices".to_owned(), why },
+    }
+}
+
+/// The operation a dispatch refusal names, which a client routes by.
+///
+/// `dispatch` alone does not say which of a client's commands was refused,
+/// and an answer to a draft the core no longer holds is drawn where that
+/// draft's dock stood - the dock itself is gone by then. Every arm that
+/// refuses a dispatch builds the tag here, so the two cannot drift.
+fn refusal_tag(refusal: &DispatchError) -> &'static str {
+    match refusal {
+        DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+        _ => "dispatch",
     }
 }
 
