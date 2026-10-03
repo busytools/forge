@@ -360,7 +360,7 @@ are not injected into any session.
 |---|---|---|---|
 | `enabled` | boolean | no | Defaults to `true`. `false` keeps the section (and the key) without injecting the tools. |
 | `base_url` | string | yes | The endpoint's base. forge appends `/v1/systemone`, or `/systemone` when the base already ends in `/v1`. |
-| `api_key` | string | no | Sent as a bearer token when set; omit it for keyless local hosts (Ollama, Laya). |
+| `api_key` | string | no | Sent as a bearer token when set; omit it for keyless local hosts such as Ollama. |
 | `model` | string | yes | The model every call asks, e.g. `jev-latest`. |
 | `timeout_ms` | integer | no | Per-request timeout in milliseconds; defaults to 30000. |
 
