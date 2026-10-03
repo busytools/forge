@@ -474,6 +474,46 @@ function openSection(name: string): void {
 }
 
 /**
+ * The painted frames a page waits for, run by hand.
+ *
+ * **The waiting is half of what these cases are about**, so a case has to be
+ * able to say when a frame paints. jsdom does provide `requestAnimationFrame` -
+ * vitest builds its window with `pretendToBeVisual` - but on a timer of its
+ * own, so a publish would land whenever that clock said. The queue here is the
+ * test's, and `paint()` is the paint.
+ */
+let frames = new Map<number, () => void>();
+let nextFrame = 1;
+
+/** Take the global frame callbacks over, so `paint()` is the only clock. */
+function stubFrames(): void {
+  frames = new Map();
+  nextFrame = 1;
+  const global = globalThis as {
+    requestAnimationFrame?: (callback: FrameRequestCallback) => number;
+    cancelAnimationFrame?: (id: number) => void;
+  };
+  global.requestAnimationFrame = (callback) => {
+    const id = nextFrame;
+    nextFrame += 1;
+    frames.set(id, () => callback(0));
+    return id;
+  };
+  global.cancelAnimationFrame = (id) => {
+    frames.delete(id);
+  };
+}
+
+/** Paint one frame: everything waiting for one runs, in the order it asked. */
+function paint(): void {
+  const waiting = [...frames.values()];
+  frames.clear();
+  for (const run of waiting) run();
+}
+
+beforeEach(stubFrames);
+
+/**
  * One seat's stream, without a socket.
  *
  * **The page's own work is the question here**, and a real socket cannot be
@@ -488,6 +528,13 @@ interface Watching {
   wentTo(next: ConnectionStatus): void;
   /** How many times the page asked the server for the session again. */
   reads(): number;
+  /**
+   * How many times the store handed its readers the record.
+   *
+   * A subscribe is handed the value the store holds, so the count starts at
+   * one and a case reads the rest against a baseline it took itself.
+   */
+  publishes(): number;
   /** What the page currently holds. */
   read(): SessionRead;
   stop(): void;
@@ -495,11 +542,15 @@ interface Watching {
 
 function watch(connection: Driveable, slot: SessionSlot = LEAD): Watching {
   const view = watchSession(connection, slot, true);
-  const stop = view.subscribe(() => {});
+  let publishes = 0;
+  const stop = view.subscribe(() => {
+    publishes += 1;
+  });
   return {
     land: (message) => connection.land(message),
     wentTo: (next) => connection.wentTo(next),
     reads: () => connection.reads(),
+    publishes: () => publishes,
     read: () => get(view),
     stop,
   };
@@ -659,6 +710,21 @@ function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
   };
 }
 
+/**
+ * Every word a record's turns carry, in the order its frames arrived.
+ *
+ * The record holds wire frames as they came, typed `unknown`, so the shape
+ * `spoke` built is narrowed here rather than restated by the production types.
+ */
+function spoken(page: Watching): string[] {
+  return (page.read().wire?.conversation.turns ?? []).flatMap((turn) =>
+    turn.messages.map((frame) => {
+      const content = (frame as { message?: { content?: { text?: string }[] } }).message?.content;
+      return (content ?? []).map((part) => part.text ?? '').join('');
+    }),
+  );
+}
+
 describe('the record a page holds over an update stream', () => {
   it('applies an update for this seat instead of asking for the session again', () => {
     const connection = drivable();
@@ -668,10 +734,72 @@ describe('the record a page holds over an update stream', () => {
     const asked = page.reads();
 
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
 
     expect(page.read().wire, 'the update never reached the record').not.toBe(before);
     expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
     expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
+    page.stop();
+  });
+
+  /**
+   * **A burst of updates is one redraw.** The record moves on every frame, and
+   * a page is handed the record once per painted frame - so a stream arriving
+   * faster than the display refreshes costs one redraw rather than one per
+   * update, with nothing dropped and the order kept.
+   */
+  it('publishes a burst of updates as one painted frame', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const published = page.publishes();
+
+    for (const word of ['one', 'two', 'three']) {
+      page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke(word) } }));
+    }
+
+    expect(page.publishes(), 'a frame published before the paint').toBe(published);
+    paint();
+    expect(page.publishes(), 'the burst cost a publish per update').toBe(published + 1);
+    expect(spoken(page), 'the burst was not published whole, or not in order').toEqual([
+      'one',
+      'two',
+      'three',
+    ]);
+
+    // And the queue is armed again by the next frame rather than spent on the
+    // first paint: a stream is many of these, not one.
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('four') } }));
+    paint();
+    expect(page.publishes(), 'the queue published once and stopped').toBe(published + 2);
+    expect(spoken(page), 'a frame after the first paint was lost').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+    ]);
+    page.stop();
+  });
+
+  /**
+   * **The record moves when the frame arrives and only the redraw waits.** A
+   * poll's answer lands in between and merges into the held record, so a fold
+   * deferred to the paint would be read past by that answer - the frame dropped
+   * and the conversation walked backwards.
+   */
+  it('folds a frame into the held record before it is published', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('held') } }));
+
+    // A poll's answer, encoded before the frame landed.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    paint();
+
+    expect(spoken(page), 'the frame was folded at the paint rather than on arrival').toEqual([
+      'held',
+    ]);
     page.stop();
   });
 
@@ -695,6 +823,7 @@ describe('the record a page holds over an update stream', () => {
         },
       }),
     );
+    paint();
 
     expect(
       page.read().wire?.dictate_overrides,
@@ -739,6 +868,7 @@ describe('the record a page holds over an update stream', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
     expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
     page.wentTo('closed');
@@ -804,6 +934,24 @@ describe('the record a page holds over an update stream', () => {
     ).toHaveLength(1);
     expect(connection.reads(), 'the return asked the server for the seat again').toBe(asked);
     expect(connection.subscribes(), 'the return subscribed the seat a second time').toBe(1);
+    back.stop();
+  });
+
+  /**
+   * **A record still waiting for a frame is handed over when the page goes.**
+   * No frame paints for a page that has left, so a frame that arrived before
+   * the leave and would have been published at the next paint is published by
+   * the leave itself - and that is the record a return draws.
+   */
+  it('hands a record waiting for a frame over when the page leaves', () => {
+    const connection = drivable();
+    const showing = watch(connection);
+    showing.land(snapshotOf(LEAD));
+    showing.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('held') } }));
+    showing.stop();
+
+    const back = watch(connection);
+    expect(spoken(back), 'the frame the leave cut short was lost').toEqual(['held']);
     back.stop();
   });
 });
@@ -874,6 +1022,7 @@ describe('the seat the client holds between visits', () => {
     const away = watch(connection);
     away.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
     away.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
     expect(away.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
     away.stop();
 
@@ -901,7 +1050,10 @@ describe('the seat the client holds between visits', () => {
  */
 describe('the slow read for what no update carries', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    // The frame queue above is the test's own, so the clock leaves the two
+    // callbacks alone: faked, a paint would land on the fake clock's schedule
+    // and a case could not say when.
+    vi.useFakeTimers({ toNotFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
   });
 
   afterEach(() => {
@@ -974,6 +1126,7 @@ describe('the slow read for what no update carries', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
     expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
     // A poll asks for the nine while the seat is still this occupant's.
@@ -1013,6 +1166,7 @@ describe('the slow read for what no update carries', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
     page.land(updateOf(occupant('new')));
     expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
 
@@ -1032,6 +1186,7 @@ describe('the slow read for what no update carries', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
 
     page.land(updateOf(occupant('new')));
     // An error names no subject, so it is not this seat's record - and it must
@@ -1118,6 +1273,7 @@ describe('the slow read for what no update carries', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    paint();
     const advanced = page.read().wire;
 
     // A poll's answer, taken before the frame landed: its conversation is
