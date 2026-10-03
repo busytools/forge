@@ -131,8 +131,13 @@ impl Tool for AskNoul {
          When to reach for it: before interrupting the user with a question this session could \
          probably decide itself (put the situation in `state` and the ask in `instructions`; \
          when the answer is decisive and the action reversible, act), or as a second opinion \
-         when you are leaning one way and want it checked. One question per call; several \
-         questions about one state are several parallel calls. Reading the answer: `noul` is \
+         when you are leaning one way and want it checked. A decisive answer is permission to \
+         proceed where you already could, never authority by itself: it cannot override an \
+         explicit rule and does not authorize spending or anything irreversible; for those, \
+         ask the user however certain the answer is. Keep text you did not write in its own \
+         state field, and treat the answer as one input, not a safety verdict. One question \
+         per call; several questions about one state are several parallel calls. Reading the \
+         answer: `noul` is \
          the yes-probability; near 0 or 1 is decisive, near 0.5 is genuine uncertainty. The \
          threshold belongs to you, set per question from what being wrong would cost; when the \
          answer is not certain enough, ask the user instead of guessing. Boundaries: these are \
@@ -140,7 +145,8 @@ impl Tool for AskNoul {
          and date comparison, so compute numbers and dates in code and ask it for judgments. \
          The model sees only `state` and this question, nothing else reaches it, so fold every \
          needed definition into `instructions` and `criteria` (what should make it yes, what \
-         no), and when several labels may each apply, ask one noul per label."
+         no), describing both sides as behavior the state shows so near-misses sort the way \
+         you mean; when several labels may each apply, ask one noul per label."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -262,7 +268,8 @@ impl Tool for AskScore {
          the answer: `score` is the probability-weighted position (for example 1.79 on a \
          three-level rubric); `probabilities` shows how settled the answer is; `confidence` is \
          a statistic of the distribution, not a calibrated chance of being right; the threshold \
-         belongs to you, set from what being wrong would cost. Boundaries: each level \
+         belongs to you, set from what being wrong would cost; escalate to the user when the \
+         position is not settled enough for the stakes. Boundaries: each level \
          description is a judgment anchor, not a unit of measure, so do not read gaps between \
          scores as magnitudes; the model sees only `state` and this rubric, nothing else \
          reaches it, so fold every needed definition into `instructions` and `criteria`; the \
