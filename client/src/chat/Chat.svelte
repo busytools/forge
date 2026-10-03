@@ -403,6 +403,12 @@
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
+      // **And so is the follow, which is why the entry re-arms it** (#1673):
+      // a seat's conversation is kept, and its follow flag was kept with it -
+      // so a seat left scrolled up came back with the pass returning early
+      // and the reader landing wherever the old offset fell. A place belongs
+      // to the visit; every entry lands at the latest.
+      working?.following(true);
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here: left
       // standing they hold `shift` on, which is the guard that keeps the
@@ -478,7 +484,8 @@
   });
 
   /**
-   * What the follow watches: the newest row, and the line that grows it.
+   * What the follow pass runs on: the seat, the newest turn, and the line that
+   * grows it.
    *
    * **The compaction line is part of the last row and arrives as a PROP**, not
    * as a frame, so a flip alone grows that row by its height with no scroll
@@ -486,8 +493,17 @@
    * happens to land, which on a session with no hooks is never. The line then
    * draws with its baseline below the fold for the whole compaction. Keyed
    * here so the follow re-sticks when the line appears.
+   *
+   * **And the seat travels in the key as consistency, not as the mechanism**:
+   * what re-runs the pass on a switch is the arriving conversation's own
+   * record being published to the column, which the effect watches (measured:
+   * six constructions tried, none where the key decides) - so the seat is in
+   * the key so two seats with the same number of turns cannot collide, belt
+   * and braces beside the publish that does the work (#1673).
    */
-  const follows = $derived(held.turns.length === 0 ? null : `${held.turns.length}:${compacting}`);
+  const follows = $derived(
+    held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,
+  );
 
   /**
    * The newest turn's own report row - the unit, and the figures in it -

@@ -403,6 +403,72 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN, PIN]);
   });
 
+  it('lands back at the foot when the reader returns to a seat they left scrolled up', async () => {
+    // **A place belongs to the visit, not to the seat** (#1673). A seat's
+    // conversation is kept, and its follow flag was kept with it - so a seat
+    // left scrolled up came back with `following: false`, the follow pass
+    // returned early, and the reader landed wherever the old offset fell in
+    // the history. Every entry lands at the latest. The terminal deliberately
+    // does the other thing - its own per-session `auto_scroll` restores where
+    // the reader was - and that divergence is named in the PR.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+
+    // The reader scrolls up on the seat they are on, then leaves it.
+    readerAt(0);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    // And comes back: the kept conversation lands at ITS foot, following.
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    expect(list(), 'the kept conversation is drawn again').not.toBeNull();
+    expect(pinned(), 'the return lands at the foot, not where it was left').toEqual([PIN, PIN]);
+
+    // **And a seat left AT its foot still re-pins on the way back.** This leg
+    // is that path's own regression guard: the conversation's follow is
+    // already on, so the re-arm writes the same record, and the arriving
+    // record's publish is what re-runs the pass - measured, this leg stands
+    // green against the pre-fix code too, so it is the guard for the
+    // return-at-foot path rather than a witness for the key.
+    await settle();
+    clear();
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    await settle();
+    readerAt(0);
+    await settle();
+    clear();
+
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    expect(pinned(), 'a return to a seat left at its foot lands there too').toEqual([PIN, PIN]);
+  });
+
   it('re-arms at the foot the element clamps to while the model reads long', async () => {
     const server = stub();
     await draw(server);
