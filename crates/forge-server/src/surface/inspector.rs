@@ -152,8 +152,11 @@ impl ViewSurface {
 
     /// Show a seat: this view is looking at it, which is what keeps its
     /// working tree scanned while the view holds it.
-    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
-        self.workspace.hold_seat(slot).await;
+    ///
+    /// The answer is whether the hold was TAKEN - a seat with no session
+    /// refuses one - and a caller must release only the holds it took.
+    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) -> bool {
+        self.workspace.hold_seat(slot).await
     }
 
     /// Stop showing a seat, which is what lets its scan go when nobody else

@@ -10,13 +10,56 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
+use forge_primitives::SessionSlot;
+
 use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::live::Live;
+use crate::surface::ViewSurface;
 use crate::{Command, DispatchError, SessionUpdate};
+
+/// The seats this connection is holding, each given back when this drops.
+///
+/// A plain vec would do, except that anything between the hold and the
+/// clean-up - a panic in the encode, which folds a transcript and scans a
+/// tree - takes the clean-up with it, and a seat's count left standing is a
+/// loop the next viewer never gets. A guard runs on the way out of an unwind.
+struct Holds<'a> {
+    surface: &'a Arc<ViewSurface>,
+    seats: Vec<SessionSlot>,
+}
+
+impl<'a> Holds<'a> {
+    fn new(surface: &'a Arc<ViewSurface>) -> Self {
+        Self { surface, seats: Vec::new() }
+    }
+
+    /// Remember a seat this connection is now holding.
+    fn take(&mut self, slot: &SessionSlot) {
+        self.seats.push(slot.clone());
+    }
+
+    /// Give back one hold, answering whether this connection had one.
+    fn give_back(&mut self, slot: &SessionSlot) -> bool {
+        let Some(at) = self.seats.iter().position(|held| held == slot) else {
+            return false;
+        };
+        self.seats.remove(at);
+        self.surface.release_seat(slot);
+        true
+    }
+}
+
+impl Drop for Holds<'_> {
+    fn drop(&mut self) {
+        for slot in &self.seats {
+            self.surface.release_seat(slot);
+        }
+    }
+}
 
 /// Take the upgrade and give the connection its own task.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
@@ -62,6 +105,11 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
     let mut watched: Vec<Subject> = Vec::new();
+    // The seats THIS connection is holding, which is not the same list as the
+    // seats it watches: a hold is refused for a seat with no session, and a
+    // release is counted per seat, so giving back a hold this connection never
+    // took would spend one another connection is still using.
+    let mut holds = Holds::new(&state.surface);
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
@@ -70,7 +118,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
 
-    let outcome = run_connection(socket, state, &mut watched, &mut updates).await;
+    let outcome = run_connection(socket, state, &mut watched, &mut holds, &mut updates).await;
 
     // Every way out of the loop runs this, a failed read included: a client
     // that goes away without unsubscribing is still a client that has gone,
@@ -80,9 +128,13 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     for what in &watched {
         if let Subject::Session(slot) = what {
             Live::lock(&state.live).detach(slot);
-            state.surface.release_seat(slot);
         }
     }
+    // The holds this connection took go back here, which the refused ones are
+    // not: releasing those would take the count down under a seat another
+    // viewer is still showing. Nothing to say - the guard's own drop is the
+    // last word, and it also covers a panic on the way here.
+    drop(holds);
     outcome
 }
 
@@ -92,6 +144,7 @@ async fn run_connection(
     socket: &mut WebSocket,
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
+    holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
@@ -105,7 +158,7 @@ async fn run_connection(
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
-                handle_client(socket, state, watched, updates, msg).await?;
+                handle_client(socket, state, watched, holds, updates, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -187,6 +240,7 @@ async fn handle_client(
     socket: &mut WebSocket,
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
+    holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     msg: Message,
 ) -> anyhow::Result<()> {
@@ -220,7 +274,13 @@ async fn handle_client(
             // seat's viewers are seeded with the row the hold read, so the
             // loop announces only what moves after it.
             if let Subject::Session(slot) = &what {
-                state.surface.hold_seat(slot).await;
+                // Only a hold that was TAKEN is remembered, because only that
+                // one may be given back: a seat with no session refuses the
+                // hold, and its release would spend a count another viewer is
+                // still using.
+                if state.surface.hold_seat(slot).await {
+                    holds.take(slot);
+                }
             }
             batch::flush(socket, queued).await?;
             match encode_subject(state, &what).await {
@@ -241,11 +301,11 @@ async fn handle_client(
                 // silence: the client learns why, and never draws an empty
                 // snapshot as a broken page.
                 Err(refusal) => {
-                    // The hold this seat took goes back with the refusal, or
-                    // a view of a seat that does not exist would keep its
-                    // loop running behind nothing.
+                    // Whatever hold this connection TOOK goes back with the
+                    // refusal, or a view of a seat that does not exist would
+                    // keep its loop running behind nothing.
                     if let Subject::Session(slot) = &what {
-                        state.surface.release_seat(slot);
+                        holds.give_back(slot);
                     }
                     send(
                         socket,
@@ -428,7 +488,10 @@ async fn handle_client(
                 watched.remove(at);
                 if let Subject::Session(slot) = &what {
                     Live::lock(&state.live).detach(slot);
-                    state.surface.release_seat(slot);
+                    // Only a hold THIS connection took is given back here,
+                    // for the same reason the clean-up gives back only those:
+                    // a count decremented twice is another viewer's seat.
+                    holds.give_back(slot);
                 }
             }
             Ok(())

@@ -7,10 +7,12 @@
 //! somebody is looking at, its answer is stored beside the process walk, and
 //! the row moves by itself as [`SessionUpdate::WorkChanged`].
 //!
-//! A seat nobody holds is not scanned at all: the hold IS what looking means,
-//! so an idle seat costs nothing and a fleet of them costs nothing either.
-//! And a seat whose row has not moved announces nothing, however often it is
-//! scanned - the frame says the tree moved, never that time passed.
+//! A seat nobody holds is not scanned: the hold IS what looking means, so a
+//! fleet of unheld seats costs nothing. A HELD seat costs one scan per
+//! [`SNAPSHOT_STALENESS`] while its tree is still, and at most one per
+//! [`POKE_INTERVAL`] while it moves. And a seat whose row has not moved
+//! announces nothing, however often it is scanned - the frame says the tree
+//! moved, never that time passed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -209,6 +211,16 @@ impl HeldSeats {
             held.remove(slot);
         }
     }
+
+    /// Let the whole seat go, whatever its count was.
+    ///
+    /// For a loop that stops itself because the seat's session ended: the
+    /// store it wrote to is gone, and leaving the count standing would hand
+    /// the next viewer an entry whose loop no longer exists - a seat that is
+    /// held, watched by nobody, and never scanned again.
+    fn forget(&self, slot: &SessionSlot) {
+        self.lock().remove(slot);
+    }
 }
 
 impl Workspace {
@@ -223,26 +235,31 @@ impl Workspace {
     /// **A seat with no session is not held at all.** Its scan would have
     /// nowhere to land - the store rides the seat's own record - so the rule
     /// would read "nothing has scanned this" on every poke and scan forever,
-    /// a `gh` lookup apiece. Refusing the hold is what makes a view of a
-    /// declared-but-unstarted project cost nothing.
-    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
+    /// a `gh` lookup apiece.
+    ///
+    /// The answer says whether the hold was taken, and a caller MUST release
+    /// only the holds it took: the release is counted per seat, so a second
+    /// viewer giving back a hold it never got would spend the first viewer's.
+    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) -> bool {
         if self.domain_session_for(slot).is_none() {
             tracing::debug!(
+                target: "forge_workspace::work",
                 event_name = "work_hold_refused",
                 slot = %slot.display(),
                 reason = "no_session",
                 "a seat with no session has no store for a scan, so nothing is held",
             );
-            return;
+            return false;
         }
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
-            return;
+            return true;
         };
         let announced = match self.scan_work_if_stale(slot, &scanning, false).await {
             Ok(held) => Some(Announced::of(&held)),
             Err(refusal) => {
                 tracing::debug!(
+                    target: "forge_workspace::work",
                     event_name = "work_scan_skipped",
                     slot = %slot.display(),
                     %refusal,
@@ -252,6 +269,7 @@ impl Workspace {
             }
         };
         spawn_work_watch(Arc::clone(self), slot.clone(), scanning, stopped, announced);
+        true
     }
 
     /// Stop showing `slot`. The last hold stops its loop and its watch.
@@ -289,6 +307,13 @@ impl Workspace {
         dirty: bool,
     ) -> Result<WorkSnapshot, String> {
         let _one_at_a_time = gate.lock().await;
+        // A seat that lost its session has nowhere to store a scan, so the
+        // rule would read "nothing has scanned this" on every poke: refused
+        // here as well as at the hold, because a session can end under a seat
+        // that was held while it lived.
+        if self.domain_session_for(slot).is_none() {
+            return Err(format!("{} has no session to store a scan on", slot.display()));
+        }
         let held = self.work_snapshot(slot);
         if should_scan(held.as_ref(), dirty, Instant::now()) {
             let Some(cwd) = self.cwd_for_session(slot) else {
@@ -325,6 +350,7 @@ fn spawn_work_watch(
     tokio::spawn(async move {
         let Some(cwd) = workspace.cwd_for_session(&slot) else {
             tracing::debug!(
+                target: "forge_workspace::work",
                 event_name = "work_watch_skipped",
                 slot = %slot.display(),
                 reason = "cwd_unresolved",
@@ -344,6 +370,24 @@ fn spawn_work_watch(
                 _ = &mut stopped => return,
                 _ = poke.tick() => {}
             }
+            // A seat whose session ENDED while it was held has nothing left to
+            // store or announce, and the poke would otherwise run to the end
+            // of the process for a seat that is not there - a `gh` lookup
+            // apiece. The loop is the thing to stop, not the tick.
+            if workspace.domain_session_for(&slot).is_none() {
+                tracing::debug!(
+                    target: "forge_workspace::work",
+                    event_name = "work_watch_stopped",
+                    slot = %slot.display(),
+                    reason = "session_gone",
+                    "the seat's session ended under its loop, so nothing is watched",
+                );
+                // The seat is also let go, count and all: the store it wrote
+                // to is gone, and a count left standing would hand the next
+                // viewer an entry whose loop no longer exists.
+                workspace.held_work_seats.forget(&slot);
+                return;
+            }
             // Whatever the watch reported since the last look is one mark:
             // the tree moved, which is all a scan decision needs.
             let mut dirty = false;
@@ -351,6 +395,12 @@ fn spawn_work_watch(
                 dirty = true;
             }
             let Ok(held) = workspace.scan_work_if_stale(&slot, &scanning, dirty).await else {
+                tracing::debug!(
+                    target: "forge_workspace::work",
+                    event_name = "work_watch_scan_refused",
+                    slot = %slot.display(),
+                    "the seat's tree was not read this poke",
+                );
                 continue;
             };
             let row = Announced::of(&held);
@@ -563,6 +613,64 @@ provider = "anthropic"
             work_from_scan(&held.diff, &held.cwd).changed,
             Some(1),
             "the scan answers the edit the tree picked up",
+        );
+    }
+
+    /// A refused hold is not a hold: the answer says so, and a caller that
+    /// gives back only what it took cannot spend another viewer's hold.
+    ///
+    /// The release is counted per seat, so this is the whole reason the
+    /// answer exists: a second viewer's refused subscribe followed by its own
+    /// clean-up would otherwise take the first viewer's count to zero.
+    #[tokio::test]
+    async fn a_refused_hold_reports_that_it_was_not_taken() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+
+        assert!(workspace.hold_seat(&seat).await, "a seat with a session is held");
+
+        // The session ends under the hold, so the next hold has nowhere to
+        // store a scan and is refused.
+        workspace.release_session_with_cascade(&seat);
+        assert!(!workspace.hold_seat(&seat).await, "a seat with no session refuses a hold");
+
+        // The taking viewer gives its hold back; the refused one gives back
+        // nothing, and the seat is only let go once.
+        workspace.release_seat(&seat);
+        assert!(
+            workspace.held_work_seats.lock().is_empty(),
+            "one taken hold means one release lets the seat go",
+        );
+    }
+
+    /// A session that ends under a held seat stops being watched, and the
+    /// seat is let go with it.
+    ///
+    /// The burn this prevents has a second entrance: the store rides the
+    /// seat's record, so a seat whose session ended has nowhere to write, and
+    /// the rule would read "nothing has scanned this" on every poke - a `gh`
+    /// lookup apiece, announcing a tree for a seat that is not there.
+    #[tokio::test]
+    async fn a_session_ending_stops_the_seat_being_watched() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat).await;
+        assert!(!workspace.held_work_seats.lock().is_empty(), "the hold is taken");
+
+        workspace.release_session_with_cascade(&seat);
+
+        // The loop's next poke lets the seat go; the edit that follows says
+        // nothing, which is the loop being gone rather than quiet.
+        std::fs::write(dir.path().join("kept.txt"), "after the session").expect("write");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), updates.recv()).await.is_err(),
+            "a seat whose session ended must not announce anything",
+        );
+        assert!(
+            workspace.held_work_seats.lock().is_empty(),
+            "and it is let go, count and all, so the next hold starts a fresh loop",
         );
     }
 
