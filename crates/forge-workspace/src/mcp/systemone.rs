@@ -137,16 +137,17 @@ impl Tool for AskNoul {
          threshold belongs to you, set per question from what being wrong would cost; when the \
          answer is not certain enough, ask the user instead of guessing. Boundaries: these are \
          bounded estimates, not guarantees; the model class is weak at arithmetic, counting, \
-         and date comparison, so compute numbers and dates in code and ask it for judgments; \
-         it answers the question you wrote, not the one you meant, so make the question and \
-         `criteria` precise (what should make it yes, what no)."
+         and date comparison, so compute numbers and dates in code and ask it for judgments. \
+         The model sees only `state` and this question, nothing else reaches it, so fold every \
+         needed definition into `instructions` and `criteria` (what should make it yes, what \
+         no), and when several labels may each apply, ask one noul per label."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
                 "instructions": { "type": "string", "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
@@ -195,20 +196,23 @@ impl Tool for AskChoice {
          writes prose. When to reach for it: routing and picking between enumerated \
          alternatives, or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Enumerate every option in `criteria` and describe when each \
-         applies (at most 255 options). Reading the answer: `choice` is the highest-probability \
-         option; read `probabilities` for the full distribution, and treat a close runner-up as \
-         uncertainty rather than a decision; escalate to the user when the margin does not \
-         clear what the decision costs. `confidence` is a statistic of the distribution, not a \
-         calibrated chance of being right. Boundaries: one question per call; probabilities are \
-         estimates, not guarantees; the model can favour whichever option is listed first, so \
-         when an answer matters, re-ask with the options reordered and check that it holds."
+         applies (at most 255 options); when nothing may fit the state, include an explicit \
+         no-match option, because the model can only choose among the options you list. Reading \
+         the answer: `choice` is the highest-probability option; read `probabilities` for the \
+         full distribution, and treat a close runner-up as uncertainty rather than a decision; \
+         escalate to the user when the margin does not clear what the decision costs. \
+         `confidence` is a statistic of the distribution, not a calibrated chance of being \
+         right. Boundaries: one question per call; the model sees only `state` and the options \
+         you list, nothing else reaches it; probabilities are estimates, not guarantees; the \
+         model can favour whichever option is listed first, so when an answer matters, re-ask \
+         with the options reordered and check that it holds."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
                 "instructions": { "type": "string", "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
@@ -254,20 +258,23 @@ impl Tool for AskScore {
          your text, and a confidence. The model never writes prose. When to reach for it: \
          severity, quality, priority, or risk judgments where the levels are meaningful to you. \
          Define `criteria` as an ordered list of level descriptions, lowest first (two to ten \
-         levels). Reading the answer: `score` is the probability-weighted position (for example \
-         1.79 on a three-level rubric); `probabilities` shows how settled the answer is; \
-         `confidence` is a statistic of the distribution, not a calibrated chance of being \
-         right; the threshold belongs to you, set from what being wrong would cost. Boundaries: \
-         each level description is a judgment anchor, not a unit of measure, so do not read \
-         gaps between scores as magnitudes; the model class is weak at arithmetic and date \
-         comparison, so compute numbers in code. One question per call."
+         levels); each level should describe a concrete situation and stand on its own. Reading \
+         the answer: `score` is the probability-weighted position (for example 1.79 on a \
+         three-level rubric); `probabilities` shows how settled the answer is; `confidence` is \
+         a statistic of the distribution, not a calibrated chance of being right; the threshold \
+         belongs to you, set from what being wrong would cost. Boundaries: each level \
+         description is a judgment anchor, not a unit of measure, so do not read gaps between \
+         scores as magnitudes; the model sees only `state` and this rubric, nothing else \
+         reaches it, so fold every needed definition into `instructions` and `criteria`; the \
+         model class is weak at arithmetic and date comparison, so compute numbers in code. \
+         One question per call."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
                 "instructions": { "type": "string", "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
