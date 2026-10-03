@@ -6,7 +6,6 @@ pub mod store;
 use super::view::{self, ActiveView};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
 
 pub(crate) use mcp::{
     McpDetailsOverlayState, available_mcp_actions, handle_mcp_operation_error,
@@ -142,7 +141,6 @@ pub struct ConfigState {
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
     pub committed_preferences_document: Value,
-    pub settings_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
 }
@@ -154,7 +152,6 @@ impl Default for ConfigState {
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
             committed_preferences_document: Value::Object(serde_json::Map::new()),
-            settings_path: None,
             status_message: None,
             last_error: None,
         }
@@ -239,7 +236,6 @@ impl ConfigState {
     }
 
     fn apply_loaded(&mut self, loaded: store::LoadedSettingsDocuments, preserve_status: bool) {
-        self.settings_path = loaded.paths.settings;
         self.committed_settings_document = loaded.settings_document;
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;

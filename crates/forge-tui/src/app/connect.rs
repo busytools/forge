@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 pub(crate) fn session_launch_settings_for_startup(
     app: &App,
 ) -> forge_workspace::SessionLaunchSettings {
-    session_start::session_launch_settings_for_reason(app)
+    session_start::session_launch_settings_from_documents(app)
 }
 
 /// Create the `App` struct in `Connecting` state and load shared
@@ -364,7 +364,7 @@ pub fn start_connection(app: &mut App) {
     }
 
     app.connection_started = true;
-    let mut launch_settings = session_start::session_launch_settings_for_reason(app);
+    let mut launch_settings = session_start::session_launch_settings_from_documents(app);
     // Boot wave only: --new makes the auto_start leads start fresh
     // instead of resuming (and cascades to their workers). Stamped on
     // the shared boot settings so every dispatch below carries it - the
