@@ -219,7 +219,22 @@ impl Workspace {
     /// tree when what is stored is missing or stale, so a page never opens on
     /// an arbitrarily old row; what that read answered becomes the row its
     /// viewers are already holding, so the loop announces only a change.
+    ///
+    /// **A seat with no session is not held at all.** Its scan would have
+    /// nowhere to land - the store rides the seat's own record - so the rule
+    /// would read "nothing has scanned this" on every poke and scan forever,
+    /// a `gh` lookup apiece. Refusing the hold is what makes a view of a
+    /// declared-but-unstarted project cost nothing.
     pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
+        if self.domain_session_for(slot).is_none() {
+            tracing::debug!(
+                event_name = "work_hold_refused",
+                slot = %slot.display(),
+                reason = "no_session",
+                "a seat with no session has no store for a scan, so nothing is held",
+            );
+            return;
+        }
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
             return;
@@ -309,6 +324,12 @@ fn spawn_work_watch(
 ) {
     tokio::spawn(async move {
         let Some(cwd) = workspace.cwd_for_session(&slot) else {
+            tracing::debug!(
+                event_name = "work_watch_skipped",
+                slot = %slot.display(),
+                reason = "cwd_unresolved",
+                "a held seat's directory is not resolvable, so nothing is watched",
+            );
             return;
         };
         // The ignore filter is on whatever the file index's own preference
@@ -364,7 +385,10 @@ mod tests {
     /// A workspace whose one project IS the repository above, so a lead seat
     /// resolves to a tree that is really there. The config dir comes back
     /// with it: the store under it is open for as long as the workspace is.
-    fn a_workspace(
+    ///
+    /// The seat is NOT started: the project is declared and nothing runs
+    /// behind it, which is the state a hold has to refuse.
+    fn a_declared_project(
         repo: &Path,
     ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
     {
@@ -396,10 +420,18 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
-        // The store rides a seat's own record, so the seat has to exist for
-        // a hold to have anywhere to put what it read.
-        workspace.register_domain_session(seat(), None);
         let updates = workspace.subscribe();
+        (workspace, updates, dir)
+    }
+
+    /// [`a_declared_project`] with the seat started, which is what a hold
+    /// needs: the store rides the seat's own record.
+    fn a_workspace(
+        repo: &Path,
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
+    {
+        let (workspace, updates, dir) = a_declared_project(repo);
+        workspace.register_domain_session(seat(), None);
         (workspace, updates, dir)
     }
 
@@ -531,6 +563,35 @@ provider = "anthropic"
             work_from_scan(&held.diff, &held.cwd).changed,
             Some(1),
             "the scan answers the edit the tree picked up",
+        );
+    }
+
+    /// A seat with no session is not held, so nothing watches its tree.
+    ///
+    /// **The alternative burns scans.** The store rides the seat's own record,
+    /// so with no record every write lands nowhere, the rule reads "nothing
+    /// has scanned this" on every poke, and the loop scans once a second
+    /// forever - a `gh` lookup apiece on a lead seat. Reachable the moment a
+    /// client subscribes to a declared-but-unstarted project, whose cwd
+    /// resolves from the declaration alone.
+    #[tokio::test]
+    async fn a_seat_with_no_session_is_not_held() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_declared_project(dir.path());
+        let seat = seat();
+
+        workspace.hold_seat(&seat).await;
+
+        assert!(workspace.work_snapshot(&seat).is_none(), "nothing was read for it");
+        assert!(workspace.held_work_seats.lock().is_empty(), "and nothing holds it");
+
+        // A tree that moves says nothing: no loop is watching it. The burn
+        // this catches emits within about a second, so the wait is a control
+        // on the loop not existing rather than on a slow one.
+        std::fs::write(dir.path().join("kept.txt"), "moved").expect("write");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),
+            "a seat with no session must not announce anything",
         );
     }
 

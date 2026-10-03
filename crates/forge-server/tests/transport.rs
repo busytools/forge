@@ -1223,35 +1223,23 @@ async fn a_devices_request_is_answered_with_the_list_or_its_refusal() {
 }
 
 /// A seat a client is showing has its working tree read, and the row it
-/// picks up reaches that client on the seat's own subscription.
+/// picks up reaches that client on the seat's own subscription, and what it
+/// carries is what a read answers.
 ///
 /// This is the whole wiring in one test: the subscribe that holds the seat,
-/// the watch that reports the edit, the scan the loop takes, and the update
-/// that routes by the seat's slot.
+/// the watch that reports the edit, the scan the loop takes, the update that
+/// routes by the seat's slot, and the differential - the three fields a
+/// client would apply are the three a fresh read of the seat hands it.
 #[tokio::test]
 async fn a_held_seats_moved_tree_reaches_the_client() {
-    let root = tempfile::tempdir().expect("tempdir");
-    // The fleet first: a project directory that exists before the fleet is
-    // built resolves under a different key.
-    let fleet = Fleet::in_dir(root.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let repo = root.path().join("proj");
-    std::fs::create_dir_all(&repo).expect("the project directory");
-    a_repo(&repo);
+    let (url, _fleet, state, _root) = a_repo_server().await;
+    let repo = state
+        .surface
+        .roster()
+        .cwd_for(&lead_seat())
+        .expect("the fixture seat has a directory");
+    let repo = std::path::PathBuf::from(repo);
 
-    let state = Arc::new(TransportState {
-        surface: fleet.surface(),
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let served = Arc::clone(&state);
-    tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
-    });
-    let url = format!("ws://{addr}/socket");
     let mut socket = connect(&url).await;
     send(
         &mut socket,
@@ -1278,7 +1266,125 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     panic!("a held seat's moved tree never reached the client");
 }
 
+/// A seat whose tree is a real repository, with its session started - the
+/// store rides the seat's own record, so a seat nothing runs behind is not
+/// held at all.
+async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("tempdir");
+    // The fleet first: a project directory that exists before the fleet is
+    // built resolves under a different key.
+    let fleet = Fleet::in_dir(root.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo(&repo);
+
+    let state = Arc::new(TransportState {
+        surface: fleet.surface(),
+        work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
+        live: Mutex::new(Live::new()),
+        config: forge_primitives::WebConfig::default(),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    // The directory comes back with the server: it holds the repository the
+    // seat's tree is, and dropping it here would unlink the tree under the
+    // test the moment this function returned.
+    (format!("ws://{addr}/socket"), fleet, state, root)
+}
+
+/// A scan to seed a seat's store with, as the scanner would have answered it.
+fn a_scan(
+    cwd: &std::path::Path,
+    read_at: std::time::Instant,
+    branch: &str,
+    changed: usize,
+    with_pr: Option<(u64, u64)>,
+) -> forge_server::surface::inspector::WorkSnapshot {
+    use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
+    use forge_primitives::git_diff::{GitDiffStats, GitDiffSnapshot, LayerState, RepoGate};
+    let (pr, closes) = match with_pr {
+        Some((number, closing)) => (
+            Some(GitPrInfo { number, url: format!("https://example.test/pull/{number}") }),
+            vec![GitIssueRef { number: closing, url: format!("https://example.test/{closing}") }],
+        ),
+        None => (None, Vec::new()),
+    };
+    forge_server::surface::inspector::WorkSnapshot {
+        diff: GitDiffSnapshot {
+            branch: GitBranch::Named(branch.to_owned()),
+            pushed_sha: None,
+            pr_fetched_at: Some(std::time::SystemTime::now()),
+            default_branch: Some("main".to_owned()),
+            repo_gate: RepoGate::InRepo,
+            worktree: LayerState::Populated(GitDiffStats {
+                files: Vec::new(),
+                total_files: changed,
+                total_added: 0,
+                total_removed: 0,
+            }),
+            branch_ahead: LayerState::Clean,
+            pr,
+            closes,
+        },
+        cwd: cwd.to_path_buf(),
+        read_at,
+    }
+}
+
+/// A seat's snapshot is the row of the tree as the hold read it, however
+/// stale what the store held was.
+///
+/// The hold is taken BEFORE the snapshot is encoded, and it is what reads the
+/// tree: a read taken first would hand a page a row from before this
+/// subscription, and nothing would correct it, because the loop announces
+/// only what moves after the hold.
+#[tokio::test]
+async fn a_snapshot_carries_the_row_the_hold_read() {
+    let (url, _fleet, state, _root) = a_repo_server().await;
+    let repo = state
+        .surface
+        .roster()
+        .cwd_for(&lead_seat())
+        .expect("the fixture seat has a directory");
+    // Stale, and saying what the tree cannot: a row the encode can only
+    // answer from the store, which the hold's own read then replaces.
+    let stale = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(60))
+        .expect("an instant a minute ago");
+    state.surface.store_work_snapshot(
+        &lead_seat(),
+        a_scan(std::path::Path::new(&repo), stale, "not-this-tree", 99, None),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        data["work"]["branch"], "work",
+        "the snapshot carries the branch the hold read, not the one the store held: {data}",
+    );
+    assert_eq!(
+        data["work"]["changed"], 0,
+        "and the count the hold read: {data}",
+    );
+}
+
 /// A repository with one commit, for a test that needs a tree git can read.
+///
+/// The branch it sits on is `work`, not the repository's default: a PR lookup
+/// runs only for a branch that is not the default one, so a fixture on `main`
+/// could never show the PR a scan cache reuses.
 fn a_repo(dir: &std::path::Path) {
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -1292,7 +1398,7 @@ fn a_repo(dir: &std::path::Path) {
             .expect("run git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     };
-    git(&["init", "-q", "-b", "main"]);
+    git(&["init", "-q", "-b", "work"]);
     git(&["config", "user.email", "test@example.test"]);
     git(&["config", "user.name", "test"]);
     std::fs::write(dir.join("kept.txt"), "one").expect("write");

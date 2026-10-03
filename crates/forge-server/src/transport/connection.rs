@@ -199,6 +199,15 @@ async fn handle_client(
                     send_update(socket, update).await?;
                 }
             }
+            // **A seat is held BEFORE its snapshot is encoded.** The hold is
+            // what has its working tree read, and the encode answers that
+            // store - so a read taken first would hand a page the tree as it
+            // was before this subscription, and nothing would correct it: the
+            // seat's viewers are seeded with the row the hold read, so the
+            // loop announces only what moves after it.
+            if let Subject::Session(slot) = &what {
+                state.surface.hold_seat(slot).await;
+            }
             match encode_subject(state, &what).await {
                 Ok(data) => {
                     // Watched only once the subject is one this server can
@@ -209,12 +218,6 @@ async fn handle_client(
                     // arming a mark nobody needs: the reader is looking at it.
                     if let Subject::Session(slot) = &what {
                         Live::lock(&state.live).attach(slot);
-                        // And the seat's working tree is read while a page
-                        // is showing it: the hold is what the scan runs for,
-                        // and it is taken only once the subscription stands,
-                        // so a refusal cannot leave a scan running behind
-                        // nothing.
-                        state.surface.hold_seat(slot).await;
                     }
                     watched.push(what.clone());
                     send(socket, ServerMessage::Snapshot { subject: what, data }).await
@@ -223,6 +226,12 @@ async fn handle_client(
                 // silence: the client learns why, and never draws an empty
                 // snapshot as a broken page.
                 Err(refusal) => {
+                    // The hold this seat took goes back with the refusal, or
+                    // a view of a seat that does not exist would keep its
+                    // loop running behind nothing.
+                    if let Subject::Session(slot) = &what {
+                        state.surface.release_seat(slot);
+                    }
                     send(
                         socket,
                         ServerMessage::Error {
