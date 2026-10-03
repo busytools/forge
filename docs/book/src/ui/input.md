@@ -225,7 +225,7 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Staging</span>                                                     <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Production</span>                                                  <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="dim">[ ]</span> <span class="success">✓</span> <span class="dim">Development</span>                                                 <span class="accent bold">┃</span>
-<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell the agent something else:</span>                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">...</span> <span class="bold">Tell the agent something else</span>                             <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                           <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
 <span class="accent bold">┃</span>  <span class="dim">space toggle  ↑↓ move  ⏎ submit  esc cancel</span>                         <span class="accent bold">┃</span>
