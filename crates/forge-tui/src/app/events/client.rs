@@ -79,6 +79,25 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
     }
 }
 
+/// What one draft ending reads as, in the chat of the session that held it.
+///
+/// The terminal was not the view that answered - a dock it had already
+/// answered is popped by that answer - so each line names the other ending
+/// flatly rather than speaking for this one.
+fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) -> String {
+    use forge_primitives::slack::SlackDraftEnding as Ending;
+    match ending {
+        Ending::Answered { approved: true } => {
+            "The Slack draft was posted from another view.".to_owned()
+        }
+        Ending::Answered { approved: false } => {
+            "The Slack draft was declined in another view.".to_owned()
+        }
+        Ending::Expired => "The Slack draft expired unanswered.".to_owned(),
+        Ending::Abandoned => "The Slack draft's asking session went away.".to_owned(),
+    }
+}
+
 /// Per-session event multiplexer. Each [`SessionUpdate`] is routed
 /// to the [`crate::app::session::UiSession`] bucket it targets via the
 /// envelope's [`SessionUpdate::slot`] accessor.
@@ -276,12 +295,24 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // the user is pointed at it.
             app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
         }
-        SessionUpdate::SlackDraftExpired { key, id } => {
-            // The gate expired the draft unanswered, so nothing was sent:
-            // retire the dock prompt instead of leaving a decision the
-            // user's answer can no longer reach.
-            if let Some(session) = app.session_mut(&key) {
-                crate::app::prompt::retire_slack_draft(session, id);
+        SessionUpdate::SlackDraftResolved { key, id, ending } => {
+            // The draft left the core's registry - answered in another view,
+            // expired, or its session gone - so this dock is dead: retire it
+            // rather than leaving a decision no answer can reach. A dock still
+            // queued here is one this view did NOT answer, and the ending is
+            // the only thing that says what became of it; the reader's own
+            // answer arrives back as this same update with the dock already
+            // popped, and stays silent.
+            let held = app
+                .session_mut(&key)
+                .is_some_and(|session| crate::app::prompt::retire_slack_draft(session, id));
+            if held {
+                super::push_system_message_to_session(
+                    app,
+                    &key,
+                    Some(crate::app::SystemSeverity::Info),
+                    &slack_draft_ending_line(ending),
+                );
             }
         }
         // The prompt is settled in the core, so a queue still holding it
@@ -3713,6 +3744,134 @@ mod tests {
             session.prompt_queue.front().expect("head").tool_id,
             "tc-q-evt",
             "queued question prompt carries the event's tool_id"
+        );
+    }
+
+    fn a_slack_draft(text: &str) -> forge_primitives::slack::SlackDraft {
+        forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "C1".to_owned(),
+            thread_ts: None,
+            text: text.to_owned(),
+            tool: "slack__post".to_owned(),
+        }
+    }
+
+    /// A draft the core has already resolved - answered in another view, or
+    /// expired - is no longer the terminal's to offer: the stand-down names
+    /// the draft's own id, so only that draft's dock goes, and the reader is
+    /// told which ending took it.
+    #[test]
+    fn a_resolved_draft_retires_only_its_own_queued_dock() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let first = a_slack_draft("first");
+        let second = a_slack_draft("second");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackPostPending { key: key.clone(), draft: first.clone() },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackPostPending { key: key.clone(), draft: second.clone() },
+        );
+        assert_eq!(
+            app.sessions.get(&key).expect("the session").prompt_queue.len(),
+            2,
+            "both drafts park a dock in the queue",
+        );
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackDraftResolved {
+                key: key.clone(),
+                id: first.id,
+                ending: forge_primitives::slack::SlackDraftEnding::Expired,
+            },
+        );
+
+        let session = app.sessions.get(&key).expect("the session");
+        assert_eq!(
+            session.prompt_queue.len(),
+            1,
+            "one draft's stand-down must not take the other draft's dock with it",
+        );
+        let held = session.prompt_queue.front().expect("head");
+        assert!(
+            matches!(
+                &held.source,
+                crate::app::prompt::PromptSource::SlackDraft { draft, .. } if draft.id == second.id
+            ),
+            "the draft still waiting is the one the core did not resolve",
+        );
+        assert!(
+            app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("expired unanswered"))
+                })
+            }),
+            "and the reader is told which ending took the resolved one",
+        );
+    }
+
+    /// The reader's own answer takes the dock before the stand-down lands, so
+    /// that update arrives with nothing queued: it says nothing, because the
+    /// reader's own click is not news.
+    #[test]
+    fn a_draft_this_view_answered_leaves_no_line() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let draft = a_slack_draft("answered here");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackPostPending { key: key.clone(), draft: draft.clone() },
+        );
+        // The answer path pops the prompt before it dispatches, and the pop is
+        // what the stand-down meets here.
+        let popped = app.session_mut(&key).expect("the session").prompt_queue.pop_front().is_some();
+        assert!(popped, "the dock was queued for the reader to answer");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackDraftResolved {
+                key: key.clone(),
+                id: draft.id,
+                ending: forge_primitives::slack::SlackDraftEnding::Answered { approved: true },
+            },
+        );
+
+        assert!(
+            !app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("Slack draft"))
+                })
+            }),
+            "the view that answered the draft does not narrate its own click",
+        );
+    }
+
+    /// Each ending reads as its own line. The terminal only ever says the
+    /// endings of a dock it did NOT answer, so every line names another view
+    /// or the clock rather than this one.
+    #[test]
+    fn each_draft_ending_reads_as_its_own_line() {
+        use forge_primitives::slack::SlackDraftEnding as Ending;
+        assert_eq!(
+            slack_draft_ending_line(Ending::Answered { approved: true }),
+            "The Slack draft was posted from another view.",
+        );
+        assert_eq!(
+            slack_draft_ending_line(Ending::Answered { approved: false }),
+            "The Slack draft was declined in another view.",
+        );
+        assert_eq!(slack_draft_ending_line(Ending::Expired), "The Slack draft expired unanswered.");
+        assert_eq!(
+            slack_draft_ending_line(Ending::Abandoned),
+            "The Slack draft's asking session went away.",
         );
     }
 

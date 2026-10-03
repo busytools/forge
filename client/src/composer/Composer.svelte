@@ -3,6 +3,8 @@
 
   import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
+  import { slotOf } from '../protocol';
+  import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
@@ -26,6 +28,7 @@
   import {
     blocked,
     composerState,
+    draftEndingLine,
     joined,
     noticeLine,
     pendingAsk,
@@ -130,12 +133,10 @@
    * The prompt the dock draws, which is the one the seat is parked on - unless
    * this composer has answered a held draft.
    *
-   * A question's answer clears the ask with an update of its own. A draft's does
-   * not: the core drops it from its registry and says nothing, and a poll's
-   * answer takes only the slices no update carries, which an ask is not. So the
-   * draft this composer answered would stand until the seat was read whole.
-   * Suppressing it is the move the terminal makes by popping its own prompt, and
-   * a refusal brings it back with the reason.
+   * A question's answer clears the ask with an update of its own. A draft's
+   * leaves the core's registry, and the stand-down that says so is a round trip
+   * away - so the mark stands the dock down from the click until the update
+   * lands, and a refusal brings it back with the reason.
    */
   const dockAsk = $derived(
     ask !== null &&
@@ -171,8 +172,53 @@
    * turn to stop, and the core is the one that knows it is running.
    */
   const running = $derived(record.header.turn_in_flight);
-  const notice = $derived(owns ? noticeLine(composer.notice, box.sawTake) : null);
+  // The engine's notice, or what became of a draft that left this box - the
+  // dock's own stand-down, said in the row the dock leaves behind.
+  const notice = $derived(owns ? (noticeLine(composer.notice, box.sawTake) ?? box.ended) : null);
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
+
+  /**
+   * The draft this box is drawing, remembered so a stand-down can tell THIS
+   * draft from the next one: the record has already lost `pending_ask` by the
+   * time the update is read.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'slack_draft') {
+      box.shownDraft = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
+   * A held draft leaving the core, which no record field carries.
+   *
+   * Applying the update clears `pending_ask`; the ENDING rides the update
+   * alone, and it is what tells this reader what happened to a dock they did
+   * not answer. The update is read here for the same reason the conversation
+   * reads its own frames: nothing else draws it.
+   *
+   * It is recorded into the box for the update's OWN seat rather than the one
+   * on screen: a reader looking elsewhere still meets the line when they come
+   * back, and a seat nothing has drawn has no dock whose loss needs saying.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'slack_draft_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownDraft) return;
+      // The reader's own answer, taken or not: the refusal that follows says
+      // so when it is not, and the ending would only repeat the click.
+      if (held.answered === id) return;
+      held.ended = draftEndingLine(payload['ending']);
+    });
+  });
 
   /**
    * The lists a draft is matched against, pulled when a list is opened rather
@@ -337,7 +383,16 @@
    */
   $effect(() => {
     return connection.onMessage((message) => {
-      if (message.kind !== 'error' || message.what !== 'dispatch') return;
+      if (message.kind !== 'error') return;
+      // The answer to a draft the core no longer holds, refused by its own
+      // operation's name: the dock is gone by then, so the reason is drawn
+      // where it stood. A generic `dispatch` refusal cannot say which command
+      // it was about, and would be read as the dock's own.
+      if (message.what === 'respond_slack_post') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what !== 'dispatch') return;
       if (box.answered !== null) {
         box.refusal = message.why;
         return;

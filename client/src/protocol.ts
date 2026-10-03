@@ -23,7 +23,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * than a client's visuals do: either a client speaks this version or it does
  * not, and a mismatch fails plainly instead of silently.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';

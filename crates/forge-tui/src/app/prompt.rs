@@ -205,9 +205,9 @@ pub fn enqueue_prompt(session: &mut crate::app::session::UiSession, prompt: Prom
     session.prompt_queue.push_back(prompt);
 }
 
-/// Retire the queued Slack draft with `id`: the gate expired it
-/// unanswered, so nothing was sent and the dock must not go on offering
-/// a decision for it. Answers nothing - removal only.
+/// Retire the queued Slack draft with `id`: the core has resolved it -
+/// answered in another view, expired unanswered - so the dock must not go
+/// on offering a decision for it. Answers nothing - removal only.
 pub fn retire_slack_draft(session: &mut crate::app::session::UiSession, id: uuid::Uuid) -> bool {
     let before = session.prompt_queue.len();
     session.prompt_queue.retain(|prompt| {

@@ -1,0 +1,381 @@
+{
+  "": [
+    "agents",
+    "analytics_disabled",
+    "apiKeySource",
+    "capabilities",
+    "claude_code_version",
+    "commands",
+    "compact_metadata",
+    "compact_result",
+    "cwd",
+    "decision_reason",
+    "decision_reason_type",
+    "description",
+    "duration_api_ms",
+    "duration_ms",
+    "errors",
+    "estimated_tokens",
+    "estimated_tokens_delta",
+    "exit_code",
+    "fast_mode_disabled_reason",
+    "fast_mode_state",
+    "hasOutput",
+    "hookCount",
+    "hookErrors",
+    "hookInfos",
+    "hook_event",
+    "hook_id",
+    "hook_name",
+    "isSynthetic",
+    "is_error",
+    "key",
+    "last_tool_name",
+    "level",
+    "mcp_servers",
+    "memory_paths",
+    "message",
+    "messaging_socket_path",
+    "model",
+    "modelUsage",
+    "num_turns",
+    "outcome",
+    "output",
+    "output_file",
+    "output_style",
+    "parent_tool_use_id",
+    "patch",
+    "permissionMode",
+    "permission_denials",
+    "plugins",
+    "preventedContinuation",
+    "priority",
+    "product_feedback_disabled",
+    "rate_limit_info",
+    "result",
+    "session_id",
+    "skills",
+    "slash_commands",
+    "status",
+    "stderr",
+    "stdout",
+    "stopReason",
+    "stop_reason",
+    "subtype",
+    "summary",
+    "task_id",
+    "task_type",
+    "tasks",
+    "terminal_reason",
+    "terminal_slash_commands",
+    "text",
+    "timestamp",
+    "toolUseID",
+    "tool_name",
+    "tool_use_id",
+    "tool_use_result",
+    "tools",
+    "total_cost_usd",
+    "type",
+    "usage",
+    "uuid",
+    "workflow_progress"
+  ],
+  "/commands[]": [
+    "aliases",
+    "argumentHint",
+    "builtin",
+    "description",
+    "name"
+  ],
+  "/compact_metadata": [
+    "post_tokens",
+    "pre_tokens",
+    "trigger"
+  ],
+  "/hookInfos[]": [
+    "command",
+    "durationMs"
+  ],
+  "/mcp_servers[]": [
+    "name",
+    "source",
+    "status"
+  ],
+  "/memory_paths": [
+    "auto"
+  ],
+  "/message": [
+    "content",
+    "id",
+    "model",
+    "role",
+    "stop_reason",
+    "stop_sequence",
+    "usage"
+  ],
+  "/message/content[]": [
+    "content",
+    "id",
+    "input",
+    "is_error",
+    "name",
+    "signature",
+    "source",
+    "text",
+    "thinking",
+    "tool_use_id",
+    "type"
+  ],
+  "/message/content[]/content[]": [
+    "text",
+    "tool_name",
+    "type"
+  ],
+  "/message/content[]/input": [
+    "_redacted",
+    "args",
+    "charter",
+    "command",
+    "content",
+    "description",
+    "file_path",
+    "label",
+    "max_results",
+    "message",
+    "name",
+    "new_string",
+    "old_string",
+    "org",
+    "plan",
+    "planFilePath",
+    "project",
+    "prompt",
+    "query",
+    "questions",
+    "replace_all",
+    "run_in_background",
+    "script",
+    "skill",
+    "subagent_type",
+    "timeout"
+  ],
+  "/message/content[]/input/questions[]": [
+    "header",
+    "multiSelect",
+    "options",
+    "question"
+  ],
+  "/message/content[]/input/questions[]/options[]": [
+    "description",
+    "label"
+  ],
+  "/message/content[]/source": [
+    "data",
+    "media_type",
+    "type"
+  ],
+  "/message/usage": [
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "input_tokens",
+    "output_tokens"
+  ],
+  "/modelUsage{}": [
+    "cacheCreationInputTokens",
+    "cacheReadInputTokens",
+    "canonicalModel",
+    "contextWindow",
+    "costBasis",
+    "costUSD",
+    "inputTokens",
+    "maxOutputTokens",
+    "outputTokens",
+    "provider",
+    "thinkingTokens",
+    "webSearchRequests"
+  ],
+  "/patch": [
+    "end_time",
+    "status"
+  ],
+  "/permission_denials[]": [
+    "tool_input",
+    "tool_name",
+    "tool_use_id"
+  ],
+  "/permission_denials[]/tool_input": [
+    "command",
+    "content",
+    "description",
+    "file_path",
+    "plan",
+    "planFilePath"
+  ],
+  "/rate_limit_info": [
+    "isUsingOverage",
+    "overageResetsAt",
+    "overageStatus",
+    "rateLimitType",
+    "resetsAt",
+    "status",
+    "unifiedWindows"
+  ],
+  "/rate_limit_info/unifiedWindows": [
+    "five_hour",
+    "seven_day"
+  ],
+  "/rate_limit_info/unifiedWindows/five_hour": [
+    "resetsAt",
+    "utilization"
+  ],
+  "/rate_limit_info/unifiedWindows/seven_day": [
+    "resetsAt",
+    "utilization"
+  ],
+  "/tasks[]": [
+    "description",
+    "task_id",
+    "task_type"
+  ],
+  "/tool_use_result": [
+    "agentId",
+    "agentType",
+    "annotations",
+    "answers",
+    "backgroundTaskId",
+    "canReadOutputFile",
+    "commandName",
+    "content",
+    "description",
+    "file",
+    "filePath",
+    "harnessNoteCount",
+    "harnessSectionHash",
+    "harnessTailCount",
+    "interrupted",
+    "isAsync",
+    "isImage",
+    "matches",
+    "noOutputExpected",
+    "originalFile",
+    "outputFile",
+    "prompt",
+    "query",
+    "questions",
+    "resolvedModel",
+    "runId",
+    "scriptPath",
+    "status",
+    "stderr",
+    "stdout",
+    "structuredPatch",
+    "success",
+    "summary",
+    "taskId",
+    "taskType",
+    "toolStats",
+    "totalDurationMs",
+    "totalTokens",
+    "totalToolUseCount",
+    "total_deferred_tools",
+    "transcriptDir",
+    "type",
+    "usage",
+    "userModified",
+    "workflowName"
+  ],
+  "/tool_use_result/annotations{}": [
+    "notes"
+  ],
+  "/tool_use_result/content[]": [
+    "text",
+    "type"
+  ],
+  "/tool_use_result/file": [
+    "content",
+    "filePath",
+    "numLines",
+    "startLine",
+    "totalLines"
+  ],
+  "/tool_use_result/questions[]": [
+    "header",
+    "multiSelect",
+    "options",
+    "question"
+  ],
+  "/tool_use_result/questions[]/options[]": [
+    "description",
+    "label"
+  ],
+  "/tool_use_result/toolStats": [
+    "bashCount",
+    "editFileCount",
+    "linesAdded",
+    "linesRemoved",
+    "otherToolCount",
+    "readCount",
+    "searchCount"
+  ],
+  "/tool_use_result/usage": [
+    "cache_creation",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "inference_geo",
+    "input_tokens",
+    "iterations",
+    "output_tokens",
+    "output_tokens_details",
+    "server_tool_use",
+    "service_tier",
+    "speed"
+  ],
+  "/tool_use_result/usage/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/tool_use_result/usage/iterations[]": [
+    "cache_creation",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "input_tokens",
+    "model",
+    "output_tokens",
+    "type"
+  ],
+  "/tool_use_result/usage/iterations[]/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/tool_use_result/usage/output_tokens_details": [
+    "thinking_tokens"
+  ],
+  "/tool_use_result/usage/server_tool_use": [
+    "web_fetch_requests",
+    "web_search_requests"
+  ],
+  "/tool_use_result[]": [
+    "text",
+    "type"
+  ],
+  "/usage": [
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "duration_ms",
+    "input_tokens",
+    "output_tokens",
+    "tool_uses",
+    "total_tokens"
+  ],
+  "/workflow_progress[]": [
+    "index",
+    "label",
+    "phaseIndex",
+    "phaseTitle",
+    "resultPreview",
+    "state",
+    "title",
+    "type"
+  ]
+}

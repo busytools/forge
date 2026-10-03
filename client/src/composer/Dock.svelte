@@ -2,7 +2,8 @@
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
-  import type { Connection } from '../socket';
+  import type { Command } from '../protocol';
+  import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
 
@@ -272,6 +273,22 @@
   }
 
   /**
+   * Send one answer, and do not let a closed socket take the click with it.
+   *
+   * `dispatch` throws synchronously when the socket is not open, which lands
+   * in the click handler rather than in anything that draws: the loss is
+   * reported, and the dock the reader has already answered keeps its
+   * stand-down.
+   */
+  function answer(command: Command): void {
+    try {
+      void connection.dispatch(command);
+    } catch (error) {
+      report('the answer was not sent', error);
+    }
+  }
+
+  /**
    * Answer with what the reader chose.
    *
    * The outcome is built from the options the core sent rather than from
@@ -291,7 +308,7 @@
       const id = ask.request.id;
       const approved = row.key === 'send';
       onanswer(id);
-      void connection.dispatch({ respond_slack_post: { key: slot, id, approved } });
+      answer({ respond_slack_post: { key: slot, id, approved } });
       return;
     }
 
@@ -306,7 +323,7 @@
       // AND denies on the reader's behalf, so it waits for them to write.
       if (option.kind === 'notes' && words === null) return;
       onanswer(toolId);
-      void connection.dispatch({
+      answer({
         respond_permission: {
           key: slot,
           tool_id: toolId,
@@ -339,7 +356,7 @@
     const ids = multi && toggled.length > 0 ? toggled : row.optionId === null ? [] : [row.optionId];
     const annotation = words === null ? null : { preview: null, notes: words };
     onanswer(toolId);
-    void connection.dispatch({
+    answer({
       respond_question: {
         key: slot,
         tool_id: toolId,
@@ -363,7 +380,7 @@
   function reject(): void {
     if (ask.kind === 'question') {
       onanswer(ask.request.toolId);
-      void connection.dispatch({
+      answer({
         respond_question: {
           key: slot,
           tool_id: ask.request.toolId,

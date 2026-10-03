@@ -39,6 +39,19 @@ export class Box {
    */
   answeredKey = $state<string | null>(null);
   refusal = $state<string | null>(null);
+  /**
+   * Why the draft this box was drawing left the core without this reader
+   * answering, drawn where the dock stood.
+   *
+   * The record loses `pending_ask` on the same update that carries this, so
+   * the why has to be held here rather than read off the draft that is gone.
+   */
+  ended = $state<{ tone: string; text: string } | null>(null);
+  /**
+   * The held draft this box drew last, which is what tells a stand-down for
+   * THIS draft from one for the next. Not `$state`: nothing draws from it.
+   */
+  shownDraft: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**
@@ -83,5 +96,14 @@ export class Boxes {
     const made = new Box();
     this.#held.set(key, made);
     return made;
+  }
+
+  /**
+   * The box a seat already holds, or `undefined` for one nothing has drawn -
+   * an update for such a seat has no dock behind it to explain, and minting a
+   * box would keep its line for a page that never showed it.
+   */
+  held(key: string): Box | undefined {
+    return this.#held.get(key);
   }
 }

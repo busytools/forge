@@ -14,8 +14,9 @@ use std::time::Duration;
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS,
-    SlackConfig, SlackDraft, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
+    SlackConfig, SlackDraft, SlackDraftEnding, SlackFollowedThread, SlackMessage,
+    SlackSubscription, SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord,
+    SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -208,6 +209,12 @@ impl Workspace {
         (id, receiver)
     }
 
+    /// Whether a draft with this id is still registered to `caller`, without
+    /// removing it - the read the dispatch guard makes before an answer.
+    pub(crate) fn slack_draft_waiting(&self, id: Uuid, caller: &SessionSlot) -> bool {
+        self.slack_drafts.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
+    }
+
     /// Remove every Slack subscription the worker `label` owns in
     /// `project_key`, from the active set and the store. Worker teardown
     /// calls this so a despawned worker cannot strand records - and so a
@@ -275,18 +282,32 @@ impl Workspace {
     /// still outstanding: it is true exactly once, for the entry that was
     /// there. A draft held for another session is refused rather than
     /// answered, and a caller that has gone away is not an error.
+    ///
+    /// The removal is the one point every removal a view could have parked
+    /// on funnels through - an answer, an expiry, a dead waiter - so the
+    /// stand-down is emitted here. The one other removal,
+    /// `register_slack_draft`'s no-answerable-subscriber path, drops a draft
+    /// the update may already have reached an observer with: a subscriber
+    /// that could ANSWER is what makes a draft answerable at all, and an
+    /// observer draws no dock to stand down.
     pub(crate) fn resolve_slack_draft(
         &self,
         id: Uuid,
         caller: &SessionSlot,
-        approved: bool,
+        ending: SlackDraftEnding,
     ) -> bool {
         let mut drafts = self.slack_drafts.lock();
         if !drafts.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
             return false;
         }
-        let Some((_, _, sender)) = drafts.remove(&id) else { return false };
-        let _ = sender.send(approved);
+        let Some((owner, _, sender)) = drafts.remove(&id) else { return false };
+        drop(drafts);
+        let _ = sender.send(matches!(ending, SlackDraftEnding::Answered { approved: true }));
+        let _ = self.update_sender().send(crate::protocol::SessionUpdate::SlackDraftResolved {
+            key: owner,
+            id,
+            ending,
+        });
         true
     }
 
@@ -1246,6 +1267,13 @@ mod tests {
         (ws, dir, rx)
     }
 
+    /// An answer as the registry takes it. Every call site here is a view
+    /// answering; the expiry and the drop are reached through the paths
+    /// under test rather than through this.
+    fn answered(approved: bool) -> SlackDraftEnding {
+        SlackDraftEnding::Answered { approved }
+    }
+
     fn draft(workspace: &str, conversation: &str) -> SlackDraft {
         SlackDraft {
             id: Uuid::new_v4(),
@@ -1284,7 +1312,7 @@ mod tests {
     fn answering_a_draft_that_is_not_pending_is_refused() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        assert!(!ws.resolve_slack_draft(Uuid::new_v4(), &caller, true));
+        assert!(!ws.resolve_slack_draft(Uuid::new_v4(), &caller, answered(true)));
     }
 
     /// No UI to answer the draft: the registry must not hold it, and the
@@ -1337,8 +1365,35 @@ mod tests {
         let caller = SessionSlot::from_str_for_test("caller-uuid");
         let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
 
-        assert!(ws.resolve_slack_draft(id, &caller, true), "the draft was waiting");
-        assert!(!ws.resolve_slack_draft(id, &caller, true), "and is gone once answered");
+        assert!(ws.resolve_slack_draft(id, &caller, answered(true)), "the draft was waiting");
+        assert!(!ws.resolve_slack_draft(id, &caller, answered(true)), "and is gone once answered");
+    }
+
+    /// The draft leaving the registry is the one moment every view has to
+    /// hear about: the terminal's queued dock and the web client's parked
+    /// record each keep a copy of their own, and no other update clears
+    /// them. The ending rides it, because a view that did not answer has
+    /// nothing else to say what happened.
+    #[test]
+    fn a_resolved_draft_stands_the_views_down() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        while rx.try_recv().is_ok() {}
+
+        assert!(ws.resolve_slack_draft(id, &caller, answered(true)), "the draft was waiting");
+
+        let mut resolved = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } = update {
+                resolved.push((key, id, ending));
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![(caller, id, SlackDraftEnding::Answered { approved: true })],
+            "the stand-down names the draft's own id and how it ended",
+        );
     }
 
     /// An answer is only applied by the session the draft was addressed
@@ -1352,11 +1407,11 @@ mod tests {
         let (id, _decision) = ws.register_slack_draft(&asker, draft("acme", "C1"));
 
         assert!(
-            !ws.resolve_slack_draft(id, &other, true),
+            !ws.resolve_slack_draft(id, &other, answered(true)),
             "an answer from another session must be refused",
         );
         assert!(
-            ws.resolve_slack_draft(id, &asker, true),
+            ws.resolve_slack_draft(id, &asker, answered(true)),
             "and the draft is still waiting for the session that asked",
         );
     }
@@ -1380,6 +1435,56 @@ mod tests {
         assert!(
             decision.await.expect("the held draft answers"),
             "the answer the dock gave reaches the awaiting caller",
+        );
+    }
+
+    /// A click on a dock the core has already resolved - answered in some
+    /// other view, expired - is refused with the reason, the same way the
+    /// permission and question answers are, rather than dropped: the
+    /// reader learns why the click did nothing.
+    #[tokio::test]
+    async fn a_stale_dock_answer_is_refused_with_the_reason() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        assert!(ws.resolve_slack_draft(id, &caller, answered(true)), "the draft was waiting");
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
+            key: caller,
+            id,
+            approved: true,
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::NoDraftWaiting { .. })),
+            "a stale dock must report why the answer did not land: {refused:?}",
+        );
+    }
+
+    /// The guard's owner half: a draft is answered by the session it was
+    /// addressed to, so another session's dispatch is refused rather than
+    /// reporting an answer that never landed - and the draft stays waiting
+    /// for the one that asked.
+    #[tokio::test]
+    async fn another_session_answering_through_dispatch_is_refused() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let asker = SessionSlot::from_str_for_test("worker-uuid");
+        let other = SessionSlot::from_str_for_test("lead-uuid");
+        let (id, _decision) = ws.register_slack_draft(&asker, draft("acme", "C1"));
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
+            key: other,
+            id,
+            approved: true,
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::NoDraftWaiting { .. })),
+            "another session's answer must be refused, not reported as landed: {refused:?}",
+        );
+        assert!(
+            ws.resolve_slack_draft(id, &asker, answered(true)),
+            "and the draft is still the asking session's to answer",
         );
     }
 
