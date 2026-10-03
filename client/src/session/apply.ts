@@ -18,7 +18,11 @@ import { fold } from '../chat/units';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
+  issuesFrom,
+  monitorFrom,
   overridesFrom,
+  prFrom,
+  workFrom,
   type ComposerState,
   type Conversation,
   type Effort,
@@ -101,6 +105,32 @@ export const HANDLERS: Record<string, Apply> = {
     const mcp = mcpFrom(payload);
     return mcp === null ? held : { ...held, mcp };
   },
+
+  /**
+   * The three sets a seat pushes whole, each replacing its field(s) with the
+   * frame's own.
+   *
+   * They are narrowed by the very functions the record's read uses, so a
+   * field cannot come out one way from a read and another from a frame.
+   */
+  work_changed: (held, payload) => ({
+    ...held,
+    work: workFrom(payload['work']),
+    pr: prFrom(payload['pr']),
+    closes: issuesFrom(payload['closes']),
+  }),
+
+  monitors_changed: (held, payload) => ({
+    ...held,
+    monitors: list(payload['monitors']).map(monitorFrom),
+  }),
+
+  // The frame names its set `tasks` and the record's field is
+  // `background_tasks`, so the payload is read by the frame's own name.
+  background_tasks_changed: (held, payload) => ({
+    ...held,
+    background_tasks: list(payload['tasks']),
+  }),
 
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
@@ -282,38 +312,26 @@ export const IGNORED: readonly string[] = [
   'notice',
   'slack_message_appended',
   'status_snapshot',
-  /**
-   * The seat's three pushed sets - its monitors, the CLI's background
-   * registry and its working tree - which this build reads from the read it
-   * already makes rather than from the frames: the fields they carry are
-   * merged from the poll, so handlers would be replaced by the next read
-   * anyway. They arrive with the read that stops carrying them.
-   */
-  'background_tasks_changed',
-  'monitors_changed',
-  'work_changed',
   'worker_status_changed',
 ];
 
 /**
- * The fields the merge read carries, because this build applies no update to
- * them.
+ * The fields the merge takes from a poll's answer, because no update this
+ * build handles carries them.
  *
- * Three of them are pushed now - `work`, `pr` and `closes` arrive on
- * `work_changed` - and they stay listed: a handler for it comes with the
- * change that stops this read carrying them, and until then the read is what
- * keeps the pane honest. The rest are the slowest-moving part of the record,
- * where a git scan and a process walk do not change between one frame and the
- * next.
+ * **The read still answers every field** - `sessionFrom` narrows the whole
+ * record - and what is narrow is the MERGE: an answer is applied by taking
+ * only these from it. That is what keeps a poll from reverting a pushed row,
+ * since an answer is encoded before a frame lands and applied after it.
+ *
+ * Five remain: the process walk, the CLI's catalogue pair, the composer's
+ * file list and the record's own dispatch answer. The three pushed sets left
+ * this list as their handlers landed, and this list is what retires the tick
+ * once nothing is on it.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
   'has_dispatches',
   'processes',
-  'work',
-  'pr',
-  'closes',
-  'monitors',
-  'background_tasks',
   'slash_commands',
   'subagents',
   'file_index',

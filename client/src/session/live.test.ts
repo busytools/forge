@@ -1129,11 +1129,50 @@ describe('the slow read for what no update carries', () => {
   it('takes the slices no update feeds from what the poll answered with', () => {
     const connection = drivable();
     const page = watch(connection);
-    page.land(snapshotOf(LEAD, { work: { branch: 'main', changed: 3, gate: 'in_repo' } }));
+    const walked = (secs: number) => ({
+      processes: { processes: [], scanned_at: { secs_since_epoch: secs, nanos_since_epoch: 0 } },
+    });
+    page.land(snapshotOf(LEAD, walked(1)));
 
-    page.land(snapshotOf(LEAD, { work: { branch: 'feature', changed: 0, gate: 'in_repo' } }));
+    page.land(snapshotOf(LEAD, walked(2)));
 
-    expect(page.read().wire?.work.branch, 'the working tree never moved').toBe('feature');
+    expect(
+      page.read().wire?.processes?.scanned_at.secs_since_epoch,
+      'the process walk never moved',
+    ).toBe(2);
+    page.stop();
+  });
+
+  /**
+   * **A pushed row is not a row a poll can revert.** A poll's answer is
+   * encoded before a frame lands and applied after it, so a field the merge
+   * still takes from that answer is a pushed row the next read undoes - which
+   * is the whole reason the push exists.
+   */
+  it('does not let a poll answer put a pushed row back', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    const stale = { work: { branch: 'stale', changed: 9, gate: 'in_repo' } };
+    page.land(snapshotOf(LEAD, stale));
+
+    // The frame moves the tree...
+    page.land(
+      updateOf({
+        work_changed: {
+          key: LEAD,
+          work: { branch: 'fresh', changed: 1, gate: 'in_repo' },
+          pr: null,
+          closes: [],
+        },
+      }),
+    );
+    paint();
+    expect(page.read().wire?.work.branch, 'precondition: the frame landed').toBe('fresh');
+
+    // ...and a poll's answer from before it lands after it.
+    page.land(snapshotOf(LEAD, stale));
+
+    expect(page.read().wire?.work.branch, 'a poll answer put the pushed row back').toBe('fresh');
     page.stop();
   });
 
