@@ -236,6 +236,32 @@ Permission requests, plan approval, AskUserQuestion and a held Slack post route 
 
 **Recommended options.** A `(Recommended)` suffix on an option label is the CLI's own text: it reaches the row verbatim and the option moves to the top of the list, so the marker and the `▸` pointer land on the same row. The pointer starts on the first option either way, and a recommended option is styled like any other unfocused one - dim, with no extra emphasis. A question with no suffix keeps the CLI's order exactly.
 
+**Focused option preview.** An option can carry a preview, and the focused one's draws as a block under the option list, headed by a white `Preview:` row. The string is the CLI's own markdown, drawn the way a message body draws markdown: bold, inline code, links and lists as their text, an ATX heading as bold text with a blank row before it, and a fenced block as the same quiet code panel. The CLI writes previews line-structured and the block keeps those lines, with two exceptions it inherits from the shared renderer: a setext heading draws with its marker kept, and an indented code block draws its lines merged between fence rows the preview never had (#1634). A row wider than the dock wraps, with the continuation keeping the row's own indentation. The block is absent when the focused option carries no preview, or a blank one.
+
+<div class="term">
+
+  <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent">? </span><span class="bold">Environments (Q2 of 3)</span>                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Pick the environments to deploy to.</span>                                 <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Staging</span>                                                         <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Production</span>                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">...</span> <span class="dim">Tell Claude something else</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Preview:</span>                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  Staging runs deploy --env staging, the same job as the production   <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  release.                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="code-panel">  <span class="code-label">sh</span>                                                              </span>  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="code-panel">  deploy --env staging --skip-migrations                          </span>  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+
+</div>
+
 <details>
 <summary>The dictate blip on the dock</summary>
 

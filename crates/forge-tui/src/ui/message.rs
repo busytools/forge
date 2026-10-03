@@ -2578,7 +2578,10 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 /// `tui_markdown` prints the fence delimiters itself, and it keeps code
 /// out of the prose rewriter, which would mistake Rust generics (`Vec<T>`)
 /// and JSX for HTML.
-fn render_markdown_segments(
+///
+/// The prompt dock's option preview is markdown on the wire and draws
+/// through this too, with no gutter: rows it returns there are unwrapped.
+pub(super) fn render_markdown_segments(
     text: &str,
     width: u16,
     preserve_newlines: bool,
