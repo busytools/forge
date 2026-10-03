@@ -70,6 +70,17 @@ describe('the inbound delivery row', () => {
     expect(draw({ body: '' }), 'a delivery with no body carries no tail').not.toContain(
       'class="ev"',
     );
+
+    // **The open body is prose, not the raw text it arrived as.** A delivery is
+    // a message meant to be read, so its marks render the way every other
+    // message's do (Ved, 2026-10-03).
+    const prose = draw({
+      title: 'Busytools \u{b7} #alerts',
+      body: 'disk **almost** full\n\n- srv2',
+    });
+    expect(prose, 'the body drawn as markdown').toContain('<strong>almost</strong>');
+    expect(prose, 'not as raw text with its marks on it').not.toContain('**almost**');
+    expect(prose, 'and its list drawn as a list').toContain('<li>srv2</li>');
   });
 
   it('holds the tail to one line that takes the width the title leaves', () => {
