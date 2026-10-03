@@ -152,7 +152,15 @@ If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
 rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
-happened.";
+happened.\n\
+\n\
+Before you report work as done, reviewed, or verified, be able to name \
+the evidence - the command and its output, the diff you read, the test \
+that ran. If the `systemone__*` tools are in your list and the claim is \
+genuinely uncertain, put the claim and that evidence in `state` and \
+ask; a decisive answer is permission to say it plainly, a near-0.5 \
+means state the caveat or go verify first. A decision is never a \
+substitute for evidence you do not have.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on

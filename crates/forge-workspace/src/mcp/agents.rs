@@ -512,6 +512,18 @@ struct SpawnArgs {
     interactive: bool,
     #[serde(default)]
     resume_session: bool,
+    #[serde(default)]
+    mcp_families: Option<Vec<String>>,
+}
+
+/// Validate and canonicalise a spawn or update `mcp_families` argument:
+/// names in wire order, de-duplicated; an empty list resolves to `None`
+/// (every family) for a spawn.
+fn canonical_spawn_families(names: Option<&[String]>) -> Result<Option<Vec<String>>, String> {
+    match names {
+        Some(names) => crate::mcp::canonical_mcp_families(names),
+        None => Ok(None),
+    }
 }
 
 #[async_trait::async_trait]
@@ -567,6 +579,17 @@ impl Tool for Spawn {
          The label 'lead' is reserved (it addresses a project's own \
          agent) and rejected here. \
          Use agents__list to see your project's current worker pool. \
+         `mcp_families` selects which MCP families this worker gets: \
+         any of review, cron, tasks, gotify, slack and systemone (the \
+         agents__* verbs are always on and cannot be listed). Omit it, \
+         or pass an empty list, and the worker gets every family. Pass a \
+         list and it gets exactly those; each withheld family is named \
+         in the worker's own prompt so it knows what it does not have - \
+         a worker without systemone is told to route decisions to you. \
+         The choice is stored on the worker and survives restarts; \
+         revise it with agents__update. On a resume or re-spawn that \
+         states no `mcp_families`, the worker's stored selection \
+         applies; stating one then revises it. \
          This tool errors if called from a worker session; only the \
          project lead may spawn."
     }
@@ -599,6 +622,11 @@ impl Tool for Spawn {
                     "type": "boolean",
                     "description": "Set true to RESUME this label's most recent prior session instead of starting fresh, so the old conversation arrives as history and the worker continues where it left off. The natural move after despawning a worker whose context you still want: re-spawn the same label with this set. The session is resolved from what the label is registered under, or from its own transcripts by worker tag once that is gone; if there is none to resume, a fresh one starts and the response says which happened. A live worker on the same label is still rejected; despawn or close it first. A git worker's worktree is recreated if despawn removed it, so the resumed session lands back in its run directory.",
                 },
+                "mcp_families": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
+                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt.",
+                },
             },
             "required": ["label", "charter"],
             "additionalProperties": false,
@@ -617,6 +645,10 @@ impl Tool for Spawn {
         if args.resume_kick.as_ref().is_some_and(|text| text.trim_end().is_empty()) {
             return tool_error("resume_kick must be non-empty after trim when provided".to_owned());
         }
+        let mcp_families = match canonical_spawn_families(args.mcp_families.as_deref()) {
+            Ok(families) => families,
+            Err(message) => return tool_error(message),
+        };
         match self
             .facade
             .spawn_worker(
@@ -627,6 +659,7 @@ impl Tool for Spawn {
                 args.resume_kick,
                 args.interactive,
                 args.resume_session,
+                mcp_families,
             )
             .await
         {
@@ -642,6 +675,9 @@ impl Tool for Spawn {
                         }
                     },
                 });
+                if let Some(families) = &reply.mcp_families {
+                    body["mcp_families"] = serde_json::json!(families);
+                }
                 if let Some(account) = &reply.rate_limited_account {
                     body["notice"] = serde_json::Value::String(format!(
                         "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
@@ -835,6 +871,8 @@ struct UpdateArgs {
     kick: Option<String>,
     #[serde(default)]
     resume_kick: Option<String>,
+    #[serde(default)]
+    mcp_families: Option<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -845,14 +883,18 @@ impl Tool for Update {
 
     fn description(&self) -> &'static str {
         "Revise a worker's stored instructions without despawning it \
-         (lead-only). Replaces any of `charter`, `kick` and `resume_kick` \
-         on that worker's persisted record; a field you omit keeps its \
-         current value, and at least one must be supplied. TAKES EFFECT ON \
-         THE WORKER'S NEXT RESPAWN, NOT IMMEDIATELY - a session's system \
-         prompt is fixed when the session spawns, so a running worker \
-         keeps what it started with; use agents__send_message to redirect it now. \
+         (lead-only). Replaces any of `charter`, `kick`, `resume_kick` and \
+         `mcp_families` on that worker's persisted record; a field you omit \
+         keeps its current value, and at least one must be supplied. TAKES \
+         EFFECT ON THE WORKER'S NEXT RESPAWN, NOT IMMEDIATELY - a session's \
+         system prompt and tool list are fixed when the session spawns, so \
+         a running worker keeps what it started with; use \
+         agents__send_message to redirect it now. \
+         `mcp_families` revises which MCP families the worker gets, \
+         validated exactly as agents__spawn validates it: a list replaces \
+         the stored selection, and an empty list restores every family. \
          The worker must already exist: this never creates one, so spawn \
-         it with agents__spawn first (which takes the same three texts). \
+         it with agents__spawn first (which takes the same four texts). \
          Address it by the same `label` you spawned it with, as shown by \
          agents__list."
     }
@@ -876,6 +918,11 @@ impl Tool for Update {
                 "resume_kick": {
                     "type": "string",
                     "description": "Replacement re-orient message delivered when this worker is resumed after a forge restart, in place of the generic restart note. Omit to leave the stored value unchanged. Non-empty after trim when provided.",
+                },
+                "mcp_families": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["review", "cron", "tasks", "gotify", "slack", "systemone"] },
+                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn.",
                 },
             },
             "required": ["label"],
@@ -921,10 +968,23 @@ impl Tool for Update {
                 updated.push(name);
             }
         }
+        // A present-but-empty list is the reset (every family); anything
+        // else is canonicalised like the spawn argument.
+        let mcp_families = match args.mcp_families.as_deref() {
+            Some([]) => Some(Vec::new()),
+            Some(names) => match crate::mcp::canonical_mcp_families(names) {
+                Ok(families) => families,
+                Err(message) => return tool_error(message),
+            },
+            None => None,
+        };
+        if mcp_families.is_some() {
+            updated.push("mcp_families");
+        }
         if updated.is_empty() {
             return tool_error(
-                "supply at least one of charter, kick or resume_kick; an update with none of \
-                 them would change nothing."
+                "supply at least one of charter, kick, resume_kick or mcp_families; an update \
+                 with none of them would change nothing."
                     .to_owned(),
             );
         }
@@ -935,6 +995,7 @@ impl Tool for Update {
             args.charter,
             args.kick,
             args.resume_kick,
+            mcp_families,
         ) {
             Ok(()) => json_output(&serde_json::json!({ "label": label, "updated": updated })),
             Err(err) => tool_error(format_update_error(&err)),
@@ -1302,6 +1363,7 @@ mod tests {
         *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "s-1".to_owned(),
             tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
             session_choice: SessionChoice::Fresh,
@@ -1622,5 +1684,136 @@ mod tests {
             .await;
         assert!(output.is_error, "an unknown project must refuse, not pick a plausible seat");
         assert!(host.peers.deliver_calls.lock().is_empty(), "nothing was delivered");
+    }
+
+    fn spawn_tool(host: &Host) -> Spawn {
+        Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() }
+    }
+
+    fn preloaded_reply(families: Option<Vec<String>>) -> WorkerSpawnReply {
+        WorkerSpawnReply {
+            session_id: "s-1".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: families,
+            rate_limited_account: None,
+            durability_warning: None,
+            session_choice: SessionChoice::Fresh,
+        }
+    }
+
+    /// The spawn argument reaches the facade in canonical wire order,
+    /// and the reply echoes exactly what the worker got.
+    #[tokio::test]
+    async fn spawn_families_are_canonicalised_and_echoed() {
+        let host = host();
+        *host.workers.spawn_reply.lock() =
+            Some(Ok(preloaded_reply(Some(vec!["tasks".to_owned(), "slack".to_owned()]))));
+        let tool = spawn_tool(&host);
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "c",
+                    "mcp_families": ["slack", "tasks"],
+                }),
+            })
+            .await;
+
+        assert!(!output.is_error, "{:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(
+            parsed["mcp_families"],
+            serde_json::json!(["tasks", "slack"]),
+            "the echo names the canonical order"
+        );
+        assert_eq!(
+            host.workers.spawn_calls.lock()[0].7,
+            Some(vec!["tasks".to_owned(), "slack".to_owned()]),
+            "the facade gets the canonical list"
+        );
+    }
+
+    /// No families named: the facade hears `None` and the reply carries
+    /// no key at all - absent means every family throughout.
+    #[tokio::test]
+    async fn spawn_without_families_sends_none_and_omits_the_key() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(preloaded_reply(None)));
+        let tool = spawn_tool(&host);
+
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({"label": "reviewer", "charter": "c"}) })
+            .await;
+
+        assert!(!output.is_error, "{:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert!(parsed.get("mcp_families").is_none(), "no key when nothing is narrowed: {parsed}");
+        assert_eq!(host.workers.spawn_calls.lock()[0].7, None);
+    }
+
+    /// A name that is not selectable is refused before anything is
+    /// persisted, and the refusal names the selectable set; `agents` is
+    /// refused as always-on.
+    #[tokio::test]
+    async fn spawn_refuses_unselectable_families() {
+        for (bad, needle) in [("bogus", "selectable families are"), ("agents", "always on")] {
+            let host = host();
+            let tool = spawn_tool(&host);
+
+            let output = tool
+                .call(ToolInput {
+                    value: serde_json::json!({
+                        "label": "reviewer",
+                        "charter": "c",
+                        "mcp_families": [bad],
+                    }),
+                })
+                .await;
+
+            assert!(output.is_error, "{bad} must refuse");
+            assert!(output.blocks[0].text.contains(needle), "{bad}: {}", output.blocks[0].text);
+            assert!(host.workers.spawn_calls.lock().is_empty(), "{bad} persists nothing");
+        }
+    }
+
+    /// Update's family contract: a list replaces, an empty list resets,
+    /// an absent argument leaves the stored selection alone.
+    #[tokio::test]
+    async fn update_families_replace_reset_or_stay() {
+        let host = host();
+        let tool =
+            Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({"label": "w1", "mcp_families": ["cron"]}) })
+            .await;
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert!(
+            output.blocks[0].text.contains("mcp_families"),
+            "the update names what changed: {}",
+            output.blocks[0].text
+        );
+        assert_eq!(host.workers.update_calls.lock()[0].5, Some(vec!["cron".to_owned()]));
+
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({"label": "w1", "mcp_families": []}) })
+            .await;
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert_eq!(
+            host.workers.update_calls.lock()[1].5,
+            Some(Vec::new()),
+            "empty list is the reset"
+        );
+
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({"label": "w1", "charter": "c2"}) })
+            .await;
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert_eq!(
+            host.workers.update_calls.lock()[2].5,
+            None,
+            "absent keeps the stored selection"
+        );
     }
 }

@@ -1229,6 +1229,47 @@ pub(crate) struct WorkerSpawnArgs {
     pub kick: Option<String>,
     pub resume_kick: Option<String>,
     pub interactive: bool,
+    /// The validated MCP-family allowlist from `agents__spawn`; `None`
+    /// or empty means every family.
+    pub mcp_families: Option<Vec<String>>,
+}
+
+/// The charter a spawned worker's prompt carries: the stored text plus
+/// the withheld-family lines for the EFFECTIVE set - the same config
+/// gate the tool build applies, so the prompt and the tools cannot
+/// disagree about a family.
+fn spawn_prompt_charter(
+    charter: &str,
+    families: Option<&[String]>,
+    systemone_available: bool,
+) -> String {
+    charter_with_withheld_families(
+        charter,
+        &crate::mcp::effective_mcp_families(families, systemone_available),
+    )
+}
+
+/// The worker's prompt charter: the stored text plus one line per
+/// withheld MCP family. The row keeps the RAW charter - these lines are
+/// composed per spawn from the current selection, so they can neither
+/// duplicate across re-spawns nor outlive a revision.
+fn charter_with_withheld_families(
+    charter: &str,
+    families: &std::collections::BTreeSet<crate::mcp::McpFamily>,
+) -> String {
+    let lines = crate::mcp::withheld_family_lines(families);
+    if lines.is_empty() {
+        return charter.to_owned();
+    }
+    let mut text = String::with_capacity(
+        charter.len() + lines.iter().map(|line| line.len() + 1).sum::<usize>(),
+    );
+    text.push_str(charter);
+    for line in lines {
+        text.push('\n');
+        text.push_str(line);
+    }
+    text
 }
 
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
@@ -1252,7 +1293,7 @@ pub(crate) fn handle_spawn_worker(
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive } = args;
+    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive, mcp_families } = args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
     // Verify the project exists before minting the worker's id. A worker
@@ -1441,6 +1482,17 @@ pub(crate) fn handle_spawn_worker(
     // `resume_kick`), and writing that here would make it the worker's
     // opening turn on every later `--new` re-spawn.
     let kick_field = if is_resume { None } else { entry.kick.as_deref() };
+    // The stored-selection contract, mirrored exactly by `families`
+    // below so the reply, the running surface and the row cannot
+    // disagree: a re-spawn stating nothing adopts the stored value; a
+    // stated list is a revision; a fresh spawn stating nothing means
+    // every family, which writes as absence.
+    let resume_like = is_resume || from_boot_respawn;
+    let families_field: Option<&[String]> = if resume_like && mcp_families.is_none() {
+        None
+    } else {
+        Some(mcp_families.as_deref().unwrap_or(&[]))
+    };
     let durability_warning = match workspace.record_worker_row(
         &project_key,
         label,
@@ -1450,6 +1502,7 @@ pub(crate) fn handle_spawn_worker(
         resume_kick,
         interactive,
         is_git,
+        families_field,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -1490,8 +1543,34 @@ pub(crate) fn handle_spawn_worker(
     // existing ConnectionFailed surface (workspace.rs:570) reports
     // it - we don't silently fall back to fresh-spawn (that would
     // lose state without warning).
+    // The selection this spawn composes from: a stated argument wins (a
+    // resume stating one is a revision); otherwise a resume or boot
+    // re-spawn adopts the row; a fresh spawn with nothing stated means
+    // every family.
+    let families = if mcp_families.is_some() {
+        mcp_families.clone()
+    } else if resume_like {
+        workspace.recorded_worker_mcp_families(&project_key, label).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                event_name = "worker_row_families_unreadable",
+                project = %project_key.as_str(),
+                label = %label,
+                %error,
+                "reading the worker's recorded mcp families failed; \
+                 composing the full surface",
+            );
+            None
+        })
+    } else {
+        None
+    };
     let settings = SessionLaunchSettings {
-        charter: Some(charter),
+        charter: Some(spawn_prompt_charter(
+            &charter,
+            families.as_deref(),
+            workspace.systemone.is_some(),
+        )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
     };
@@ -1511,6 +1590,7 @@ pub(crate) fn handle_spawn_worker(
             // already there, so only a spawn that minted this one may
             // take it away.
             wrote_row: !is_resume && !from_boot_respawn,
+            mcp_families: families.clone(),
         },
     ) {
         Ok(handle) => {
@@ -1534,6 +1614,9 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: session_id.as_str().to_owned(),
                 tag,
+                // The stored selection, canonicalised; `None` means every
+                // family. The lead sees exactly what this worker got.
+                mcp_families: families,
                 rate_limited_account,
                 // Set when the row could not be written above; the boot
                 // re-spawn paths drop the reply, so they read the warn
@@ -2811,6 +2894,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -2883,6 +2967,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: None,
                     is_git_repo: seeded_is_git,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -2897,6 +2982,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             resume_existing,
@@ -2984,6 +3070,7 @@ provider = "anthropic"
             None,
             false,
             false,
+            None,
         )
         .expect("seed the row the resume re-writes");
 
@@ -2998,6 +3085,7 @@ provider = "anthropic"
                 kick: Some("This session was restarted by forge; continue.".to_owned()),
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             Some("tester-id"),
@@ -3023,6 +3111,231 @@ provider = "anthropic"
             "the row keeps the worker's original first turn; overwriting it makes the restart \
              note the worker's opening turn on every later --new re-spawn",
         );
+    }
+
+    fn spawn_scaffold() -> (Arc<Workspace>, crate::ProjectKey, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+        (ws, key, dir)
+    }
+
+    /// A fresh spawn that omits `mcp_families` states "every family", so
+    /// a stale stored selection must not survive it: reply, running
+    /// surface and row have to agree.
+    #[tokio::test]
+    async fn a_fresh_spawn_without_families_clears_a_stale_selection() {
+        let (ws, key, _dir) = spawn_scaffold();
+        ws.record_worker_row(
+            &key,
+            "tester",
+            "tester-id",
+            "charter",
+            None,
+            None,
+            false,
+            false,
+            Some(&["cron".to_owned()]),
+        )
+        .expect("seed a stale selection");
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the fresh spawn succeeds: {reply:?}");
+        assert_eq!(reply.expect("ok").mcp_families, None, "the reply says every family");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.mcp_families, None,
+            "the row cannot keep a selection the running surface does not have; a restart \
+             would silently narrow the worker",
+        );
+    }
+
+    /// A re-spawn that states no selection adopts the row's; one that
+    /// states a selection is a revision and both the reply and the row
+    /// carry it.
+    #[tokio::test]
+    async fn a_respawn_adopts_the_rows_selection_or_honours_a_stated_one() {
+        let (ws, key, _dir) = spawn_scaffold();
+        ws.record_worker_row(
+            &key,
+            "tester",
+            "tester-id",
+            "charter",
+            None,
+            None,
+            false,
+            false,
+            Some(&["cron".to_owned()]),
+        )
+        .expect("seed the stored selection");
+
+        // Adopt: no argument, boot re-spawn reads the row.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            true,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert_eq!(
+            reply.expect("ok").mcp_families,
+            Some(vec!["cron".to_owned()]),
+            "a re-spawn with nothing stated adopts the row's selection",
+        );
+
+        // State one: it wins, and the row is revised. Clear the live
+        // entry the first re-spawn left, or the one-live-worker guard
+        // refuses this second spawn for a reason unrelated to families.
+        ws.remove_latest_worker(&key, "tester");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["tasks".to_owned()]),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            true,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert_eq!(
+            reply.expect("ok").mcp_families,
+            Some(vec!["tasks".to_owned()]),
+            "a stated selection wins on a re-spawn",
+        );
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row");
+        assert_eq!(stored.mcp_families, Some(vec!["tasks".to_owned()]), "and is written");
+    }
+
+    /// The prompt charter carries one line per withheld family; the ROW
+    /// keeps the raw charter, so the lines are recomposed per spawn and
+    /// can neither duplicate nor outlive a revision.
+    #[tokio::test]
+    async fn a_narrowed_spawn_keeps_its_rows_charter_raw() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["slack".to_owned()]),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the narrowed spawn succeeds: {reply:?}");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.charter.as_deref(),
+            Some("charter"),
+            "the row keeps the raw charter; a later revision compares against this text, \
+             so composed lines here would compound on every re-spawn",
+        );
+        assert_eq!(stored.mcp_families, Some(vec!["slack".to_owned()]));
+    }
+
+    /// The wiring the round-2 axis probed: an argument-less spawn on a
+    /// systemone-less workspace composes the systemone withheld line,
+    /// and the same spawn with the section on does not.
+    #[test]
+    fn the_spawn_prompt_charter_follows_the_config_gate() {
+        let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
+        let without = spawn_prompt_charter("charter", None, false);
+        assert!(without.contains(line), "[systemone] off composes the line: {without}");
+        let with = spawn_prompt_charter("charter", None, true);
+        assert!(!with.contains(line), "the section on composes none: {with}");
+    }
+
+    /// The composer's contract: nothing withheld means the charter is
+    /// untouched; a withheld family appends its line exactly once; the
+    /// present family appends nothing.
+    #[test]
+    fn the_prompt_charter_carries_only_the_withheld_lines() {
+        let all = crate::mcp::McpFamily::all();
+        assert_eq!(charter_with_withheld_families("charter", &all), "charter");
+
+        let slack_only: std::collections::BTreeSet<crate::mcp::McpFamily> =
+            [crate::mcp::McpFamily::Slack].into_iter().collect();
+        let text = charter_with_withheld_families("charter", &slack_only);
+        assert!(text.starts_with("charter\n"), "{text}");
+        assert!(text.contains("no `systemone__*` decision tools"), "{text}");
+        assert!(!text.contains("no `slack__*` tools"), "the present family gets no line: {text}");
     }
 
     /// A first spawn writes the kick it opened the worker with: the row's
@@ -3052,6 +3365,7 @@ provider = "anthropic"
                 kick: Some("opening turn".to_owned()),
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3130,6 +3444,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3173,7 +3488,11 @@ provider = "anthropic"
             },
             forge_agent::client::SessionLaunchSettings::default(),
             None,
-            &crate::protocol::SpawnRole::Worker { label: "reviewer".to_owned(), wrote_row: false },
+            &crate::protocol::SpawnRole::Worker {
+                label: "reviewer".to_owned(),
+                wrote_row: false,
+                mcp_families: None,
+            },
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");
@@ -3375,6 +3694,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3426,6 +3746,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: false,
+                    mcp_families: None,
                 },
                 SessionSlot::from_str_for_test("lead"),
                 None,
@@ -3514,6 +3835,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3717,6 +4039,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3746,6 +4069,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3788,6 +4112,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3816,6 +4141,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3841,6 +4167,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3876,6 +4203,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3923,6 +4251,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4022,6 +4351,7 @@ provider = "anthropic"
                         kick: None,
                         resume_kick: None,
                         interactive: false,
+                        mcp_families: None,
                     },
                     SessionSlot::from_str_for_test("lead"),
                     None,
@@ -4082,6 +4412,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4119,6 +4450,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4146,6 +4478,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4180,6 +4513,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4385,6 +4719,7 @@ provider = "anthropic"
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row whose live worker is gone");
 
@@ -4416,7 +4751,17 @@ provider = "anthropic"
     async fn despawn_clears_a_stranded_workers_subscriptions_and_crons() {
         let StoreBackedStub { workspace, project, .. } = store_backed_stub();
         workspace
-            .record_worker_row(&project, "stranded", "stranded-id", "c", None, None, false, false)
+            .record_worker_row(
+                &project,
+                "stranded",
+                "stranded-id",
+                "c",
+                None,
+                None,
+                false,
+                false,
+                None,
+            )
             .expect("seed the stranded row");
         let sub = forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
@@ -4476,6 +4821,7 @@ provider = "anthropic"
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the lead's row");
 
@@ -4515,7 +4861,7 @@ provider = "anthropic"
         // A sibling row, so "nothing was cleared" cannot pass because the
         // store was empty.
         workspace
-            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false)
+            .record_worker_row(&project, "other", "other-id", "c", None, None, false, false, None)
             .expect("seed a row the despawn must leave alone");
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -4787,6 +5133,7 @@ provider = "anthropic"
                 // The row is what says this worker runs in a worktree, so
                 // it is what the despawn has to read the gitness from.
                 true,
+                None,
             )
             .expect("seed the row that outlived its worker");
         (workspace, project_key, wt, repo, config)
@@ -4849,6 +5196,7 @@ provider = "anthropic"
                     interactive: None,
                     // The shape `migrate_from_dynamic_workers` writes.
                     is_git_repo: None,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row the migration writes");
@@ -5064,6 +5412,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: false,
+                mcp_families: None,
             },
             SessionSlot::from_str_for_test("lead-uuid"),
             None,

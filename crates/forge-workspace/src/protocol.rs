@@ -125,6 +125,10 @@ impl std::fmt::Debug for PendingInteractionSlot {
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
+    /// The worker's stored MCP-family selection, canonicalised; `None`
+    /// means every family. The spawn tool echoes it so the lead sees
+    /// exactly which families this worker got.
+    pub mcp_families: Option<Vec<String>>,
     /// Set to the account name when the walk had to take an account
     /// that is saturated or bailed, because no other account in the pin
     /// declares the project's model. The spawn tool surfaces it as a
@@ -437,6 +441,11 @@ pub enum Command {
         /// tool. Read from the persisted row on a re-spawn, so it
         /// survives a forge restart.
         interactive: bool,
+        /// The MCP families this spawn selects, exactly as
+        /// `agents__spawn` validated them; `None`/empty means every
+        /// family. Written to the row on a first spawn and read back
+        /// from it on a re-spawn, so the selection survives restarts.
+        mcp_families: Option<Vec<String>>,
         /// True only for boot/reconnect re-spawns of persisted
         /// workers, which bypass the project's worker cap:
         /// they restore state the user already had, and their reply is
@@ -843,6 +852,11 @@ pub enum SpawnRole {
         /// being resumed, so the row is the worker, not this spawn's
         /// leftover.
         wrote_row: bool,
+        /// The stored MCP-family selection this spawn composes its tool
+        /// surface from; `None`/empty means every family. Carried here
+        /// because the server is built inside `get_agent_handle_at_key`,
+        /// which reads no store of its own.
+        mcp_families: Option<Vec<String>>,
     },
 }
 
@@ -2039,6 +2053,7 @@ mod workers_command_tests {
         let r = WorkerSpawnReply {
             session_id: "abc".into(),
             tag: "forge:worker:reviewer".into(),
+            mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
             session_choice: SessionChoice::Fresh,

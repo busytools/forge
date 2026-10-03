@@ -2077,6 +2077,7 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the row the rollback judges");
 
@@ -3463,6 +3464,7 @@ provider = "anthropic"
                     resume_kick: None,
                     interactive: None,
                     is_git_repo: None,
+                    mcp_families: None,
                 },
             )
             .expect("seed the row");
@@ -5404,6 +5406,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
             )
             .expect("seed the worker's row");
 
@@ -5853,6 +5856,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the worker row");
         dir
@@ -5929,6 +5933,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 false,
+                None,
             )
             .expect("seed the worker row");
         workspace.enable_test_dispatch_intercept();

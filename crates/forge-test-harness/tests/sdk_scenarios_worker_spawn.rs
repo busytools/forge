@@ -51,6 +51,7 @@ async fn worker_spawn_scenario() {
     *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
         session_id: "worker-session-uuid-stub".into(),
         tag: forge_primitives::worker_tag("reviewer"),
+        mcp_families: None,
         rate_limited_account: None,
         durability_warning: None,
         session_choice: forge_workspace::protocol::SessionChoice::Fresh,
