@@ -131,7 +131,9 @@ impl Tool for AskNoul {
          When to reach for it: before interrupting the user with a question this session could \
          probably decide itself (put the situation in `state` and the ask in `instructions`; \
          when the answer is decisive and the action reversible, act), or as a second opinion \
-         when you are leaning one way and want it checked. A decisive answer is permission to \
+         when you are leaning one way and want it checked. Beyond those moments, reach for a \
+         decision when the outcome matters to the user and is not obvious, and skip it when \
+         both outcomes would lead you to the same action. A decisive answer is permission to \
          proceed where you already could, never authority by itself: it cannot override an \
          explicit rule and does not authorize spending or anything irreversible; for those, \
          ask the user however certain the answer is. Keep text you did not write in its own \
@@ -201,7 +203,9 @@ impl Tool for AskChoice {
          probability of every option, and a confidence for the distribution. The model never \
          writes prose. When to reach for it: routing and picking between enumerated \
          alternatives, or as a second opinion when you are leaning toward one option and want \
-         the alternatives weighed. Enumerate every option in `criteria` and describe when each \
+         the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
+         matters to the user and is not obvious, and skip it when both outcomes would lead you \
+         to the same action. Enumerate every option in `criteria` and describe when each \
          applies (at most 255 options); when nothing may fit the state, include an explicit \
          no-match option, because the model can only choose among the options you list. Reading \
          the answer: `choice` is the highest-probability option; read `probabilities` for the \
@@ -263,6 +267,8 @@ impl Tool for AskScore {
          between levels), the probability of each level, a legend mapping level positions to \
          your text, and a confidence. The model never writes prose. When to reach for it: \
          severity, quality, priority, or risk judgments where the levels are meaningful to you. \
+         Beyond those moments, score a judgment when it matters to the user and is not obvious, \
+         and skip it when the position would not change what you do. \
          Define `criteria` as an ordered list of level descriptions, lowest first (two to ten \
          levels); each level should describe a concrete situation and stand on its own. Reading \
          the answer: `score` is the probability-weighted position (for example 1.79 on a \
