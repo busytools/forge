@@ -869,6 +869,26 @@ export class Chat {
         named.push(fresh);
         copies.push(fresh.messages);
       }
+      // **A page can carry the row the pile is already drawing.** The
+      // transport keeps the forged turn it was sent, so a read taken while the
+      // prompt still waits hands the words back as conversation - and a reader
+      // attaching mid-queue would meet the card and the row at once. The
+      // page's copies are quieted the same way the live frame is: a message
+      // under a queued id is pulled back into the hold, and a row left with
+      // nothing goes rather than drawing an empty one.
+      const quiet: unknown[][] = [];
+      const quietNamed: Turn[] = [];
+      for (let at = 0; at < copies.length; at += 1) {
+        const kept = (copies[at] ?? []).filter((message) => !this.waiting(message));
+        if (kept.length === 0) continue;
+        const row = named[at];
+        if (row !== undefined) quietNamed.push({ ...row, messages: kept });
+        quiet.push(kept);
+      }
+      if (quiet.length !== named.length) {
+        named.splice(0, named.length, ...quietNamed);
+        copies.splice(0, copies.length, ...quiet);
+      }
       // A row the page settled: a turn the server has an END for, which is a
       // `result` frame where the wire carries one and any row but the last
       // otherwise - the last row is the transcript's own tail, and that is the
@@ -1095,6 +1115,20 @@ export class Chat {
         text: `${what} was refused: ${why}`.trimEnd(),
       });
     }
+  }
+
+  /**
+   * Whether this message is the row of a prompt the pile is still holding,
+   * taking it into the hold on the way.
+   *
+   * The first frame kept is the one that draws at the drain: a live frame the
+   * seat already had is preferred over a page's later copy of it.
+   */
+  private waiting(message: unknown): boolean {
+    const id = uuidOf(message);
+    if (id === null || !this.queued.has(id)) return false;
+    if (!this.drained.has(id)) this.drained.set(id, message);
+    return true;
   }
 
   /**

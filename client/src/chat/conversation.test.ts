@@ -1514,6 +1514,31 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
   });
 
+  it('holds the row a page carries while the prompt still waits', () => {
+    // The transport keeps the forged turn it was sent, so a read taken while
+    // the prompt waits hands the words back as conversation - and a reader
+    // attaching mid-queue would meet the card and the row at once.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'page-carried' },
+    });
+    server.send(
+      page(
+        [turn('t1', 'first'), { key: 't2', messages: [forgedUnder('page-carried', 'p1')] }],
+        null,
+      ),
+    );
+    expect(words(chat), 'the card is the only drawing, page or not').not.toContain('page-carried');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the drain draws it').toContain('page-carried');
+    expect(words(chat).split('page-carried').length - 1, 'once').toBe(1);
+  });
+
   it('writes the wait the row spent in the pile, in the pile vocabulary', () => {
     vi.useFakeTimers();
     const server = fakeConnection();
