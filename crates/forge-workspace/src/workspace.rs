@@ -5747,7 +5747,7 @@ impl Workspace {
     /// answer for a fresh git worker - it launches in the project root
     /// with `--worktree <label>`, so its transcripts land in the
     /// worktree's project dir and a listing read from the root finds none
-    /// of them (#245's layer, one read over).
+    /// of them.
     fn worker_listing_for(&self, slot: &SessionSlot) -> Option<forge_agent::WorkerListing> {
         if slot.is_lead() {
             return None;
@@ -14748,22 +14748,65 @@ mod git_scan_cwd_tests {
 
     /// A worker's listing is read from its worktree, and a lead has none of
     /// its own. A fresh git worker launches in the project root while its
-    /// transcripts land in the worktree's project dir, so the launching cwd
-    /// is #245's trap one read over. Catches a listing composed from that
-    /// cwd (the worker's own sessions missing from its own list) and one
-    /// answered for a lead.
+    /// transcripts land in the worktree's project dir, so a listing read
+    /// from the launching cwd finds none of the worker's own sessions.
+    ///
+    /// **The project is loaded from a forge.toml fixture, not the test
+    /// overlay**, which is what makes the lead half bite: the overlay is
+    /// consulted by `project_for_key` and not by the cwd lookup, so a lead
+    /// seeded there resolves to nothing and the `is_lead` guard could be
+    /// deleted with the assertion still passing. Loaded, the lead resolves
+    /// to its project root and only the guard answers `None`.
     #[test]
     fn worker_listing_is_the_workers_worktree_and_a_lead_has_none() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let root = "/tmp/test-listing";
-        ws.seed_test_project("listing-proj", root);
-        let project_key = ProjectKey::new(
-            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(root)),
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("listing-proj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "listing-proj"
+path = "{}"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                root.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let view = ws
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "listing-proj")
+            .expect("fixture project");
+        let lead = SessionSlot::lead(&view.org, &view.name);
+        assert_eq!(
+            ws.cwd_for_session(&lead).as_deref(),
+            view.path.to_str(),
+            "the fixture's lead must resolve, or its half of this test proves nothing",
         );
+        assert!(
+            ws.worker_listing_for(&lead).is_none(),
+            "a lead lists from the cwd it launches in, so it has no listing to carry",
+        );
+
         // The slot's label is the worker's label, which is what its tag
         // carries: the two are one string in production.
-        let worker = SessionSlot::worker("TestOrg", "listing-proj", "reviewer");
-        ws.insert_live_worker(&project_key, worker_entry("reviewer", &worker, true));
+        let worker = SessionSlot::worker(&view.org, &view.name, "reviewer");
+        ws.insert_live_worker(&view.key, worker_entry("reviewer", &worker, true));
 
         let listing = ws.worker_listing_for(&worker).expect("a worker has a listing of its own");
         assert_eq!(
@@ -14772,12 +14815,8 @@ mod git_scan_cwd_tests {
         );
         assert_eq!(
             listing.dir,
-            std::path::PathBuf::from(root).join(".claude/worktrees/reviewer"),
+            view.path.join(".claude/worktrees/reviewer"),
             "the listing must be read from the worker's worktree, not the cwd it launches in",
-        );
-        assert!(
-            ws.worker_listing_for(&SessionSlot::lead("TestOrg", "listing-proj")).is_none(),
-            "a lead lists from the cwd it launches in, so it has no listing to carry",
         );
     }
 
