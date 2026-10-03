@@ -509,9 +509,12 @@
     if (action === 'begin') {
       // **The keyboard comes to the box before the take starts** (#1669): the
       // shortcut is how a reader begins without the mouse, so the transcript
-      // lands where their keys already are. Only while the composer holds the
-      // slot - with a prompt up the dock owns the floor, and the dock's own
-      // box takes the caret itself when the reader opens it.
+      // lands where their keys already are.
+      //
+      // The guard is insurance rather than a live condition: while a prompt
+      // has the slot the composer's field is morphed away, so there is no
+      // element to focus and no observable difference to pin. It becomes
+      // load-bearing the day a morph keeps the field mounted under the dock.
       if (focusOf(where) === 'composer') field?.focus();
       void connection.dispatch({ dictate_start: { key: slot } });
       return;

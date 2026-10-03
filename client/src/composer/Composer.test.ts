@@ -709,11 +709,12 @@ describe('the box', () => {
 
   /**
    * A seat switch leaves the keyboard in the box, which is the page's resting
-   * focus (#1669). The composer stays mounted across a switch, so the field a
-   * reader was typing in is the field they are typing in still - a switch that
-   * dropped the caret to the body would make the next keystroke go nowhere
-   * until they clicked back, which is the "some arrivals take the focus, some
-   * do not" half of the report.
+   * focus (#1669): nothing on a switch steals the caret. The composer stays
+   * mounted across a switch, so the field a reader was typing in is the field
+   * they are typing in still - and that is exactly what this pins, that no
+   * effect keyed on the seat grabs the keyboard or lets it go. A remount would
+   * re-run the mount's own focus effect and the caret would never reach the
+   * body, which is the draft tests' ground rather than this one's.
    */
   it('leaves the keyboard in the box across a seat switch', () => {
     const harness = open();
