@@ -70,6 +70,15 @@ impl ViewSurface {
         self.workspace.available_agents_for(slot)
     }
 
+    /// Whether the conversation at `slot` dispatched a sub-agent.
+    ///
+    /// A fact about the whole conversation rather than about a window of it,
+    /// and one the session task's fold raises and announces - so this answers
+    /// what that fold holds rather than scanning the messages again here.
+    pub fn has_dispatches(&self, slot: &SessionSlot) -> bool {
+        self.workspace.has_dispatches_for(slot)
+    }
+
     /// One working tree's files, walked on demand. `root` is the
     /// session's own scan cwd, which a git worker's worktree overrides.
     ///

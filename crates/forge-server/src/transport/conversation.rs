@@ -33,15 +33,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use forge_primitives::{ContentBlock, Message, SessionSlot};
+use forge_primitives::{Message, SessionSlot};
 
 use crate::SessionUpdate;
-use crate::transcript::{Rendered, names_a_dispatch};
+use crate::transcript::Rendered;
 
-/// One seat's conversation: the messages, where its turns sit, how many times
-/// it has compacted, and whether a sub-agent was ever dispatched in it.
+/// One seat's conversation: the messages, where its turns sit and how many
+/// times it has compacted.
 ///
-/// All four come out of one read and one fold, so a page cut on the fold's
+/// All three come out of one read and one fold, so a page cut on the fold's
 /// boundaries and a record built from `messages` cannot disagree about where a
 /// turn begins, and the count cannot describe a different conversation than
 /// the one held.
@@ -55,7 +55,6 @@ pub struct Conversation {
     /// for something nothing here reads.
     rendered: Rendered,
     compaction_count: u32,
-    has_dispatches: bool,
     /// The messages moved since the fold last ran.
     ///
     /// **Memoized rather than made incremental**, because making it
@@ -89,18 +88,11 @@ impl Conversation {
     /// [`Held::fold`], which runs on a blocking task; folding here would run
     /// an 18 ms render on whatever task built this, and that task is the
     /// socket's single stream folder.
-    ///
-    /// `has_dispatches` is the exception and it is a scan rather than a
-    /// render: it has to be right the moment a conversation exists, because a
-    /// record may read it before any fold has run.
     pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
-        let messages = as_blocks(messages);
-        let has_dispatches = messages.iter().any(is_dispatch);
         Self {
-            messages,
+            messages: as_blocks(messages),
             rendered: Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
-            has_dispatches,
             dirty: true,
             folding: false,
         }
@@ -127,7 +119,6 @@ impl Conversation {
         self.rendered.turns.clear();
         self.rendered.endings.clear();
         self.compaction_count = compaction_count;
-        self.has_dispatches = self.messages.iter().any(is_dispatch);
         self.dirty = true;
     }
 
@@ -140,7 +131,6 @@ impl Conversation {
         if matches!(message, Message::CompactBoundary { .. }) {
             self.compaction_count = self.compaction_count.saturating_add(1);
         }
-        self.has_dispatches |= is_dispatch(&message);
         self.messages.push(message);
         self.dirty = true;
     }
@@ -186,20 +176,6 @@ impl Conversation {
     pub fn compaction_count(&self) -> u32 {
         self.compaction_count
     }
-
-    /// Whether the conversation holds a sub-agent dispatch.
-    ///
-    /// **Computed here because it is a fact about the conversation and not
-    /// about a window of it.** The inspector's subagents section reads it,
-    /// and it used to scan every frame of every turn to decide - which a
-    /// bounded page would have blinded, reporting "no sub-agents ran" for a
-    /// seat that dispatched one an hour ago.
-    ///
-    /// The rule is the client's own, kept identical: an assistant frame that
-    /// is not a sub-agent's, carrying a `Task` or `Agent` call.
-    pub fn has_dispatches(&self) -> bool {
-        self.has_dispatches
-    }
 }
 
 /// A history as the CLI wrote it, with its task notices in the shape a view
@@ -214,19 +190,6 @@ impl Conversation {
 /// through the read is unchanged.
 fn as_blocks(messages: Vec<Message>) -> Vec<Message> {
     crate::transcript::notices_as_blocks(messages)
-}
-
-/// A frame that dispatches a sub-agent, as the conversation sees one.
-fn is_dispatch(message: &Message) -> bool {
-    let Message::Assistant { message, parent_tool_use_id, .. } = message else {
-        return false;
-    };
-    if names_a_dispatch(parent_tool_use_id.as_deref()) {
-        return false;
-    }
-    message.content.iter().any(|block| {
-        matches!(block, ContentBlock::ToolUse { name, .. } if name == "Task" || name == "Agent")
-    })
 }
 
 /// One seat's conversation, and the fold that may be running over it.
@@ -482,7 +445,7 @@ impl Conversations {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::SessionId;
+    use forge_primitives::{ContentBlock, SessionId};
 
     use super::*;
 
@@ -506,21 +469,6 @@ mod tests {
     }
 
     /// An assistant frame calling `tool`, optionally one a sub-agent made.
-    fn an_assistant_frame(tool: &str, parent: Option<&str>) -> Message {
-        serde_json::from_value(serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "id": "m1",
-                "role": "assistant",
-                "model": "claude-opus-5",
-                "content": [{"type": "tool_use", "id": "tu1", "name": tool, "input": {}}],
-            },
-            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
-            "parent_tool_use_id": parent,
-        }))
-        .expect("an assistant frame")
-    }
-
     fn a_frame(text: &str) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "user",
@@ -687,57 +635,11 @@ mod tests {
         assert_eq!(conversation.messages().len(), 1, "carrying the history the connect brought");
     }
 
-    /// **The dispatch rule lives here now, and this is its test.** It was the
-    /// client's, scanned over every frame of every turn to decide whether to
-    /// draw the inspector's subagents section; a bounded page can no longer
-    /// answer it that way, so the conversation computes it where it is folded
-    /// and the record carries it.
-    ///
-    /// The rule is the client's own, kept identical: an assistant frame whose
-    /// `parent_tool_use_id` is absent or blank - `names_a_dispatch`'s
-    /// non-empty-string guard, which is what the client checked - carrying a
-    /// `Task` or `Agent` call. A sub-agent's own calls are the sub-agent's and
-    /// do not count for the session that dispatched it.
-    #[test]
-    fn a_dispatch_is_an_assistant_frame_calling_task_or_agent() {
-        let dispatch = |message| Conversation::new(vec![message], 0).has_dispatches();
-
-        assert!(dispatch(an_assistant_frame("Task", None)), "a Task call is a dispatch");
-        assert!(dispatch(an_assistant_frame("Agent", None)), "and so is an Agent call");
-        assert!(!dispatch(an_assistant_frame("Bash", None)), "a Bash call is not one");
-        assert!(
-            !dispatch(an_assistant_frame("Task", Some("tu-parent"))),
-            "and a sub-agent's own Task call is the sub-agent's, not this session's",
-        );
-        assert!(!dispatch(a_frame("hello")), "a user frame dispatches nothing");
-    }
-
-    /// The rule answers for a frame the session emits after the seed too, not
-    /// only for the history a connect carried - otherwise a dispatch made
-    /// while a client is watching would go unnoticed until the seat was
-    /// re-seeded.
-    #[test]
-    fn a_dispatch_appended_after_a_seed_is_seen() {
-        let held = Conversations::new();
-        held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("nothing dispatched here")], 0));
-
-        let read = || {
-            let conversation = held.get(&a_seat()).expect("the seat is held");
-            let conversation = conversation.lock();
-            conversation.has_dispatches()
-        };
-        assert!(!read(), "precondition: the seeded conversation holds no dispatch");
-
-        held.apply(&SessionUpdate::ChatAppended {
-            key: a_seat(),
-            msg: an_assistant_frame("Task", None),
-            origin: None,
-        });
-
-        assert!(read(), "a dispatch appended after the seed is seen");
-    }
-
+    /// The dispatch rule and its flag moved to `forge-workspace` with the push
+    /// that announces the raise: the rule's own test lives beside it there
+    /// (`a_dispatch_is_an_assistant_frame_calling_task_or_agent`), and this
+    /// crate answers the flag through the view surface rather than computing
+    /// it.
     /// A reseed leaves the boundaries consistent with the messages they
     /// describe, so a page over a just-reseeded seat cannot slice past the end
     /// of the list it is reading.

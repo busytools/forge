@@ -1186,6 +1186,16 @@ pub enum SessionUpdate {
         key: SessionSlot,
         subagents: Vec<forge_primitives::runtime::AvailableAgent>,
     },
+    /// The conversation dispatched a sub-agent, and did not before.
+    ///
+    /// **Pushed rather than read.** A dispatch is a call frame the CLI already
+    /// sends, so the fold that sees it announces the flip - the section the
+    /// flag gates appears as the dispatch happens rather than on the next
+    /// read. It only ever goes on: a seat that dispatched keeps the section.
+    DispatchesChanged {
+        key: SessionSlot,
+        has_dispatches: bool,
+    },
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
@@ -1460,6 +1470,7 @@ impl SessionUpdate {
             | Self::WorkChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
+            | Self::DispatchesChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
             | Self::BackgroundTasksChanged { key, .. }
@@ -1596,6 +1607,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("SubagentsChanged")
                 .field("key", key)
                 .field("count", &subagents.len())
+                .finish(),
+            Self::DispatchesChanged { key, has_dispatches } => f
+                .debug_struct("DispatchesChanged")
+                .field("key", key)
+                .field("has_dispatches", has_dispatches)
                 .finish(),
             Self::ProcessesChanged { key, snapshot } => f
                 .debug_struct("ProcessesChanged")

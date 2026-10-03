@@ -1129,9 +1129,9 @@ describe('the slow read for the fields still unfed', () => {
   });
 
   /**
-   * **Every field still on the merge's list moves on a poll, and there are
-   * two.** One pinned would leave the other silent if an edit dropped it from
-   * the list believing it fed.
+   * **Every field still on the merge's list moves on a poll, and there is
+   * one.** The fields that left it are pinned by the revert case below, which
+   * is what tells a fed field from a polled one.
    */
   it('takes every field still unfed from what the poll answered with', () => {
     const cases: {
@@ -1141,13 +1141,6 @@ describe('the slow read for the fields still unfed', () => {
       moved: (wire: SessionRecord) => unknown;
       expect: unknown;
     }[] = [
-      {
-        what: 'dispatch answer',
-        stale: { has_dispatches: false },
-        fresh: { has_dispatches: true },
-        moved: (wire) => wire.has_dispatches,
-        expect: true,
-      },
       {
         what: 'file list',
         stale: { file_index: { entries: {} } },
@@ -1300,6 +1293,13 @@ describe('the slow read for the fields still unfed', () => {
         frame: { subagents_changed: { key: LEAD, subagents: [{ name: 'reviewer' }] } },
         moved: (wire) => wire.subagents.length,
         fresh: 1,
+      },
+      {
+        what: 'dispatch answer',
+        stale: { has_dispatches: false },
+        frame: { dispatches_changed: { key: LEAD, has_dispatches: true } },
+        moved: (wire) => wire.has_dispatches,
+        fresh: true,
       },
     ];
 

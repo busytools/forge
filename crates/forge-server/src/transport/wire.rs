@@ -998,7 +998,7 @@ async fn session(
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
     let conversation = conversation_for(state, slot).await;
-    let (turns, compaction_count, has_dispatches) = match conversation {
+    let (turns, compaction_count) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
@@ -1006,7 +1006,6 @@ async fn session(
                     (
                         page(held.messages(), held.rendered(), None, SUBSCRIBE_TURNS).turns,
                         held.compaction_count(),
-                        held.has_dispatches(),
                     )
                 })
             })
@@ -1018,11 +1017,15 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0, false)
+                (Vec::new(), 0)
             })
         }
-        None => (Vec::new(), 0, false),
+        None => (Vec::new(), 0),
     };
+    // The dispatch flag is the workspace's, raised by the fold that can
+    // announce its raise: read here rather than recomputed, so the record and
+    // the `DispatchesChanged` frame cannot disagree about it.
+    let has_dispatches = surface.has_dispatches(slot);
     // The seat's scan, as the loop that owns it last answered it. Nothing is
     // read here: the tree is read for a seat somebody is showing, and this
     // answers what that read found - the tile's branch, count and PR are one
@@ -1800,6 +1803,44 @@ mod tests {
         assert_eq!(
             encoded["header"]["session_id"], "d4f70669-1f2a",
             "the occupant the core named crosses on the header: {encoded}"
+        );
+    }
+
+    /// **The dispatch flag the record carries is the workspace's.** It was
+    /// computed here, over the held conversation, until the push landed: the
+    /// fold that raises it is the one that announces the raise, so the record
+    /// reads it through the view surface rather than keeping a second answer
+    /// that could disagree with the frame.
+    #[tokio::test]
+    async fn the_record_reads_the_dispatch_flag_from_the_workspace() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let before =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            before["has_dispatches"], false,
+            "a seat whose fold raised nothing reads false: {before}",
+        );
+
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts { has_dispatches: true, ..ViewFacts::default() },
+        );
+
+        let after =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            after["has_dispatches"], true,
+            "and the flag the workspace holds is the one the record answers with: {after}",
         );
     }
 

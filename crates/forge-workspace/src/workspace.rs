@@ -3475,6 +3475,13 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Whether the conversation at `slot` dispatched a sub-agent, anywhere in
+    /// it. Raised by the session task's fold, which is what announces the
+    /// raise, so a record reading this and a viewer hearing it agree.
+    pub fn has_dispatches_for(&self, slot: &SessionSlot) -> bool {
+        self.domain_session_for(slot).is_some_and(|domain| domain.lock().has_dispatches)
+    }
+
     /// Whether the session at `key` currently has a live agent
     /// handle stamped onto its [`DomainSession`]. Encapsulates the
     /// presence check so callers don't need to peek at

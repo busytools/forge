@@ -203,6 +203,13 @@ pub struct DomainSession {
     /// Written by the seat's watch loop while a view is showing it, so a
     /// read answers a value rather than paying for a `git` subprocess.
     pub work_snapshot: Option<crate::work::WorkSnapshot>,
+    /// Whether this conversation dispatched a sub-agent, anywhere in it.
+    ///
+    /// Seeded from the history a connect carries and raised by each dispatch
+    /// frame: it is a fact about the whole conversation rather than about a
+    /// window of it, and it never goes back - a seat that dispatched keeps
+    /// the section it gates.
+    pub has_dispatches: bool,
 }
 
 impl DomainSession {
@@ -321,6 +328,7 @@ impl DomainSession {
             monitors: Vec::new(),
             process_snapshot: None,
             work_snapshot: None,
+            has_dispatches: false,
         }
     }
 

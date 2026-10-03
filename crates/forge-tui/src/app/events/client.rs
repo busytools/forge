@@ -570,7 +570,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::BackgroundTasksChanged { .. }
         | SessionUpdate::ProcessesChanged { .. }
         | SessionUpdate::SlashCommandsChanged { .. }
-        | SessionUpdate::SubagentsChanged { .. } => {}
+        | SessionUpdate::SubagentsChanged { .. }
+        | SessionUpdate::DispatchesChanged { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {

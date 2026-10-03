@@ -151,6 +151,14 @@ export const HANDLERS: Record<string, Apply> = {
     subagents: list(payload['subagents']),
   }),
 
+  // The frame carries the flag's own value. A payload naming no bool is a
+  // frame this build cannot read, and it leaves the flag where a dispatch
+  // already put it rather than clearing it.
+  dispatches_changed: (held, payload) => {
+    const dispatched = payload['has_dispatches'];
+    return typeof dispatched === 'boolean' ? { ...held, has_dispatches: dispatched } : held;
+  },
+
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
@@ -343,11 +351,11 @@ export const IGNORED: readonly string[] = [
  * only these from it. That is what keeps a poll from reverting a pushed row,
  * since an answer is encoded before a frame lands and applied after it.
  *
- * Two remain: the composer's file list and the record's own dispatch answer.
- * Each pushed set left this list as its handler landed, and this list is what
- * retires the tick once nothing is on it.
+ * One remains: the composer's file list. Each pushed set left this list as
+ * its handler landed, and this list is what retires the tick once nothing is
+ * on it.
  */
-export const UNFED: readonly (keyof SessionRecord)[] = ['has_dispatches', 'file_index'];
+export const UNFED: readonly (keyof SessionRecord)[] = ['file_index'];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */
 export function applyUpdate(held: SessionRecord, update: SessionUpdate): SessionRecord {

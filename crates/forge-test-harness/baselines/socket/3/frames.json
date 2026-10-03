@@ -27,6 +27,7 @@
     "DictateProgress": "dictate_progress",
     "DictateStarted": "dictate_started",
     "DictateTranscribing": "dictate_transcribing",
+    "DispatchesChanged": "dispatches_changed",
     "FatalError": "fatal_error",
     "ForgeAccountIdentity": "forge_account_identity",
     "GotifyNotificationAppended": "gotify_notification_appended",
