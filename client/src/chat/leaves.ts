@@ -338,11 +338,12 @@ function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[]
   let next = newStart;
   for (const line of raw) {
     if (typeof line !== 'string' || line === '') continue;
-    const [mark = ' ', ...rest] = line;
+    // By index, not by spreading the line: the spread costs one string per character.
+    const mark = line.charAt(0);
     const kind = mark === '-' ? 'del' : mark === '+' ? 'add' : 'ctx';
     out.push({
       kind,
-      text: kind === 'ctx' ? line : rest.join(''),
+      text: kind === 'ctx' ? line : line.slice(1),
       old: kind === 'add' ? null : old,
       new: kind === 'del' ? null : next,
     });
