@@ -507,6 +507,12 @@
   /** What the bound key asks for, which is the terminal's own three. */
   function act(action: Action): void {
     if (action === 'begin') {
+      // **The keyboard comes to the box before the take starts** (#1669): the
+      // shortcut is how a reader begins without the mouse, so the transcript
+      // lands where their keys already are. Only while the composer holds the
+      // slot - with a prompt up the dock owns the floor, and the dock's own
+      // box takes the caret itself when the reader opens it.
+      if (focusOf(where) === 'composer') field?.focus();
       void connection.dispatch({ dictate_start: { key: slot } });
       return;
     }
