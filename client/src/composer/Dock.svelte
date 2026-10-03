@@ -380,7 +380,7 @@
   function reject(): void {
     if (ask.kind === 'question') {
       onanswer(ask.request.toolId);
-      void connection.dispatch({
+      answer({
         respond_question: {
           key: slot,
           tool_id: ask.request.toolId,

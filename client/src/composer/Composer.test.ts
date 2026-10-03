@@ -2745,7 +2745,24 @@ describe('the dock', () => {
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 
     // The core resolved it elsewhere, so the click's answer is refused: the
-    // dock is already gone, and the reason is drawn where it stood.
+    // dock is already gone, and the refusal names its own operation, so the
+    // reason is drawn where it stood.
+    harness.say({
+      kind: 'error',
+      what: 'respond_slack_post',
+      why: 'that Slack draft is no longer waiting: it has been answered, or it expired',
+    });
+    flushSync();
+
+    expect(drawn(), 'the refusal lands where the dock stood').toContain('no longer waiting');
+  });
+
+  it("says nothing when the reader's own answer is the one that took the draft", () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
+
     harness.say({
       kind: 'update',
       update: {
@@ -2758,18 +2775,69 @@ describe('the dock', () => {
     });
     harness.page.record = record({ pending_ask: null });
     flushSync();
-    expect(drawn(), 'nothing is said while the answer is unresolved').not.toContain(
-      'no longer waiting',
-    );
 
+    expect(document.querySelector('.dock'), 'the dock is gone with the answer').toBeNull();
+    expect(drawn(), 'and nothing is said about a draft this reader answered').not.toContain(
+      'another view',
+    );
+  });
+
+  it('does not read a later refusal as the draft it answered', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+
+    options()[0]?.click();
+    flushSync();
     harness.say({
-      kind: 'error',
-      what: 'dispatch',
-      why: 'that Slack draft is no longer waiting: it has been answered, or it expired',
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: { answered: { approved: true } },
+        },
+      },
     });
+    harness.page.record = record({ pending_ask: null });
     flushSync();
 
-    expect(drawn(), 'the refusal lands where the dock stood').toContain('no longer waiting');
+    // The reader's next send is refused, and that refusal belongs to the
+    // send: reading it as the answered draft would leave the send sending
+    // forever and put its reason in a row nothing asked for.
+    type('hello');
+    sendBox();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
+    flushSync();
+
+    expect(echoAt(SLOT)?.state, 'the send is the row that failed').toBe('failed');
+    expect(drawn(), 'and the draft row says nothing of it').not.toContain('another view');
+  });
+
+  it('keeps the ending for a seat the reader has left', () => {
+    const harness = open({ record: record({ pending_ask: slackDraftAsk() }) });
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+
+    harness.say({
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: 'expired',
+        },
+      },
+    });
+    flushSync();
+    expect(drawn(), 'nothing is drawn on the seat showing now').not.toContain('expired unanswered');
+
+    harness.page.slot = SLOT;
+    harness.page.record = record({ pending_ask: null });
+    flushSync();
+
+    expect(drawn(), 'and the seat it happened to meets the line on return').toContain(
+      'expired unanswered',
+    );
   });
 
   it('draws the next held draft as a fresh dock, rather than carrying the mark over', () => {

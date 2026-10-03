@@ -15,7 +15,7 @@ use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page, walk_processes_if_stale};
 use crate::delivery::delivery_turn;
 use crate::live::Live;
-use crate::{Command, SessionUpdate};
+use crate::{Command, DispatchError, SessionUpdate};
 
 /// Take the upgrade and give the connection its own task.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
@@ -511,9 +511,18 @@ async fn dispatch_answering(
         other => match state.surface.dispatch(other) {
             Ok(()) => Ok(()),
             Err(refusal) => {
+                // A refusal names the operation it is about: `dispatch` alone
+                // cannot tell a client which of its commands was refused, and
+                // an answer to a draft that is gone has to be drawn where
+                // that draft's dock stood rather than as whatever else the
+                // client had in flight.
+                let what = match &refusal {
+                    DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+                    _ => "dispatch",
+                };
                 send(
                     socket,
-                    ServerMessage::Error { what: "dispatch".to_owned(), why: refusal.to_string() },
+                    ServerMessage::Error { what: what.to_owned(), why: refusal.to_string() },
                 )
                 .await
             }

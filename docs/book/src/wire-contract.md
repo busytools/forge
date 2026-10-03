@@ -121,6 +121,13 @@ They live under `baselines/` beside the CLI captures and are not captures
 themselves: nothing here is recorded live. Both are derived from the
 current code, which is why regenerating one is a deliberate act.
 
+**Only the current version is read.** A bump files the new record beside
+the old one and leaves that one where it is: the directory is an archive of
+what a server at that version emitted, and its staleness is the point - it
+is what a reader consults when a client reports the older wire. So nothing
+notices when a past version's record drifts, because nothing reads it, and
+that is deliberate rather than a gap to close.
+
 `frames.json` carries every variant of the five enums whose tags the socket
 itself chooses - `ServerMessage`, `SessionUpdate`, `Subject`, `Command` and
 `ClientMessage` - with the wire name each encodes as. The census behind it

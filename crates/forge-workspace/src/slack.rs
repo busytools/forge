@@ -285,9 +285,11 @@ impl Workspace {
     ///
     /// The removal is the one point every removal a view could have parked
     /// on funnels through - an answer, an expiry, a dead waiter - so the
-    /// stand-down is emitted here rather than at each caller. The one other
-    /// removal, `register_slack_draft`'s no-answerable-subscriber path, is
-    /// nothing a view was ever shown.
+    /// stand-down is emitted here. The one other removal,
+    /// `register_slack_draft`'s no-answerable-subscriber path, drops a draft
+    /// the update may already have reached an observer with: a subscriber
+    /// that could ANSWER is what makes a draft answerable at all, and an
+    /// observer draws no dock to stand down.
     pub(crate) fn resolve_slack_draft(
         &self,
         id: Uuid,

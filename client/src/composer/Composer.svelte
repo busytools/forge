@@ -3,7 +3,7 @@
 
   import { echoes } from '../chat/echoes.svelte';
   import Icon from '../components/Icon.svelte';
-  import { slotOf, subjectKey } from '../protocol';
+  import { slotOf } from '../protocol';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { Boxes, boxKey, type Box } from './box.svelte';
@@ -187,7 +187,6 @@
     if (held !== null && held.kind === 'slack_draft') {
       box.shownDraft = held.request.id;
       box.ended = null;
-      box.answerAwaits = null;
     }
   });
 
@@ -198,6 +197,10 @@
    * alone, and it is what tells this reader what happened to a dock they did
    * not answer. The update is read here for the same reason the conversation
    * reads its own frames: nothing else draws it.
+   *
+   * It is recorded into the box for the update's OWN seat rather than the one
+   * on screen: a reader looking elsewhere still meets the line when they come
+   * back, and a seat nothing has drawn has no dock whose loss needs saying.
    */
   $effect(() => {
     return connection.onMessage((message) => {
@@ -205,16 +208,15 @@
       const [name, payload] = variantOf(message.update);
       if (name !== 'slack_draft_resolved') return;
       const at = slotOf(message.update);
-      if (at === null || subjectKey({ session: at }) !== boxKey(slot)) return;
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
       const id = typeof payload['id'] === 'string' ? payload['id'] : null;
-      if (id === null || id !== box.shownDraft) return;
-      if (box.answered === id) {
-        // This reader's own answer is in flight for it: whether it landed is
-        // the refusal's to say, and it says it in the same row.
-        box.answerAwaits = id;
-        return;
-      }
-      box.ended = draftEndingLine(payload['ending']);
+      if (id === null || id !== held.shownDraft) return;
+      // The reader's own answer, taken or not: the refusal that follows says
+      // so when it is not, and the ending would only repeat the click.
+      if (held.answered === id) return;
+      held.ended = draftEndingLine(payload['ending']);
     });
   });
 
@@ -381,15 +383,16 @@
    */
   $effect(() => {
     return connection.onMessage((message) => {
-      if (message.kind !== 'error' || message.what !== 'dispatch') return;
-      // The draft a click of this reader's was answering left the core under
-      // that click: the dock is already gone, so the reason is drawn where it
-      // stood rather than on a dock that no longer exists.
-      if (box.answerAwaits !== null) {
-        box.answerAwaits = null;
+      if (message.kind !== 'error') return;
+      // The answer to a draft the core no longer holds, refused by its own
+      // operation's name: the dock is gone by then, so the reason is drawn
+      // where it stood. A generic `dispatch` refusal cannot say which command
+      // it was about, and would be read as the dock's own.
+      if (message.what === 'respond_slack_post') {
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
+      if (message.what !== 'dispatch') return;
       if (box.answered !== null) {
         box.refusal = message.why;
         return;

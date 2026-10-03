@@ -52,12 +52,6 @@ export class Box {
    * THIS draft from one for the next. Not `$state`: nothing draws from it.
    */
   shownDraft: string | null = null;
-  /**
-   * The draft this box's own answer was in flight for when its stand-down
-   * landed, so the refusal that follows can be attributed to it. Not
-   * `$state`: it is read where the refusal arrives, not while drawing.
-   */
-  answerAwaits: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**
@@ -102,5 +96,14 @@ export class Boxes {
     const made = new Box();
     this.#held.set(key, made);
     return made;
+  }
+
+  /**
+   * The box a seat already holds, or `undefined` for one nothing has drawn -
+   * an update for such a seat has no dock behind it to explain, and minting a
+   * box would keep its line for a page that never showed it.
+   */
+  held(key: string): Box | undefined {
+    return this.#held.get(key);
   }
 }

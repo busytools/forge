@@ -79,14 +79,6 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
     }
 }
 
-/// Per-session event multiplexer. Each [`SessionUpdate`] is routed
-/// to the [`crate::app::session::UiSession`] bucket it targets via the
-/// envelope's [`SessionUpdate::slot`] accessor.
-///
-/// `needs_redraw` is flipped only when the routed event targets the
-/// active session - background-session events update their bucket
-/// silently. App-global events (no slot) flip the redraw
-/// flag unconditionally because they affect the rendered view.
 /// What one draft ending reads as, in the chat of the session that held it.
 ///
 /// The terminal was not the view that answered - a dock it had already
@@ -106,6 +98,14 @@ fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) ->
     }
 }
 
+/// Per-session event multiplexer. Each [`SessionUpdate`] is routed
+/// to the [`crate::app::session::UiSession`] bucket it targets via the
+/// envelope's [`SessionUpdate::slot`] accessor.
+///
+/// `needs_redraw` is flipped only when the routed event targets the
+/// active session - background-session events update their bucket
+/// silently. App-global events (no slot) flip the redraw
+/// flag unconditionally because they affect the rendered view.
 pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     // INVARIANT: `is_active_or_global` is captured BEFORE the match
     // so reducers that themselves mutate `active_session_key` (e.g.
@@ -3814,6 +3814,64 @@ mod tests {
                 })
             }),
             "and the reader is told which ending took the resolved one",
+        );
+    }
+
+    /// The reader's own answer takes the dock before the stand-down lands, so
+    /// that update arrives with nothing queued: it says nothing, because the
+    /// reader's own click is not news.
+    #[test]
+    fn a_draft_this_view_answered_leaves_no_line() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let draft = a_slack_draft("answered here");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackPostPending { key: key.clone(), draft: draft.clone() },
+        );
+        // The answer path pops the prompt before it dispatches, and the pop is
+        // what the stand-down meets here.
+        let popped = app.session_mut(&key).expect("the session").prompt_queue.pop_front().is_some();
+        assert!(popped, "the dock was queued for the reader to answer");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SlackDraftResolved {
+                key: key.clone(),
+                id: draft.id,
+                ending: forge_primitives::slack::SlackDraftEnding::Answered { approved: true },
+            },
+        );
+
+        assert!(
+            !app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("Slack draft"))
+                })
+            }),
+            "the view that answered the draft does not narrate its own click",
+        );
+    }
+
+    /// Each ending reads as its own line. The terminal only ever says the
+    /// endings of a dock it did NOT answer, so every line names another view
+    /// or the clock rather than this one.
+    #[test]
+    fn each_draft_ending_reads_as_its_own_line() {
+        use forge_primitives::slack::SlackDraftEnding as Ending;
+        assert_eq!(
+            slack_draft_ending_line(Ending::Answered { approved: true }),
+            "The Slack draft was posted from another view.",
+        );
+        assert_eq!(
+            slack_draft_ending_line(Ending::Answered { approved: false }),
+            "The Slack draft was declined in another view.",
+        );
+        assert_eq!(slack_draft_ending_line(Ending::Expired), "The Slack draft expired unanswered.");
+        assert_eq!(
+            slack_draft_ending_line(Ending::Abandoned),
+            "The Slack draft's asking session went away.",
         );
     }
 

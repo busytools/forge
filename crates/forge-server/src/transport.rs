@@ -39,8 +39,9 @@ pub mod wire;
 /// drops it silently - which is what a version the server bumps exists to
 /// prevent, since the skewed pair is real: the desktop client ships
 /// separately from the binary. `slack_draft_expired` became
-/// `slack_draft_resolved` (v1's record under `baselines/socket/1/` is the
-/// older tag, kept as what a v1 client really emitted).
+/// `slack_draft_resolved`, and `baselines/socket/1/` keeps the older tag as
+/// the record a v1 server emitted. Nothing reads a past version's directory:
+/// it is an archive, and its staleness is the point rather than a fault.
 pub const PROTOCOL_VERSION: u32 = 2;
 
 /// What a connection answers from: the surface it reads and dispatches
