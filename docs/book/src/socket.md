@@ -63,10 +63,10 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 34
+A command's variant is its name around its field bag - `Command` has 36
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 55 of `SessionUpdate`'s 60 variants are struct variants too. The other
+and 58 of `SessionUpdate`'s 63 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -251,7 +251,7 @@ conversation, and what the composer is doing.
 | `pending_ask` | The prompt the seat is waiting on, `null` when there is none. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue. |
-| `state` | The seat's scan cwd and what it dictates with, where it has overridden the defaults. |
+| `state` | The seat's scan cwd, what it dictates with where it has overridden the defaults, and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it. |
 | `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The ask it is answering rides `pending_ask` rather than being copied here. |
 
 **`usage`** is the token/cost pool behind a `/usage` view, scanned on the

@@ -869,6 +869,24 @@ describe('the reader own words before the core has them', () => {
     expect(echoes.of(key), 'the core having the words is what settles the row').toBeUndefined();
   });
 
+  it('leaves a mid-turn send to the pile, which is the only thing drawing it', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    // Posted with the seat already running: the CLI queues it, and the row's
+    // home is the pile above the box. Drawing it here too would say "sent" in
+    // the chat and "queued" in the pile about one prompt.
+    echoes.post(key, 'queued while the gate runs', true);
+    flushSync();
+    expect(drawn(), 'the chat does not claim a prompt the pile is holding').not.toContain(
+      'queued while the gate runs',
+    );
+    expect(echoes.of(key)?.state, 'the send is still held, so a refusal can still reach it').toBe(
+      'sending',
+    );
+  });
+
   it('stops when a page read carries the words, which is where a dropped send lands', () => {
     // The other end of a turn: a read rebuilds the turn with the reader's own
     // words at its head, which is the shape a send that outlived a dropped

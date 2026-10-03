@@ -51,6 +51,15 @@ pub struct ContextUsage {
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
 /// can route commands without locking the whole pool.
+/// The lifecycle states that settle a queued row.
+///
+/// Written out rather than derived, and it has to agree with the client's own
+/// set (`client/src/session/apply.ts`): the core drops what the client drops.
+/// A state neither names leaves the row standing on both sides, which is the
+/// fail-safe direction - a pile that keeps a delivered prompt is visibly odd,
+/// and one that empties on a word nobody reads is silently wrong.
+const SETTLED_STATES: [&str; 5] = ["started", "completed", "cancelled", "discarded", "refused"];
+
 pub struct DomainSession {
     pub key: SessionSlot,
     /// Claude-issued session UUID. `None` until the first `Connected`
@@ -114,6 +123,15 @@ pub struct DomainSession {
     /// which are the only writer of a prompt's state. Belongs to the
     /// occupant, so it is dropped with the background registry.
     pub prompt_queue: Vec<crate::protocol::QueuedPrompt>,
+    /// Whether this occupant's CLI advertises `msg_lifecycle_v1`, from its
+    /// init frame. `None` until one has been read.
+    ///
+    /// The pile is drawn FOR it: without the frames nothing would ever settle
+    /// a row, so a session that does not advertise them records no rows at all
+    /// and falls back to drawing the prompt the way it was drawn before the
+    /// pile existed. Unknown reads as present - the first prompt can precede
+    /// the first init - and the pinned CLI always advertises it.
+    pub lifecycle_frames: Option<bool>,
     /// The command a tool call's card carried, by tool-use id.
     ///
     /// Held rather than resolved on the spot because the card arrives BEFORE
@@ -296,15 +314,17 @@ impl DomainSession {
 
     /// Advance a prompt's state from one of the CLI's lifecycle frames.
     ///
-    /// Returns whether the id was known; an entry that left `queued` is
-    /// dropped, so the pile holds only prompts still waiting. An unknown id is
-    /// not an error - a prompt dispatched before this build, or a frame for a
-    /// prompt another cohort minted, simply is not in the pile.
+    /// Returns whether the id was known. A state the CLI has SETTLED drops the
+    /// row, so the pile holds only prompts still waiting; a state this build
+    /// cannot name leaves it standing, because a word the CLI adds later must
+    /// not empty a pile nobody can see being wrong. An unknown id is not an
+    /// error - a prompt dispatched before this build, or a frame for a prompt
+    /// another cohort minted, simply is not in the pile.
     pub(crate) fn advance_queued_prompt(&mut self, uuid: &str, state: &str) -> bool {
         let Some(at) = self.prompt_queue.iter().position(|p| p.uuid == uuid) else {
             return false;
         };
-        if state != "queued" {
+        if SETTLED_STATES.contains(&state) {
             self.prompt_queue.remove(at);
         }
         true
@@ -342,6 +362,7 @@ impl DomainSession {
             conn,
             pending_interactions: HashMap::new(),
             prompt_queue: Vec::new(),
+            lifecycle_frames: None,
             spawned_force_new: false,
             spawn_wrote_row: false,
             runtime_state: None,

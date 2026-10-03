@@ -697,6 +697,38 @@ impl SessionTask {
                     // each review's submit origin.
                     self.drain_review_activity_for(&caller);
                 }
+                // The init frame is where the CLI says what it can do. The
+                // pile needs `msg_lifecycle_v1`: without it nothing settles a
+                // queued row, so the seat stops recording them rather than
+                // birthing cards that can never drain. Read here rather than
+                // in a view, because what a view then draws follows from what
+                // the core recorded.
+                if let forge_primitives::Message::System { subtype, data, .. } = &msg
+                    && subtype == "init"
+                {
+                    let advertised =
+                        data.get("capabilities").and_then(serde_json::Value::as_array).is_some_and(
+                            |caps| caps.iter().any(|cap| cap.as_str() == Some("msg_lifecycle_v1")),
+                        );
+                    let first_sight = {
+                        let mut guard = self.domain.lock();
+                        let first = guard.lifecycle_frames.is_none();
+                        if first {
+                            guard.lifecycle_frames = Some(advertised);
+                        }
+                        first
+                    };
+                    if first_sight && !advertised {
+                        tracing::warn!(
+                            target: "forge_workspace::session_task",
+                            slot = %self.key.display(),
+                            event_name = "lifecycle_frames_absent",
+                            outcome = "pile_disabled",
+                            "this session's CLI does not advertise msg_lifecycle_v1, so queued \
+                             prompts cannot be followed here; the pile is not drawn for this seat",
+                        );
+                    }
+                }
                 // A prompt's queue state is state, not conversation: the
                 // prompt's own presence in the record is the transcript's
                 // enqueue row and the `queued_command` attachment, and
@@ -708,7 +740,11 @@ impl SessionTask {
                     &msg
                 {
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
-                    if !known {
+                    // Only the states that IMPLY a row: a prompt's `completed`
+                    // or `cancelled` follows the row's own removal at
+                    // `started`, so logging those would be one false alarm per
+                    // prompt, and an alarm nobody can act on is noise.
+                    if !known && matches!(state.as_str(), "queued" | "started") {
                         tracing::debug!(
                             target: "forge_workspace::session_task",
                             slot = %self.key.display(),
@@ -763,9 +799,16 @@ impl SessionTask {
     /// Record a prompt as waiting and announce it: the row's words and sender
     /// ride [`SessionUpdate::PromptQueued`], where the lifecycle frames carry
     /// only the id and the state.
+    ///
+    /// Nothing is recorded for a session whose CLI has said it does not carry
+    /// those frames: a row nothing can settle is worse than no row, and that
+    /// session draws its prompt the way it did before the pile existed.
     fn record_queued(&self, uuid: &str, source: PromptSource, text: &str) {
         {
             let mut guard = self.domain.lock();
+            if guard.lifecycle_frames == Some(false) {
+                return;
+            }
             guard.record_queued_prompt(uuid, source, text);
         }
         self.emit(SessionUpdate::PromptQueued {
@@ -5652,6 +5695,70 @@ provider = "anthropic"
                     if announced == &rows[0].uuid && text == "the queued words"
             )),
             "the row's words ride the announcement, because no lifecycle frame carries them: {announced:?}",
+        );
+    }
+
+    /// A session whose CLI says it does not carry the lifecycle frames records
+    /// NO queued rows: nothing could ever settle one, and a card that can never
+    /// drain is worse than no card - that session draws its prompt the way it
+    /// did before the pile existed.
+    #[tokio::test]
+    async fn a_cli_without_lifecycle_frames_records_nothing() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("nf", "/tmp/nf");
+        let key = SessionSlot::from_str_for_test("nf-lead");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("nf-session"));
+        let (handle, mut agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        // An init frame from a CLI that does not advertise the capability - the
+        // one thing that turns the pile off for this seat.
+        let init: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "nf-session",
+            "capabilities": ["interrupt_receipt_v1"],
+        }))
+        .expect("parse an init frame");
+        task.translate_event(forge_agent::AgentEvent::SdkMessage {
+            session_id: "nf-session".to_owned(),
+            msg: init,
+        });
+
+        task.execute_command(Command::Prompt {
+            key: key.clone(),
+            text: "this one is not recorded".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(
+            domain.lock().prompt_queue.is_empty(),
+            "a prompt is recorded only where the CLI can settle it",
+        );
+        assert!(
+            agent_rx.try_recv().is_ok(),
+            "the prompt itself still reaches the agent: the pile is a view, not the send",
+        );
+        let announced: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+        assert!(
+            !announced.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::PromptQueued { .. }
+            )),
+            "nothing is announced for a row that is not kept: {announced:?}",
         );
     }
 

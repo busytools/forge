@@ -120,6 +120,9 @@ export const HANDLERS: Record<string, Apply> = {
     if (held.queue.some((row) => row.uuid === uuid)) return held;
     return {
       ...held,
+      // A new row is the next thing to look at, so the last ending goes with
+      // it rather than standing beside a queue that has moved on.
+      queue_ended: null,
       queue: [...held.queue, { uuid, source: text(payload['source']) ?? 'forge', text: words }],
     };
   },
@@ -136,8 +139,17 @@ export const HANDLERS: Record<string, Apply> = {
     const uuid = text(payload['uuid']);
     const state = text(payload['state']);
     if (uuid === null || state === null || !SETTLED_STATES.has(state)) return held;
+    const leaving = held.queue.find((row) => row.uuid === uuid);
+    if (leaving === undefined) return held;
     const queue = held.queue.filter((row) => row.uuid !== uuid);
-    return queue.length === held.queue.length ? held : { ...held, queue };
+    // Two states leave with a word rather than silently: a session that ended
+    // with the prompt waiting, and a hook that refused it. Being taken and
+    // being cancelled are the row doing its job, and neither says anything.
+    const ending =
+      state === 'discarded' || state === 'refused'
+        ? { text: leaving.text, state }
+        : held.queue_ended;
+    return { ...held, queue, queue_ended: ending };
   },
 
   /**

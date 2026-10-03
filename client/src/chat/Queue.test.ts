@@ -177,6 +177,25 @@ describe('the queue pile', () => {
     ).toBe(true);
   });
 
+  it('says what an ending was, where the card was', () => {
+    const { connection } = recording();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: { text: 'the lost one', state: 'discarded' },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'a row that vanishes silently reads as one that was delivered',
+    ).toBe('discarded, never sent');
+  });
+
   /**
    * The pile is the PR's one new interactive surface, and axe has to see it
    * WALKED: the walked markup is where the cursor row, its position and the

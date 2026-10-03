@@ -672,6 +672,39 @@ describe('applyUpdate', () => {
       expect(delivered.queue, 'started is the CLI taking the prompt').toEqual([]);
     });
 
+    it('says so when a row left by discard or refusal, and not when it was taken', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const delivered = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+      });
+      expect(delivered.queue_ended, 'being taken is the row doing its job').toBeNull();
+
+      const discarded = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+      });
+      expect(discarded.queue, 'the row leaves either way').toEqual([]);
+      expect(discarded.queue_ended).toEqual({ text: 'nightly sweep', state: 'discarded' });
+
+      const refused = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'refused' },
+      });
+      expect(refused.queue_ended).toEqual({ text: 'nightly sweep', state: 'refused' });
+    });
+
+    it('clears the last ending when the next prompt is queued', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+      const ended = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+      });
+
+      const next = applyUpdate(ended, {
+        prompt_queued: { key: SLOT, uuid: 'u8', source: 'you', text: 'the next thing' },
+      });
+
+      expect(next.queue_ended, 'the ending goes with the queue that moved on').toBeNull();
+    });
+
     it('keeps the row on a state this build cannot name', () => {
       const held = applyUpdate(empty(), { prompt_queued: queued });
 

@@ -342,7 +342,7 @@
     <div class="composer">
       <!-- The queue sits between the pinned turn row (drawn by the chat
            column above) and the box: what is waiting, then what you type. -->
-      <Queue rows={record.queue} {slot} {connection} />
+      <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
       {@render composer({ record, slot, seat, connection })}
     </div>
   {/if}

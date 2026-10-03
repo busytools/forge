@@ -1,4 +1,16 @@
-import type { QueuedPromptRow } from '../session/wire';
+import type { QueueEnding, QueuedPromptRow } from '../session/wire';
+
+/**
+ * The one line an ending leaves where the card was, or `null` for an ending
+ * that needs no word: a row that was taken, or one the reader cancelled, has
+ * said what it had to say by leaving.
+ */
+export function endingLine(ended: QueueEnding | null): string | null {
+  if (ended === null) return null;
+  if (ended.state === 'discarded') return 'discarded, never sent';
+  if (ended.state === 'refused') return 'refused by a hook';
+  return null;
+}
 
 /**
  * The pile's own arithmetic, apart from the component so its edges are

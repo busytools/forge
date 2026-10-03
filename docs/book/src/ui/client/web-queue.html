@@ -257,8 +257,9 @@ const tiles = {
   g5: [
     { cap: 'A background seat with a queue (not settled)', items: [],
       note: 'the rail could carry a count for a seat that is not open - shown as a chip: <span class="mono">forge &#183; 3 queued</span>. Decide later' },
-    { cap: 'Cancel a prompt the CLI already took', items: [], ended: '<span>cancel answered</span><b>false</b><span style="margin-left:auto">already sent - the card had drained</span>',
-      note: 'nothing is drawn as a "too late" row: the drain has usually happened before a hand could press' },
+    { cap: 'Cancel a prompt the CLI already took', items: [],
+      ended: '<span>cancel answered</span><b>false</b><span style="margin-left:auto">the row had already drained</span>',
+      note: 'the row leaves on `started`, and a cancel that lands after it is a no-op - there is no "too late" row to draw, because the card is gone before a hand could press. What IS said, in one dim line where the card was: a row that left by `discarded` or `refused`, which delivered nothing' },
   ],
 };
 for (const [id, specs] of Object.entries(tiles)) {

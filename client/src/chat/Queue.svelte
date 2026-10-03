@@ -1,9 +1,9 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
-  import type { QueuedPromptRow } from '../session/wire';
+  import type { QueueEnding, QueuedPromptRow } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
-  import { faceAt, walk } from './queue';
+  import { endingLine, faceAt, walk } from './queue';
 
   /**
    * The prompts waiting in the CLI's queue, drawn as a stack above the box.
@@ -23,9 +23,18 @@
    */
   let {
     rows,
+    ended = null,
     slot,
     connection,
-  }: { rows: QueuedPromptRow[]; slot: SessionSlot; connection: Connection } = $props();
+  }: {
+    rows: QueuedPromptRow[];
+    ended?: QueueEnding | null;
+    slot: SessionSlot;
+    connection: Connection;
+  } = $props();
+
+  /** The one line an ending leaves, where the last card was. */
+  const line = $derived(endingLine(ended));
 
   /** The step between one arc and the next. */
   const STEP = 6;
@@ -188,7 +197,15 @@
         {/each}
       </div>
     </div>
+    {#if line !== null}
+      <div class="ended">{line}</div>
+    {/if}
   </div>
+{:else if line !== null}
+  <!-- The queue is empty and the last card left with a word: the line stands
+       where the pile was, because a row that vanishes silently reads as one
+       that was delivered. -->
+  <div class="ended">{line}</div>
 {/if}
 
 <style>
@@ -196,6 +213,12 @@
      column above shrinks by exactly that much and nothing paints over it. */
   .list {
     outline: none;
+  }
+  .ended {
+    padding: 2px 0 0 11px;
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
   }
   .head {
     display: flex;
