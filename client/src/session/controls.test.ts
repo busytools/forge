@@ -273,6 +273,10 @@ describe("a rail row's close chip", () => {
     expect(commands, 'a worker row must close through close_worker').toEqual([
       { close_worker: { project_key: '<fixture>-proj', label: 'w1' } },
     ]);
+    expect(
+      chip('.wk').getAttribute('aria-label'),
+      "the worker's chip names its project rather than the worker",
+    ).toBe('close w1');
     expect(location.pathname, 'the reader was left on the seat that closed').toBe(
       '/session/TestOrg/proj/lead',
     );

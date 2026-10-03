@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
   import { rememberedAddress } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
+  import { subjectKey } from '../protocol';
   import { hrefFor, parseRoute, type Route } from '../routes';
+  import { forgetClosed, removedLanding, watchRemovals } from '../session/close';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
@@ -119,6 +121,34 @@
       stopHome();
       stopStatus();
     };
+  });
+
+  /**
+   * A seat removed under the reader moves them off it.
+   *
+   * The reader's own close lands them in the same handler (`closeSeat`);
+   * this is the other door - a lead's cascade releasing the workers under
+   * it, a despawn from another view - and it is the terminal's own
+   * `WorkerStatusChanged` answer. The marks of closes made here are
+   * forgotten as the roster catches up, so a project started again is not
+   * suppressed by an old one.
+   */
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    const stop = watchRemovals(open, (seat, spawnedBy) => {
+      // Both reads are untracked, so the effect subscribes once per
+      // connection rather than once per roster read and route change.
+      const wire = untrack(() => home.wire);
+      if (wire === null) return;
+      forgetClosed(wire);
+      const showing = untrack(() => route);
+      const onSeat =
+        showing.name === 'session' &&
+        subjectKey({ session: showing.slot }) === subjectKey({ session: seat });
+      if (onSeat) go(removedLanding(wire, seat, spawnedBy, Date.now()));
+    });
+    return stop;
   });
 
   /**

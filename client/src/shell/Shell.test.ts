@@ -3,13 +3,15 @@ import { createRequire } from 'node:module';
 
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AddressInfo, WebSocket } from 'ws';
+import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberAddress } from '../connect/remembered';
+import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { fontStack } from '../theme';
 import type { ClientSettings } from '../wire/types';
+import type { SessionSlot } from '../wire/types';
 import Shell from './Shell.svelte';
 
 /**
@@ -67,6 +69,14 @@ async function openAt(path: string, address: string | null): Promise<void> {
   await settle();
 }
 
+/** The text of a socket frame, which every frame these tests send is. */
+function frameText(raw: RawData): string {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) return Buffer.concat(raw).toString('utf8');
+  if (Buffer.isBuffer(raw)) return raw.toString('utf8');
+  return Buffer.from(raw).toString('utf8');
+}
+
 /**
  * A forge that greets, and that a test can hold back from greeting.
  *
@@ -89,6 +99,15 @@ async function stubForge(settings: ClientSettings, greeting: 'now' | 'held' = 'n
     socket.send(JSON.stringify({ kind: 'greeting', version: PROTOCOL_VERSION, settings }));
   };
   server.on('connection', (socket) => {
+    // A home read is the fixture, so a page has a roster to reason over; a
+    // seat's read is left unanswered, which is the page's own unread state.
+    socket.on('message', (raw) => {
+      const message: unknown = JSON.parse(frameText(raw));
+      const asked = message as { kind?: unknown; what?: unknown };
+      if (asked.kind === 'subscribe' && asked.what === 'home') {
+        socket.send(JSON.stringify({ kind: 'snapshot', subject: 'home', data: homeWire }));
+      }
+    });
     if (greeting === 'now') greet(socket);
   });
 
@@ -100,6 +119,22 @@ async function stubForge(settings: ClientSettings, greeting: 'now' | 'held' = 'n
     /** Let the greeting go, which is what lands a held launch. */
     greet() {
       for (const socket of server.clients) greet(socket);
+    },
+    /** Remove a seat, as a lead's cascade or another view's despawn does. */
+    remove(seat: SessionSlot, spawnedBy: SessionSlot) {
+      for (const socket of server.clients) {
+        socket.send(
+          JSON.stringify({
+            kind: 'update',
+            update: {
+              worker_status_changed: {
+                action: 'removed',
+                status: { slot: seat, spawned_by: spawnedBy },
+              },
+            },
+          }),
+        );
+      }
     },
     async close() {
       for (const client of server.clients) client.terminate();
@@ -236,6 +271,55 @@ describe('the shell at launch', () => {
     expect(guessed.live(), 'a launch that yielded left its own socket open').toBe(0);
     expect(appliedFont(), 'the launch rewrote the settings the submit had taken').toBe(
       fontStack('system')?.ui,
+    );
+  });
+});
+
+describe('a seat removed under the reader', () => {
+  /**
+   * The other door onto a landing: the reader closed nothing, but the seat
+   * they are on went - a lead's cascade releasing the workers under it, a
+   * despawn from another view. The terminal's answer is its
+   * `WorkerStatusChanged` handler, and this is the client's: without it the
+   * reader sits on a seat with nothing behind it.
+   */
+  it('moves the reader off a seat the core removes under them', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/w1', forge.address);
+    await crossed();
+    expect(location.pathname, 'the fixture did not land on the worker').toBe(
+      '/session/TestOrg/proj/w1',
+    );
+
+    const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    forge.remove(W1, LEAD);
+    await crossed();
+
+    expect(location.pathname, 'the reader was left on a seat with nothing behind it').toBe(
+      '/session/TestOrg/proj/lead',
+    );
+  });
+
+  /**
+   * The other half: a removal somewhere else is not the reader's business,
+   * and a page that moved on every update would be unusable.
+   */
+  it('leaves the reader where they are when another seat is removed', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await crossed();
+
+    forge.remove(
+      { org: 'TestOrg', project: 'proj', label: 'w1' },
+      { org: 'TestOrg', project: 'proj', label: 'lead' },
+    );
+    await crossed();
+
+    expect(location.pathname, 'a removal elsewhere moved the reader').toBe(
+      '/session/TestOrg/proj/lead',
     );
   });
 });
