@@ -10,8 +10,9 @@
  * Nothing the app ships imports this file.
  */
 
-import type { ServerMessage } from '../protocol';
+import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection } from '../socket';
+import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
@@ -177,21 +178,28 @@ export interface Wire {
   sent: Sent[];
   /** How many times a panel asked for the device list, which one walk each. */
   asked: number;
-  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
+  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
+  /**
+   * Land frames on a seat's own store, which is what the connection holds
+   * before any page has folded them into a record.
+   */
+  hold(slot: SessionSlot, ...updates: SessionUpdate[]): void;
 }
 
 /**
  * A connection that records what it was sent and can be made to speak.
  *
- * Only the two things the composer uses of one, which is also why the composer
- * declares its own narrow type: a fake that had to satisfy the whole
- * `Connection` would be scaffolding nothing in these tests exercises.
+ * Only what the composer uses of one, which is also why the composer declares
+ * its own narrow type: a fake that had to satisfy the whole `Connection` would
+ * be scaffolding nothing in these tests exercises. The stores are the real
+ * `Stores`, so a frame held here folds the way it does on a live connection.
  */
 export function wire(): Wire {
   const sent: Sent[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
+  const stores = new Stores();
   const held: Wire = {
     sent,
     asked: 0,
@@ -208,9 +216,14 @@ export function wire(): Wire {
         listeners.add(fn);
         return () => listeners.delete(fn);
       },
+      store: (what) => stores.get(what),
     },
     say(message) {
       for (const fn of listeners) fn(message);
+    },
+    hold(slot, ...updates) {
+      const store = stores.open({ session: slot });
+      for (const update of updates) store.push(update);
     },
   };
   return held;

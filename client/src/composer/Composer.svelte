@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
+  import { runningAt } from '../chat/conversation';
   import Icon from '../components/Icon.svelte';
   import { slotOf } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -445,7 +446,13 @@
     // What the seat was doing when the words left: a send that starts a turn is
     // taken by it, one sent into a turn already running is not (it is settled by
     // the conversation carrying the words, or by a refusal).
-    echoes.post(boxKey(slot), text, running);
+    //
+    // **Read from the connection's store rather than from the record this box
+    // draws.** The record is written once per painted frame, so a turn-start
+    // frame can be applied and not yet drawn - and a send posted as
+    // not-running is taken by the very publish that carries the turn, where a
+    // refusal can no longer reach it.
+    echoes.post(boxKey(slot), text, runningAt(connection, slot, running));
     box.draft = '';
   }
 

@@ -98,6 +98,42 @@ function runningOf(data: unknown): boolean {
 }
 
 /**
+ * Whether the core says a turn is running on `slot`, read from the connection's
+ * own store.
+ *
+ * **This is the live answer, and the record a page draws is not.** The store
+ * carries every frame the moment it lands, where a record is written once per
+ * painted frame - so an event that has to know the state at this instant, like
+ * a send deciding whether it started a turn, reads here, and a drawing reads
+ * the record. What is held is the subscription's snapshot stepped by the frames
+ * since, which is the same fold a seat answered from memory gets.
+ *
+ * `lastKnown` is the caller's own value, for a subject the connection has no
+ * store for and for a tail the store dropped the head of.
+ */
+export function runningAt(
+  connection: Pick<Connection, 'store'>,
+  slot: SessionSlot,
+  lastKnown: boolean,
+): boolean {
+  const store = connection.store({ session: slot });
+  if (store === undefined) return lastKnown;
+  const snapshot = store.snapshot();
+  let held = snapshot === null ? lastKnown : runningOf(snapshot);
+  // **A dropped tail is not replayed.** The store caps its updates and takes
+  // the OLDEST off the front, and the `init` that opens a turn is the front of
+  // it - so replaying an incomplete tail can miss the frame that opened the
+  // turn and answer from a snapshot the frames since have left behind. The
+  // snapshot's own answer is the honest one there.
+  if (store.dropped() > 0) return held;
+  for (const update of store.updates()) {
+    const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
+    if (message !== undefined) held = inFlightOf(held, message);
+  }
+  return held;
+}
+
+/**
  * Whether a turn is still being written, which the fold cannot read off its
  * frames: a page read from a turn that has not ended carries no result frame,
  * because the transcript holds none either.
@@ -502,21 +538,7 @@ export class Chat {
    * store holds is its last snapshot stepped by every frame since.
    */
   private heldRunning(): boolean {
-    const store = this.connection.store({ session: this.slot });
-    if (store === undefined) return this.turnRunning;
-    const snapshot = store.snapshot();
-    let held = snapshot === null ? this.turnRunning : runningOf(snapshot);
-    // **A dropped tail is not replayed.** The store caps its updates and takes
-    // the OLDEST off the front, and the `init` that opens a turn is the front of
-    // it - so replaying an incomplete tail can miss the frame that opened the
-    // turn and answer from a snapshot the frames since have left behind. The
-    // snapshot's own answer is the honest one there.
-    if (store.dropped() > 0) return held;
-    for (const update of store.updates()) {
-      const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
-      if (message !== undefined) held = inFlightOf(held, message);
-    }
-    return held;
+    return runningAt(this.connection, this.slot, this.turnRunning);
   }
 
   /** The newest row carries the running row while the core says a turn is running. */
