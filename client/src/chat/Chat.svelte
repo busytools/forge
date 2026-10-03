@@ -484,7 +484,8 @@
   });
 
   /**
-   * What the follow watches: the newest row, and the line that grows it.
+   * What the follow pass runs on: the seat, the newest turn, and the line that
+   * grows it.
    *
    * **The compaction line is part of the last row and arrives as a PROP**, not
    * as a frame, so a flip alone grows that row by its height with no scroll
@@ -492,13 +493,13 @@
    * happens to land, which on a session with no hooks is never. The line then
    * draws with its baseline below the fold for the whole compaction. Keyed
    * here so the follow re-sticks when the line appears.
-   */
-  /**
-   * What the follow pass runs on: the seat, and the newest turn's shape.
    *
-   * **The seat is IN the key** so a switch always re-runs the pass - two seats
-   * can hold the same number of turns, and a pass keyed on the count alone
-   * would leave the arriving conversation unpinned (#1673).
+   * **And the seat travels in the key as consistency, not as the mechanism**:
+   * what re-runs the pass on a switch is the arriving conversation's own
+   * record being published to the column, which the effect watches (measured:
+   * six constructions tried, none where the key decides) - so the seat is in
+   * the key so two seats with the same number of turns cannot collide, belt
+   * and braces beside the publish that does the work (#1673).
    */
   const follows = $derived(
     held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,

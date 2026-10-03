@@ -443,12 +443,12 @@ describe('whether the column follows the newest end', () => {
     expect(list(), 'the kept conversation is drawn again').not.toBeNull();
     expect(pinned(), 'the return lands at the foot, not where it was left').toEqual([PIN, PIN]);
 
-    // **And a seat left AT its foot still re-pins on the way back**, which is
-    // the half the seat in the pass's key carries: this conversation's follow
-    // is already on, so the re-arm writes the same record and nothing else
-    // about it changes - without the seat in the key the pass would not
-    // re-run, and the reader would land on whatever offset the seat they are
-    // leaving was scrolled to.
+    // **And a seat left AT its foot still re-pins on the way back.** This leg
+    // is that path's own regression guard: the conversation's follow is
+    // already on, so the re-arm writes the same record, and the arriving
+    // record's publish is what re-runs the pass - measured, this leg stands
+    // green against the pre-fix code too, so it is the guard for the
+    // return-at-foot path rather than a witness for the key.
     await settle();
     clear();
     readerAt(FOOT);
