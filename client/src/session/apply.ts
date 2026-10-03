@@ -362,9 +362,12 @@ export const IGNORED: readonly string[] = [
  * Three of them are pushed now - `work`, `pr` and `closes` arrive on
  * `work_changed` - and they stay listed: a handler for it comes with the
  * change that stops this read carrying them, and until then the read is what
- * keeps the pane honest. The rest are the slowest-moving part of the record,
- * where a git scan and a process walk do not change between one frame and the
- * next.
+ * keeps the pane honest. **`queue` is listed for the clears no frame
+ * carries**: rows are pushed per prompt, but the core empties the whole pile
+ * when the process holding it goes, and the read is what stops a dead CLI's
+ * cards being drawn forever. The rest are the slowest-moving part of the
+ * record, where a git scan and a process walk do not change between one frame
+ * and the next.
  */
 export const UNFED: readonly (keyof SessionRecord)[] = [
   'has_dispatches',
@@ -374,6 +377,7 @@ export const UNFED: readonly (keyof SessionRecord)[] = [
   'closes',
   'monitors',
   'background_tasks',
+  'queue',
   'slash_commands',
   'subagents',
   'file_index',

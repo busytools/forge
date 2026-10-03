@@ -8,6 +8,7 @@ import type { QueuedPromptRow } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import Queue from './Queue.svelte';
 import { faceAt, walk } from './queue';
+import Composed from './testing/Composed.svelte';
 
 /**
  * The pile: the rows the core holds, the walk's arithmetic, and what this
@@ -63,6 +64,13 @@ function pile(): HTMLElement {
   const found = host.querySelector<HTMLElement>('.pile [role="listbox"]');
   if (found === null) throw new Error('the pile did not draw');
   return found;
+}
+
+/** The composed harness's own state, which a test moves the way a page re-renders. */
+function pageOf(instance: Record<string, unknown>): { rows: QueuedPromptRow[] } {
+  const held = instance['page'];
+  if (held === null || typeof held !== 'object') throw new Error('the harness exposed no props');
+  return held as { rows: QueuedPromptRow[] };
 }
 
 function key(target: HTMLElement, name: string): void {
@@ -145,6 +153,28 @@ describe('the queue pile', () => {
     expect(pile().querySelector('.row.cur'), 'down past the newest lands in the box').toBeNull();
   });
 
+  it('walks the face: its words, its place in the pile, and the cancel it offers', () => {
+    const { sent, connection } = recording();
+    draw(rows('one', 'two', 'three'), connection);
+
+    key(pile(), 'ArrowUp');
+    const face = pile().querySelector('.row.cur');
+    expect(face?.querySelector('.w')?.textContent, 'the face is the walked row').toBe('three');
+    expect(face?.querySelector('.pos')?.textContent, 'and says where that row sits').toBe('#3 / 3');
+
+    key(pile(), 'ArrowUp');
+    // The runner spells its rows' sources, so the second row's own label is
+    // what the control should name.
+    const control = host.querySelector<HTMLButtonElement>('.head .del');
+    expect(control?.textContent?.trim(), 'the head offers to cancel the walked source').toBe(
+      'cancel you',
+    );
+    control?.click();
+    expect(sent, 'and dispatches the walked row, not the newest').toEqual([
+      { command: { cancel_queued_prompt: { key: SLOT, uuid: 'u1' } } },
+    ]);
+  });
+
   it('dispatches a cancel for the row it is on, and leaves the row to the stream', () => {
     const { sent, connection } = recording();
     draw(rows('one'), connection);
@@ -209,6 +239,50 @@ describe('the queue pile', () => {
     flushSync();
 
     const found = await axe.run(document.body);
+
     expect(found.violations.map((violation) => violation.id)).toEqual([]);
+  });
+});
+
+/**
+ * The key ring, inside the container the page composes - the shape the walk's
+ * handbacks are structural about, and the one no mounting test held.
+ */
+describe('the walk and the box in one composer', () => {
+  const composed = (initial: QueuedPromptRow[], connection: Connection) => {
+    const app = mount(Composed, {
+      target: host,
+      props: { rows: initial, slot: SLOT, connection },
+    });
+    flushSync();
+    const page = pageOf(app);
+    return {
+      page,
+      box: () => host.querySelector('textarea'),
+      pile: () => pile(),
+    };
+  };
+
+  it('hands the keyboard back to the box on the last down and on the pile closing', () => {
+    const { connection } = recording();
+    const harness = composed(rows('one', 'two'), connection);
+
+    harness.pile().focus();
+    flushSync();
+    expect(document.activeElement, 'the up-entry lands on the pile').toBe(harness.pile());
+
+    // Down past the newest lands in the box - focus included, so the next
+    // Enter is the next send.
+    key(harness.pile(), 'ArrowDown');
+    flushSync();
+    expect(document.activeElement, 'the walk out returns the keyboard').toBe(harness.box());
+
+    // And a pile that empties under a focused reader hands it back the same
+    // way, rather than dropping it on the body with the next keystroke.
+    harness.pile().focus();
+    flushSync();
+    harness.page.rows = [];
+    flushSync();
+    expect(document.activeElement, 'the pile going takes nothing with it').toBe(harness.box());
   });
 });

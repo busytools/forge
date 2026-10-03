@@ -294,8 +294,13 @@ impl DomainSession {
         self.background_commands.clear();
         self.staged_commands.clear();
         self.task_tool_use.clear();
-        // The queue died with the CLI process the prompts were written to.
+        // The queue died with the CLI process the prompts were written to, and
+        // so did the promise its init frame made: the flag is re-read from the
+        // new occupant's own init, which the CLI re-fires every turn. Left
+        // latched, a `/resume` onto an advertising CLI would keep the pile
+        // silently off, or latch true beside rows nothing can settle.
         self.prompt_queue.clear();
+        self.lifecycle_frames = None;
     }
 
     /// Record a prompt as waiting, at the dispatch site.

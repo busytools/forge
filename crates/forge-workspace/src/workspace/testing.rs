@@ -205,6 +205,19 @@ impl Workspace {
     /// Auto-creates a `DomainSession` for `key` when none is
     /// registered yet; otherwise overwrites the existing
     /// `DomainSession.conn` slot.
+    pub fn install_testing_stub(
+        &self,
+        key: &SessionSlot,
+    ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = self
+            .domain_session_for(key)
+            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
+        domain.lock().conn = Some(arc);
+        rx
+    }
+
     /// Put a prompt in a seat's queue exactly as a dispatch leaves it: the row
     /// a client attaching mid-queue reads, with no dispatch to drive.
     pub fn seed_queued_prompt(
@@ -218,19 +231,6 @@ impl Workspace {
             .domain_session_for(key)
             .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
         domain.lock().record_queued_prompt(uuid, source, text);
-    }
-
-    pub fn install_testing_stub(
-        &self,
-        key: &SessionSlot,
-    ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
-        let (handle, rx) = forge_agent::Agent::testing_stub();
-        let arc = Arc::new(handle);
-        let domain = self
-            .domain_session_for(key)
-            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
-        domain.lock().conn = Some(arc);
-        rx
     }
 
     /// Construct an empty `Workspace` for use in unit tests. Skips

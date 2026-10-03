@@ -47,6 +47,13 @@
    * gap, a 1.5-line of mono meta and a hairline, and every row is the same by
    * construction - the words never wrap. Measuring would tie the pile to a
    * `ResizeObserver` for a number the theme already fixes.
+   *
+   * **The arithmetic has no cap**: a pile deeper than the room draws deeper
+   * than the room, on purpose - a cap would hide waiting prompts, which is
+   * the opposite of what the pile is for. The other edge of the same coin is
+   * the idle send: `queued` and `started` land inside one beat (measured
+   * 1-5 ms), so its card is up for about a frame and the eye mostly meets the
+   * chat row the drain draws.
    */
   const FACE_HEIGHT = 64;
 
@@ -56,18 +63,18 @@
   let pile = $state<HTMLElement | null>(null);
 
   /**
-   * A cursor whose row has left is no cursor: the core settling the pointed
-   * row - delivered or dropped - clears it, so the walk starts again at the
-   * newest rather than going inert on a uuid nothing draws.
+   * The walk's own row, which is none once it has left.
+   *
+   * Derived rather than written back: the core can settle the pointed row -
+   * delivered or dropped - and a cursor naming it draws nothing, so the
+   * highlight and the walk's next step both read the row that still exists.
    */
-  $effect(() => {
-    if (cursor !== null && !rows.some((row) => row.uuid === cursor)) {
-      cursor = null;
-    }
-  });
+  const active = $derived(
+    cursor !== null && rows.some((row) => row.uuid === cursor) ? cursor : null,
+  );
 
   /** Where the face sits: the cursor's row, or the newest when the walk is in the box. */
-  const face = $derived(faceAt(cursor, rows));
+  const face = $derived(faceAt(active, rows));
 
   /**
    * The walk, as the terminal taught it: up enters at the newest and goes
@@ -76,8 +83,8 @@
    * the next send.
    */
   function move(direction: 'up' | 'down'): void {
-    const was = cursor;
-    cursor = walk(cursor, rows, direction);
+    const was = active;
+    cursor = walk(active, rows, direction);
     if (cursor === null && was !== null && direction === 'down') {
       draft()?.focus();
     }
@@ -106,7 +113,7 @@
   function onfocus(): void {
     holder = pile?.closest('.composer') ?? null;
     focused = true;
-    if (cursor === null && rows.length > 0) {
+    if (active === null && rows.length > 0) {
       cursor = rows[rows.length - 1]?.uuid ?? null;
     }
   }
@@ -134,13 +141,15 @@
       move('down');
       return;
     }
-    if ((event.key === 'Backspace' || event.key === 'Delete') && cursor !== null) {
+    if ((event.key === 'Backspace' || event.key === 'Delete') && active !== null) {
       event.preventDefault();
-      cancel(cursor);
+      cancel(active);
       return;
     }
     if (event.key === 'Escape') {
+      // Back to the box, keyboard included: the contract the walk advertises.
       cursor = null;
+      draft()?.focus();
     }
   }
 </script>
@@ -152,9 +161,9 @@
          backspace - sits beside it rather than inside an option. -->
     <div class="head">
       <span>queued <b>{rows.length}</b></span>
-      {#if cursor !== null}
-        {@const held = rows.find((row) => row.uuid === cursor)}
-        <button class="del" type="button" onclick={() => cancel(cursor ?? '')}>
+      {#if active !== null}
+        {@const held = rows.find((row) => row.uuid === active)}
+        <button class="del" type="button" onclick={() => cancel(active ?? '')}>
           <Icon name="x" class="ic" /> cancel {held?.source ?? ''}
         </button>
       {/if}
@@ -166,7 +175,7 @@
       tabindex="-1"
       role="listbox"
       aria-label="Queued prompts"
-      aria-activedescendant={cursor ?? ''}
+      aria-activedescendant={active ?? ''}
       {onfocus}
       onblur={() => (focused = false)}
       onkeydown={onkey}
@@ -179,18 +188,18 @@
             <div
               class="row"
               class:back={depth > 0}
-              class:cur={cursor === row.uuid}
+              class:cur={active === row.uuid}
               role="option"
               id={row.uuid}
               tabindex="-1"
-              aria-selected={cursor === row.uuid}
+              aria-selected={active === row.uuid}
               style="transform: translateY({-depth * STEP}px)"
             >
               <span class="w">{row.text}</span>
               <span class="m">
                 <span class="src {row.source}">{row.source}</span>
                 {#if at === 0}<span class="nx">next</span>{/if}
-                {#if cursor === row.uuid}<span class="pos">#{at + 1} / {rows.length}</span>{/if}
+                {#if active === row.uuid}<span class="pos">#{at + 1} / {rows.length}</span>{/if}
               </span>
             </div>
           {/if}
