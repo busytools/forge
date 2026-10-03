@@ -105,9 +105,16 @@ conformance-record-socket:
 # to commit. The raw unsettled numbers print on every run regardless - the
 # file is the trend, stdout is the truth.
 #
+# The corpus runs alone, selected by exact name. The binary also carries a
+# model-load measurement (`model_load_cold_warm`), and `--no-capture` runs a
+# binary's tests serially, corpus first: that measurement's `first (cold)`
+# pass here would be guaranteed warm - a cold figure that is not one - and
+# this recipe would carry a 3 GB load it does not need. The load measurement
+# has its own invocation, in its own doc comment.
+#
 # Benchmark the corpus and rewrite this machine's results file.
 bench:
-    RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
 
 # Mutation-test the client with Stryker: break each line the tests claim to
 # cover and see whether anything fails. `vitest` reports what ran and never
