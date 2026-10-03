@@ -153,7 +153,7 @@
 {#each layout as block, at (blockKey(block))}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
-    <div class="mine" data-k={blockKey(block)}>
+    <div class="mine" data-k={`${turn.key}:${blockKey(block)}`}>
       <Prose text={block.unit.text} preserveLines />
       {#each block.unit.files as file, index (`att-${index}`)}
         <div class="attrow">
@@ -171,9 +171,12 @@
         {/if}
         <!-- The unit's own key, in the DOM, for the one reader that has to
              find the row again after the layout moves: the column's anchor
-             (`chat/anchor.ts`). A plain block, so nothing the sheet draws
-             changes. -->
-        <div class="unit" data-k={unit.key}>
+             (`chat/anchor.ts`). **Prefixed with the turn's key** because the
+             fold names an id-less frame within its own turn (`f2`), so two
+             turns can carry the same unit key and an unprefixed lookup could
+             hold a row of the wrong one. A plain block, so nothing the sheet
+             draws changes. -->
+        <div class="unit" data-k={`${turn.key}:${unit.key}`}>
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
           {:else if unit.kind === 'group'}
