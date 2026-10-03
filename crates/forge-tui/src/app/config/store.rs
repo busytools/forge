@@ -24,9 +24,8 @@ pub struct LoadedSettingsDocuments {
 
 /// Workspace-backed entry point into the bridge's settings reader.
 /// Holds a borrowed `&Workspace` plus the active session's
-/// `&SessionSlot` so `load` / `resolve_paths` can ask the workspace
-/// for the bridge's documents + config_dir without TUI ever holding
-/// an `AgentHandle` directly.
+/// `&SessionSlot` so `load` can ask the workspace for the bridge's
+/// documents without TUI ever holding an `AgentHandle` directly.
 #[derive(Clone, Copy)]
 pub struct WorkspaceBridge<'a> {
     pub workspace: &'a Arc<forge_workspace::Workspace>,
