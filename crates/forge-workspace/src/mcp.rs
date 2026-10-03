@@ -173,6 +173,43 @@ pub(crate) fn canonical_mcp_families(names: &[String]) -> Result<Option<Vec<Stri
     Ok(Some(selected.into_iter().map(McpFamily::as_str).map(str::to_owned).collect()))
 }
 
+/// The lines a worker's prompt carries for the families it was NOT
+/// given: one per withheld family, in wire order. All families selected
+/// means no lines. This wording ships as the worker's own instruction
+/// (rule 17), so it says what is absent and what to do instead.
+pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'static str> {
+    McpFamily::ALL
+        .into_iter()
+        .filter(|family| !families.contains(family))
+        .map(|family| match family {
+            McpFamily::Review => {
+                "This session has no `review__*` tools. Review threads for your work are \
+                 handled through your lead - ask it to relay findings or to post your replies."
+            }
+            McpFamily::Cron => {
+                "This session has no `cron__*` tools. You cannot schedule durable work; ask \
+                 your lead to set up any recurring task."
+            }
+            McpFamily::Tasks => {
+                "This session has no `tasks__*` tools. The project task list is not yours to \
+                 edit; report status to your lead instead."
+            }
+            McpFamily::Gotify => {
+                "This session has no `gotify__*` tools. Notifications from Gotify do not \
+                 reach you; your lead carries anything urgent."
+            }
+            McpFamily::Slack => {
+                "This session has no `slack__*` tools. Channel reads and posts go through \
+                 your lead."
+            }
+            McpFamily::Systemone => {
+                "This session has no `systemone__*` decision tools. When a decision is \
+                 material and not obvious, route it to your lead instead of guessing."
+            }
+        })
+        .collect()
+}
+
 /// The facades one session's server is composed from: the agents pair
 /// plus one per toggleable family.
 pub struct ForgeServerFacades {
@@ -528,6 +565,26 @@ mod tests {
             [McpFamily::Tasks].into_iter().collect(),
             "an unknown name is dropped"
         );
+    }
+
+    /// One line per withheld family, in wire order; the present family
+    /// gets none, and nothing withheld means no lines at all.
+    #[test]
+    fn withheld_lines_name_each_missing_family_once() {
+        let slack_only: BTreeSet<McpFamily> = [McpFamily::Slack].into_iter().collect();
+        let lines = withheld_family_lines(&slack_only);
+        assert_eq!(lines.len(), 5, "five of the six families are withheld");
+        assert!(lines[0].contains("review__"), "wire order leads with review: {}", lines[0]);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("systemone__") && line.contains("route it to your lead")),
+            "the systemone line routes decisions to the lead: {lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.contains("slack__"), "the present family gets no line: {line}");
+        }
+        assert!(withheld_family_lines(&McpFamily::all()).is_empty(), "nothing withheld, no lines");
     }
 
     /// The family set and the systemone client are independent gates: a

@@ -1234,6 +1234,29 @@ pub(crate) struct WorkerSpawnArgs {
     pub mcp_families: Option<Vec<String>>,
 }
 
+/// The worker's prompt charter: the stored text plus one line per
+/// withheld MCP family. The row keeps the RAW charter - these lines are
+/// composed per spawn from the current selection, so they can neither
+/// duplicate across re-spawns nor outlive a revision.
+fn charter_with_withheld_families(
+    charter: &str,
+    families: &std::collections::BTreeSet<crate::mcp::McpFamily>,
+) -> String {
+    let lines = crate::mcp::withheld_family_lines(families);
+    if lines.is_empty() {
+        return charter.to_owned();
+    }
+    let mut text = String::with_capacity(
+        charter.len() + lines.iter().map(|line| line.len() + 1).sum::<usize>(),
+    );
+    text.push_str(charter);
+    for line in lines {
+        text.push('\n');
+        text.push_str(line);
+    }
+    text
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a spawn for the id the
 /// worker will run under (or the id being resumed) with the charter
@@ -1497,19 +1520,9 @@ pub(crate) fn handle_spawn_worker(
     // existing ConnectionFailed surface (workspace.rs:570) reports
     // it - we don't silently fall back to fresh-spawn (that would
     // lose state without warning).
-    let settings = SessionLaunchSettings {
-        charter: Some(charter),
-        extra_args: build_worker_extra_args(is_git, label, interactive),
-        ..Default::default()
-    };
-    let target = if resume_existing.is_some() {
-        SessionTarget::Session(slot.clone())
-    } else {
-        SessionTarget::FreshInProject { slot: slot.clone() }
-    };
     // The family selection this spawn composes its tool surface from: a
     // resume or boot re-spawn reads what the row already carries; a
-    // first spawn writes the same value to the row just below.
+    // first spawn writes the same value to the row just above.
     let families = if is_resume || from_boot_respawn {
         workspace.recorded_worker_mcp_families(&project_key, label).unwrap_or_else(|error| {
             tracing::warn!(
@@ -1525,6 +1538,19 @@ pub(crate) fn handle_spawn_worker(
         })
     } else {
         mcp_families.clone()
+    };
+    let settings = SessionLaunchSettings {
+        charter: Some(charter_with_withheld_families(
+            &charter,
+            &crate::mcp::resolve_mcp_families(families.as_deref()),
+        )),
+        extra_args: build_worker_extra_args(is_git, label, interactive),
+        ..Default::default()
+    };
+    let target = if resume_existing.is_some() {
+        SessionTarget::Session(slot.clone())
+    } else {
+        SessionTarget::FreshInProject { slot: slot.clone() }
     };
     match workspace.get_agent_handle_at_key(
         target,
@@ -3058,6 +3084,73 @@ provider = "anthropic"
             "the row keeps the worker's original first turn; overwriting it makes the restart \
              note the worker's opening turn on every later --new re-spawn",
         );
+    }
+
+    /// The prompt charter carries one line per withheld family; the ROW
+    /// keeps the raw charter, so the lines are recomposed per spawn and
+    /// can neither duplicate nor outlive a revision.
+    #[tokio::test]
+    async fn a_narrowed_spawn_keeps_its_rows_charter_raw() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "tester".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["slack".to_owned()]),
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the narrowed spawn succeeds: {reply:?}");
+
+        let stored = ws
+            .worker_rows_for_project(&key)
+            .into_iter()
+            .find(|row| row.label == "tester")
+            .expect("the row the spawn wrote");
+        assert_eq!(
+            stored.charter.as_deref(),
+            Some("charter"),
+            "the row keeps the raw charter; a later revision compares against this text, \
+             so composed lines here would compound on every re-spawn",
+        );
+        assert_eq!(stored.mcp_families, Some(vec!["slack".to_owned()]));
+    }
+
+    /// The composer's contract: nothing withheld means the charter is
+    /// untouched; a withheld family appends its line exactly once; the
+    /// present family appends nothing.
+    #[test]
+    fn the_prompt_charter_carries_only_the_withheld_lines() {
+        let all = crate::mcp::McpFamily::all();
+        assert_eq!(charter_with_withheld_families("charter", &all), "charter");
+
+        let slack_only: std::collections::BTreeSet<crate::mcp::McpFamily> =
+            [crate::mcp::McpFamily::Slack].into_iter().collect();
+        let text = charter_with_withheld_families("charter", &slack_only);
+        assert!(text.starts_with("charter\n"), "{text}");
+        assert!(text.contains("no `systemone__*` decision tools"), "{text}");
+        assert!(!text.contains("no `slack__*` tools"), "the present family gets no line: {text}");
     }
 
     /// A first spawn writes the kick it opened the worker with: the row's
