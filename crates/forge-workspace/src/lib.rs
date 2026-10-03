@@ -89,6 +89,7 @@ mod target;
 mod tasks;
 mod update_fanout;
 mod views;
+pub mod work;
 mod workspace;
 
 pub use dictate::{

@@ -498,7 +498,11 @@ function createSeat(
 }
 
 /**
- * A poll's answer, keeping only the slices no update carries.
+ * A poll's answer, keeping only the fields the read is asked for.
+ *
+ * Which fields those are is `UNFED`'s list, and it is not the same question
+ * as whether any update carries them: a field can be pushed and still be read
+ * here, because this build applies no update to it yet.
  *
  * **The conversation is the one to watch here.** A poll is asked for while
  * frames are arriving, and its answer was encoded after some of them and

@@ -741,7 +741,10 @@ async fn inspector(
     let cwd = roster.cwd_for(slot);
     let (work, diff) = match cwd.as_deref() {
         Some(cwd) => {
-            (Some(home.work.snapshot(slot, cwd).await), Some(home.work.diff(slot, cwd).await))
+            // The scan the page's section draws is the seat's own store, which
+            // is where the core keeps the one answer about this tree.
+            let held = home.surface.work(slot, cwd).await;
+            (Some(home.work.snapshot(slot, cwd).await), Some(held.diff))
         }
         None => (None, None),
     };

@@ -816,10 +816,14 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// Async because a session's git section is a filesystem read, so the
 /// working tree's state is awaited rather than guessed at.
 ///
-/// A seat forge holds no session for is an error rather than an empty
-/// snapshot: `Roster::cwd_for` answers `None` for a project nobody has
-/// started, and a client drawing an empty page would read that as a broken
-/// one rather than as a seat that does not exist.
+/// A seat naming no project forge has loaded is an error rather than an empty
+/// snapshot, because a client drawing an empty page would read that as a
+/// broken one rather than as a seat that does not exist.
+///
+/// **A project that has simply not started is not that case**: its directory
+/// resolves from the declaration, so it is answered - with the session's own
+/// fields empty and a working tree read per read, since no held seat has a
+/// store to keep one in.
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
     let surface = &state.surface;
     match subject {
@@ -1073,12 +1077,13 @@ async fn session(
         }
         None => (Vec::new(), 0, false),
     };
-    // ONE scan for the working tree, its branch, its count and its PR: the four
-    // are then the same instant, so a branch switch between two reads cannot
-    // render a PR for a branch this record does not name. It is the scan the
-    // terminal's inspector draws the same section from.
-    let diff = state.work.diff(slot, cwd).await;
-    let work = work_from_scan(&diff, cwd);
+    // The seat's scan, as the loop that owns it last answered it. Nothing is
+    // read here: the tree is read for a seat somebody is showing, and this
+    // answers what that read found - the tile's branch, count and PR are one
+    // instant, so a branch switch cannot render a PR for a branch this record
+    // does not name.
+    let held = surface.work(slot, cwd).await;
+    let work = work_from_scan(&held.diff, &held.cwd);
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
     let state_at = surface.session(slot, cwd);
@@ -1143,8 +1148,8 @@ async fn session(
             }
         },
         work,
-        pr: diff.pr,
-        closes: diff.closes,
+        pr: held.diff.pr,
+        closes: held.diff.closes,
     })
 }
 
@@ -1622,11 +1627,19 @@ mod tests {
         // A scan the fixture pins the working tree and the PR row from: the
         // fleet's own directory is not a git repository, so without it both
         // fields would be pinned as null and a read that answered nothing at
-        // all would round-trip.
+        // all would round-trip. It goes in the seat's own store, which is
+        // where the record's read answers it from.
         let surface = fleet.surface();
         let work = Arc::new(WorkCache::new());
         let cwd = surface.roster().cwd_for(&fixture_seat()).expect("the fixture seat's directory");
-        work.seed_test_diff(&fixture_seat(), &cwd, &scanned());
+        surface.store_work_snapshot(
+            &fixture_seat(),
+            forge_workspace::work::WorkSnapshot {
+                diff: scanned(),
+                cwd: std::path::PathBuf::from(&cwd),
+                read_at: std::time::Instant::now(),
+            },
+        );
 
         let state = TransportState {
             surface,
@@ -1930,8 +1943,15 @@ mod tests {
         let seat = fixture_seat();
         let surface = fleet.surface();
         let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        surface.store_work_snapshot(
+            &seat,
+            forge_workspace::work::WorkSnapshot {
+                diff: scanned(),
+                cwd: std::path::PathBuf::from(&cwd),
+                read_at: std::time::Instant::now(),
+            },
+        );
         let work = Arc::new(WorkCache::new());
-        work.seed_test_diff(&seat, &cwd, &scanned());
         let state = TransportState {
             surface,
             work,
@@ -1950,6 +1970,60 @@ mod tests {
              {encoded}"
         );
         assert_eq!(encoded["work"]["changed"], 3, "with the count that scan took: {encoded}");
+    }
+
+    /// The pushed row and the record's own fields are one answer.
+    ///
+    /// Both are the seat's store read the same way, so a client that applies
+    /// the update lands on exactly what a client that read the record holds -
+    /// a second derivation is the only way the two could ever disagree.
+    #[tokio::test]
+    async fn the_pushed_row_is_the_records_own_fields() {
+        // Its OWN fleet rather than `fixture_state`'s shared root: that root is
+        // one fixed path, and two tests calling it in one binary's parallel
+        // run unlink it under each other.
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let surface = fleet.surface();
+        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
+        surface.store_work_snapshot(
+            &seat,
+            forge_workspace::work::WorkSnapshot {
+                diff: scanned(),
+                cwd: std::path::PathBuf::from(&cwd),
+                read_at: std::time::Instant::now(),
+            },
+        );
+        let state = TransportState {
+            surface,
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");
+        let held = state.surface.work(&seat, std::path::Path::new(&cwd)).await;
+        let pushed = forge_workspace::work::work_from_scan(&held.diff, &held.cwd);
+
+        assert_eq!(
+            encoded["work"],
+            serde_json::to_value(&pushed).expect("encode"),
+            "the row the seat pushes is the row its record answers",
+        );
+        assert_eq!(
+            encoded["pr"],
+            serde_json::to_value(&held.diff.pr).expect("encode"),
+            "and so is the PR beside it",
+        );
+        assert_eq!(
+            encoded["closes"],
+            serde_json::to_value(&held.diff.closes).expect("encode"),
+            "and the issues it closes",
+        );
     }
 
     /// A scan as the terminal's inspector reads it: one branch, one worktree

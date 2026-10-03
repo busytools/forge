@@ -74,8 +74,12 @@ impl Roster {
     }
 
     /// The directory `slot`'s agent works in: its project's root, or the
-    /// worktree a git worker was forked into. `None` when forge holds no
-    /// session for the slot, which is a project nobody has started.
+    /// worktree a git worker was forked into.
+    ///
+    /// **A session that has not started still resolves.** A lead's directory
+    /// comes from the project's own declaration, so a declared-but-unstarted
+    /// project answers its root; `None` is a slot naming no loaded project at
+    /// all, which for a worker means no registry row either.
     pub fn cwd_for(&self, slot: &SessionSlot) -> Option<PathBuf> {
         self.workspace.cwd_for_session(slot).map(PathBuf::from)
     }

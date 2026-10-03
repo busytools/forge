@@ -199,6 +199,10 @@ pub struct DomainSession {
     /// runs on a view's tick rather than here, so this is the most
     /// recent one whoever asked last produced.
     pub process_snapshot: Option<forge_agent::env::processes::ProcessSnapshot>,
+    /// The last scan of the session's working tree, and when it was taken.
+    /// Written by the seat's watch loop while a view is showing it, so a
+    /// read answers a value rather than paying for a `git` subprocess.
+    pub work_snapshot: Option<crate::work::WorkSnapshot>,
 }
 
 impl DomainSession {
@@ -316,6 +320,7 @@ impl DomainSession {
             available_models: Vec::new(),
             monitors: Vec::new(),
             process_snapshot: None,
+            work_snapshot: None,
         }
     }
 

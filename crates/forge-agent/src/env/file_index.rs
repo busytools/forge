@@ -179,6 +179,88 @@ pub fn start_watch(
     (rx, CancelToken(cancel))
 }
 
+/// Spawn a recursive watch rooted at `root` that reports ONE message per
+/// burst of changes the tree saw.
+///
+/// The same notify wiring, burst drain and ignore filter the index watch
+/// above uses, without its per-path classification: a caller that only needs
+/// to know the tree moved should not pay for the walk a created directory
+/// costs the index. Paths under `.git` are ignored by the filter, so a commit
+/// or a stage fires nothing at all - those ride the caller's own cadence.
+pub fn start_change_watch(root: PathBuf, respect_gitignore: bool) -> (Receiver<()>, CancelToken) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = Arc::clone(&cancel);
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (watch_tx, watch_rx) = mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |result| {
+            let _ = watch_tx.send(result);
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_agent::env::file_index",
+                    %err,
+                    "change watch setup failed",
+                );
+                return;
+            }
+        };
+        if let Err(err) =
+            notify::Watcher::watch(&mut watcher, &root, notify::RecursiveMode::Recursive)
+        {
+            tracing::warn!(target: "forge_agent::env::file_index", %err, "change watch start failed");
+            return;
+        }
+
+        let mut filter = WatchFilter::new(&root, respect_gitignore);
+        while !cancel_clone.load(AtomicOrdering::Relaxed) {
+            let first = match watch_rx.recv_timeout(WATCH_POLL_INTERVAL) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            // Drained the way the index watch drains one, so a build is one
+            // report rather than one per event.
+            let mut batch = vec![first];
+            while let Ok(event) = watch_rx.try_recv() {
+                batch.push(event);
+                if batch.len() >= WATCH_BATCH_CAP {
+                    break;
+                }
+            }
+
+            let mut moved = false;
+            for event in batch {
+                match event {
+                    Ok(event) => {
+                        if is_content_change(event.kind)
+                            && matches_ignore_semantics_change(&root, &event.paths)
+                        {
+                            // The ignore rules themselves moved, so the
+                            // matcher has to come back with them.
+                            filter = WatchFilter::new(&root, respect_gitignore);
+                            moved = true;
+                            continue;
+                        }
+                        if event.paths.iter().any(|path| !filter.is_ignored(&root, path)) {
+                            moved = true;
+                        }
+                    }
+                    // An event notify could not deliver is still a burst the
+                    // caller has to hear about, or the tree could sit
+                    // unread behind a broken watch.
+                    Err(_) => moved = true,
+                }
+            }
+            if moved && tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+    (rx, CancelToken(cancel))
+}
+
 /// Synchronous walk that returns every candidate under `walk_root`.
 /// Used by inline subtree refreshes triggered by watcher events.
 pub fn collect_candidates(
@@ -513,6 +595,47 @@ mod tests {
         touch(&root.join("src/main.rs"));
         touch(&root.join("target/debug/liba.rlib"));
         dir
+    }
+
+    /// Every path under `.git` is filtered out, which is what lets a caller
+    /// ride its own cadence for a commit or a stage rather than watching for
+    /// one: git's own bookkeeping moves on almost every git command, and none
+    /// of it changes what the tree's row says.
+    #[test]
+    fn every_path_under_git_is_filtered_out() {
+        let dir = fixture();
+        let root = dir.path();
+        let filter = WatchFilter::new(root, true);
+
+        for under in [".git/index", ".git/refs/heads/main", ".git/HEAD"] {
+            assert!(
+                filter.is_ignored(root, &root.join(under)),
+                "{under} must not reach a watcher's caller",
+            );
+        }
+        assert!(
+            !filter.is_ignored(root, &root.join("src/main.rs")),
+            "and a tracked path is the control: it is not filtered",
+        );
+    }
+
+    /// The change watch reports a write to the tree.
+    #[test]
+    fn the_change_watch_reports_a_write() {
+        let dir = fixture();
+        let root = dir.path();
+        let (rx, _cancel) = start_change_watch(root.to_path_buf(), true);
+
+        // Written in a loop because the watch is armed on its own thread: a
+        // write sent before notify is listening would be called a swallowed
+        // event by a test that wrote once.
+        for attempt in 0..50 {
+            touch(&root.join(format!("src/write-{attempt}.rs")));
+            if rx.recv_timeout(Duration::from_millis(100)).is_ok() {
+                return;
+            }
+        }
+        panic!("a write to the watched tree is reported rather than swallowed");
     }
 
     #[test]

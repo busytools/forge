@@ -553,12 +553,18 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // A replay answers a consumer that ASKED for one, and this view never
         // asks: its bucket is seeded by `Connected`, which it is present for
         // because it is the view that starts the sessions.
+        //
+        // `WorkChanged` is the seat's pushed working tree, which this view
+        // does not draw yet: the terminal's inspector still reads its tree
+        // through its own scanner, and pointing it at the store is its own
+        // piece.
         SessionUpdate::PeerEnvelopeAppended { .. }
         | SessionUpdate::GotifyNotificationAppended { .. }
         | SessionUpdate::SlackMessageAppended { .. }
         | SessionUpdate::CronPromptAppended { .. }
         | SessionUpdate::HistoryReplayed { .. }
-        | SessionUpdate::DictateAvailability => {}
+        | SessionUpdate::DictateAvailability
+        | SessionUpdate::WorkChanged { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
