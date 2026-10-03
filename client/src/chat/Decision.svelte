@@ -120,7 +120,7 @@
 
   {#if rows.length > 0}
     <div class="dist">
-      {#each rows as row (row.name)}
+      {#each rows as row, at (at)}
         <div class="opt" class:win={row.win}>
           <span class="name">{row.name}</span>
           <span class="track"
