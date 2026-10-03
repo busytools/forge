@@ -1367,6 +1367,18 @@ pub enum SessionUpdate {
     PromptQueuedWhileBusy {
         key: SessionSlot,
     },
+    /// A prompt entered the CLI's queue: the row a view draws as waiting,
+    /// with the words and the sender the lifecycle frames do not carry.
+    ///
+    /// Emitted where the prompt is dispatched, keyed by the uuid it was sent
+    /// under - so a view keys its own optimistic row to this one by id rather
+    /// than by order or text.
+    PromptQueued {
+        key: SessionSlot,
+        uuid: String,
+        source: PromptSource,
+        text: String,
+    },
     /// Where one prompt is in the CLI's queue, as the CLI itself reports it:
     /// `queued`, `started`, `completed` and the terminal states
     /// (`cancelled`, `discarded`, `refused`). Keyed by the uuid the prompt was
@@ -1486,6 +1498,7 @@ impl SessionUpdate {
             | Self::DictateTranscribing { key }
             | Self::DictateProgress { key, .. }
             | Self::PromptQueuedWhileBusy { key }
+            | Self::PromptQueued { key, .. }
             | Self::PromptLifecycle { key, .. }
             | Self::PromptCancelResolved { key, .. }
             | Self::DictateEnded { key, .. }
@@ -1718,6 +1731,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
             }
+            Self::PromptQueued { key, uuid, .. } => f
+                .debug_struct("PromptQueued")
+                .field("key", key)
+                .field("uuid", uuid)
+                .finish_non_exhaustive(),
             Self::PromptLifecycle { key, uuid, state } => f
                 .debug_struct("PromptLifecycle")
                 .field("key", key)

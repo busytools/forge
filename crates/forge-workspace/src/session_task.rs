@@ -760,6 +760,22 @@ impl SessionTask {
         true
     }
 
+    /// Record a prompt as waiting and announce it: the row's words and sender
+    /// ride [`SessionUpdate::PromptQueued`], where the lifecycle frames carry
+    /// only the id and the state.
+    fn record_queued(&self, uuid: &str, source: PromptSource, text: &str) {
+        {
+            let mut guard = self.domain.lock();
+            guard.record_queued_prompt(uuid, source, text);
+        }
+        self.emit(SessionUpdate::PromptQueued {
+            key: self.key.clone(),
+            uuid: uuid.to_owned(),
+            source,
+            text: text.to_owned(),
+        });
+    }
+
     fn execute_command(&self, cmd: Command) {
         // A prompt's queued row is recorded here, where its id is minted (or
         // is already the caller's) and its source is known: the lifecycle
@@ -768,17 +784,11 @@ impl SessionTask {
         let cmd = match cmd {
             Command::Prompt { key, text, attachments } => {
                 let uuid = forge_sdk::request_id::next_prompt_id();
-                {
-                    let mut guard = self.domain.lock();
-                    guard.record_queued_prompt(&uuid, PromptSource::You, &text);
-                }
+                self.record_queued(&uuid, PromptSource::You, &text);
                 Command::PromptUnder { key, text, attachments, uuid, source: PromptSource::You }
             }
             Command::PromptUnder { key, text, attachments, uuid, source } => {
-                {
-                    let mut guard = self.domain.lock();
-                    guard.record_queued_prompt(&uuid, source, &text);
-                }
+                self.record_queued(&uuid, source, &text);
                 Command::PromptUnder { key, text, attachments, uuid, source }
             }
             other => other,

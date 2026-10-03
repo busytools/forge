@@ -50,6 +50,7 @@
     "PluginsUpdateRunProgress": "plugins_update_run_progress",
     "PromptCancelResolved": "prompt_cancel_resolved",
     "PromptLifecycle": "prompt_lifecycle",
+    "PromptQueued": "prompt_queued",
     "PromptQueuedWhileBusy": "prompt_queued_while_busy",
     "QuestionRequest": "question_request",
     "ReviewActivityNotice": "review_activity_notice",
