@@ -1051,6 +1051,36 @@ async fn an_answer_to_a_prompt_that_is_gone_is_refused() {
     };
     assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
     assert!(why.contains("nothing-is-waiting"), "and it names the prompt: {why}");
+    assert!(why.contains("TestOrg/proj/lead"), "and the seat in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// A command to a seat whose session task has closed its command channel is
+/// refused naming the seat in its own words - the sentence the composer's
+/// not-sent row draws.
+///
+/// `install_agent`'s stub hands back the channel's receiver; dropping it is
+/// what closes the channel, the way a session that ended leaves it.
+#[tokio::test]
+async fn a_command_to_a_closed_session_task_names_the_seat_in_words() {
+    let (url, fleet) = a_server().await;
+    drop(fleet.install_agent("TestOrg", "proj", "lead"));
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(a_prompt_for("TestOrg", "proj", "lead")),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
+    assert!(why.contains("TestOrg/proj/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
 }
 
 /// A Slack answer the core no longer holds is refused by its own operation's
@@ -1104,8 +1134,8 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
         panic!("expected an error")
     };
     // Which refusal, not merely that one arrived: an arm that echoed the whole message
-    // back would carry the seat's name AND its `Debug` shape, which the assertions below
-    // reject - and the `what` says which arm composed the sentence.
+    // back would carry the seat's name only in its `Debug` form, which the assertion below
+    // rejects - and the `what` says which arm composed the sentence.
     assert_eq!(
         what, "dispatch",
         "the refusal comes from the core, not from this server declining the message: {why}",
