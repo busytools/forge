@@ -304,10 +304,17 @@ impl Composer {
             // thing on the stream that says so: answering leaves the core's
             // pending set either way, and a view that answered from another
             // seat's page would otherwise keep drawing it.
-            SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+            SessionUpdate::PendingInteractionResolved { key, tool_id, question_index } => {
                 let held = match self.asks.get(key) {
                     Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
-                    Some(Ask::Question(request)) => &request.tool_call.tool_call_id == tool_id,
+                    // **The round as well as the call**: a batch reuses one
+                    // tool id and advances the index, and the next round's
+                    // request can land before this round's resolution, so a
+                    // clear on the id alone drops the ask that just parked.
+                    Some(Ask::Question(request)) => {
+                        &request.tool_call.tool_call_id == tool_id
+                            && question_index.is_none_or(|index| index == request.question_index)
+                    }
                     // A draft is answered by its own id rather than by a tool
                     // call, so a resolved interaction never names one.
                     Some(Ask::SlackDraft(_)) | None => false,
@@ -399,6 +406,7 @@ mod tests {
             composer.apply(&SessionUpdate::PendingInteractionResolved {
                 key: slot.clone(),
                 tool_id: "held-1".to_owned(),
+                question_index: None,
             }),
             "the box redraws for a prompt this view held",
         );
@@ -408,6 +416,7 @@ mod tests {
             composer.apply(&SessionUpdate::PendingInteractionResolved {
                 key: slot,
                 tool_id: "a-prompt-this-view-never-folded".to_owned(),
+                question_index: None,
             }),
             "the box redraws for a settled prompt this view never folded too",
         );

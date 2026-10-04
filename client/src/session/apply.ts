@@ -254,6 +254,16 @@ export const HANDLERS: Record<string, Apply> = {
     // still has one to drop.
     const toolId = text(payload['tool_id']);
     if (toolId === null || askToolId(held.pending_ask) !== toolId) return held;
+    // **The round as well as the call.** A batch reuses one tool id and
+    // advances the question index, and the next round's request can land
+    // before this round's resolution - clearing on the id alone dropped the
+    // ask that had just parked, so every round after the first lost its
+    // opening question (Ved's live find; #1717). A frame naming no round is
+    // an older core, and the id is all it can mean there; a permission's
+    // frames never name one.
+    const index = numberOrNull(payload['question_index']);
+    const parked = askIndex(held.pending_ask);
+    if (index !== null && parked !== null && parked !== index) return held;
     return { ...held, pending_ask: null };
   },
 
@@ -493,6 +503,17 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
 function askToolId(ask: unknown): string | null {
   const request = record(record(ask)['request']);
   return text(record(request['tool_call'])['tool_call_id']);
+}
+
+/** The round a parked question asks, in the wire's own name, or null. */
+function askIndex(ask: unknown): number | null {
+  const request = record(record(ask)['request']);
+  return numberOrNull(request['question_index']);
+}
+
+/** A finite number, or null for anything else. */
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 /** The record with the turn settled, or unchanged when it already was. */

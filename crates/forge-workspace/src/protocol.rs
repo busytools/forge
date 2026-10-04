@@ -1131,9 +1131,19 @@ pub enum SessionUpdate {
     /// and this is the only thing that says so on the stream: without it a
     /// second view keeps drawing a prompt that is already settled. The TUI
     /// never met that, because it is the only view.
+    ///
+    /// **A question names its round as well as its call.** A batch reuses
+    /// one tool call id and advances `question_index`, and the next round's
+    /// request can land before this round's resolution - so a clear keyed
+    /// on the id alone dropped the ask that had just parked, and every
+    /// round after the first lost its opening question (Ved's live find;
+    /// #1717). `None` on every interaction that is not a question, and on
+    /// the frames of a core older than this field.
     PendingInteractionResolved {
         key: SessionSlot,
         tool_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question_index: Option<u64>,
     },
     McpOperationError {
         key: SessionSlot,
@@ -1719,7 +1729,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::PendingInteractionResolved { key, tool_id } => f
+            Self::PendingInteractionResolved { key, tool_id, .. } => f
                 .debug_struct("PendingInteractionResolved")
                 .field("key", key)
                 .field("tool_id", tool_id)

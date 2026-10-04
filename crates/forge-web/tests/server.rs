@@ -5085,6 +5085,7 @@ async fn the_dock_clears_when_the_prompt_is_gone() {
     fleet.emit(SessionUpdate::PendingInteractionResolved {
         key: lead(),
         tool_id: "tu-1".to_owned(),
+        question_index: None,
     });
     settle().await;
 
@@ -5288,6 +5289,7 @@ async fn a_prompt_settled_elsewhere_redraws_the_composer() {
     fleet.emit(SessionUpdate::PendingInteractionResolved {
         key: lead(),
         tool_id: "a-prompt-this-view-never-folded".to_owned(),
+        question_index: None,
     });
 
     let region = nth_composer_event(stream, 1).await.expect("the box redraws");
