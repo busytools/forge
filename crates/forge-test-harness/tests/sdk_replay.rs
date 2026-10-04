@@ -259,6 +259,32 @@ fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
     );
 }
 
+/// `tool_progress` is the frame this upgrade un-dropped: the reader used to
+/// swallow it, and it reaches the stream as a `Message` now. Pinned by name
+/// through the decoder, because a drift back to `Unknown` re-emits the raw
+/// line verbatim and every other gate - replay and the socket record
+/// included - stays green while the typed frame is gone.
+#[test]
+fn committed_baselines_carry_tool_progress_frames_to_the_typed_variant() {
+    let log = load_baseline("tool_progress");
+    let heartbeats = log
+        .inbound()
+        .iter()
+        .filter(|line| {
+            matches!(
+                decode_dispatch(line, 1),
+                DecodedLine::Message(msg) if matches!(*msg, Message::ToolProgress { .. })
+            )
+        })
+        .count();
+
+    assert!(
+        heartbeats >= 1,
+        "the tool_progress baseline carries no heartbeat reaching the typed variant - a drift \
+         back to Message::Unknown would replay clean while covering nothing",
+    );
+}
+
 fn assert_corpus_decodes(dir: &std::path::Path) {
     if !dir.exists() {
         eprintln!(
