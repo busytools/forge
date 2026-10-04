@@ -460,7 +460,7 @@
     // frame can be applied and not yet drawn - and a send posted as
     // not-running is taken by the very publish that carries the turn, where a
     // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running));
+    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid);
     box.draft = '';
   }
 

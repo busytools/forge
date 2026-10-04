@@ -49,12 +49,12 @@ export function subjectKey(subject: Subject): string {
 /**
  * A core command: the variant's name around its own fields.
  *
- * `Command` has 33 variants and every one of them is a struct variant, so
+ * `Command` has 36 variants and every one of them is a struct variant, so
  * the inner value is always a field bag - `{cancel: {key}}`, never a bare
  * `"cancel"`.
  *
  * Left unenumerated rather than written out here: every surface dispatches a
- * handful of the 33, and a union naming them would be a second copy of an
+ * handful of the 36, and a union naming them would be a second copy of an
  * enum the server generates from. A caller builds the shape it means, and
  * the page that owns it is where that shape is stated.
  */

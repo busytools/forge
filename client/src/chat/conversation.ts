@@ -862,8 +862,17 @@ export class Chat {
       case 'snapshot':
         // The seat's own record, which is where the core's answer for a turn in
         // flight crosses: a page can be taken before this lands - `more` is
-        // asked first - so it is read here rather than at the page.
-        if (subjectKey(message.subject) === this.key) this.heard(runningOf(message.data));
+        // asked first - so it is read here rather than at the page. **The
+        // queue rides it too**, and that is what arms the hold for the reader
+        // the hold was built for: a client attaching mid-queue gets no backlog
+        // of `prompt_queued` frames - the pending backlog goes to the
+        // first-ever subscriber alone - so without this read a fresh load, a
+        // refresh or a seat switch mid-queue meets the card and the row at
+        // once, the exact duplicate the quieting exists to stop.
+        if (subjectKey(message.subject) === this.key) {
+          this.heard(runningOf(message.data));
+          this.armed(message.data);
+        }
         return;
       case 'update':
         this.takeUpdate(message.update);
@@ -986,18 +995,24 @@ export class Chat {
       // prompt still waits hands the words back as conversation - and a reader
       // attaching mid-queue would meet the card and the row at once. The
       // page's copies are quieted the same way the live frame is: a message
-      // under a queued id is pulled back into the hold, and a row left with
-      // nothing goes rather than drawing an empty one.
+      // under a queued id is pulled back into the hold. **The splice fires on
+      // ANY pull, not only on a row that emptied**: the ordinary shape is a
+      // turn opening at the forged row with the running frames joined to it,
+      // so the row survives the pull - and a copy kept while its words went
+      // into the hold would draw beside the card AND drain a second time.
       const quiet: unknown[][] = [];
       const quietNamed: Turn[] = [];
+      let pulled = false;
       for (let at = 0; at < copies.length; at += 1) {
-        const kept = (copies[at] ?? []).filter((message) => !this.heldBack(message));
+        const copy = copies[at] ?? [];
+        const kept = copy.filter((message) => !this.heldBack(message));
+        if (kept.length !== copy.length) pulled = true;
         if (kept.length === 0) continue;
         const row = named[at];
         if (row !== undefined) quietNamed.push({ ...row, messages: kept });
         quiet.push(kept);
       }
-      if (quiet.length !== named.length) {
+      if (pulled) {
         named.splice(0, named.length, ...quietNamed);
         copies.splice(0, copies.length, ...quiet);
       }
@@ -1156,10 +1171,13 @@ export class Chat {
         this.waiting.set(uuid, { since: Date.now(), text: words ?? '' });
         // **The two frames race, and this side of the race is the retraction.**
         // The dispatcher emits the user turn as it routes the prompt; the
-        // task's queue announcement follows it by a flush, so a frame often
-        // arrives before the pile knows the prompt is waiting. An announcement
-        // for a row the seat has already drawn pulls it back into the hold -
-        // in the same flush that drew it, so nothing flickers.
+        // task's queue announcement follows it, so a frame often arrives before
+        // the pile knows the prompt is waiting. An announcement for a row the
+        // seat has already drawn pulls it back into the hold - and what keeps
+        // that invisible is the SERVER's batch window rather than this side:
+        // the transport coalesces both updates into one flush, so the draw and
+        // the retraction land in one paint. Outside that window the row hops
+        // back into the pile a beat late rather than standing in both.
         this.retract(uuid);
       }
       return;
@@ -1241,6 +1259,34 @@ export class Chat {
   }
 
   /**
+   * Arm the hold from the read's own queue, for a reader the frame never
+   * reached.
+   *
+   * Add-only, deliberately: the snapshot is the current waiting set, and a
+   * prompt it does not list has either settled - settled frames are what the
+   * lifecycle arms clear on - or belongs to no reader here. What it lists is
+   * waiting, and the words it carries are only here for the note's text; the
+   * frame's own announcement, where one comes, is what re-dates the wait.
+   */
+  private armed(data: unknown): void {
+    // `state` is the wire's own record inside the snapshot, the same nesting
+    // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.
+    const held = (data ?? {}) as { state?: unknown };
+    const state = (held.state ?? {}) as { queue?: unknown };
+    const queue = state.queue;
+    if (!Array.isArray(queue)) return;
+    for (const row of queue) {
+      const held = row as { uuid?: unknown; text?: unknown } | null;
+      if (typeof held?.uuid !== 'string' || held.uuid === '') continue;
+      if (this.waiting.has(held.uuid)) continue;
+      this.waiting.set(held.uuid, {
+        since: Date.now(),
+        text: typeof held.text === 'string' ? held.text : '',
+      });
+    }
+  }
+
+  /**
    * Whether this message is the row of a prompt the pile is still holding,
    * taking it into the hold on the way.
    *
@@ -1286,14 +1332,16 @@ export class Chat {
   /**
    * The CLI moved a prompt, from the frame that names only its id and state.
    *
-   * **`started` is the drain**: the held row draws, carrying how long the
-   * prompt waited - the wait being the whole difference between the card's
-   * "queued" and the row's "sent", and the reason the row was held at all.
+   * **The per-state table.** `started` is the drain: the held row draws,
+   * carrying how long the prompt waited - the wait being the whole difference
+   * between the card's "queued" and the row's "sent", and the reason the row
+   * was held at all. `completed` draws the same way, which is what saves a
+   * hold whose `started` was lost - a reattached client that missed the frame.
    * `refused` and `discarded` draw too, without the note, because those words
    * never reached a model and the pile's own ending line is the only other
    * place they exist. `cancelled` goes: the reader deleted it, and the send
    * that was waiting on it is settled rather than left behind a copy that is
-   * never coming.
+   * never coming. Anything else keeps the hold.
    */
   private advanced(update: SessionUpdate): void {
     const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
@@ -1308,10 +1356,11 @@ export class Chat {
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
     if (state === 'cancelled') {
-      // Only when the pending send is this prompt's own: the store holds one
-      // send per seat, so a second send's mark must not go with a first
-      // prompt's cancel.
-      if (entry !== undefined && echoes.of(this.key)?.words === entry.text) {
+      // Only when the pending send is THIS prompt's: the store holds one send
+      // per seat, and the id is what separates a second send from a first
+      // prompt's cancel. Words could not - two sends of the same text compare
+      // equal - so they are not asked.
+      if (entry !== undefined && echoes.of(this.key)?.id === uuid) {
         echoes.clear(this.key);
       }
       return;

@@ -5868,6 +5868,90 @@ provider = "anthropic"
         );
     }
 
+    /// The capability latch is per-occupant and re-reads.
+    ///
+    /// The flag and the pile go with the occupant that set them - the same
+    /// drop the `Connected` arm runs - so a `/resume` onto a CLI that DOES
+    /// advertise the frames gets its pile back, and one that does not cannot
+    /// inherit a latched true beside rows nothing can settle. A latch that
+    /// only ever wrote once would keep the pile silently off for the rest of
+    /// the slot's life.
+    #[tokio::test]
+    async fn the_capability_latch_re_reads_on_a_new_occupant() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("latch", "/tmp/latch");
+        let key = SessionSlot::from_str_for_test("latch-lead");
+        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new("latch-session"));
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        let init = |capabilities: serde_json::Value| -> forge_primitives::Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "latch-session",
+                "capabilities": capabilities,
+            }))
+            .expect("parse an init frame")
+        };
+
+        // The first occupant does not advertise: the pile is off for it.
+        task.translate_event(forge_agent::AgentEvent::SdkMessage {
+            session_id: "latch-session".to_owned(),
+            msg: init(serde_json::json!(["interrupt_receipt_v1"])),
+        });
+        assert_eq!(domain.lock().lifecycle_frames, Some(false), "the first init is read");
+
+        // A new occupant: the per-occupant drop `Connected` runs.
+        domain.lock().drop_background_tasks();
+        assert_eq!(domain.lock().lifecycle_frames, None, "nothing has been advertised yet");
+        assert!(domain.lock().prompt_queue.is_empty(), "nor is anything waiting");
+
+        // The new occupant advertises, so its init is the first sight again -
+        // and the pile works for it.
+        task.translate_event(forge_agent::AgentEvent::SdkMessage {
+            session_id: "latch-session".to_owned(),
+            msg: init(serde_json::json!(["msg_lifecycle_v1"])),
+        });
+        assert_eq!(
+            domain.lock().lifecycle_frames,
+            Some(true),
+            "the re-read is what gives the new occupant its pile",
+        );
+
+        task.execute_command(Command::Prompt {
+            key: key.clone(),
+            text: "recorded now".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert_eq!(
+            domain.lock().prompt_queue.len(),
+            1,
+            "and a row is kept for a CLI that can settle it",
+        );
+        let announced: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::PromptQueued { text, .. } if text == "recorded now"
+            )),
+            "and announced: {announced:?}",
+        );
+    }
+
     /// `Command::Cancel` reaches the agent's command dispatcher.
     #[test]
     fn execute_cancel_forwards_to_handle() {

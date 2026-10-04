@@ -172,9 +172,25 @@ mod tests {
 
         for (update, expected) in &cases {
             let turn = delivery_turn(update, &slot).expect("a delivery to this seat forges a turn");
-            let Message::User { message, .. } = &turn else {
+            let Message::User { message, uuid, .. } = &turn else {
                 panic!("a delivery draws as the user turn the model's prompt was")
             };
+            // **The prompt's own id, off the envelope.** It is what a view
+            // holds the row by while the prompt waits, and what pairs the row
+            // with the page's later copy - a row minted without it, or with a
+            // fresh one, is a row nothing can settle.
+            let carried_id = match update {
+                SessionUpdate::CronPromptAppended { uuid, .. }
+                | SessionUpdate::GotifyNotificationAppended { uuid, .. }
+                | SessionUpdate::SlackMessageAppended { uuid, .. }
+                | SessionUpdate::PeerEnvelopeAppended { uuid, .. } => uuid,
+                other => panic!("this test only carries deliveries: {other:?}"),
+            };
+            assert_eq!(
+                uuid.as_deref(),
+                Some(carried_id.as_str()),
+                "the forged row is stamped with the id the prompt was dispatched under",
+            );
             let Some(ContentBlock::Text { text }) = message.content.first() else {
                 panic!("the turn carries the prose the model received")
             };

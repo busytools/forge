@@ -16493,6 +16493,45 @@ mod prompt_frame_origin_tests {
         );
     }
 
+    /// The frame a typed dispatch forges carries the SAME id the wired prompt
+    /// runs under.
+    ///
+    /// The lifecycle frames name only the id, so a frame minted apart from the
+    /// wire would hold a row nothing can ever settle - the pile dead for that
+    /// prompt in every view - and a page's copy of the message, which the CLI
+    /// writes under the same id, would arrive as a stranger rather than as the
+    /// row already held.
+    #[test]
+    fn a_prompt_frames_uuid_is_the_uuid_it_runs_under() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(a_prompt(&seat));
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+
+        let wired = ws.drain_test_dispatch_buffer();
+        let wired_id = match wired.as_slice() {
+            [Command::PromptUnder { uuid, .. }] => uuid.clone(),
+            other => panic!("a typed dispatch wires the prompt under a minted id: {other:?}"),
+        };
+        assert!(!wired_id.is_empty(), "and a real one, not a blank");
+
+        let mut frame_id: Option<String> = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::User { uuid, .. },
+                ..
+            } = update
+            {
+                frame_id = uuid;
+            }
+        }
+        assert_eq!(
+            frame_id.as_deref(),
+            Some(wired_id.as_str()),
+            "the forged frame and the wired prompt are one thing by id",
+        );
+    }
+
     /// `/new` from any composer is forge's own command, never the CLI's. The
     /// CLI answers that name as its own `/clear`, which rotates a
     /// conversation forge never records - no id minted, no `SessionReplaced` -

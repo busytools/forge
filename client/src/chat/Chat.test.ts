@@ -885,7 +885,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false);
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
     flushSync();
     expect(drawn(), 'the words are drawn before the core has them').toContain(
       'and run the gate too',
@@ -917,7 +917,7 @@ describe('the reader own words before the core has them', () => {
     // Posted with the seat already running: the CLI queues it, and the row's
     // home is the pile above the box. Drawing it here too would say "sent" in
     // the chat and "queued" in the pile about one prompt.
-    echoes.post(key, 'queued while the gate runs', true);
+    echoes.post(key, 'queued while the gate runs', true, 'e-q1');
     flushSync();
     expect(drawn(), 'the chat does not claim a prompt the pile is holding').not.toContain(
       'queued while the gate runs',
@@ -936,7 +936,7 @@ describe('the reader own words before the core has them', () => {
     // dispatch was refused, so no queued row exists anywhere. The suppression
     // is for the WAITING state alone: a failure has to be visible, or the
     // words are lost behind a row that never comes.
-    echoes.post(key, 'queued but refused', true);
+    echoes.post(key, 'queued but refused', true, 'e-q2');
     echoes.refuse(key, 'the socket closed mid-send');
     flushSync();
 
@@ -955,7 +955,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and the gate again', false);
+    echoes.post(key, 'and the gate again', false, 'e-again');
     flushSync();
     expect(drawn(), 'the row is up before the read lands').toContain('and the gate again');
 
@@ -971,7 +971,7 @@ describe('the reader own words before the core has them', () => {
       'Nothing said yet',
     );
 
-    echoes.post(key, 'start here', false);
+    echoes.post(key, 'start here', false, 'e-start');
     flushSync();
     expect(drawn(), 'the first thing the seat says is the reader own words').toContain(
       'start here',
@@ -984,7 +984,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false);
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
     echoes.refuse(key, 'the session is not running');
     flushSync();
     expect(drawn(), 'the words stay where they were sent from').toContain('and run the gate too');
@@ -997,9 +997,20 @@ describe('the reader own words before the core has them', () => {
     retry.click();
     flushSync();
 
-    expect(server.dispatched, 'the row sends the same words again').toContainEqual({
-      prompt: { key: LEAD, text: 'and run the gate too', attachments: [] },
+    const resentCommand = server.dispatched.at(-1);
+    expect(resentCommand, 'the row sends the same words again').toMatchObject({
+      prompt_under: {
+        key: LEAD,
+        text: 'and run the gate too',
+        attachments: [],
+        source: 'you',
+      },
     });
-    expect(echoes.of(key)?.state, 'and the row is back to saying it is on its way').toBe('sending');
+    const resentUuid = (resentCommand as { prompt_under?: { uuid?: unknown } } | undefined)
+      ?.prompt_under?.uuid;
+    expect(typeof resentUuid, 'under a fresh id, which is what the pile settles by').toBe('string');
+    expect(resentUuid, 'not the id the first attempt went under').not.toBe('e-gate');
+    const resent = echoes.of(key);
+    expect(resent?.state, 'and the row is back to saying it is on its way').toBe('sending');
   });
 });

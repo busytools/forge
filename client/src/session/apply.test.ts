@@ -716,6 +716,14 @@ describe('applyUpdate', () => {
       const held = empty();
       expect([...UNFED].every((field) => field in held)).toBe(true);
     });
+
+    it("keeps the queue in the merge read, which is how a dead CLI's cards clear", () => {
+      // Rows arrive by update, but the core empties the pile WHOLESALE when
+      // the process holding it goes, and no frame says so - the poll's merge
+      // is the only thing that clears those cards, so dropping `queue` from
+      // the list strands them forever.
+      expect(UNFED).toContain('queue');
+    });
   });
 
   describe('the queue', () => {
