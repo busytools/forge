@@ -97,7 +97,10 @@ function instructionsOf(input: unknown): string | null {
 /** The per-option descriptions, under the names the block's rows draw. */
 function criteriaOf(answer: DecisionAnswer, input: unknown): Record<string, string> {
   const held = obj(obj(input)['criteria']);
-  const out: Record<string, string> = {};
+  // A null prototype, so a level or option named `constructor` reads as the
+  // absent description it is rather than through Object.prototype (the 1723
+  // review measured `function Object() { [native code] }` drawing as one).
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   if (answer.kind === 'noul') {
     for (const [key, name] of [
       ['true', 'yes'],
