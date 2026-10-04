@@ -617,7 +617,11 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
     );
     sampled.insert(
         "DictateStream".to_owned(),
-        shape.paths.iter().map(|(path, keys)| (path.clone(), json!(keys.iter().collect::<Vec<_>>()))).collect(),
+        shape
+            .paths
+            .iter()
+            .map(|(path, keys)| (path.clone(), json!(keys.iter().collect::<Vec<_>>())))
+            .collect(),
     );
     sampled
 }

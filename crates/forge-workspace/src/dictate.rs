@@ -2164,12 +2164,17 @@ mod dictate_lifecycle_tests {
         // Deliberately NOT marked live.
         let session = key("ghost");
 
-        ws.dispatch(Command::DictateStream { key: session.clone(), options: DictateAxes::default() })
-            .expect("dispatch");
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+        })
+        .expect("dispatch");
 
         let ended = updates.recv().await.expect("the refusal echoes");
         match ended {
-            SessionUpdate::DictateEnded { outcome: DictateOutcome::Refused { message }, .. } => {
+            SessionUpdate::DictateEnded {
+                outcome: DictateOutcome::Refused { message }, ..
+            } => {
                 assert!(
                     message.contains("closed"),
                     "the refusal must say the seat is gone, got: {message}"
@@ -2202,8 +2207,11 @@ mod dictate_lifecycle_tests {
         let session = key("capped");
         live_session(&ws, &session);
 
-        ws.dispatch(Command::DictateStream { key: session.clone(), options: DictateAxes::default() })
-            .expect("dispatch");
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+        })
+        .expect("dispatch");
         assert!(ws.dictate_push(&session, &[0.5; 320]), "the take is live");
         let _ = updates.recv().await.expect("the start echoes");
 
@@ -2235,8 +2243,11 @@ mod dictate_lifecycle_tests {
         let session = key("streamer");
         live_session(&ws, &session);
 
-        ws.dispatch(Command::DictateStream { key: session.clone(), options: DictateAxes::default() })
-            .expect("dispatch");
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+        })
+        .expect("dispatch");
         assert!(ws.dictate_push(&session, &[0.5; 320]));
         let _ = updates.recv().await.expect("the start echoes");
 
@@ -2268,8 +2279,11 @@ mod dictate_lifecycle_tests {
         );
 
         // The property the refusal broke: the next take registers at once.
-        ws.dispatch(Command::DictateStream { key: session.clone(), options: DictateAxes::default() })
-            .expect("dispatch");
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+        })
+        .expect("dispatch");
         assert!(
             ws.dictate_push(&session, &[0.5; 320]),
             "a take started right after a drop must land"

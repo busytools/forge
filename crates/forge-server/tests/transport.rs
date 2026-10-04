@@ -481,8 +481,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
 #[tokio::test]
 async fn the_greeting_carries_the_dictate_axes_the_config_set() {
     let (url, fleet) = a_server().await;
-    let (mut socket, _) =
-        tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
     let msg = socket.next().await.expect("a greeting").expect("no error");
     let text = msg.to_text().expect("text").to_owned();
     let ServerMessage::Greeting { settings, .. } =
