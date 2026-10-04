@@ -244,44 +244,63 @@ impl Workspace {
     /// **A held seat waits for its session.** A seat with no session has no
     /// store for a scan, so the watch's own loop goes quiet on it and wakes
     /// when the session appears - the same rule that covers a session ending
-    /// under a running loop. Refusing the hold instead was the one order that
-    /// could not recover: nothing asks again when the session starts, so a
-    /// viewer that opened the seat FIRST - the everyday order for a client -
-    /// got no watch at all, and the pushed rows stood still for the life of
-    /// the connection (#1706, measured live as `work_hold_refused`).
+    /// under a running loop.
     ///
-    /// The answer says whether the hold was taken, and a caller MUST release
-    /// only the holds it took: the release is counted per seat, so a second
-    /// viewer giving back a hold it never got would spend the first viewer's.
-    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) -> bool {
+    /// **What the old refusal cost was the viewer that never comes back.** A
+    /// subscribe to a sessionless seat was refused its hold, and most viewers
+    /// recovered by accident: a session starting is a REPLACES frame, the
+    /// reread around it unsubscribe/subscribes, and the next subscribe took
+    /// the hold - the `work_watch_quiet / session_gone` line in the live log
+    /// is one of those later holds. A viewer that nothing drove to
+    /// re-subscribe had no watch for as long as it showed the seat, and its
+    /// pushed rows stood still; the hold is unconditional now, so the FIRST
+    /// subscribe is the one that counts (#1706).
+    ///
+    /// The first read, walk and index run only when a session is there to
+    /// store them under: a sessionless seat's stores drop what they are
+    /// given, so the work would be a whole-tree walk with nowhere to land.
+    pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
-            return true;
+            return;
         };
-        let announced = match self.scan_work_if_stale(slot, &scanning, false).await {
-            Ok(held) => Some(Announced::of(&held)),
-            Err(refusal) => {
-                tracing::debug!(
-                    target: "forge_workspace::work",
-                    event_name = "work_scan_skipped",
-                    slot = %slot.display(),
-                    %refusal,
-                    "a held seat's working tree was not read at the hold",
-                );
-                None
+        let live = self.domain_session_for(slot).is_some();
+        let announced = if live {
+            match self.scan_work_if_stale(slot, &scanning, false).await {
+                Ok(held) => Some(Announced::of(&held)),
+                Err(refusal) => {
+                    tracing::debug!(
+                        target: "forge_workspace::work",
+                        event_name = "work_scan_skipped",
+                        slot = %slot.display(),
+                        %refusal,
+                        "a held seat's working tree was not read at the hold",
+                    );
+                    None
+                }
             }
+        } else {
+            None
         };
         // The walk is the hold's too, for the same reason the tree's scan is:
         // the snapshot a page opens on is this seat's, and a walk left to the
         // loop would leave the first one as old as the last time anybody
         // looked.
-        self.walk_processes_if_stale(slot, self.claude_pid(slot)).await;
-        let walked = self.process_snapshot(slot).map(|held| held.processes);
+        let walked = if live {
+            self.walk_processes_if_stale(slot, self.claude_pid(slot)).await;
+            self.process_snapshot(slot).map(|held| held.processes)
+        } else {
+            None
+        };
         // The file index is the same bargain: a page that opens on the seat
         // reads the list its composer's `@` trigger offers, so the hold walks
         // it once rather than leaving the composer empty until the first poke.
-        self.walk_files_if_stale(slot, false).await;
-        let indexed = self.file_index(slot).map(|held| held.index);
+        let indexed = if live {
+            self.walk_files_if_stale(slot, false).await;
+            self.file_index(slot).map(|held| held.index)
+        } else {
+            None
+        };
         spawn_work_watch(
             Arc::clone(self),
             slot.clone(),
@@ -291,7 +310,6 @@ impl Workspace {
             walked,
             indexed,
         );
-        true
     }
 
     /// Stop showing `slot`. The last hold stops its loop and its watch.
@@ -443,10 +461,11 @@ impl Workspace {
         dirty: bool,
     ) -> Result<WorkSnapshot, String> {
         let _one_at_a_time = gate.lock().await;
-        // A seat that lost its session has nowhere to store a scan, so the
-        // rule would read "nothing has scanned this" on every poke: refused
-        // here as well as at the hold, because a session can end under a seat
-        // that was held while it lived.
+        // A seat with no session has nowhere to store a scan, so the rule
+        // would read "nothing has scanned this" on every poke. The loop's own
+        // guard skips the call while sessionless, and this is the second layer
+        // behind it: the hold's first read and the terminal's scanner reach
+        // here too, and both must be refused rather than left scanning.
         if self.domain_session_for(slot).is_none() {
             return Err(format!("{} has no session to store a scan on", slot.display()));
         }
@@ -546,13 +565,21 @@ fn spawn_work_watch(
                 _ = &mut stopped => return,
                 _ = poke.tick() => {}
             }
-            // **A seat whose session ended goes quiet, and does not go away.**
-            // There is nothing to store or announce for a session that is not
-            // there, so the rule refuses and the scan never runs - which is
-            // what stops the burn. But the LOOP stays, and so does the hold:
-            // a session that comes back under the same seat resumes being
-            // scanned under the viewer that was already showing it, with no
-            // re-subscribe and no entry whose loop has gone.
+            // **A seat whose session is not there - not started yet, or ended
+            // under its loop - goes quiet, and does not go away.** There is
+            // nothing to store or announce for a session that is absent, so
+            // this skips the whole body. But the LOOP stays, and so does the
+            // hold: a session that comes back under the same seat resumes
+            // being scanned under the viewer that was already showing it, with
+            // no re-subscribe and no entry whose loop has gone - and that is
+            // the wake the sessionless hold depends on.
+            //
+            // **This guard is load-bearing; do not delete it as redundant
+            // with the scan's own refusal.** Deleting either quiet layer
+            // alone leaves every test green (the other swallows the
+            // emission), so no mutation says it - but without this one, a
+            // sessionless seat walks+scans its whole tree every poke with
+            // every result dropped, and nothing observable would say so.
             if workspace.domain_session_for(&slot).is_none() {
                 if !quiet {
                     quiet = true;
@@ -560,8 +587,9 @@ fn spawn_work_watch(
                         target: "forge_workspace::work",
                         event_name = "work_watch_quiet",
                         slot = %slot.display(),
-                        reason = "session_gone",
-                        "the seat's session ended under its loop, so nothing is scanned until it returns",
+                        reason = "no_session",
+                        "the seat has no session - not started yet, or ended under its loop - so \
+                         nothing is scanned until one is there",
                     );
                 }
                 continue;
@@ -804,21 +832,22 @@ provider = "anthropic"
     /// **A viewer that arrives before the seat's session does still gets the
     /// tree once it starts** (#1706).
     ///
-    /// The client's own order: the seat is opened, and its session comes
-    /// later. A hold refused for the missing session is never asked for again
-    /// - nothing re-subscribes when the session appears - so the seat's
-    /// viewers get no watch, and after the poll's retirement the git row is
-    /// stale for the life of the connection. Measured live
-    /// (`work_hold_refused no_session` for the seat Ved opened before
-    /// touching a file in it).
+    /// A viewer that nothing drives to RE-SUBSCRIBE is the one the old refusal
+    /// stranded: most recovered by accident, because a session starting is a
+    /// REPLACES frame and the reread around it takes the hold again (the live
+    /// log's `work_watch_quiet / session_gone` is one of those later holds) -
+    /// but a viewer whose seat simply starts (or stays asleep) under it had no
+    /// watch, and its pushed rows stood still. The hold is unconditional, so
+    /// the FIRST subscribe is the one that counts.
     #[tokio::test]
     async fn a_seat_held_before_its_session_starts_announces_the_row_once_it_does() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_declared_project(dir.path());
         let seat = seat();
 
+        workspace.hold_seat(&seat).await;
         assert!(
-            workspace.hold_seat(&seat).await,
+            !workspace.held_work_seats.lock().is_empty(),
             "a sessionless seat is still held - the loop waits quietly for its session",
         );
         workspace.register_domain_session(seat.clone(), None);
@@ -1282,12 +1311,13 @@ provider = "anthropic"
         let (workspace, _updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
-        assert!(workspace.hold_seat(&seat).await, "the first viewer holds");
+        workspace.hold_seat(&seat).await;
+        assert!(!workspace.held_work_seats.lock().is_empty(), "the first viewer holds");
 
         // The session ends under the hold, and the next viewer still holds:
         // the watch waits for the session rather than refusing (#1706).
         workspace.release_session_with_cascade(&seat);
-        assert!(workspace.hold_seat(&seat).await, "a sessionless seat is held too");
+        workspace.hold_seat(&seat).await;
 
         // Two taken holds: one release leaves the seat held, the second lets
         // it go.
@@ -1345,9 +1375,19 @@ provider = "anthropic"
 
     /// **A sessionless seat is held, and its loop says nothing.** The hold
     /// waits for the session (#1706); the burn the old refusal guarded
-    /// against is the loop's own quiet rule's business - no session means no
-    /// record to store a scan in, so it waits instead of scanning once a
-    /// second forever with a `gh` lookup apiece.
+    /// against is the quiet rules' business - no session means no record to
+    /// store a scan in, so the loop waits instead of scanning once a second
+    /// forever with a `gh` lookup apiece.
+    ///
+    /// **Both quiet layers are load-bearing and this test covers only the
+    /// PAIR** (measured): the loop's guard and the scan's own sessionless
+    /// refusal each swallow the other's absence - delete either alone and this
+    /// stays green, and only both gone emit. The walk the guard skips is not
+    /// observable either: a sessionless seat's stores drop what they are given,
+    /// so there is no state a control could read. What this holds is that a
+    /// sessionless seat is silent and held; the reason the guard can never be
+    /// dropped as "redundant, the scan refuses anyway" lives in the comment
+    /// there, not in a mutation.
     ///
     /// Reachable the moment a client subscribes to a declared-but-unstarted
     /// project, whose cwd resolves from the declaration alone - and that
@@ -1368,9 +1408,8 @@ provider = "anthropic"
         );
 
         // A tree that moves says nothing while there is no session to store a
-        // scan under. A loop that lost its quiet rule emits within about a
-        // second, so the wait is a control on the quiet rather than on a slow
-        // loop.
+        // scan under. (Not phrased as a control on the guard alone: see the
+        // doc above - only the pair is observable.)
         std::fs::write(dir.path().join("kept.txt"), "moved").expect("write");
         assert!(
             tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),

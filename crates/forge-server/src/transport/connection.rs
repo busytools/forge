@@ -275,13 +275,13 @@ async fn handle_client(
             // seat's viewers are seeded with the row the hold read, so the
             // loop announces only what moves after it.
             if let Subject::Session(slot) = &what {
-                // Only a hold that was TAKEN is remembered, because only that
-                // one may be given back: a seat with no session refuses the
-                // hold, and its release would spend a count another viewer is
-                // still using.
-                if state.surface.hold_seat(slot).await {
-                    holds.take(slot);
-                }
+                // **Every session subscribe holds the seat**, a sessionless
+                // one included - its watch waits for the session (#1706) - and
+                // every taken hold is remembered here so the two paths a
+                // subscribe can end without one can give it back: the encode's
+                // refusal below, and the unsubscribe.
+                state.surface.hold_seat(slot).await;
+                holds.take(slot);
             }
             batch::flush(socket, queued).await?;
             match encode_subject(state, &what).await {
@@ -302,9 +302,9 @@ async fn handle_client(
                 // silence: the client learns why, and never draws an empty
                 // snapshot as a broken page.
                 Err(refusal) => {
-                    // Whatever hold this connection TOOK goes back with the
-                    // refusal, or a view of a seat that does not exist would
-                    // keep its loop running behind nothing.
+                    // The hold every session subscribe takes goes back with
+                    // the refusal, or a view of a seat that does not exist
+                    // would keep its loop running behind nothing.
                     if let Subject::Session(slot) = &what {
                         holds.give_back(slot);
                     }
