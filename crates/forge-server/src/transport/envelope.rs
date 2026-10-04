@@ -6,6 +6,7 @@
 //! adding a variant is compatible and renaming one is not.
 
 use forge_primitives::{SessionSlot, WebConfig};
+use forge_workspace::DictateAxes;
 use serde::{Deserialize, Serialize};
 
 use crate::live::fleet_news;
@@ -174,11 +175,23 @@ pub struct ClientSettings {
     pub mark: Option<String>,
     pub theme: Option<String>,
     pub font: Option<String>,
+    /// The axes a client that captures starts on and resets to: the
+    /// `[dictate]` keys, over the crate's own defaults. A client that
+    /// captures sends the values in force with each take, so this is the
+    /// default it departs from rather than anything the server remembers.
+    pub dictate: DictateAxes,
 }
 
-impl From<&WebConfig> for ClientSettings {
-    fn from(config: &WebConfig) -> Self {
-        Self { mark: config.mark.clone(), theme: config.theme.clone(), font: config.font.clone() }
+impl ClientSettings {
+    /// The client's settings: the `[web]` keys off the config, and the
+    /// axes the workspace resolved.
+    pub fn new(config: &WebConfig, dictate: DictateAxes) -> Self {
+        Self {
+            mark: config.mark.clone(),
+            theme: config.theme.clone(),
+            font: config.font.clone(),
+            dictate,
+        }
     }
 }
 
@@ -255,7 +268,9 @@ mod tests {
     }
 
     /// The client's settings come off the server's own config, so the
-    /// client never reads `forge.toml` and the two cannot drift.
+    /// client never reads `forge.toml` and the two cannot drift - the
+    /// `[web]` keys off it directly, and the `[dictate]` axes as the
+    /// workspace resolved them.
     #[test]
     fn the_client_settings_are_the_configs_view_settings() {
         let config = WebConfig {
@@ -266,11 +281,17 @@ mod tests {
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),
         };
+        let axes = DictateAxes {
+            styling: forge_dictate::normalize::Styling::Formal,
+            structure: forge_dictate::normalize::Structure::Lists,
+            context: forge_dictate::normalize::Context::Email,
+        };
 
-        let settings = ClientSettings::from(&config);
+        let settings = ClientSettings::new(&config, axes);
 
         assert_eq!(settings.mark.as_deref(), Some("strike"));
         assert_eq!(settings.theme.as_deref(), Some("dark"));
         assert_eq!(settings.font.as_deref(), Some("system"));
+        assert_eq!(settings.dictate, axes, "and the axes a capturing client starts on");
     }
 }

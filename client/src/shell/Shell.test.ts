@@ -10,7 +10,7 @@ import { rememberAddress } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { fontStack } from '../theme';
-import type { ClientSettings } from '../wire/types';
+import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
 import type { SessionSlot } from '../wire/types';
 import Shell from './Shell.svelte';
 
@@ -85,7 +85,7 @@ function frameText(raw: RawData): string {
  * An acceptance that then says nothing is what the handshake deadline is for,
  * and this is that window with its end under the test's control.
  */
-async function stubForge(settings: ClientSettings, greeting: 'now' | 'held' = 'now') {
+async function stubForge(settings: Partial<ClientSettings>, greeting: 'now' | 'held' = 'now') {
   const server = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
@@ -96,7 +96,13 @@ async function stubForge(settings: ClientSettings, greeting: 'now' | 'held' = 'n
   });
 
   const greet = (socket: WebSocket): void => {
-    socket.send(JSON.stringify({ kind: 'greeting', version: PROTOCOL_VERSION, settings }));
+    socket.send(
+      JSON.stringify({
+        kind: 'greeting',
+        version: PROTOCOL_VERSION,
+        settings: { ...DEFAULT_SETTINGS, ...settings },
+      }),
+    );
   };
   server.on('connection', (socket) => {
     // A home read is the fixture, so a page has a roster to reason over; a

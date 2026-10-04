@@ -20,7 +20,6 @@ import { METER_CELLS } from '../wire/limits';
 import {
   issuesFrom,
   monitorFrom,
-  overridesFrom,
   prFrom,
   processesFrom,
   workFrom,
@@ -321,22 +320,6 @@ export const HANDLERS: Record<string, Apply> = {
     return withTake(held, { ...take, progress: [done, total] }, null);
   },
 
-  /**
-   * The whole set a `/dictate` edit left behind, which the core echoes after
-   * every set and reset.
-   *
-   * **A handler, because the core emits this update.** A payload naming no
-   * set therefore leaves the held one standing, rather than reading the axes
-   * off a name nothing sent and reporting the crate defaults as the session's
-   * own.
-   */
-  dictate_overrides: (held, payload) => {
-    const overrides = payload['overrides'];
-    return overrides === undefined
-      ? held
-      : { ...held, dictate_overrides: overridesFrom(overrides) };
-  },
-
   dictate_ended: (held, payload) => {
     const take = heldTake(held.composer);
     const outcome = outcomeOf(payload['outcome']);
@@ -390,6 +373,9 @@ export const IGNORED: readonly string[] = [
   'cron_prompt_appended',
   'dictate_availability',
   'dictate_device_pin',
+  // The core echoes the terminal's own `/dictate` overrides; this client
+  // holds its axes itself, so the echo reaches nothing here.
+  'dictate_overrides',
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',

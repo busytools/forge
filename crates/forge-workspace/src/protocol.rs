@@ -551,6 +551,18 @@ pub enum Command {
     DictateStart {
         key: SessionSlot,
     },
+    /// Begin a take the CLIENT captures: the connection that sent this
+    /// feeds the audio as binary frames, so no device is opened here.
+    /// Registered synchronously by the dispatch that receives it, so the
+    /// frame a client sends next on the same ordered socket finds it.
+    ///
+    /// `options` are the axes that client's panel was showing; they
+    /// normalize this take, where the terminal's own take reads the
+    /// session's stored overrides at its stop.
+    DictateStream {
+        key: SessionSlot,
+        options: crate::dictate::DictateAxes,
+    },
     /// Submit (`submit = true`) or abandon the take started by `key`.
     /// During recording this is release-to-submit vs discard; during a
     /// transcription in flight it abandons the ticket.
@@ -648,6 +660,7 @@ impl Command {
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
             | Self::DictateStart { .. }
+            | Self::DictateStream { .. }
             | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
@@ -797,6 +810,9 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
+            Self::DictateStream { key, .. } => {
+                f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
+            }
             Self::DictateStop { key, submit } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
             }
@@ -835,6 +851,20 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
         }
     }
+}
+
+/// Read a level's peak, taking `null` as no signal rather than as a
+/// decode failure.
+///
+/// The counterpart of serde writing a non-finite float as `null`: a
+/// window that heard nothing peaks at exactly zero, whose dBFS is
+/// negative infinity. Without this, a Rust reader cannot decode a level
+/// message at all, and the failure names the type rather than the case.
+fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or(f32::NEG_INFINITY))
 }
 
 /// What one finished dictation take produced. Plain data rather than
@@ -1514,8 +1544,18 @@ pub enum SessionUpdate {
     /// One level reading for the recording at `key`: the peak over the
     /// window since the previous reading, in dBFS. Emitted on the
     /// meter clock, not the repaint clock.
+    ///
+    /// **A window with no signal reads as `null` on the wire, and `null`
+    /// reads back as negative infinity.** A peak that heard nothing is
+    /// exactly zero, whose dBFS is negative infinity, and serde writes a
+    /// non-finite float as `null` - so a reader that takes the field as an
+    /// `f32` cannot decode the message at all, which is the state this
+    /// tolerance exists to close. Nothing about the value a view draws
+    /// changes: the client narrows `null` itself, and this only lets a
+    /// Rust reader do the same.
     DictateLevel {
         key: SessionSlot,
+        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
         peak_db: f32,
     },
     /// The take from `key` was submitted and a transcript is in flight.
@@ -2249,6 +2289,41 @@ mod session_update_variants {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod dictate_level_wire_tests {
+    use super::*;
+
+    /// A level whose window heard nothing carries a non-finite dB, which
+    /// serde writes as `null` - and must read back, or a Rust reader
+    /// cannot decode the message at all. The wire value stays `null`: the
+    /// tolerance is on the read side, so nothing a client narrows moves.
+    #[test]
+    fn a_level_with_no_signal_round_trips_as_null() {
+        let key = SessionSlot::from_str_for_test("dictate-level".to_owned());
+        let silent = SessionUpdate::DictateLevel { key: key.clone(), peak_db: f32::NEG_INFINITY };
+        let encoded = serde_json::to_value(&silent).expect("a level encodes");
+        assert!(
+            encoded["dictate_level"]["peak_db"].is_null(),
+            "a no-signal reading crosses as null, got {encoded}"
+        );
+
+        let back: SessionUpdate = serde_json::from_value(encoded).expect("a level decodes");
+        let SessionUpdate::DictateLevel { peak_db, .. } = back else {
+            panic!("the level decoded into another update")
+        };
+        assert_eq!(peak_db, f32::NEG_INFINITY, "null must read back as no signal");
+
+        // And a reading that IS a signal is untouched by the tolerance.
+        let heard = SessionUpdate::DictateLevel { key, peak_db: -22.5 };
+        let encoded = serde_json::to_value(&heard).expect("a level encodes");
+        let back: SessionUpdate = serde_json::from_value(encoded).expect("a level decodes");
+        let SessionUpdate::DictateLevel { peak_db, .. } = back else {
+            panic!("the level decoded into another update")
+        };
+        assert_eq!(peak_db, -22.5);
     }
 }
 

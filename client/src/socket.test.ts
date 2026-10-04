@@ -13,7 +13,8 @@ import {
   type ServerMessage,
   type Subject,
 } from './protocol';
-import type { SessionSlot } from './wire/types';
+import { DEFAULT_AXES } from './session/wire';
+import { DEFAULT_SETTINGS, type SessionSlot } from './wire/types';
 
 /** A forge that speaks the protocol and nothing else. */
 async function stubServer() {
@@ -173,10 +174,15 @@ describe('the connection', () => {
     server.send({
       kind: 'greeting',
       version: PROTOCOL_VERSION,
-      settings: { mark: 'klin', theme: null, font: null },
+      settings: { mark: 'klin', theme: null, font: null, dictate: DEFAULT_AXES },
     });
     await until(() => conn.settings() !== null, 'the greeting to land');
-    expect(conn.settings()).toEqual({ mark: 'klin', theme: null, font: null });
+    expect(conn.settings()).toEqual({
+      mark: 'klin',
+      theme: null,
+      font: null,
+      dictate: DEFAULT_AXES,
+    });
   });
 
   /**
@@ -194,7 +200,7 @@ describe('the connection', () => {
     server.send({
       kind: 'greeting',
       version: PROTOCOL_VERSION + 1,
-      settings: { mark: null, theme: null, font: null },
+      settings: DEFAULT_SETTINGS,
     });
 
     await until(() => conn.status() === 'mismatched', 'the mismatch to be reported');

@@ -688,52 +688,20 @@ describe('applyUpdate', () => {
    * set on an update of its own after every set and reset - so it is folded,
    * the way the terminal's own arm folds it, rather than left to a read.
    */
-  describe('the dictation overrides', () => {
-    it('takes the whole set a dictate_overrides carries', () => {
-      const next = applyUpdate(empty(), {
+  describe('the dictate override echo', () => {
+    it("leaves the record alone: the axes are this client's own now", () => {
+      // The core still echoes `dictate_overrides` for the terminal's own
+      // `/dictate` overlay, and this client holds its axes itself - so the
+      // echo is an update with nothing here to write it to, and the record
+      // stands rather than gaining a field nothing reads.
+      const held = empty();
+      const next = applyUpdate(held, {
         dictate_overrides: {
           key: SLOT,
           overrides: { styling: 'formal', structure: 'lists', context: null },
         },
       });
-
-      expect(next.dictate_overrides, 'the set the update carried never reached the record').toEqual(
-        { styling: 'formal', structure: 'lists', context: null },
-      );
-    });
-
-    it('leaves a held set standing for a payload that carries none', () => {
-      const held = applyUpdate(empty(), {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: 'formal', structure: null, context: null },
-        },
-      });
-
-      const next = applyUpdate(held, { dictate_overrides: { key: SLOT } });
-
-      expect(next, 'a payload naming no set wrote the crate defaults over the held one').toBe(held);
-    });
-
-    it('clears the axes for the reset echo, which carries the set as nulls', () => {
-      const held = applyUpdate(empty(), {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: 'formal', structure: 'lists', context: 'email' },
-        },
-      });
-
-      const next = applyUpdate(held, {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: null, structure: null, context: null },
-        },
-      });
-
-      expect(
-        next.dictate_overrides,
-        'the reset echo did not clear the axes the session had set',
-      ).toEqual({ styling: null, structure: null, context: null });
+      expect(next, "the override echo must not touch this side's record").toBe(held);
     });
   });
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { Connection } from '../socket';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import Router from './Router.svelte';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -27,6 +27,7 @@ function untouched(): Connection {
     dispatch: refuse,
     more: refuse,
     devices: refuse,
+    frame: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,
@@ -49,7 +50,7 @@ function draw(): string {
   return render(Router, {
     props: {
       route: { name: 'session', slot: LEAD },
-      settings: { mark: null, theme: null, font: null },
+      settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
       home: { wire: homeWire, refused: null },
       failure: null,

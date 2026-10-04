@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { applySettings, fontStack, rootTokens, type StyleTarget } from './theme';
+import { DEFAULT_AXES } from './session/wire';
 import { FONT_NAMES, THEME_NAMES, type ClientSettings } from './wire/types';
 
 const sheet = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8');
@@ -142,6 +143,7 @@ describe('applying what the greeting carried', () => {
     mark: null,
     theme: null,
     font: null,
+    dictate: DEFAULT_AXES,
     ...over,
   });
 

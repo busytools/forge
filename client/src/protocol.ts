@@ -23,7 +23,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * than a client's visuals do: either a client speaks this version or it does
  * not, and a mismatch fails plainly instead of silently.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';
@@ -49,12 +49,12 @@ export function subjectKey(subject: Subject): string {
 /**
  * A core command: the variant's name around its own fields.
  *
- * `Command` has 36 variants and every one of them is a struct variant, so
+ * `Command` has 37 variants and every one of them is a struct variant, so
  * the inner value is always a field bag - `{cancel: {key}}`, never a bare
  * `"cancel"`.
  *
  * Left unenumerated rather than written out here: every surface dispatches a
- * handful of the 36, and a union naming them would be a second copy of an
+ * handful of the 37, and a union naming them would be a second copy of an
  * enum the server generates from. A caller builds the shape it means, and
  * the page that owns it is where that shape is stated.
  */

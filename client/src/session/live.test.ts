@@ -35,7 +35,7 @@ import { PROTOCOL_VERSION, subjectKey } from '../protocol';
 import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreState, StoreValue } from '../stores';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
@@ -77,7 +77,7 @@ async function stubServer(session: unknown) {
     const greeting: ServerMessage = {
       kind: 'greeting',
       version: PROTOCOL_VERSION,
-      settings: { mark: null, theme: null, font: null },
+      settings: DEFAULT_SETTINGS,
     };
     socket.send(JSON.stringify(greeting));
     socket.on('message', (data) => {
@@ -291,7 +291,7 @@ describe('the session page over a socket', () => {
       target: document.body,
       props: {
         route: { name: 'session', slot: LEAD },
-        settings: { mark: null, theme: null, font: null },
+        settings: DEFAULT_SETTINGS,
         address: '',
         home: { wire: homeWire, refused: null },
         failure: null,
@@ -632,6 +632,7 @@ function drivable(refused = false): Driveable {
     },
     more: () => false,
     devices: () => false,
+    frame: () => false,
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -791,11 +792,15 @@ describe('the record a page holds over an update stream', () => {
    * own arm folds it, so the panel follows the pick instead of waiting for a
    * read to carry the record past it.
    */
-  it('moves the overrides a set landed, without asking for a read', () => {
+  it("leaves an override echo alone: the axes are this client's own now", () => {
+    // The core echoes `dictate_overrides` for the terminal's overlay; this
+    // client holds its own axes, so the echo is an update with nothing here
+    // to write it to - and it must not cost a read either.
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     const asked = page.reads();
+    const before = page.read().wire;
 
     page.land(
       updateOf({
@@ -807,11 +812,8 @@ describe('the record a page holds over an update stream', () => {
     );
     paint();
 
-    expect(
-      page.read().wire?.dictate_overrides,
-      'the set the update carried never reached the seat',
-    ).toEqual({ styling: 'formal', structure: 'lists', context: null });
-    expect(page.reads(), 'the set was answered with a read rather than folded').toBe(asked);
+    expect(page.read().wire, 'the echo wrote nothing').toBe(before);
+    expect(page.reads(), 'and it cost no read').toBe(asked);
     page.stop();
   });
 

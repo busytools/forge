@@ -6,6 +6,8 @@
  * with the socket.
  */
 
+import { DEFAULT_AXES, axesFrom, type DictateAxes } from '../session/wire';
+
 /** The seat a session is addressed by. */
 export interface SessionSlot {
   org: string;
@@ -23,10 +25,33 @@ export interface ClientSettings {
   mark: string | null;
   theme: string | null;
   font: string | null;
+  /**
+   * The axes a client that captures starts on and resets to: `[dictate]`'s
+   * keys over the crate's own defaults, which is the same value the panel
+   * draws as its unset state.
+   */
+  dictate: DictateAxes;
 }
 
 /** Every key unset, which is what a `forge.toml` with no `[web]` block sends. */
-export const DEFAULT_SETTINGS: ClientSettings = { mark: null, theme: null, font: null };
+export const DEFAULT_SETTINGS: ClientSettings = {
+  mark: null,
+  theme: null,
+  font: null,
+  dictate: DEFAULT_AXES,
+};
+
+/** The greeting's settings, narrowed once where they enter. */
+export function settingsFrom(value: unknown): ClientSettings {
+  const held =
+    value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  return {
+    mark: typeof held['mark'] === 'string' ? held['mark'] : null,
+    theme: typeof held['theme'] === 'string' ? held['theme'] : null,
+    font: typeof held['font'] === 'string' ? held['font'] : null,
+    dictate: axesFrom(held['dictate']),
+  };
+}
 
 /** The marks `[web] mark` accepts, from `forge_primitives::web::MARK_NAMES`. */
 export const MARK_NAMES = [

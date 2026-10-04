@@ -24,8 +24,9 @@
     type Action,
     type Held,
   } from './dictate-key';
-  import { devicePick } from './dictation';
+  import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
+  import { busyLine, LocalTake } from './take';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -38,11 +39,12 @@
     type ComposerProps,
   } from './view';
   import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
+  import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation, device = null }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation }: ComposerProps = $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -101,6 +103,47 @@
   let field = $state<HTMLElement | null>(null);
   /** Whether the dictation panel is showing, which the mic opens. */
   let panel = $state(false);
+  /**
+   * The client-captured take this page started, if any.
+   *
+   * One, not one per seat: the microphone is the client's own, and a second
+   * take while this one is live is refused by name rather than opening a
+   * second stream over the first.
+   */
+  let take = $state<LocalTake | null>(null);
+  /** Whether a start is waiting on the browser's permission round trip. */
+  let opening = false;
+  /**
+   * A release or a cancel that landed while the microphone was still
+   * opening, applied the moment the take exists.
+   *
+   * The permission prompt is the everyday case for a first take in an
+   * origin, and it is seconds long: a gesture made during it must end the
+   * take rather than being dropped, or the reader records past the release
+   * until the next press stops it.
+   */
+  let pending: Action | null = null;
+
+  /**
+   * The axes and input this seat dictates with, which this client holds.
+   *
+   * The greeting carries what `forge.toml` set; a seat's own edits live on its
+   * box, remembered on this machine, so a reload or a reconnect returns what
+   * the reader chose rather than the config's value.
+   */
+  const defaults = $derived(connection.settings()?.dictate ?? DEFAULT_AXES);
+  const seatAxes = $derived(box.axes ?? axesFor(boxKey(slot), defaults));
+  const seatDevice = $derived(box.device ?? deviceFor(boxKey(slot)));
+
+  function setAxes(next: DictateAxes): void {
+    box.axes = next;
+    rememberAxes(boxKey(slot), next);
+  }
+
+  function setDevice(next: string | null): void {
+    box.device = next;
+    rememberDevice(boxKey(slot), next);
+  }
   /** The bound key's press in flight, from its press to its release. */
   let pressed: Held | null = null;
   /** Whether this platform delivers Cmd, which is what a binding names. */
@@ -176,7 +219,9 @@
   const running = $derived(record.header.turn_in_flight);
   // The engine's notice, or what became of a draft that left this box - the
   // dock's own stand-down, said in the row the dock leaves behind.
-  const notice = $derived(owns ? (noticeLine(composer.notice, box.sawTake) ?? box.ended) : null);
+  const notice = $derived(
+    owns ? (box.dictateLine ?? noticeLine(composer.notice, box.sawTake) ?? box.ended) : null,
+  );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
   /**
@@ -525,6 +570,59 @@
     box.dismissed = notice?.text ?? null;
   }
 
+  /**
+   * Open the microphone and start a take this client captures.
+   *
+   * Async, because the browser's permission round trip is: the presses that
+   * land while it is open are ignored rather than opening a second stream.
+   * A microphone that will not open never reaches the server - it is this
+   * side's failure, and it draws as one - and the take itself is registered
+   * by the server the moment it receives `dictate_stream`, so the frames
+   * that follow always find it.
+   */
+  async function startTake(): Promise<void> {
+    if (opening) return;
+    const live = untrack(() => take);
+    if (live !== null) {
+      box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
+      return;
+    }
+    const at = boxKey(untrack(() => slot));
+    const target = boxes.of(at);
+    target.dictateLine = null;
+    // A gesture from an earlier attempt has nothing to stop.
+    pending = null;
+    opening = true;
+    try {
+      const started = await LocalTake.begin({
+        connection,
+        seat: untrack(() => slot),
+        // The axes in force, which the panel's own state holds: re-reading
+        // storage here would miss an edit made since the page drew.
+        options: untrack(() => seatAxes),
+        device: deviceFor(at),
+        onLine: (text) => {
+          target.dictateLine = { tone: 'bad', text };
+        },
+        onEnded: () => {
+          take = null;
+        },
+      });
+      if (started === null) {
+        pending = null;
+        return;
+      }
+      take = started;
+      if (pending !== null) {
+        const held = pending;
+        pending = null;
+        started.stop(held === 'finish');
+      }
+    } finally {
+      opening = false;
+    }
+  }
+
   /** What the bound key asks for, which is the terminal's own three. */
   function act(action: Action): void {
     if (action === 'begin') {
@@ -537,10 +635,29 @@
       // element to focus and no observable difference to pin. It becomes
       // load-bearing the day a morph keeps the field mounted under the dock.
       if (focusOf(where) === 'composer') field?.focus();
-      void connection.dispatch({ dictate_start: { key: slot } });
+      void startTake();
       return;
     }
-    void connection.dispatch({ dictate_stop: { key: slot, submit: action === 'finish' } });
+    // A gesture during the open is HELD for the take it belongs to: the
+    // permission prompt is seconds long, and dropping it would record past
+    // the reader's release.
+    if (opening) {
+      pending = action;
+      return;
+    }
+    // A take this page is holding: the microphone is ours to let go of, and
+    // the frames stop with it.
+    const live = untrack(() => take);
+    if (live !== null) {
+      live.stop(action === 'finish');
+      return;
+    }
+    // A take this page did NOT start, which the record still shows - a page
+    // reloaded mid-take, or another view's own on the same seat. The row is
+    // on this reader's screen, so the key means here what it means there.
+    if (composer.take !== null) {
+      void connection.dispatch({ dictate_stop: { key: slot, submit: action === 'finish' } });
+    }
   }
 
   /**
@@ -561,8 +678,9 @@
       if (event.key === 'Escape') {
         // A live take consumes Esc, which is the terminal's rule: the surfaces
         // under it never see the key, so one press is one command and the list
-        // a field would close stays where it is.
-        if (composer.take !== null) {
+        // a field would close stays where it is. A take still OPENING counts,
+        // for the same reason a reader cannot tell the two apart.
+        if (composer.take !== null || opening) {
           event.preventDefault();
           event.stopPropagation();
           act('cancel');
@@ -782,12 +900,13 @@
     </div>
     {#if panel}
       <DictationPanel
-        overrides={record.dictate_overrides}
+        axes={seatAxes}
+        {defaults}
         bind={composer.bind}
         mode={composer.mode}
-        {slot}
-        {connection}
-        device={devicePick(device)}
+        device={seatDevice}
+        onaxes={setAxes}
+        ondevice={setDevice}
       />
     {/if}
   </div>

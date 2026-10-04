@@ -10,7 +10,7 @@
 
 import { PROTOCOL_VERSION } from '../protocol';
 import { connect, type Connection } from '../socket';
-import { DEFAULT_WEB_PORT, type ClientSettings } from '../wire/types';
+import { DEFAULT_WEB_PORT, settingsFrom, type ClientSettings } from '../wire/types';
 import { rememberAddress } from './remembered';
 
 /**
@@ -182,7 +182,7 @@ function greeting(
       if (message.kind !== 'greeting') return;
       clearTimeout(timer);
       stop();
-      resolve({ settings: message.settings, version: message.version });
+      resolve({ settings: settingsFrom(message.settings), version: message.version });
     });
   });
 }

@@ -680,7 +680,6 @@ describe('the band', () => {
             snapshot: { models: [], failure: null },
             enabled: false,
             models_dir: null,
-            device: null,
           },
         },
         'dictation',

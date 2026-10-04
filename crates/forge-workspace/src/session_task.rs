@@ -1505,6 +1505,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::ResetDictateOverrides { .. }
         | Command::SetDictateDevice { .. }
         | Command::DictateStart { .. }
+        | Command::DictateStream { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }
         | Command::SpawnSession { .. }

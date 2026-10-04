@@ -316,16 +316,28 @@ Optional. Absent means dictation is off, which is also what an explicit
 |---|---|---|---|
 | `enabled` | boolean | `false` | Off unless asked for. Turning it on costs a 3.07 GB model download the first time and holds about 1.8 GB of resident memory for the run. |
 | `models_dir` | string | platform cache dir | Where the model files live. `~` is expanded. |
-| `device` | string | system default | Input to record from, by device id rather than name. |
+| `device` | string | system default | Input the TERMINAL records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this. |
 | `language` | string | autodetect | Spoken language hint. |
 | `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
 | `max_capture_minutes` | integer | `30` | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default. |
 | `bind` | string | `right_cmd` | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key. |
 | `mode` | string | `auto` | How press/release maps onto recording: `auto` infers from timing (a quick tap toggles, a hold transcribes on release), `toggle` starts on a press and stops on the next press, `hold` records while held and always transcribes on release. |
+| `styling` | string | `semi_formal` | The register a take's cleanup rewrites into: `casual`, `semi_casual`, `semi_formal` or `formal`. A client reads this as the value its panel starts on and resets to. |
+| `structure` | string | `prose` | Whether the cleanup may return a bulleted list: `prose` or `lists`. |
+| `context` | string | `general` | What the words are being written for: `general` or `email`. `email` may return multi-line text. |
 
 An unrecognised key here fails the load rather than being ignored: a
 mistyped `models_dir` would otherwise fetch three gigabytes to the
 wrong volume with nothing said about it.
+
+The models live where forge runs; the microphone is wherever the reader
+is. The terminal records from forge's own machine, which is what `device`
+names, and a client that captures - the web client today - records from
+its own and streams the audio to forge, where the same pipeline recognises
+it. `styling`, `structure` and `context` are defaults rather than state:
+they reach every client in the greeting, and a client that captures holds
+the values in force itself, per seat, so its panel's reset row returns to
+these.
 
 With `enabled = true`, forge fetches, verifies and loads the models on
 the preflight screen before forge hands over. A first run
