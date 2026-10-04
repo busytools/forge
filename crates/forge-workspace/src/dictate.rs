@@ -2231,6 +2231,50 @@ mod dictate_lifecycle_tests {
         assert!(ws.dictate_runtime.lock().recordings.is_empty(), "and the seat is free again");
     }
 
+    /// A DEVICE take that reached its cap submits itself: the capture flags
+    /// itself truncated when the sample cap fills, and the runner's meter is what
+    /// notices - the branch that turns "the microphone stopped on its own" into
+    /// "the take is submitted" rather than a microphone held forever.
+    #[tokio::test]
+    async fn a_device_take_that_reached_its_cap_submits() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = forge_dictate::ConfigBuilder::new()
+            .models_dir(dir.path())
+            .normalizer(None)
+            .max_capture(Duration::from_secs(1))
+            .build();
+        let engine = forge_dictate::test_support::engine_with_feeding_microphone(
+            cfg,
+            Arc::new(vec![0.5; 3 * forge_dictate::SAMPLE_RATE as usize]),
+            Duration::from_millis(1),
+        )
+        .expect("engine must start");
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("capped-device");
+        live_session(&ws, &session);
+
+        ws.dispatch(Command::DictateStart { key: session.clone() }).expect("dispatch");
+
+        // Nothing else stops it: the cap is the only thing that can.
+        let ended = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DictateEnded { .. }) => break true,
+                    Some(_) => {}
+                    None => break false,
+                }
+            }
+        })
+        .await
+        .expect("the cap must end a device take that filled it");
+        assert!(ended, "the take must resolve rather than hold the microphone");
+        assert!(
+            ws.dictate_runtime.lock().recordings.is_empty(),
+            "and the microphone is free again"
+        );
+    }
+
     /// The connection going away submits the take it was streaming and frees
     /// the seat AT ONCE: a client that reconnects and starts again must not
     /// be refused by the take it left behind, and the audio already sent
