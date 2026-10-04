@@ -42,6 +42,7 @@ function untouched(): Connection {
     dispatch: refuse,
     more: refuse,
     devices: refuse,
+    frame: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,

@@ -26,19 +26,19 @@
   const level = $derived(`${Math.round(take.peakDb)} dB`);
 
   /**
-   * What the row says it is doing.
+   * What the row says it is doing, in the terminal's own words.
    *
    * A take settles segments while the microphone is still open, so a live one
-   * reports how many are in; the total is only known once the take closes, and
-   * naming it before then would be a number the take cannot have.
+   * counts the ones ready behind the speaker - the terminal has said
+   * `listening · 2 ready` there for as long as it has had this row. The total
+   * is only known once the take closes, and naming it before then would be a
+   * number the take cannot have.
    */
-  const label = $derived(
-    transcribing
-      ? take.progress.total === null
-        ? 'transcribing'
-        : `transcribing ${take.progress.done}/${take.progress.total}`
-      : 'listening',
-  );
+  const label = $derived.by(() => {
+    const { done, total } = take.progress;
+    if (!transcribing) return done > 0 ? `listening \u{b7} ${done} ready` : 'listening';
+    return total === null ? 'transcribing' : `transcribing ${done}/${total}`;
+  });
 
   /** Abandon the take. Release-to-submit is the box's own control, not this one. */
   function cancel(): void {

@@ -16,8 +16,12 @@
    */
   import Composer from '../composer/Composer.svelte';
   import Driven from './Driven.svelte';
-  import type { ComposerProps, ComposerRecord, SeatRead } from '../composer/view';
-  import type { Connection } from '../socket';
+  import type {
+    ComposerConnection,
+    ComposerProps,
+    ComposerRecord,
+    SeatRead,
+  } from '../composer/view';
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -40,7 +44,7 @@
     devices: () => true,
     onMessage: () => () => {},
     store: () => undefined,
-  } as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
+  } as unknown as ComposerConnection;
 
   function blank(): ComposerRecord {
     return {

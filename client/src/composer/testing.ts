@@ -11,9 +11,9 @@
  */
 
 import type { ServerMessage, SessionUpdate } from '../protocol';
-import type { Connection } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
 export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -176,9 +176,14 @@ export interface Sent {
 /** One connection two composers can be mounted on, which is two clients on one seat. */
 export interface Wire {
   sent: Sent[];
+  /** Every binary frame a take sent, in the order the take sent it. */
+  frames: Uint8Array[];
   /** How many times a panel asked for the device list, which one walk each. */
   asked: number;
-  connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
+  connection: Pick<
+    Connection,
+    'dispatch' | 'onMessage' | 'devices' | 'store' | 'status' | 'onStatus' | 'frame' | 'settings'
+  >;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
   /**
@@ -196,12 +201,15 @@ export interface Wire {
  * be scaffolding nothing in these tests exercises. The stores are the real
  * `Stores`, so a frame held here folds the way it does on a live connection.
  */
-export function wire(): Wire {
+export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
   const sent: Sent[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
+  const frames: Uint8Array[] = [];
+  const statuses = new Set<(status: ConnectionStatus) => void>();
   const stores = new Stores();
   const held: Wire = {
     sent,
+    frames,
     asked: 0,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
@@ -217,6 +225,18 @@ export function wire(): Wire {
         return () => listeners.delete(fn);
       },
       store: (what) => stores.get(what),
+      // The take's own three: a page that starts one streams frames here,
+      // and the fixtures answer as a live socket does.
+      frame(bytes: Uint8Array) {
+        frames.push(bytes);
+        return true;
+      },
+      status: (): ConnectionStatus => 'open',
+      onStatus(fn: (status: ConnectionStatus) => void) {
+        statuses.add(fn);
+        return () => statuses.delete(fn);
+      },
+      settings: () => settings,
     },
     say(message) {
       for (const fn of listeners) fn(message);

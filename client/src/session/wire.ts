@@ -261,6 +261,37 @@ export function overridesFrom(value: unknown): DictateOverrides {
   };
 }
 
+/**
+ * The three axes DECIDED: what a capturing client sends with each take, and
+ * what the greeting hands it as the values it starts on and resets to.
+ *
+ * Every axis is a value here rather than a maybe - the crate's own default
+ * stands in for anything the server did not send, which is the same value the
+ * panel draws as its unset state.
+ */
+export interface DictateAxes {
+  styling: DictateStyling;
+  structure: DictateStructure;
+  context: DictateContext;
+}
+
+/** The crate's own defaults, which is what an absent axis means. */
+export const DEFAULT_AXES: DictateAxes = {
+  styling: 'semi_formal',
+  structure: 'prose',
+  context: 'general',
+};
+
+/** The axes the greeting carries, narrowed once as they enter. */
+export function axesFrom(value: unknown): DictateAxes {
+  const held = record(value);
+  return {
+    styling: axis(held['styling'], STYLINGS) ?? DEFAULT_AXES.styling,
+    structure: axis(held['structure'], STRUCTURES) ?? DEFAULT_AXES.structure,
+    context: axis(held['context'], CONTEXTS) ?? DEFAULT_AXES.context,
+  };
+}
+
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MODES: PermissionMode[] = [
   'default',

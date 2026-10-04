@@ -35,7 +35,7 @@ import { PROTOCOL_VERSION, subjectKey } from '../protocol';
 import Router from '../shell/Router.svelte';
 import { connect, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreState, StoreValue } from '../stores';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
@@ -77,7 +77,7 @@ async function stubServer(session: unknown) {
     const greeting: ServerMessage = {
       kind: 'greeting',
       version: PROTOCOL_VERSION,
-      settings: { mark: null, theme: null, font: null },
+      settings: DEFAULT_SETTINGS,
     };
     socket.send(JSON.stringify(greeting));
     socket.on('message', (data) => {
@@ -291,7 +291,7 @@ describe('the session page over a socket', () => {
       target: document.body,
       props: {
         route: { name: 'session', slot: LEAD },
-        settings: { mark: null, theme: null, font: null },
+        settings: DEFAULT_SETTINGS,
         address: '',
         home: { wire: homeWire, refused: null },
         failure: null,
@@ -632,6 +632,7 @@ function drivable(refused = false): Driveable {
     },
     more: () => false,
     devices: () => false,
+    frame: () => false,
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

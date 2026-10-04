@@ -18,6 +18,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 
 import { subjectKey } from '../protocol';
+import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 
 /** The key one seat's box is held under, which is the subject the wire addresses it by. */
@@ -47,6 +48,16 @@ export class Box {
    * the why has to be held here rather than read off the draft that is gone.
    */
   ended = $state<{ tone: string; text: string } | null>(null);
+  /**
+   * The line a capture the SERVER never saw left behind: a microphone that
+   * would not open, or a take released with no connection to send it on.
+   *
+   * Held here rather than folded from the record, because the record has no
+   * word for it - the failure happened before anything crossed - and it is
+   * cleared when a take is attempted again rather than by the reader's typing
+   * alone, so a retry does not start under a stale refusal.
+   */
+  dictateLine = $state<{ tone: string; text: string } | null>(null);
   /**
    * The held draft this box drew last, which is what tells a stand-down for
    * THIS draft from one for the next. Not `$state`: nothing draws from it.
@@ -80,6 +91,17 @@ export class Box {
    * that dictation landing unwatched, and never sent, is not handed back.
    */
   sawTake = false;
+  /**
+   * The dictation axes this seat was last set to, or `null` while it has not
+   * been edited - which is what makes the config's own value the default.
+   *
+   * The value is remembered on this machine under the seat's key, so what is
+   * held here is the current run's copy of it: a reload reads the stored one
+   * back through `axesFor`.
+   */
+  axes = $state<DictateAxes | null>(null);
+  /** The input this seat records from, or `null` for the system default. */
+  device = $state<string | null>(null);
 }
 
 /** The boxes one composer holds, one per seat, made the first time a seat is shown. */

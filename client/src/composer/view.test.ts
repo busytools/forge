@@ -9,7 +9,6 @@ function dictate(over: Partial<DictateWire> = {}): DictateWire {
     enabled: true,
     snapshot: { models: [], failure: null },
     models_dir: null,
-    device: null,
     ...over,
   };
 }

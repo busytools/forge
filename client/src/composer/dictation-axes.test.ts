@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * The dictation panel's own reads: the axes and their labels, the value in
  * force on each, the key hint, and what a chip asks the core for.
@@ -13,14 +14,14 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_AXES } from '../session/wire';
 import {
+  axesFor,
   DESTINATION,
-  devicePick,
-  inForce,
   keyHint,
   MODES,
   OVERRIDE,
-  pickUpdate,
+  rememberAxes,
   STRUCTURE,
   VOICE,
 } from './dictation';
@@ -39,27 +40,37 @@ describe('the axes', () => {
     expect(MODES.map((option) => option.value)).toEqual(['auto', 'toggle', 'hold']);
   });
 
-  it('reads the value in force per axis: the session own, or the crate default', () => {
-    expect(
-      inForce({ styling: 'casual', structure: null, context: 'email' }),
-      'the session set two of the three',
-    ).toEqual({ styling: 'casual', structure: 'prose', context: 'email' });
-
-    expect(
-      inForce({ styling: null, structure: null, context: null }),
-      'and nothing is the crate defaults, which are what a take would use',
-    ).toEqual({ styling: 'semi_formal', structure: 'prose', context: 'general' });
-  });
-
-  it('asks for one axis at a time, in the core own vocabulary', () => {
-    expect(pickUpdate('voice', 'casual')).toEqual({ styling: 'casual' });
-    expect(pickUpdate('structure', 'lists')).toEqual({ structure: 'lists' });
-    expect(pickUpdate('destination', 'email')).toEqual({ context: 'email' });
-    expect(OVERRIDE, 'and the wire name is the Rust variant, not the panel label').toEqual({
+  it('names the field of each panel axis, which is the crate own vocabulary', () => {
+    expect(OVERRIDE, 'the wire name is the Rust variant, not the panel label').toEqual({
       voice: 'styling',
       structure: 'structure',
       destination: 'context',
     });
+  });
+
+  it('reads the axes this client stored, and the config defaults where it stored none', () => {
+    const seat = 'session:TestOrg/proj/lead';
+    rememberAxes(seat, null);
+    expect(axesFor(seat, DEFAULT_AXES), 'nothing stored is the greeting values').toEqual(
+      DEFAULT_AXES,
+    );
+
+    rememberAxes(seat, { styling: 'casual', structure: 'lists', context: 'email' });
+    expect(axesFor(seat, DEFAULT_AXES), 'and a stored set comes back whole').toEqual({
+      styling: 'casual',
+      structure: 'lists',
+      context: 'email',
+    });
+
+    // A value this client is older than is the least-alarming reading, which
+    // is what the wire boundary takes everywhere else.
+    globalThis.localStorage.setItem(
+      `forge.dictate.axes.${seat}`,
+      JSON.stringify({ styling: 'shouty' }),
+    );
+    expect(axesFor(seat, DEFAULT_AXES).styling).toBe(DEFAULT_AXES.styling);
+
+    rememberAxes(seat, null);
   });
 });
 
@@ -75,20 +86,5 @@ describe('the key hint', () => {
     // take is worse than no hint at all.
     expect(keyHint('off', true)).toBeNull();
     expect(keyHint('off', false)).toBeNull();
-  });
-});
-
-describe('the device pick', () => {
-  it('reads the pick the home carries, and the pin standing as nothing picked', () => {
-    expect(devicePick({ device: 'mic-2' })).toEqual({ device: 'mic-2' });
-    expect(devicePick('system'), 'the system default, picked rather than pinned').toBe('system');
-    expect(devicePick(null), 'the pin standing').toBeNull();
-  });
-
-  it('reads a shape nothing here knows as the pin standing, not as a pick', () => {
-    // The least-alarming reading, which is what the wire boundary takes
-    // everywhere else: the row then draws the config's device and says so.
-    expect(devicePick({ device_id: 'mic-2' })).toBeNull();
-    expect(devicePick('microphone')).toBeNull();
   });
 });
