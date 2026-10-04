@@ -18,17 +18,20 @@
   let { row, now, refused = null }: { row: Row; now: number; refused?: string | null } = $props();
 
   const mark = $derived(markOf(row.state));
+  const opens = $derived(openable(row));
   const href = $derived(row.task?.artifact ? followable(row.task.artifact) : null);
 </script>
 
-<div class="row {mark.class}">
+<div class="row {mark.class}{opens ? '' : ' unopenable'}">
   <Mark state={row.state} />
   <!-- The name is the link rather than the row: a row can carry an artifact
        anchor, and an anchor inside an anchor is not HTML. A seat whose page
        refuses is not a link at all, and the row says why in words - the
-       terminal's own treatment of such a row is a label with no hit target. -->
+       terminal's own treatment of such a row is a label with no hit target.
+       `unopenable` is what the sheet keys the way-in chrome on, so a mark like
+       `asleep` cannot turn the chrome off on a row that is still a link. -->
   <span class="name">
-    {#if openable(row)}
+    {#if opens}
       <a href={hrefForSlot(row.slot)}>{row.name}</a>
     {:else}
       {row.name}
@@ -40,7 +43,7 @@
     {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
   </span>
   <span class="what">
-    {#if !openable(row)}
+    {#if !opens}
       <!-- The mark is a shape, and a shape is not words: the row says in
            words why it is not a way in. -->
       <span class="txt">asleep</span>

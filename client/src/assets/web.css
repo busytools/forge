@@ -229,10 +229,12 @@ section.org > h2 .counts {
 .row.auth::after { color: var(--bad); }
 /* A row whose seat refuses is not a way in: the chrome that says "this goes
    somewhere" - the pointer, the hover ground, the chevron - belongs to rows
-   that do. The row says why in words instead. */
-.row.asleep { cursor: default; }
-.row.asleep::after { display: none; }
-.row.asleep:hover { background: none; }
+   that do. Keyed on whether the row opens rather than on the `asleep` mark,
+   because a dormant lead is asleep and openable. The row says why in words
+   instead. */
+.row.unopenable { cursor: default; }
+.row.unopenable::after { display: none; }
+.row.unopenable:hover { background: none; }
 /* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
    child, so the flex only stops the text from ellipsising - and a name
    like `pure-black-github-intellij` has to shorten rather than clip. */

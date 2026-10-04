@@ -101,6 +101,27 @@ describe('a row that names a seat', () => {
     expect(held, 'the row says nothing about why it is not a link').toContain('>asleep<');
   });
 
+  /**
+   * The chrome that says "this goes somewhere" follows the LINK, not the
+   * `asleep` mark: a dormant lead is asleep and also openable, so a mark-keyed
+   * chrome would draw it clickable but inert. The pair is the property - the
+   * linked row carries no `unopenable`, the unlinked one does.
+   */
+  it('keys the way-in chrome on the link, not on the asleep mark', () => {
+    const lead = rowsOf(
+      homeWith({
+        agents: [],
+        sessions: [{ last_activity: { secs_since_epoch: 1, nanos_since_epoch: 0 } }],
+      }),
+    ).lead;
+    const leadBody = body(lead);
+    expect(leadBody, 'the dormant path stopped drawing the asleep mark').toContain('row asleep');
+    expect(leadBody, 'a linked row lost its way-in chrome to the mark').not.toContain('unopenable');
+    expect(body(workerIn('Sleeping')), 'a row with no link kept its way-in chrome').toContain(
+      'unopenable',
+    );
+  });
+
   /** The state the parked web view groups beside `Sleeping`, on a worker. */
   it('draws a signed-out worker the same way', () => {
     expect(body(workerIn('LoggedOut'))).not.toContain('href="/session/');
