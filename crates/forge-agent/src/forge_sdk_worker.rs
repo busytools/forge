@@ -2321,16 +2321,19 @@ mod tests {
         );
     }
 
-    /// **The property this change turns on**: a boundary the CLI sends live and
-    /// the same boundary read back from a transcript reach a client as one
-    /// frame, carrying the same three facts.
+    /// **The property this change turns on**: a boundary read back from a
+    /// transcript reaches a client in the wire's own shape, carrying every
+    /// fact the transcript row holds - and the live frame carries the extra
+    /// facts the transcript does not persist on top of those.
     ///
     /// The two paths share no code - the live one decodes the wire's nested
     /// `compact_metadata`, the resumed one normalises the transcript's flat
     /// `compactMetadata` into it - so a fact either path drops is a row that
-    /// draws differently depending on how the reader arrived.
+    /// draws differently depending on how the reader arrived, and the two
+    /// frames diverging by MORE than the transcript's own omissions is the
+    /// read-side normaliser losing a fact.
     #[test]
-    fn a_live_boundary_and_a_resumed_one_reach_the_client_as_the_same_frame() {
+    fn a_boundary_read_back_from_disk_reaches_the_client_as_the_wire_shape() {
         // A uuid, because the scan refuses a session id that is not one.
         let session_id = "550e8400-e29b-41d4-a716-446655440000";
         let live: forge_primitives::Message = serde_json::from_value(serde_json::json!({
