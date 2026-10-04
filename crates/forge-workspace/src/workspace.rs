@@ -2345,6 +2345,12 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
+    /// The dictate axes in force: `forge.toml` over the crate's own
+    /// defaults. What a capturing client starts on and resets to.
+    pub fn dictate_axes(&self) -> crate::dictate::DictateAxes {
+        self.config.dictate.axes()
+    }
+
     /// Push one frame of client-captured audio into the seat's live take.
     ///
     /// Answers whether the samples were kept. `false` means there is

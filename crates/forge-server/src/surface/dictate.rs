@@ -35,6 +35,12 @@ pub struct DictateView {
 }
 
 impl ViewSurface {
+    /// The axes a client that captures starts on and resets to: the
+    /// `[dictate]` keys over the crate's own defaults.
+    pub fn dictate_axes(&self) -> forge_workspace::DictateAxes {
+        self.workspace.dictate_axes()
+    }
+
     /// Push one frame of client-captured audio into a seat's live take,
     /// answering whether the samples were kept.
     ///

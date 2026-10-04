@@ -75,7 +75,7 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
     let greeting = ServerMessage::Greeting {
         version: PROTOCOL_VERSION,
-        settings: ClientSettings::from(&state.config),
+        settings: ClientSettings::new(&state.config, state.surface.dictate_axes()),
     };
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(

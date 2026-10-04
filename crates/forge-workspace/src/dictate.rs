@@ -269,6 +269,18 @@ pub struct DictateSettings {
     /// How press/release maps onto starting and stopping a take.
     #[serde(default)]
     pub mode: DictateMode,
+    /// The register a take's cleanup rewrites into, where a client has not
+    /// chosen its own. Absent means the crate's default.
+    #[serde(default)]
+    pub styling: Option<forge_dictate::normalize::Styling>,
+    /// Whether the cleanup may return a bulleted list. Absent means the
+    /// crate's default.
+    #[serde(default)]
+    pub structure: Option<forge_dictate::normalize::Structure>,
+    /// What the words are being written for. Absent means the crate's
+    /// default.
+    #[serde(default)]
+    pub context: Option<forge_dictate::normalize::Context>,
 }
 
 fn enabled_by_default() -> bool {
@@ -301,11 +313,26 @@ impl Default for DictateSettings {
             max_capture_minutes: DEFAULT_MAX_CAPTURE_MINUTES,
             bind: DictateBind::default(),
             mode: DictateMode::default(),
+            styling: None,
+            structure: None,
+            context: None,
         }
     }
 }
 
 impl DictateSettings {
+    /// The axes in force: what `forge.toml` sets, and the crate's own
+    /// default wherever it sets nothing. This is what a client reads as the
+    /// values it starts on and resets to.
+    pub fn axes(&self) -> DictateAxes {
+        let defaults = DictateAxes::default();
+        DictateAxes {
+            styling: self.styling.unwrap_or(defaults.styling),
+            structure: self.structure.unwrap_or(defaults.structure),
+            context: self.context.unwrap_or(defaults.context),
+        }
+    }
+
     /// The engine configuration these settings describe.
     fn to_config(&self) -> forge_dictate::Config {
         let mut builder = forge_dictate::ConfigBuilder::new()
@@ -1412,6 +1439,32 @@ mod tests {
             cfg.digest_cache_dir.is_some(),
             "the record is what keeps a warm boot off the disk; nothing else arms it"
         );
+    }
+
+    /// The axes are `forge.toml` keys and the crate's own defaults stand
+    /// in where they are absent - which is what a client draws as its
+    /// unset state and resets to.
+    #[test]
+    fn the_axes_come_from_the_config_over_the_crates_own_defaults() {
+        let defaults: DictateSettings = toml::from_str("").expect("an empty section parses");
+        assert_eq!(
+            defaults.axes(),
+            DictateAxes::default(),
+            "with nothing configured the axes are the crate's defaults"
+        );
+
+        let set: DictateSettings =
+            toml::from_str("styling = \"formal\"\nstructure = \"lists\"\ncontext = \"email\"\n")
+                .expect("the axes parse");
+        let axes = set.axes();
+        assert_eq!(axes.styling, forge_dictate::normalize::Styling::Formal);
+        assert_eq!(axes.structure, forge_dictate::normalize::Structure::Lists);
+        assert_eq!(axes.context, forge_dictate::normalize::Context::Email);
+
+        // A typo fails the load the way every other `[dictate]` key does.
+        let err = toml::from_str::<DictateSettings>("styling = \"chatty\"\n")
+            .expect_err("an unknown value must be refused");
+        assert!(err.to_string().contains("chatty"), "the error must name the value, got: {err}");
     }
 
     /// The normalizer is the one exposed knob whose default is on, and

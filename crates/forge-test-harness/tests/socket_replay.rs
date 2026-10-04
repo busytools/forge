@@ -282,7 +282,8 @@ census!(Command,
         SpawnProject struct, SpawnSession struct, StartDefault struct, DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, OpenUrl struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
-        DeliverGotifyMessage struct, DictateStart struct, DictateStop struct,
+        DeliverGotifyMessage struct, DictateStart struct, DictateStream struct,
+        DictateStop struct,
         SaveReviewThreads struct, RemoveReviewThread struct, SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, SubmitReview struct,
     ],
@@ -453,7 +454,12 @@ fn frames_record() -> Value {
     let samples = [
         ServerMessage::Greeting {
             version: PROTOCOL_VERSION,
-            settings: ClientSettings { mark: None, theme: None, font: None },
+            settings: ClientSettings {
+                mark: None,
+                theme: None,
+                font: None,
+                dictate: forge_workspace::DictateAxes::default(),
+            },
         },
         ServerMessage::Snapshot { subject: Subject::Home, data: Value::Null },
         ServerMessage::Update { update: Box::new(SessionUpdate::CatalogLoaded) },
@@ -554,6 +560,21 @@ fn frames_record() -> Value {
             cursor: Some("message-1".to_owned()),
         }),
     );
+    // The greeting, because its settings gained the dictate axes a
+    // capturing client starts on: without a sample, the new key is as
+    // invisible to this record as it was before the record existed.
+    payload_sampled.insert(
+        "Greeting".to_owned(),
+        shape_of(&ServerMessage::Greeting {
+            version: PROTOCOL_VERSION,
+            settings: ClientSettings {
+                mark: None,
+                theme: None,
+                font: None,
+                dictate: forge_workspace::DictateAxes::default(),
+            },
+        }),
+    );
     payload_sampled.insert(
         "Devices".to_owned(),
         shape_of(&ServerMessage::Devices {
@@ -573,6 +594,57 @@ fn frames_record() -> Value {
         "command": named(COMMAND_VARIANTS),
         "client_message": named(CLIENT_MESSAGE_VARIANTS),
         "payload_sampled": payload_sampled,
+        "dictate_frame": dictate_frame_record(),
+    })
+}
+
+/// The dictate frame's byte-level contract, asserted and then recorded.
+///
+/// A frame is raw bytes rather than a serde enum, so this pins the two
+/// things a reader can check about it: the header and cap the server
+/// enforces, and a fixed vector whose BYTES decode to the samples they
+/// carry, which is what pins byte order and scaling together. The server
+/// only decodes, so the fixture runs that way: bytes in, samples out.
+fn dictate_frame_record() -> Value {
+    use forge_server::transport::frame::{self, HEADER_BYTES, MAX_PAYLOAD_BYTES};
+
+    // Every codec, one list expanded twice: the `match` has no wildcard
+    // arm, so a codec added or removed is a compile error here before it is
+    // a failing record.
+    let codecs: Vec<Value> = [frame::Codec::PcmI16]
+        .into_iter()
+        .map(|codec| {
+            let name = match codec {
+                frame::Codec::PcmI16 => "PcmI16",
+            };
+            json!({ "name": name, "tag": codec.tag() })
+        })
+        .collect();
+
+    // The fixture: one of each interesting sample, little-endian i16 on the
+    // wire. A big-endian read of these bytes, or a /32767 scale, moves the
+    // decoded samples and fails the assertion below.
+    const FIXTURE: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
+    let mut bytes = vec![frame::Codec::PcmI16.tag()];
+    for sample in FIXTURE {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    let expected: Vec<f32> = FIXTURE.iter().map(|&s| f32::from(s) / 32768.0).collect();
+
+    let decoded = frame::decode(&bytes).expect("the recorded fixture is a frame this server takes");
+    assert_eq!(
+        decoded.samples, expected,
+        "the recorded fixture's bytes must decode to the samples they carry"
+    );
+
+    json!({
+        "header_bytes": HEADER_BYTES,
+        "max_payload_bytes": MAX_PAYLOAD_BYTES,
+        "codecs": codecs,
+        "fixture": {
+            "hex": bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "samples": expected,
+        },
     })
 }
 

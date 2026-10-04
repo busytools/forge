@@ -51,7 +51,13 @@ pub mod wire;
 /// agent-row fields that carried them: a subscriber that still expects the
 /// variant would wait for a badge that never moves again. `baselines/socket/2/`
 /// is the record a v2 server emitted.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// **v4 is a bump for the greet's settings and for the binary path.** The
+/// greeting's `settings` gains the `[dictate]` axes a capturing client starts
+/// on, `Command` gains `dictate_stream`, and the socket now takes binary
+/// messages as dictation frames - a whole message kind a v3 client has no
+/// vocabulary for. `baselines/socket/3/` is the record a v3 server emitted.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
