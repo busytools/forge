@@ -261,9 +261,11 @@ fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
 
 /// `tool_progress` is the frame this upgrade un-dropped: the reader used to
 /// swallow it, and it reaches the stream as a `Message` now. Pinned by name
-/// through the decoder, because a drift back to `Unknown` re-emits the raw
-/// line verbatim and every other gate - replay and the socket record
-/// included - stays green while the typed frame is gone.
+/// through the decoder, so a drift back to `Unknown` is attributed to THIS
+/// frame by name: the corpus gates also fail on that drift - the clean-decode
+/// assertion reports the type as unknown, and the socket record loses
+/// `elapsed_time_seconds` and `heartbeat` - but they say "a type drifted",
+/// while this says which one, which is what the fix is written against.
 #[test]
 fn committed_baselines_carry_tool_progress_frames_to_the_typed_variant() {
     let log = load_baseline("tool_progress");
