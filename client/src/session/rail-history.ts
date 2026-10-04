@@ -23,19 +23,34 @@ export function railOnTop(state: unknown): RailSide | null {
 }
 
 /**
- * What a pop means for the two choices.
+ * What a pop means for the two choices, `null` for a choice the pop says
+ * nothing about.
  *
- * Landing on a side's entry shows that side and steps out of the other; a pop
- * that lands anywhere else closes both, and only where a rail covers, so a
- * route step on a wide page leaves the columns as they were. `null` means the
- * pop says nothing about them.
+ * Landing on a side's entry shows that side, and steps out of the other where
+ * a rail covers; at a wide width that other one is a column and is left as it
+ * was. An entry whose rail was closed while another navigation sat on top of
+ * it (`closedUnder`) shows nothing: the press that walks past it cannot
+ * re-open what a close already closed. Landing anywhere else closes both where
+ * a rail covers, and at a wide width closes only the side whose entry the pop
+ * left (`leftRail`) - the band opening back up under an open rail - so that
+ * press still closes what it opened.
  */
 export function chosenAfterPop(
   state: unknown,
   narrow: boolean,
+  leftRail: RailSide | null,
+  closedUnder: RailSide | null,
 ): { left: boolean | null; right: boolean | null } | null {
   const side = railOnTop(state);
-  if (side === 'left') return { left: true, right: false };
-  if (side === 'right') return { left: false, right: true };
-  return narrow ? { left: false, right: false } : null;
+  if (side !== null) {
+    const shown = side !== closedUnder;
+    const otherCloses = narrow ? false : null;
+    return side === 'left'
+      ? { left: shown, right: otherCloses }
+      : { left: otherCloses, right: shown };
+  }
+  if (narrow) return { left: false, right: false };
+  if (leftRail === 'left') return { left: false, right: null };
+  if (leftRail === 'right') return { left: null, right: false };
+  return null;
 }

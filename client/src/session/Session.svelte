@@ -178,23 +178,54 @@
    * shown as a column takes no entry. The push and the pop's meaning are
    * `rail-history.ts`'s, so a click is not what they rest on.
    */
+  let lastRail: RailSide | null = hasDom ? railOnTop(history.state) : null;
+  let closedUnder: RailSide | null = null;
+
   function openRail(side: RailSide) {
     if (side === 'left' ? narrow : inspectorNarrow) {
-      history.pushState(railEntry(history.state, side), '', location.href);
+      // One entry covers the open state: a second rail opened over the first
+      // joins it rather than stacking a step of its own.
+      if (lastRail === null) {
+        history.pushState(railEntry(history.state, side), '', location.href);
+        lastRail = side;
+      }
     }
+    closedUnder = null;
     if (side === 'left') leftChosen = true;
     else rightChosen = true;
   }
 
   function closeRail(side: RailSide) {
-    if (railOnTop(history.state) === side) history.back();
-    else if (side === 'left') leftChosen = false;
+    if (side === 'left') leftChosen = false;
     else rightChosen = false;
+    // A covering rail still open keeps the entry earned: the press closes the
+    // side it names, and the step stays for the Back that closes the last one.
+    const stillCovering = side === 'left' ? inspectorNarrow && rightShown : narrow && leftShown;
+    if (stillCovering) return;
+    if (railOnTop(history.state) === side) {
+      history.back();
+      return;
+    }
+    // The entry sits beneath another navigation's, where no pop can reach it
+    // without leaving that page: it is stepped down instead, and the Back
+    // that walks past it drops it without re-opening anything.
+    closedUnder = side;
   }
 
   $effect(() => {
     const restore = () => {
-      const chosen = chosenAfterPop(history.state, narrow);
+      const landed = railOnTop(history.state);
+      if (landed !== null && landed === closedUnder) {
+        // The inert entry a close stepped down: dropped here, so it is
+        // consumed rather than left as a step that shows nothing.
+        closedUnder = null;
+        lastRail = null;
+        history.back();
+        return;
+      }
+      const chosen = chosenAfterPop(history.state, narrow, lastRail, closedUnder);
+      lastRail = landed;
+      closedUnder = null;
       if (chosen === null) return;
       leftChosen = chosen.left;
       rightChosen = chosen.right;
