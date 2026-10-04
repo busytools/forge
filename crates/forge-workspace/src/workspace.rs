@@ -2345,6 +2345,19 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
+    /// Push one frame of client-captured audio into the seat's live take.
+    ///
+    /// Answers whether the samples were kept. `false` means there is
+    /// nothing to keep them for: the seat has no live take (never
+    /// started, refused, or already resolved) or the take has stopped
+    /// (the cap, or the speaker let go). A caller drops the frame rather
+    /// than holding it, because the take's own answer is what a reader
+    /// sees either way.
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
+        let runtime = self.dictate_runtime.lock();
+        runtime.frame_sink_for(key).is_some_and(|sink| sink.push_mono(samples))
+    }
+
     /// The device this process records from, once a `/dictate` pick moved it.
     ///
     /// Volatile and process-wide rather than per session: a pick overrides the
@@ -4324,6 +4337,42 @@ impl Workspace {
                     tokio::spawn(async move {
                         crate::dictate::handle_dictate_start(&ws, key).await;
                     });
+                }
+                Command::DictateStream { key, options } => {
+                    let updates = self.update_sender();
+                    // Registered HERE, inline, rather than on a spawned
+                    // task: the connection this arrived on is ordered, so
+                    // the audio frame a client sends next must find the
+                    // take. Nothing on this path opens a device, so there
+                    // is nothing to take off the runtime thread. The test
+                    // `a_stream_take_registers_synchronously_and_keeps_its_frames`
+                    // fails the moment this moves onto one.
+                    match crate::dictate::register_stream_take(self, &key, options) {
+                        Ok(take) => {
+                            let _ = updates.send(SessionUpdate::DictateStarted {
+                                key: key.clone(),
+                                floor_db: take.floor_db,
+                                generation: take.generation,
+                            });
+                            tokio::spawn(crate::dictate::run_stream_take(
+                                Arc::clone(self),
+                                key,
+                                take,
+                                updates,
+                            ));
+                        }
+                        Err(message) => {
+                            // The start refused, so any park the press's
+                            // release left behind answers a take that will
+                            // never exist.
+                            self.dictate_runtime.lock().clear_stop_pending(&key);
+                            let _ = updates.send(SessionUpdate::DictateEnded {
+                                key,
+                                outcome: crate::protocol::DictateOutcome::Refused { message },
+                                generation: 0,
+                            });
+                        }
+                    }
                 }
                 Command::DictateStop { key, submit } => {
                     let ws = Arc::clone(self);

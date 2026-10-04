@@ -551,6 +551,18 @@ pub enum Command {
     DictateStart {
         key: SessionSlot,
     },
+    /// Begin a take the CLIENT captures: the connection that sent this
+    /// feeds the audio as binary frames, so no device is opened here.
+    /// Registered synchronously by the dispatch that receives it, so the
+    /// frame a client sends next on the same ordered socket finds it.
+    ///
+    /// `options` are the axes that client's panel was showing; they
+    /// normalize this take, where the terminal's own take reads the
+    /// session's stored overrides at its stop.
+    DictateStream {
+        key: SessionSlot,
+        options: crate::dictate::DictateAxes,
+    },
     /// Submit (`submit = true`) or abandon the take started by `key`.
     /// During recording this is release-to-submit vs discard; during a
     /// transcription in flight it abandons the ticket.
@@ -648,6 +660,7 @@ impl Command {
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
             | Self::DictateStart { .. }
+            | Self::DictateStream { .. }
             | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
@@ -797,6 +810,9 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
+            Self::DictateStream { key, .. } => {
+                f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
+            }
             Self::DictateStop { key, submit } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
             }
