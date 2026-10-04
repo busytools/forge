@@ -231,6 +231,8 @@
   .sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
   .sess .brand:hover .word { text-decoration: underline; }
   .sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
+  /* The org appears only where the fleet makes the seat's name ambiguous
+     (#1707): the demo draws the common shape, name alone. */
   .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
   .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
     min-width: 0; overflow: hidden;
@@ -259,9 +261,15 @@
      nothing reported yet, which a single example cannot show. */
   .annot { display: flex; align-items: center; gap: 10px; padding: 5px 0 0; font-size: var(--fs-data); }
 
-  /* The seat's id, with the control that copies it. */
-  .sess .facts .sid { display: flex; align-items: center; gap: 7px; }
-  .sess .facts .id { font-family: var(--mono); color: var(--muted); }
+  /* The seat's id, with the control that copies it, wherever it draws. Inline
+     flex, so it sits beside the fact's label rather than under it. */
+  .sess .sid { display: inline-flex; align-items: center; gap: 7px; }
+  .sess .id { font-family: var(--mono); color: var(--muted); }
+  /* The context track in the tap's own copy: drawn only for a usage that was
+     reported, so an empty track never stands for an unknown value. */
+  .sess .mfacts .tk { display: inline-block; width: 60px; height: 5px; border-radius: 99px;
+    background: var(--s3); overflow: hidden; vertical-align: middle; margin-right: 6px; }
+  .sess .mfacts .fl { display: block; height: 100%; background: var(--accent); }
   .sess .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     background: none; border: 1px solid var(--line); border-radius: 5px;
     padding: 2px 5px; cursor: pointer; display: flex; align-items: center; }
@@ -269,8 +277,7 @@
      the id reads as data rather than the pair reading as a form - in the row
      and in the panel alike. */
   .sess .cp .ic { width: 13px; height: 13px; }
-  .sess .facts .eff { color: var(--dim); }
-  /* Everything the row had to drop, one tap away: the facts stay reachable at
+  /* Everything the row has to drop, one tap away: the facts stay reachable at
      every width, which is what keeps the collapse honest. A popover on the
      header's own edge, so it belongs to the row it opened from. */
   .sess > .more { position: relative; flex: none; display: none; margin-left: 2px; }
@@ -1183,7 +1190,10 @@
              stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
       </label>
       <span class="dot live"></span>
-      <span class="nm">forge</span><span class="mono dim f-org">Busytools</span>
+      <span class="nm">forge</span>
+      <!-- The line draws the name alone (#1707); the org joins it only where
+           the fleet makes the name ambiguous, as `Busytools/forge` beside the
+           dot. -->
       <span class="facts">
         <!-- The seat's own id, in the slot the account chip left: eight
              characters on the row and the whole id behind the tap, with the
@@ -1211,13 +1221,14 @@
       <details class="more">
         <summary title="every fact"><svg class="ic"><use href="#i-dots"/></svg></summary>
         <div class="mfacts">
-          <div class="kv"><span class="k">session</span><span class="v">d4f70669-1f2a-4b3c-9d0e
-            <button class="cp" type="button" aria-label="copy session id"><svg class="ic"><use href="#i-copy"/></svg></button></span></div>
+          <div class="kv"><span class="k">session</span><span class="v"><span class="sid">
+            <span class="id" title="d4f70669-1f2a-4b3c-9d0e">d4f70669</span>
+            <button class="cp" type="button" aria-label="copy the whole session id"><svg class="ic"><use href="#i-copy"/></svg></button></span></span></div>
           <div class="kv"><span class="k">model</span><span class="v">claude-opus-5-5</span></div>
           <div class="kv"><span class="k">effort</span><span class="v">high</span></div>
           <div class="kv"><span class="k">mode</span><span class="v"><span class="perm bypass">bypassPermissions</span></span></div>
-          <div class="kv"><span class="k">ctx</span><span class="v">41%</span></div>
-          <div class="kv"><span class="k">compactions</span><span class="v">3</span></div>
+          <div class="kv cm"><span class="k">ctx</span><span class="v"><span class="tk"><span class="fl" style="width:41%"></span></span>41%</span></div>
+          <div class="kv"><span class="k">compactions</span><span class="v"><button class="f-comp" type="button" title="go to the latest compaction">3</button></span></div>
         </div>
       </details>
     </div>

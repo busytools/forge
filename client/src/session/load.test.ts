@@ -449,8 +449,8 @@ describe('what one arriving frame costs the inspector', () => {
  * is that nobody has asked, and only the track says which.
  */
 describe("the header's context usage", () => {
-  /** The header's context cell, as the page drew it - behind the tap since #1707. */
-  const cell = (): Element | null => document.querySelector('.mfacts .cm');
+  /** The header's context cell, as the page drew it. */
+  const cell = (): Element | null => document.querySelector('.facts .cm');
 
   it('draws no bar for a usage nothing has reported', () => {
     open([], { header: { ...session.header, context: { percent: null, max_tokens: null } } });

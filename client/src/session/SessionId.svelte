@@ -8,8 +8,7 @@
    * the terminal's own split: the short form is what a reader compares against
    * a transcript or another row, and the long one is what a person pastes into
    * a resume. The whole id stays reachable without the click, on the `title`.
-   * Carries no label of its own: the row it sits in names it (#1707 moved it
-   * behind the header's tap).
+   * Carries no label of its own: the row it sits in names it.
    */
   let { id }: { id: string } = $props();
 
