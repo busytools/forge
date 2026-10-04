@@ -840,25 +840,16 @@ describe('the dictation overrides', () => {
     state: { ...session.state, dictate_overrides: overrides },
   });
 
-  it('reads the axes in force, unset ones included', () => {
+  it("does not read the session's overrides: the axes are this client's own", () => {
+    // The wire still carries them for the terminal's `/dictate` overlay, and
+    // this client captures its own audio - so the axes it dictates with are
+    // held here, per seat, and the session's set reaches nothing.
     const held = sessionFrom(
       withOverrides({ styling: 'casual', structure: null, context: 'email' }),
     );
     expect(
-      held.dictate_overrides,
-      'the axes the wire nests under state never reached the record',
-    ).toEqual({
-      styling: 'casual',
-      structure: null,
-      context: 'email',
-    });
-  });
-
-  it('reads an axis this client is older than as unset, not as the session choice', () => {
-    const held = sessionFrom(
-      withOverrides({ styling: 'operatic', structure: 'lists', context: null }),
-    );
-    expect(held.dictate_overrides.styling, 'a value nothing here knows').toBeNull();
-    expect(held.dictate_overrides.structure, 'and the ones it does').toBe('lists');
+      Object.hasOwn(held, 'dictate_overrides'),
+      'the record must not carry a field nothing reads',
+    ).toBe(false);
   });
 });

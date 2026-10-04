@@ -11,7 +11,6 @@
  */
 
 import type { Connection } from '../socket';
-import type { DictateOverrides } from '../session/wire';
 import type { DictateWire, Lifecycle } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from './wire';
@@ -73,8 +72,6 @@ export interface ComposerRecord {
    * only this one acts on.
    */
   composer: unknown;
-  /** What this session has overridden on the dictation axes. */
-  dictate_overrides: DictateOverrides;
   /** The prompt this seat is parked on, or `null` when nothing waits. */
   pending_ask: unknown;
   header: { turn_in_flight: boolean };

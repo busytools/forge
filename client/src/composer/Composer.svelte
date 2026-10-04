@@ -113,6 +113,16 @@
   let take = $state<LocalTake | null>(null);
   /** Whether a start is waiting on the browser's permission round trip. */
   let opening = false;
+  /**
+   * A release or a cancel that landed while the microphone was still
+   * opening, applied the moment the take exists.
+   *
+   * The permission prompt is the everyday case for a first take in an
+   * origin, and it is seconds long: a gesture made during it must end the
+   * take rather than being dropped, or the reader records past the release
+   * until the next press stops it.
+   */
+  let pending: Action | null = null;
 
   /**
    * The axes and input this seat dictates with, which this client holds.
@@ -574,18 +584,22 @@
     if (opening) return;
     const live = untrack(() => take);
     if (live !== null) {
-      box.dictateLine = { tone: 'bad', text: busyLine(live.seat.label) };
+      box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
       return;
     }
     const at = boxKey(untrack(() => slot));
     const target = boxes.of(at);
     target.dictateLine = null;
+    // A gesture from an earlier attempt has nothing to stop.
+    pending = null;
     opening = true;
     try {
       const started = await LocalTake.begin({
         connection,
         seat: untrack(() => slot),
-        options: axesFor(at, defaults),
+        // The axes in force, which the panel's own state holds: re-reading
+        // storage here would miss an edit made since the page drew.
+        options: untrack(() => seatAxes),
         device: deviceFor(at),
         onLine: (text) => {
           target.dictateLine = { tone: 'bad', text };
@@ -594,7 +608,16 @@
           take = null;
         },
       });
-      if (started !== null) take = started;
+      if (started === null) {
+        pending = null;
+        return;
+      }
+      take = started;
+      if (pending !== null) {
+        const held = pending;
+        pending = null;
+        started.stop(held === 'finish');
+      }
     } finally {
       opening = false;
     }
@@ -613,6 +636,13 @@
       // load-bearing the day a morph keeps the field mounted under the dock.
       if (focusOf(where) === 'composer') field?.focus();
       void startTake();
+      return;
+    }
+    // A gesture during the open is HELD for the take it belongs to: the
+    // permission prompt is seconds long, and dropping it would record past
+    // the reader's release.
+    if (opening) {
+      pending = action;
       return;
     }
     // A take this page is holding: the microphone is ours to let go of, and
@@ -648,8 +678,9 @@
       if (event.key === 'Escape') {
         // A live take consumes Esc, which is the terminal's rule: the surfaces
         // under it never see the key, so one press is one command and the list
-        // a field would close stays where it is.
-        if (composer.take !== null) {
+        // a field would close stays where it is. A take still opening counts:
+        // the reader cannot see the difference yet, and the gesture is held.
+        if (composer.take !== null || opening) {
           event.preventDefault();
           event.stopPropagation();
           act('cancel');

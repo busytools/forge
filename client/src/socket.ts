@@ -23,6 +23,7 @@ import {
 } from './protocol';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
+import { settingsFrom } from './wire/types';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
@@ -289,7 +290,7 @@ export function connect(url: string): Connection {
   function handle(message: ServerMessage): void {
     switch (message.kind) {
       case 'greeting':
-        settings = message.settings;
+        settings = settingsFrom(message.settings);
         // Checked on every greeting rather than only the first: a page left
         // open across a forge upgrade reconnects to a protocol it cannot
         // read, and drawing against it silently is what this arm exists to

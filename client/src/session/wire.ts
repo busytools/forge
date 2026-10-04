@@ -189,8 +189,6 @@ export interface SessionRecord {
   file_index: unknown;
   /** What this seat's composer is doing. */
   composer: ComposerState;
-  /** What this session has overridden on the dictation axes. */
-  dictate_overrides: DictateOverrides;
   /** The prompts still waiting in the CLI's queue, oldest first: the pile. */
   queue: QueuedPromptRow[];
   /**
@@ -219,18 +217,6 @@ export interface SessionRecord {
   closes: { number: number; url: string }[];
 }
 
-/**
- * What a session has overridden on the dictation axes.
- *
- * `null` on an axis means the crate default, which is what the composer's
- * panel draws as the value in force unless the session set one.
- */
-export interface DictateOverrides {
-  styling: DictateStyling | null;
-  structure: DictateStructure | null;
-  context: DictateContext | null;
-}
-
 /** The axes' vocabularies, as `forge.toml` and the normalizer name them. */
 export type DictateStyling = 'casual' | 'semi_casual' | 'semi_formal' | 'formal';
 export type DictateStructure = 'prose' | 'lists';
@@ -241,24 +227,13 @@ const STRUCTURES: DictateStructure[] = ['prose', 'lists'];
 const CONTEXTS: DictateContext[] = ['general', 'email'];
 
 /**
- * One axis, or `null` for a session that set none.
+ * One axis, or `null` for a value this client is older than.
  *
- * A value this client is older than reads as `null` too, which is the same
- * least-alarming reading `narrow` takes everywhere else: the panel then draws
+ * The least-alarming reading `narrow` takes everywhere else: the panel draws
  * the crate's default rather than a value it cannot name.
  */
 function axis<T extends string>(value: unknown, known: T[]): T | null {
   return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : null;
-}
-
-/** The three axes a read or an update carries, narrowed once as they enter. */
-export function overridesFrom(value: unknown): DictateOverrides {
-  const held = record(value);
-  return {
-    styling: axis(held['styling'], STYLINGS),
-    structure: axis(held['structure'], STRUCTURES),
-    context: axis(held['context'], CONTEXTS),
-  };
 }
 
 /**
@@ -374,7 +349,6 @@ export function sessionFrom(data: unknown): SessionRecord {
     // is the only thing that decides what a valid one looks like.
     slot: held['slot'] as SessionSlot,
     state: { scan_cwd: text(state['scan_cwd']) ?? '' },
-    dictate_overrides: overridesFrom(state['dictate_overrides']),
     queue: queuedFrom(state['queue']),
     // A read carries what is waiting, never what left: an ending is this
     // view's own observation, so a seat read starts with none.

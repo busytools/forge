@@ -278,7 +278,7 @@
           </button>
           {#each devices ?? [] as held, at (held.id)}
             <button class="row" type="button" onclick={() => choose(held.id)}>
-              <span class="nm">{held.label || `Input ${at + 1}`}</span>
+              <span class="nm">{held.label || `Microphone ${at + 1}`}</span>
             </button>
           {/each}
           {#if devices !== null && devices.length === 0}

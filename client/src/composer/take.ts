@@ -55,6 +55,8 @@ export class LocalTake {
 
   private started = false;
   private ended = false;
+  /** Whether the microphone has been let go of, so it happens exactly once. */
+  private micStopped = false;
   private pendingStop: boolean | null = null;
   private waiting: ReturnType<typeof setTimeout> | null = null;
   private readonly ring: FrameRing;
@@ -107,7 +109,9 @@ export class LocalTake {
     // audio away, and the last 20 ms is audio like the rest.
     const tail = this.mic.flush();
     if (submit && tail !== null) this.ring.push(tail);
-    this.mic.stop();
+    // At the gesture, not at the release: a take waiting for a connection it
+    // never gets must not record past the reader's hand for the whole wait.
+    this.stopMic();
 
     if (this.started) {
       this.sendStop(submit);
@@ -131,10 +135,24 @@ export class LocalTake {
     this.ended = true;
     if (this.waiting !== null) clearTimeout(this.waiting);
     this.waiting = null;
-    this.mic.stop();
+    this.stopMic();
     this.unlisten();
     this.unlistenMessages();
     this.wiring.onEnded();
+  }
+
+  /**
+   * Let go of the microphone, once.
+   *
+   * Both halves matter: the device is released, and the frames stop being
+   * read - a frame posted after the take is over would be pushed into a
+   * released ring and sent, which is audio for a take that has ended.
+   */
+  private stopMic(): void {
+    if (this.micStopped) return;
+    this.micStopped = true;
+    this.mic.onFrame = null;
+    this.mic.stop();
   }
 
   /** The seat's own updates: the server's end closes this side's take. */
@@ -216,7 +234,13 @@ export function microphoneLine(why: unknown): string {
 /** A release whose connection never came back. */
 export const WENT_UNSENT = 'not connected \u{b7} dictation did not start';
 
-/** A start refused because this client already records on another seat. */
-export function busyLine(seat: string): string {
-  return `the microphone is in use by session ${seat} \u{b7} dictation did not start`;
+/**
+ * A start refused because this client already records on another seat.
+ *
+ * The seat is named the way the terminal names it - the whole slot - so a
+ * reader with two seats open knows which one holds the microphone.
+ */
+export function busyLine(seat: SessionSlot): string {
+  const where = `${seat.org}/${seat.project}/${seat.label}`;
+  return `the microphone is in use by session ${where} \u{b7} dictation did not start`;
 }

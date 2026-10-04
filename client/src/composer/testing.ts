@@ -23,7 +23,6 @@ export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
     slot: SLOT,
     composer: { take: null, notice: null, compacting: false, sign_in: null },
-    dictate_overrides: { styling: null, structure: null, context: null },
     pending_ask: null,
     header: { turn_in_flight: false },
     slash_commands: [],

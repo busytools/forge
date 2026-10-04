@@ -11,15 +11,39 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  * with the frames is `capture.test.ts`'s and `take.test.ts`'s, and what it
  * costs to open one is nobody's here.
  */
-vi.mock('./mic', () => ({
-  Microphone: {
+const mic = vi.hoisted(() => {
+  const held: {
+    onFrame: ((bytes: Uint8Array) => void) | null;
+    stops: number;
+    gated: boolean;
+    release: (() => void) | null;
+  } = { onFrame: null, stops: 0, gated: false, release: null };
+  const source = {
+    get onFrame(): ((bytes: Uint8Array) => void) | null {
+      return held.onFrame;
+    },
+    set onFrame(fn: ((bytes: Uint8Array) => void) | null) {
+      held.onFrame = fn;
+    },
+    flush: (): Uint8Array | null => null,
+    stop: (): void => {
+      held.stops += 1;
+    },
+  };
+  return {
+    held,
+    /** Open at once, or wait for `held.release()` while gated. */
     open: (): Promise<unknown> =>
-      Promise.resolve({
-        onFrame: null,
-        flush: () => null,
-        stop: () => {},
-      }),
-  },
+      held.gated
+        ? new Promise((resolve) => {
+            held.release = () => resolve(source);
+          })
+        : Promise.resolve(source),
+  };
+});
+
+vi.mock('./mic', () => ({
+  Microphone: { open: mic.open },
   // A walk a case drives: `mockResolvedValueOnce`/`mockRejectedValueOnce`.
   inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
@@ -953,6 +977,43 @@ describe('the key', () => {
       });
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A gesture that lands while the microphone is still opening must END the
+   * take it belongs to.
+   *
+   * The permission prompt is the everyday case for a first take in an
+   * origin, and it is seconds long: a release dropped during it records past
+   * the reader's hand until the next press stops it, which is the one gesture
+   * this path had no cover for.
+   */
+  it('holds a release that lands while the microphone is opening', async () => {
+    mic.held.gated = true;
+    mic.held.stops = 0;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'hold');
+      flushSync();
+
+      key('ControlRight', 'keydown'); // the open begins and waits
+      await Promise.resolve();
+      key('ControlRight', 'keyup'); // the reader lets go during the prompt
+      mic.held.release?.(); // the permission lands
+      await opened();
+
+      expect(mic.held.stops, 'the take must let go of the microphone at once').toBe(1);
+      expect(
+        mic.held.onFrame,
+        'and unhook the frames: audio posted after the release must go nowhere',
+      ).toBeNull();
+      expect(harness.sent.at(-1)?.command, 'the take is submitted, not left open').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
     }
   });
 
