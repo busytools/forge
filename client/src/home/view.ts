@@ -65,9 +65,11 @@ export interface TaskCell {
  * its directory from the project declaration, and opening one starts it - and
  * a worker's only while it has a session behind it.
  *
- * A row whose seat refuses is information rather than a way in: opening it
- * draws "this seat has no session behind it", and the terminal draws a
- * sleeping worker row the same way, as a label with no hit target.
+ * A row whose seat refuses is information rather than a way in: opening it is
+ * refused by the core - "forge holds no session for" and the seat's name -
+ * where "this seat has no session behind it" is the page's own not-running
+ * line. The terminal draws a sleeping worker row the same way, as a label
+ * with no hit target.
  *
  * `LoggedOut` shares the arm with `Sleeping` so a row's mark and its link
  * cannot disagree: the two are one mark in the parked web view's grouping,
