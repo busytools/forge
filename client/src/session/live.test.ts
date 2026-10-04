@@ -202,7 +202,9 @@ describe('the session page over a socket', () => {
     await open(sessionFixture);
 
     expect(sections(), 'the seat record never reached the page').toContain('git');
-    const facts = document.querySelector('.sess .facts');
+    // **The facts live behind the tap since #1707** - the header line carries
+    // the seat's name alone - so the record's facts are read where they draw.
+    const facts = document.querySelector('.sess .mfacts');
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
   });
 
@@ -219,17 +221,18 @@ describe('the session page over a socket', () => {
       conversation: { ...sessionFixture.conversation, compaction_count: 54 },
     });
 
-    const facts = document.querySelector('.sess .facts');
+    const facts = document.querySelector('.sess .mfacts');
     expect(facts?.textContent, 'the header drew no compaction count from the record').toContain(
-      '54 compactions',
+      'compactions',
     );
+    expect(facts?.textContent, 'and drew no figure for it').toContain('54');
   });
 
   /** A session with no boundary in its transcript draws no figure, not a zero. */
   it('draws no compaction figure for a session that has never compacted', async () => {
     await open(sessionFixture);
 
-    const facts = document.querySelector('.sess .facts');
+    const facts = document.querySelector('.sess .mfacts');
     expect(
       facts?.textContent ?? '',
       'a session that never compacted claimed a count',

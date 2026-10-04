@@ -290,6 +290,22 @@ export interface SeatState {
  * seat with nothing behind it as for one that is up, and only the chat column
  * tells the two apart.
  */
+/**
+ * Whether the seat's name needs its org to be unambiguous.
+ *
+ * **The org shows only where the fleet makes the name ambiguous.** A lead's
+ * name is its project's and a worker's is its own label ({@link seatState}),
+ * and neither is unique across orgs - two `forge` projects under different
+ * orgs share one word - so the header qualifies the name exactly then, and
+ * nowhere else (#1707).
+ */
+export function orgNeeded(home: HomeWire, slot: SessionSlot): boolean {
+  const name = slot.label === 'lead' ? slot.project : slot.label;
+  return home.projects.some(
+    (entry) => entry.project.name === name && entry.project.org !== slot.org,
+  );
+}
+
 export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
   const row = home.agents.find(
     (agent) =>

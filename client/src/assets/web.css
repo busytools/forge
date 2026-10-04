@@ -458,14 +458,6 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .sess .brand:hover .word { text-decoration: underline; }
 .sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
-.sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
-  min-width: 0; overflow: hidden;
-  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.sess .facts > .fact { white-space: nowrap; flex: none; }
-/* Each fact carries the dot before it, so a fact that folds takes its dot with
-   it and none is left standing alone; the tier that folds the then-first fact
-   moves the dot off the one that becomes first. */
-.sess .facts > .fact + .fact::before { content: '\00b7'; color: var(--line); margin-right: 13px; }
 /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
    book page; a terminal draws one row per line at 1.231em of its own text
    size, and 1.35 is nearer that without sitting on it - a browser still has to
@@ -1535,24 +1527,19 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    reads from the session itself: subagents, mcp servers, processes,
    monitors ---------- */
 
-.sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
-/* Effort rides the model it belongs to: it is a property of that choice, so it
-   reads as the choice's suffix rather than a fact of its own. */
-.sess .facts .eff { color: var(--dim); }
-/* The model is the one fact whose length a name decides, so it is the one that
-   gives: it ellipsises rather than pushing the row past its column, and the
-   whole name rides the control's title. */
-.sess .facts .f-model { flex: 0 1 auto; min-width: 84px; overflow: hidden;
-  text-overflow: ellipsis; }
-
-/* The seat's own id, in the slot the account chip left: the short form on the
-   row, the whole id on the control's title - and the copy is a MARK rather
-   than a word, sized with the row's other marks, so the id reads as data
-   rather than the pair reading as a form. The mark carries the outcome too:
-   a check once the write landed, an x when it could not, with the reason in
-   the title. */
-.sess .facts .sid { display: flex; align-items: center; gap: 7px; }
-.sess .facts .id { font-family: var(--mono); color: var(--muted); }
+/* The seat's own id: the short form behind the tap, the whole id on the
+   control's title - and the copy is a MARK rather than a word, sized with the
+   row's other marks, so the id reads as data rather than the pair reading as
+   a form. The mark carries the outcome too: a check once the write landed, an
+   x when it could not, with the reason in the title. */
+.sess .mfacts .sid { display: flex; align-items: center; gap: 7px; }
+.sess .mfacts .id { font-family: var(--mono); color: var(--muted); }
+/* The context track, moved with its figure behind the tap: drawn only for a
+   usage that was reported, so an empty track never stands for an unknown
+   value - the same rule `.bar` follows in the inspector. */
+.sess .mfacts .tk { display: inline-block; width: 60px; height: 5px; border-radius: 99px;
+  background: var(--s3); overflow: hidden; vertical-align: middle; margin-right: 6px; }
+.sess .mfacts .fl { display: block; height: 100%; background: var(--accent); }
 .sess .cp { color: var(--dim); background: none; border: 1px solid var(--line);
   border-radius: 5px; padding: 2px 5px; cursor: pointer;
   display: inline-flex; align-items: center; }
@@ -1561,10 +1548,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sess .cp.ok { color: var(--ok); border-color: var(--ok); }
 .sess .cp.bad { color: var(--bad); border-color: var(--bad); }
 
-/* Everything the row had to fold, one tap away: the facts stay reachable at
-   every width, which is what keeps the collapse honest. A popover on the
-   header's own edge, so it belongs to the row it opened from. */
-.sess > .more { position: relative; flex: none; display: none; margin-left: 2px; }
+/* Everything the row had to fold, one tap away - and since #1707 that is
+   EVERY fact, at every width: the line carries the seat's name and nothing
+   else, which is what "one clean line" means. A popover on the header's own
+   edge, so it belongs to the row it opened from. */
+.sess > .more { position: relative; flex: none; display: flex; margin-left: 2px; }
 .sess > .more > summary { list-style: none; cursor: pointer; color: var(--dim);
   padding: 3px 4px; border: 1px solid transparent; border-radius: 6px;
   display: flex; align-items: center; }
@@ -1574,27 +1562,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sess > .more .mfacts { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20;
   background: var(--s2); border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 12px; min-width: 250px; box-shadow: 0 14px 38px rgba(0,0,0,.45); }
-/* The fold, widest tier first, each step moving a unit behind the tap: the
-   whole session id, then the compaction count out of the context unit, then
-   the org, then the model - the permission it runs under is the one that
-   stays, because it is the state a reader acts on and its colour is the
-   signal. The seat and the context figure never fold, and below them the cell
-   drops its track and keeps the number. Sited after the tables above so an
-   equal-specificity `display` there does not outrank a tier: source order is
-   what decides between them. */
-@container (max-width: 1000px) {
-  .sess .facts .f-session { display: none; }
-  .sess .facts > .fact.f-model::before { content: none; }
-  .sess > .more { display: flex; } }
-@container (max-width: 820px) { .sess .facts .f-comp { display: none; } }
-@container (max-width: 700px) { .sess .f-org { display: none; } }
-@container (max-width: 660px) {
-  .sess .facts .f-model { display: none; }
-  .sess .facts > .fact.f-mode::before { content: none; } }
-@container (max-width: 450px) {
-  .sess .facts .f-mode { display: none; }
-  .sess .facts > .fact.f-ctx::before { content: none; } }
-@container (max-width: 300px) { .sess .facts .f-ctx .tk { display: none; } }
+/* **No width tiers any more** (#1707): the facts live behind the tap at every
+   width, so there is nothing to fold back onto the line as it grows. The org
+   is the one thing the line can add, and only where the fleet makes the
+   seat's name ambiguous - see `orgNeeded`. */
 
 /* The palette carries no blue, so plan mode takes the accent: the chips
    have to stay apart from each other more than they have to match the

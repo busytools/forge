@@ -8,16 +8,16 @@
   import { report, type Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
-  import CopyButton from './CopyButton.svelte';
+  import SessionId from './SessionId.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
-  import SessionId from './SessionId.svelte';
   import Queue from '../chat/Queue.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
     headerFacts,
+    orgNeeded,
     seatState,
     type ComposerProps,
     type ConversationProps,
@@ -71,9 +71,9 @@
 
   const record: SessionRecord | null = $derived(read.wire);
   const seat = $derived(seatState(wire, slot));
+  /** Whether this seat's name needs its org on the header line (#1707). */
+  const collides = $derived(orgNeeded(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
-  /** The count the folded panel names, where the row's unit draws the figure. */
-  const compactionCount = $derived(record?.conversation.compaction_count ?? 0);
 
   /**
    * The seams this page has already asked the core to start.
@@ -250,53 +250,12 @@
         >
       </button>
       <span class="dot {seat.mark}"></span>
+      <!-- **One clean line** (#1707): the seat's own name, the org only where
+           the fleet makes that name ambiguous, and every fact behind the tap
+           below. Nothing folds by width any more - the line reads whole at
+           every one. -->
+      {#if collides}<span class="mono dim f-org">{slot.org}/</span>{/if}
       <span class="nm">{seat.name}</span>
-      <span class="mono dim f-org">{slot.org}</span>
-      <span class="facts">
-        {#if facts !== null}
-          {#if facts.sessionId !== null}
-            <span class="fact f-session"><SessionId id={facts.sessionId} /></span>
-          {/if}
-          <!-- Effort rides the model it belongs to: a property of that choice,
-               so it reads as the choice's suffix rather than a fact of its own,
-               with the whole reading on the control's title. -->
-          <span
-            class="fact f-model"
-            title={`model ${facts.model} ${'\u{b7}'} effort ${facts.effort}`}
-            ><span class="fk">model</span> <span class="v">{facts.model}</span>
-            <span class="eff">{facts.effort}</span></span
-          >
-          <span class="fact f-mode">
-            <span class="fk">mode</span>
-            {#if facts.mode !== null}<span class="perm {facts.mode.klass}">{facts.mode.wire}</span
-              >{:else}<span class="perm">{'\u{2014}'}</span>{/if}
-          </span>
-          <!-- The conversation's context is one unit: how full it is, and how
-               many times it has been cut. The track is drawn only for a usage
-               that was reported - an empty track stands for an unknown value as
-               readily as for a real zero, and nothing in the record says which
-               of the two this is. -->
-          <span class="cm fact f-ctx">
-            <span class="fk">ctx</span>
-            {#if facts.percent !== null}
-              <span class="tk"><span class="fl" style={`width:${facts.percent}%`}></span></span>
-            {/if}
-            <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
-            {#if compactions !== null}
-              <!-- Tappable: the count is a fact about the conversation, and
-                   the one thing a reader wants from it is to see the latest
-                   cut - so the click takes them there. -->
-              {'\u{b7}'}
-              <button
-                class="f-comp"
-                type="button"
-                title="go to the latest compaction"
-                onclick={askCompaction}>{compactions}</button
-              >
-            {/if}
-          </span>
-        {/if}
-      </span>
       {#if facts !== null}
         <!-- Everything the row folds, one tap away: the facts stay reachable at
              every width, which is what keeps the collapse honest. -->
@@ -306,7 +265,7 @@
             {#if facts.sessionId !== null}
               <div class="kv">
                 <span class="k">session</span>
-                <span class="v">{facts.sessionId}<CopyButton id={facts.sessionId} /></span>
+                <span class="v"><SessionId id={facts.sessionId} /></span>
               </div>
             {/if}
             <div class="kv"><span class="k">model</span><span class="v">{facts.model}</span></div>
@@ -319,13 +278,36 @@
                   >{:else}<span class="perm">{'\u{2014}'}</span>{/if}</span
               >
             </div>
-            <div class="kv">
+            <!-- The conversation's context is one unit: how full it is, and
+                 how many times it has been cut. The track is drawn only for a
+                 usage that was reported - an empty track stands for an unknown
+                 value as readily as for a real zero, and nothing in the record
+                 says which of the two this is. -->
+            <div class="kv cm">
               <span class="k">ctx</span>
-              <span class="v">{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span>
+              <span class="v"
+                >{#if facts.percent !== null}<span class="tk"
+                    ><span class="fl" style={`width:${facts.percent}%`}></span></span
+                  >{/if}{facts.percent === null ? '\u{2014}' : `${facts.percent}%`}</span
+              >
             </div>
-            <div class="kv">
-              <span class="k">compactions</span><span class="v">{compactionCount}</span>
-            </div>
+            <!-- Tappable, because the count is a fact about the conversation
+                 and the one thing a reader wants from it is to see the latest
+                 cut. A session that never compacted draws no row rather than a
+                 zero. -->
+            {#if compactions !== null}
+              <div class="kv">
+                <span class="k">compactions</span>
+                <span class="v"
+                  ><button
+                    class="f-comp"
+                    type="button"
+                    title="go to the latest compaction"
+                    onclick={askCompaction}>{compactions}</button
+                  ></span
+                >
+              </div>
+            {/if}
           </div>
         </details>
       {/if}
