@@ -463,9 +463,10 @@ impl Workspace {
         let _one_at_a_time = gate.lock().await;
         // A seat with no session has nowhere to store a scan, so the rule
         // would read "nothing has scanned this" on every poke. The loop's own
-        // guard skips the call while sessionless, and this is the second layer
-        // behind it: the hold's first read and the terminal's scanner reach
-        // here too, and both must be refused rather than left scanning.
+        // guard skips the call while sessionless, and this refusal is the
+        // second layer behind it: the hold's first read is already gated on
+        // `live`, but a session can END under a held seat between the two, and
+        // then the next poke must refuse here rather than scan into nothing.
         if self.domain_session_for(slot).is_none() {
             return Err(format!("{} has no session to store a scan on", slot.display()));
         }
@@ -674,7 +675,8 @@ mod tests {
     /// with it: the store under it is open for as long as the workspace is.
     ///
     /// The seat is NOT started: the project is declared and nothing runs
-    /// behind it, which is the state a hold has to refuse.
+    /// behind it - the state a hold takes and waits on (#1706), and the shape
+    /// most of these tests begin from.
     fn a_declared_project(
         repo: &Path,
     ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)

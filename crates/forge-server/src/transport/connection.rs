@@ -106,9 +106,10 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
     let mut watched: Vec<Subject> = Vec::new();
     // The seats THIS connection is holding, which is not the same list as the
-    // seats it watches: a hold is refused for a seat with no session, and a
-    // release is counted per seat, so giving back a hold this connection never
-    // took would spend one another connection is still using.
+    // seats it watches: every session subscribe holds - a sessionless seat's
+    // watch waits for its session (#1706) - and a release is counted per seat,
+    // so giving back a hold this connection never took would spend one another
+    // connection is still using.
     let mut holds = Holds::new(&state.surface);
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
@@ -130,10 +131,10 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
             Live::lock(&state.live).detach(slot);
         }
     }
-    // The holds this connection took go back here, which the refused ones are
-    // not: releasing those would take the count down under a seat another
-    // viewer is still showing. Nothing to say - the guard's own drop is the
-    // last word, and it also covers a panic on the way here.
+    // Every hold this connection took goes back here, one release apiece -
+    // the same count the refusal and unsubscribe paths keep, so a seat two
+    // viewers show is only let go once. Nothing to say - the guard's own drop
+    // is the last word, and it also covers a panic on the way here.
     drop(holds);
     outcome
 }
