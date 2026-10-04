@@ -211,24 +211,26 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
         let decoded = decode_dispatch(&envelope.line, line_no);
         match decoded {
             DecodedLine::Message(msg) => {
-                if let Message::Result { duration_ms, .. } = &msg {
-                    result_duration_ms = Some(*duration_ms);
+                if let Message::Result { duration_ms, .. } = *msg {
+                    result_duration_ms = Some(duration_ms);
                 }
                 apply_session_update(
                     &mut app,
-                    SessionUpdate::ChatAppended { key: replay_key.clone(), msg, origin: None },
+                    SessionUpdate::ChatAppended {
+                        key: replay_key.clone(),
+                        msg: *msg,
+                        origin: None,
+                    },
                 );
             }
             // Control + ControlResponse + ControlCancel are part of the
             // forge<->CLI handshake / outbound-cancel surface. Production
             // routes them through the SDK's control loop, NOT the App
             // reducer. Replay skips them - the reducer never sees these
-            // frames in live operation. ToolProgress is dropped by the
-            // reader in production, so replay skips it the same way.
+            // frames in live operation.
             DecodedLine::Control(_)
             | DecodedLine::ControlResponse { .. }
-            | DecodedLine::ControlCancel { .. }
-            | DecodedLine::ToolProgress(_) => {}
+            | DecodedLine::ControlCancel { .. } => {}
             DecodedLine::Unknown { type_str, .. } => {
                 panic!(
                     "replay_baseline {name}: line {line_no} decoded as Unknown \

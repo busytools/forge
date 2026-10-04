@@ -331,12 +331,12 @@ impl Client {
                             // and never surfaces it to callers; we mirror.
                             // Cache its `data` so `forge-agent` can read
                             // model / mcp / slash-command info off it.
-                            if let Message::System { ref subtype, ref data, .. } = msg
+                            if let Message::System { ref subtype, ref data, .. } = *msg
                                 && subtype == "init"
                             {
                                 cached_init_data = Some(data.clone());
                             } else {
-                                pre_init_messages.push_back(msg);
+                                pre_init_messages.push_back(*msg);
                             }
                         }
                         DecodedLine::Unknown { type_str, raw } => {
