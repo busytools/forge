@@ -2417,13 +2417,40 @@ mod tests {
 
         let live_frame = serde_json::to_value(&live).expect("the live frame encodes");
         let disk_frame = serde_json::to_value(from_disk).expect("the disk frame encodes");
+        // Every fact the transcript row carries reaches the client in the
+        // wire's own shape.
         assert_eq!(
-            disk_frame, live_frame,
-            "a boundary read back from disk must reach the client as the live one does",
+            disk_frame,
+            serde_json::json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "session_id": session_id,
+                "uuid": "cb-uuid",
+                "compact_metadata": {
+                    "trigger": "manual",
+                    "pre_tokens": 68_031,
+                    "post_tokens": 9_149,
+                },
+            }),
+            "a boundary read back from disk reaches the client as the wire shape",
+        );
+        // The live frame carries MORE: the wire's extra facts cross whole,
+        // and a transcript persists a flat camelCase row the scan's
+        // normalizer maps only the three fields above out of. So the two
+        // frames agree on what the transcript holds and diverge by exactly
+        // what it does not - the read-side mapping, not the wire, is what
+        // loses those siblings.
+        assert_eq!(
+            live_frame["compact_metadata"]["cumulative_dropped_tokens"], 58_882,
+            "the live frame keeps the metadata siblings the wire sent",
+        );
+        assert_eq!(
+            live_frame["logical_parent_uuid"], "lp-uuid",
+            "and the frame-level ones with them",
         );
         assert_eq!(
             live_frame["compact_metadata"]["post_tokens"], 9_149,
-            "with the count carried after the cut, which is the fact both paths dropped",
+            "with the count carried after the cut",
         );
 
         let lost = resumed

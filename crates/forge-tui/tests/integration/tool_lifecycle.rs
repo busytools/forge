@@ -55,6 +55,7 @@ fn seed_backgrounded_subagent(app: &mut App) {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -74,6 +75,7 @@ fn seed_backgrounded_subagent(app: &mut App) {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 }
@@ -570,6 +572,7 @@ async fn subagent_section_clears_when_terminal_task_updated_flips_root() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("Explore".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     assert_eq!(
@@ -587,9 +590,11 @@ async fn subagent_section_clears_when_terminal_task_updated_flips_root() {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some("completed".to_owned()),
                 end_time: None,
+                extras: serde_json::Map::new(),
             },
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -645,6 +650,7 @@ async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     // Backgrounding sentinel: the immediate tool_result flips the root's
@@ -674,6 +680,7 @@ async fn backgrounded_agent_survives_turn_reset_over_real_wire_path() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     // Turn finalisation wipes the turn-scoped liveness; the session map
@@ -731,6 +738,7 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_bash".to_owned()),
             task_type: Some("local_bash".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     // Backgrounding sentinel flips the card terminal while the process runs -
@@ -758,6 +766,7 @@ async fn backgrounded_bash_survives_turn_reset_over_real_wire_path() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     // Turn finalisation wipes the turn-scoped liveness.
@@ -825,6 +834,7 @@ async fn backgrounded_agent_survives_real_turn_complete() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     // Backgrounding sentinel flips the root card terminal while it runs.
@@ -845,6 +855,7 @@ async fn backgrounded_agent_survives_real_turn_complete() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -870,9 +881,11 @@ async fn backgrounded_agent_survives_real_turn_complete() {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some("completed".to_owned()),
                 end_time: None,
+                extras: serde_json::Map::new(),
             },
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert_eq!(
@@ -890,6 +903,7 @@ async fn backgrounded_agent_survives_real_turn_complete() {
             tasks: Vec::new(),
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -932,6 +946,7 @@ async fn a_late_roster_frame_does_not_collapse_the_subagent_exemption() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -956,6 +971,7 @@ async fn a_late_roster_frame_does_not_collapse_the_subagent_exemption() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -1024,6 +1040,7 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -1048,6 +1065,7 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -1064,9 +1082,11 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some("completed".to_owned()),
                 end_time: None,
+                extras: serde_json::Map::new(),
             },
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1075,6 +1095,7 @@ async fn the_sticky_backgrounded_root_lasts_until_a_terminal_event() {
             tasks: Vec::new(),
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -1115,6 +1136,7 @@ async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_bash".to_owned()),
             task_type: Some("local_bash".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1127,6 +1149,7 @@ async fn turn_end_does_not_force_complete_a_backgrounded_bash_card() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     // No backgrounding sentinel: the card is still InProgress at turn end -
@@ -1212,6 +1235,7 @@ fn seed_active_backgrounded_bash(app: &mut App) {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_bash".to_owned()),
             task_type: Some("local_bash".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1224,6 +1248,7 @@ fn seed_active_backgrounded_bash(app: &mut App) {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 }
@@ -1395,6 +1420,7 @@ async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_bash".to_owned()),
             task_type: Some("local_bash".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     // Backgrounding sentinel flips the card terminal while the process runs.
@@ -1420,6 +1446,7 @@ async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -1443,9 +1470,11 @@ async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some("killed".to_owned()),
                 end_time: None,
+                extras: serde_json::Map::new(),
             },
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1454,6 +1483,7 @@ async fn backgrounded_bash_card_and_roster_clear_on_genuine_completion() {
             tasks: Vec::new(),
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -1549,6 +1579,7 @@ async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1568,6 +1599,7 @@ async fn backgrounded_subagent_traffic_does_not_reopen_the_finished_turn() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(&mut app, result_success_message());
@@ -1688,6 +1720,7 @@ async fn tab_title_shows_activity_after_turn_end_while_background_work_runs() {
             tasks: Vec::new(),
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -1824,6 +1857,7 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1836,6 +1870,7 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1865,6 +1900,7 @@ async fn a_roster_drain_settles_the_departed_roots_open_children() {
             tasks: Vec::new(),
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert_eq!(
@@ -1915,6 +1951,7 @@ async fn a_turn_error_spares_a_sticky_roots_cards() {
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -1964,9 +2001,11 @@ async fn a_turn_error_spares_a_sticky_roots_cards() {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some("completed".to_owned()),
                 end_time: None,
+                extras: serde_json::Map::new(),
             },
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
     assert!(
@@ -2007,6 +2046,7 @@ async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_root".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     // A plain child of the root: nothing but the root keeps it alive.
@@ -2035,6 +2075,7 @@ async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row
             session_id: "test-session".to_owned(),
             tool_use_id: Some("toolu_nested".to_owned()),
             task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
         },
     );
     send_msg(
@@ -2061,6 +2102,7 @@ async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row
             ],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 
@@ -2075,6 +2117,7 @@ async fn the_roster_drain_spares_a_descendant_that_is_live_on_its_own_roster_row
             })],
             uuid: String::new(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         },
     );
 

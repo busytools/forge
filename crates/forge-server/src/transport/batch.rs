@@ -98,6 +98,7 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
         estimated_tokens_delta,
         uuid,
         session_id,
+        ..
     } = msg
     else {
         return false;
@@ -123,6 +124,7 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
         estimated_tokens_delta: summed,
         uuid: uuid.clone(),
         session_id: session_id.clone(),
+        extras: serde_json::Map::new(),
     };
     true
 }
@@ -361,6 +363,7 @@ mod tests {
                 estimated_tokens_delta: delta,
                 uuid: uuid.to_owned(),
                 session_id: "s".to_owned(),
+                extras: serde_json::Map::new(),
             },
         }
     }

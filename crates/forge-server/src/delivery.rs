@@ -191,7 +191,7 @@ mod tests {
                 Some(carried_id.as_str()),
                 "the forged row is stamped with the id the prompt was dispatched under",
             );
-            let Some(ContentBlock::Text { text }) = message.content.first() else {
+            let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
                 panic!("the turn carries the prose the model received")
             };
             let kind = crate::envelope::detect_inbound(text).unwrap_or_else(|| {

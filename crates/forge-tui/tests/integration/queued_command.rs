@@ -32,6 +32,7 @@ fn queued_command_block(prompt: &str) -> ContentBlock {
         prompt: serde_json::Value::String(prompt.to_owned()),
         command_mode: Some("prompt".to_owned()),
         source_uuid: None,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -72,6 +73,7 @@ async fn replay_multi_block_prompt_renders_text_with_image_placeholder() {
             prompt: multi_prompt,
             command_mode: Some("prompt".to_owned()),
             source_uuid: None,
+            extras: serde_json::Map::new(),
         }]),
     );
 

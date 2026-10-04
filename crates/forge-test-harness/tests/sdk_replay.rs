@@ -150,7 +150,7 @@ fn the_compact_baseline_carries_a_real_compaction() {
         .filter(|line| {
             matches!(
                 decode_dispatch(line, 1),
-                DecodedLine::Message(Message::CompactBoundary { .. })
+                DecodedLine::Message(msg) if matches!(*msg, Message::CompactBoundary { .. })
             )
         })
         .count();
@@ -191,8 +191,8 @@ fn the_stop_hook_error_baseline_carries_the_notification_frame() {
         .filter(|line| {
             matches!(
                 decode_dispatch(line, 1),
-                DecodedLine::Message(Message::Notification { key: Some(key), .. })
-                    if key == "stop-hook-error"
+                DecodedLine::Message(msg)
+                    if matches!(&*msg, Message::Notification { key: Some(key), .. } if key == "stop-hook-error")
             )
         })
         .count();
@@ -214,7 +214,10 @@ fn committed_baselines_carry_hook_progress_frames_to_the_typed_variant() {
         .inbound()
         .iter()
         .filter(|line| {
-            matches!(decode_dispatch(line, 1), DecodedLine::Message(Message::HookProgress { .. }))
+            matches!(
+                decode_dispatch(line, 1),
+                DecodedLine::Message(msg) if matches!(*msg, Message::HookProgress { .. })
+            )
         })
         .count();
 
@@ -242,7 +245,7 @@ fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
                 .filter(|line| {
                     matches!(
                         decode_dispatch(line, 1),
-                        DecodedLine::Message(Message::PermissionDenied { .. })
+                        DecodedLine::Message(msg) if matches!(*msg, Message::PermissionDenied { .. })
                     )
                 })
                 .count();

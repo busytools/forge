@@ -1866,6 +1866,7 @@ fn a_token_append(running: u64, delta: i64) -> SessionUpdate {
             estimated_tokens_delta: delta,
             uuid: format!("tokens-{running}"),
             session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
         },
     }
 }
@@ -2106,7 +2107,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
     let forge_primitives::Message::User { message, .. } = msg else {
         panic!("a delivery draws as the user turn the model's prompt was")
     };
-    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
         panic!("the turn carries the prose the model received")
     };
     assert!(
@@ -2165,7 +2166,7 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
         return None;
     };
     Some(text.clone())

@@ -488,7 +488,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
             // shouldn't move the pointer.
             let mut rendered_user_text = false;
             for block in &envelope.content {
-                if let forge_primitives::ContentBlock::Text { text } = block {
+                if let forge_primitives::ContentBlock::Text { text, .. } = block {
                     if text.is_empty() {
                         continue;
                     }
@@ -560,16 +560,21 @@ mod tests {
                 id: "msg_history".to_owned(),
                 role: "assistant".to_owned(),
                 model: "claude-test".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -583,16 +588,19 @@ mod tests {
                     id: id.to_owned(),
                     name: name.to_owned(),
                     input,
+                    extras: serde_json::Map::new(),
                 }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -612,7 +620,9 @@ mod tests {
                     tool_use_id: id.to_owned(),
                     content: Value::String(text.to_owned()),
                     is_error,
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -620,6 +630,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -633,28 +644,36 @@ mod tests {
                     id: id.to_owned(),
                     name: name.to_owned(),
                     input: Value::Null,
+                    extras: serde_json::Map::new(),
                 }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
     fn user_with_content(content: Vec<ContentBlock>) -> Message {
         Message::User {
-            message: UserEnvelope { role: "user".to_owned(), content },
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content,
+                extras: serde_json::Map::new(),
+            },
             session_id: String::new(),
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -662,6 +681,7 @@ mod tests {
         user_with_content(vec![ContentBlock::ServerToolResult {
             tool_use_id: id.to_owned(),
             content: Value::String("ok".to_owned()),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -1322,20 +1342,24 @@ mod tests {
                         id: "toolu_landed".to_owned(),
                         name: "Bash".to_owned(),
                         input: serde_json::json!({"command": "echo a"}),
+                        extras: serde_json::Map::new(),
                     },
                     ContentBlock::ToolUse {
                         id: "toolu_lost".to_owned(),
                         name: "Bash".to_owned(),
                         input: serde_json::json!({"command": "echo b"}),
+                        extras: serde_json::Map::new(),
                     },
                 ],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
+            extras: serde_json::Map::new(),
             uuid: None,
             timestamp: None,
         };
@@ -1550,7 +1574,9 @@ mod tests {
                     prompt: Value::String(prompt.to_owned()),
                     command_mode: None,
                     source_uuid: None,
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -1558,6 +1584,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1565,7 +1592,11 @@ mod tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -1573,6 +1604,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1582,7 +1614,11 @@ mod tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -1590,6 +1626,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: true,
+            extras: serde_json::Map::new(),
         }
     }
 

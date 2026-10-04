@@ -74,7 +74,7 @@ pub fn subagent_cards(messages: &[Message]) -> Vec<SubagentCard> {
             Message::Assistant { message: envelope, parent_tool_use_id, .. } => {
                 let parent = parent_tool_use_id.as_deref().filter(|p| !p.trim().is_empty());
                 for block in &envelope.content {
-                    let ContentBlock::ToolUse { id, name, input } = block else { continue };
+                    let ContentBlock::ToolUse { id, name, input, .. } = block else { continue };
                     match parent {
                         // A dispatch the session itself made. A `Task` a
                         // sub-agent made is that instance's own call, drawn
@@ -255,19 +255,26 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: parent.map(str::to_owned),
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
     /// A tool call frame the instance named by `parent` produced.
     fn call(id: &str, name: &str, input: serde_json::Value, parent: Option<&str>) -> Message {
         assistant(
-            vec![ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }],
+            vec![ContentBlock::ToolUse {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input,
+                extras: serde_json::Map::new(),
+            }],
             parent,
         )
     }
@@ -295,7 +302,9 @@ mod tests {
                     tool_use_id: id.to_owned(),
                     content: serde_json::json!("ok"),
                     is_error: false,
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
@@ -303,10 +312,9 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
-
-    /// The result the CLI writes when it launches a dispatch. Measured 1066
     /// of 1077 dispatch results across 220 transcripts, and it is what a
     /// page opened after the instance ran sees.
     fn launch_ack(id: &str) -> Message {
@@ -335,7 +343,9 @@ mod tests {
                     tool_use_id: id.to_owned(),
                     content: serde_json::json!([{"type": "text", "text": text}]),
                     is_error: false,
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
@@ -343,6 +353,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -356,6 +367,7 @@ mod tests {
             session_id: "session".to_owned(),
             tool_use_id: Some(tool_use_id.to_owned()),
             task_type: Some("Explore".to_owned()),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -370,12 +382,14 @@ mod tests {
                 total_tokens: 0,
                 tool_uses: 1,
                 duration_ms: 0,
+                extras: serde_json::Map::new(),
             },
             uuid: "u-progress".to_owned(),
             session_id: "session".to_owned(),
             tool_use_id: Some(tool_use_id.to_owned()),
             last_tool_name: Some("Read".to_owned()),
             workflow_progress: Vec::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -395,6 +409,7 @@ mod tests {
             session_id: "session".to_owned(),
             tool_use_id: Some(tool_use_id.to_owned()),
             usage: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -405,9 +420,11 @@ mod tests {
             patch: forge_primitives::messages::TaskUpdatePatch {
                 status: Some(status.to_owned()),
                 end_time: end_ms,
+                extras: serde_json::Map::new(),
             },
             uuid: "u-upd".to_owned(),
             session_id: "session".to_owned(),
+            extras: serde_json::Map::new(),
         }
     }
 

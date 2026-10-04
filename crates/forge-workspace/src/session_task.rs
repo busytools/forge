@@ -2033,7 +2033,7 @@ fn fold_monitor(
     match msg {
         forge_primitives::Message::Assistant { message, .. } => {
             for block in &message.content {
-                let forge_primitives::ContentBlock::ToolUse { id, name, input } = block else {
+                let forge_primitives::ContentBlock::ToolUse { id, name, input, .. } = block else {
                     continue;
                 };
                 if name != "Monitor" {
@@ -3064,6 +3064,7 @@ mod tests {
             },
             uuid: "u1".to_owned(),
             session_id: session_id.to_owned(),
+            extras: serde_json::Map::new(),
         };
         task.translate_event(AgentEvent::SdkMessage {
             session_id: session_id.to_owned(),
@@ -3100,6 +3101,7 @@ mod tests {
                 },
                 uuid: "u2".to_owned(),
                 session_id: session_id.to_owned(),
+                extras: serde_json::Map::new(),
             },
         });
         assert_eq!(
@@ -3118,7 +3120,10 @@ mod tests {
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "worker".to_owned(),
-            msg: forge_primitives::Message::Error { error: "stream closed".to_owned() },
+            msg: forge_primitives::Message::Error {
+                error: "stream closed".to_owned(),
+                extras: serde_json::Map::new(),
+            },
         });
 
         let (key, ..) =
@@ -4059,6 +4064,7 @@ provider = "anthropic"
             commands: vec![serde_json::json!({"name": "/reload", "description": "Reloaded"})],
             uuid: "cmd-uuid".to_owned(),
             session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
         }));
         let reloaded = announced_commands(&mut updates);
         assert_eq!(reloaded.len(), 1, "the reload's list is a move");
@@ -4820,6 +4826,8 @@ provider = "anthropic"
                 post_tokens: 1,
                 uuid: "c1".to_owned(),
                 session_id: session_key.display(),
+                metadata_extras: serde_json::Map::new(),
+                extras: serde_json::Map::new(),
             },
         ] {
             task.translate_event(AgentEvent::SdkMessage { session_id: session_key.display(), msg });
@@ -5179,6 +5187,7 @@ provider = "anthropic"
                 commands: vec![serde_json::json!({"no_name": "x"}), serde_json::json!(7)],
                 uuid: "cmd-uuid".to_owned(),
                 session_id: "s".to_owned(),
+                extras: serde_json::Map::new(),
             }),
         );
 
@@ -5200,6 +5209,7 @@ provider = "anthropic"
                 commands: Vec::new(),
                 uuid: "cmd-uuid".to_owned(),
                 session_id: "s".to_owned(),
+                extras: serde_json::Map::new(),
             }),
         );
 
@@ -5282,6 +5292,7 @@ provider = "anthropic"
             commands: vec![serde_json::json!({"name": "/reload", "description": "Reloaded"})],
             uuid: "cmd-uuid".to_owned(),
             session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
         };
         apply_event_to_domain(&mut domain, &sdk_message(refreshed));
 
@@ -6377,6 +6388,7 @@ provider = "anthropic"
             tasks,
             uuid: "u1".to_owned(),
             session_id: "worker".to_owned(),
+            extras: serde_json::Map::new(),
         }
     }
 
