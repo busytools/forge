@@ -154,13 +154,20 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.\n\
 \n\
-Before you report work as done, reviewed, or verified, be able to name \
-the evidence - the command and its output, the diff you read, the test \
-that ran. If the `systemone__*` tools are in your list and the claim is \
-genuinely uncertain, put the claim and that evidence in `state` and \
-ask; a decisive answer is permission to say it plainly, a near-0.5 \
-means state the caveat or go verify first. A decision is never a \
-substitute for evidence you do not have.";
+Before you report work as done, reviewed, or verified - to a lead, a PR \
+body, or the user - name the evidence (the command and its output, the \
+diff you read, the test that ran), and when the `systemone__*` tools are \
+in your list, make one claim-check call on it: put the claim and the \
+evidence itself in `state` - the command's output, the file's bytes, not \
+your memory of them - and ask whether it holds; a decisive answer is \
+permission to say it plainly, a near-0.5 means state the caveat or go \
+verify first. The trigger is the act of asserting, not a feeling of \
+uncertainty - the claims that matter most are the ones that feel \
+settled. And when two readings both survive your own reasoning and \
+nothing outside you decides between them - no file, no command, no \
+test, no instruction from the user - make one `ask_choice` over the \
+options you have already enumerated rather than deciding it in prose. \
+A decision is never a substitute for evidence you do not have.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on

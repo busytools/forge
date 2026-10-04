@@ -335,7 +335,15 @@ impl Tool for SendMessage {
          A `sent` status means the queue ACCEPTED the message, not that \
          the target read it - a target that is down or wedged still \
          returns sent, so confirm real work happened by an answer or an \
-         observable artifact rather than by the ack."
+         observable artifact rather than by the ack. \
+         \
+         When the message you are about to send asserts that work is \
+         done, reviewed, or verified, or hands over a two-sided \
+         recommendation, and the `systemone__*` tools are in your list, \
+         make one call on the claim or the pick first: put the claim and \
+         its evidence (or the options you have already enumerated) in \
+         `state` and ask; a decisive answer is permission to send it \
+         plainly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
