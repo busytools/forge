@@ -21,6 +21,7 @@ pub mod batch;
 mod connection;
 pub mod conversation;
 pub mod envelope;
+pub mod frame;
 mod probe;
 pub mod wire;
 
