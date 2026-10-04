@@ -2239,9 +2239,9 @@ mod dictate_lifecycle_tests {
     /// **The discriminator is the clock, not the outcome.** The runner also
     /// has a wall-clock deadline over the same cap, so a take left alone
     /// resolves either way - what tells the two apart is WHEN. The audio here
-    /// arrives at a hundred times real time, so the sample cap fills at once
-    /// while the deadline is five seconds out: only the truncated branch can
-    /// answer inside the bound asserted below.
+    /// arrives a thousand times faster than real time, so the sample cap fills
+    /// at once while the deadline is five seconds out: only the truncated
+    /// branch can answer inside the bound asserted below.
     #[tokio::test]
     async fn a_device_take_that_reached_its_cap_submits() {
         let (ws, mut updates) = crate::Workspace::testing_stub();

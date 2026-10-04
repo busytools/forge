@@ -678,8 +678,8 @@
       if (event.key === 'Escape') {
         // A live take consumes Esc, which is the terminal's rule: the surfaces
         // under it never see the key, so one press is one command and the list
-        // a field would close stays where it is. A take still opening counts:
-        // the reader cannot see the difference yet, and the gesture is held.
+        // a field would close stays where it is. A take still OPENING counts,
+        // for the same reason a reader cannot tell the two apart.
         if (composer.take !== null || opening) {
           event.preventDefault();
           event.stopPropagation();

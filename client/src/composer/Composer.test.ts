@@ -1017,6 +1017,40 @@ describe('the key', () => {
     }
   });
 
+  /**
+   * Escape inside the open window is the TAKE's, not the page's: a reader
+   * cannot see the difference between a take that is opening and one that is
+   * live, so the key has to consume there too - and the take it cancels must
+   * never record a sample.
+   */
+  it('consumes Escape inside the open window', async () => {
+    mic.held.gated = true;
+    mic.held.stops = 0;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'hold');
+      flushSync();
+
+      key('ControlRight', 'keydown'); // the open begins and waits
+      await Promise.resolve();
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      mic.held.release?.(); // the permission lands
+      await opened();
+
+      expect(harness.sent.at(-1)?.command, 'the take is cancelled, not left open').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+      });
+      expect(mic.held.stops, 'and the microphone goes with it').toBe(1);
+      expect(mic.held.onFrame, 'nothing records for a take the reader cancelled').toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
   it('takes the binding off the record rather than assuming one', async () => {
     const harness = open({ dictation: true });
     harness.page.record = bound('left_cmd', 'auto');

@@ -266,4 +266,28 @@ describe('a take whose socket is down', () => {
       vi.useRealTimers();
     }
   });
+
+  /**
+   * The microphone goes at the GESTURE, not at the end of the wait.
+   *
+   * A submit with the socket down is held for a connection that may take
+   * seconds to arrive, and the whole point of that wait is to SEND what was
+   * captured - not to keep capturing. A release that only stopped the
+   * microphone when the wait resolved would record past the reader's hand
+   * for the length of it.
+   */
+  it("lets go of the microphone at the gesture, not at the wait's end", () => {
+    const connection = fakeConnection(false);
+    const mic = fakeMic();
+    const w = wiring(connection);
+    const take = new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    take.stop(true);
+    expect(mic.stopped, 'the release must end the recording there and then').toBe(true);
+    take.release();
+  });
 });
