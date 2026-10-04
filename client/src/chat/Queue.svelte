@@ -159,7 +159,7 @@
     <!-- The head is OUTSIDE the listbox: a listbox holds options and nothing
          else, so the cancel control - the mouse's way to the same act as
          backspace - sits beside it rather than inside an option. -->
-    <div class="head">
+    <div class="qcount">
       <span>queued <b>{rows.length}</b></span>
       {#if active !== null}
         {@const held = rows.find((row) => row.uuid === active)}
@@ -167,10 +167,10 @@
           <Icon name="x" class="ic" /> cancel {held?.source ?? ''}
         </button>
       {/if}
-      <span class="hint"><b>↑↓</b> walk &middot; <b>⌫</b> cancel</span>
+      <span class="qhint"><b>↑↓</b> walk &middot; <b>⌫</b> cancel</span>
     </div>
     <div
-      class="list"
+      class="qlist"
       bind:this={pile}
       tabindex="-1"
       role="listbox"
@@ -181,12 +181,12 @@
       onkeydown={onkey}
       onclick={() => pile?.focus()}
     >
-      <div class="rows" style="height: {FACE_HEIGHT + face * STEP}px">
+      <div class="qstack" style="height: {FACE_HEIGHT + face * STEP}px">
         {#each rows as row, at (row.uuid)}
           {@const depth = face - at}
           {#if depth >= 0}
             <div
-              class="row"
+              class="qcard"
               class:back={depth > 0}
               class:cur={active === row.uuid}
               role="option"
@@ -220,8 +220,16 @@
 <style>
   /* The pile owns its height: the face plus one step per row above it, so the
      column above shrinks by exactly that much and nothing paints over it. */
-  .list {
+  .qlist {
     outline: none;
+  }
+  /* **The pile separates itself from the turn above.** The composer's own
+     margin pulls it up under the conversation (`margin-top: calc(-1 *
+     var(--ins))`, written for the box alone); with the pile on top the card
+     met the last row flush (#1705), so the pile carries the block gap
+     instead. */
+  .pile {
+    margin-top: 8px;
   }
   .ended {
     padding: 2px 0 0 11px;
@@ -229,7 +237,7 @@
     font-size: var(--fs-label);
     color: var(--dim);
   }
-  .head {
+  .qcount {
     display: flex;
     align-items: baseline;
     gap: 10px;
@@ -238,11 +246,11 @@
     color: var(--dim);
     margin-bottom: 5px;
   }
-  .head b {
+  .qcount b {
     color: var(--muted);
     font-weight: 400;
   }
-  .head .del {
+  .qcount .del {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -255,18 +263,22 @@
     padding: 0 7px;
     cursor: pointer;
   }
-  .head .del:hover,
-  .head .del:focus-visible {
+  .qcount .del:hover,
+  .qcount .del:focus-visible {
     color: var(--bad);
     border-color: var(--bad);
   }
-  .head .hint {
-    margin-left: auto;
+  /* The header's pieces sit together rather than pinned to the column's ends:
+     the mock's tile is 430px, where a right-pinned hint is a step; the real
+     column is three times that, where the same rule is a canyon (#1705, and
+     the mock is the reference the divergence is named against). */
+  .qcount .qhint {
+    margin-left: 0;
   }
-  .rows {
+  .qstack {
     position: relative;
   }
-  .row {
+  .qcard {
     position: absolute;
     left: 0;
     right: 0;
@@ -278,11 +290,11 @@
   }
   /* An arc is a surface: every row behind the face keeps its words to itself,
      so nothing bleeds through the step. */
-  .row.back .w,
-  .row.back .m {
+  .qcard.back .w,
+  .qcard.back .m {
     visibility: hidden;
   }
-  .row.cur {
+  .qcard.cur {
     border-color: var(--ctl);
     background: var(--s3);
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
@@ -295,7 +307,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .row.cur .w {
+  .qcard.cur .w {
     color: var(--text);
   }
   .m {

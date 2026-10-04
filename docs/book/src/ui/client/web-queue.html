@@ -51,7 +51,10 @@
   .qcount { display: flex; align-items: baseline; gap: 9px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-bottom: 5px; }
   .qcount b { color: var(--muted); font-weight: 400; }
-  .qcount .k { margin-left: auto; }
+  /* The header's pieces sit together: a right-pinned hint is a step in this
+     tile and a canyon in the real column, so the shipped rule clusters them
+     (#1705). */
+
   .qstack { position: relative; }
   .qcard { position: absolute; left: 0; right: 0; bottom: 0;
     border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
