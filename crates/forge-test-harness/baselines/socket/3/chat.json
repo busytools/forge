@@ -2,7 +2,9 @@
   "": [
     "agents",
     "analytics_disabled",
+    "apiBlockIndex",
     "apiKeySource",
+    "api_error_status",
     "capabilities",
     "claude_code_version",
     "command_uuid",
@@ -15,24 +17,34 @@
     "description",
     "duration_api_ms",
     "duration_ms",
+    "effort",
+    "elapsed_time_seconds",
     "errors",
     "estimated_tokens",
     "estimated_tokens_delta",
     "exit_code",
     "fast_mode_disabled_reason",
     "fast_mode_state",
+    "first_content_frame_ms",
     "hasOutput",
+    "heartbeat",
+    "hookAdditionalContext",
     "hookCount",
     "hookErrors",
     "hookInfos",
     "hook_event",
     "hook_id",
     "hook_name",
+    "imagePasteIds",
+    "isReplay",
     "isSynthetic",
+    "is_backgrounded",
     "is_error",
     "key",
     "last_tool_name",
     "level",
+    "local_command",
+    "logical_parent_uuid",
     "mcp_servers",
     "memory_paths",
     "message",
@@ -40,47 +52,70 @@
     "model",
     "modelUsage",
     "num_turns",
+    "origin",
     "outcome",
     "output",
     "output_file",
     "output_style",
     "parent_tool_use_id",
     "patch",
+    "perTurnEffort",
     "permissionMode",
     "permission_denials",
     "plugins",
     "preventedContinuation",
     "priority",
     "product_feedback_disabled",
+    "prompt",
+    "promptSource",
+    "queued_turn_count",
     "rate_limit_info",
+    "request_id",
+    "request_sent_wall_ms",
     "result",
+    "result_index",
     "session_id",
     "skills",
     "slash_commands",
+    "spawn_depth",
     "state",
     "status",
     "stderr",
     "stdout",
     "stopReason",
     "stop_reason",
+    "subagent_stats",
+    "subagent_type",
     "subtype",
     "summary",
+    "task_description",
     "task_id",
     "task_type",
     "tasks",
     "terminal_reason",
     "terminal_slash_commands",
     "text",
+    "time_to_request_ms",
     "timestamp",
+    "toolDenialKind",
     "toolUseID",
     "tool_name",
+    "tool_result_meta",
     "tool_use_id",
+    "tool_use_meta",
     "tool_use_result",
     "tools",
     "total_cost_usd",
+    "ttft_ms",
+    "ttft_stream_ms",
+    "turnCompanion",
+    "turnOrigin",
     "type",
     "usage",
+    "user_message_uuid",
+    "user_message_uuids",
     "uuid",
+    "workflow_name",
     "workflow_progress"
   ],
   "/commands[]": [
@@ -91,9 +126,23 @@
     "name"
   ],
   "/compact_metadata": [
+    "cumulative_dropped_tokens",
+    "duration_ms",
     "post_tokens",
     "pre_tokens",
+    "preserved_messages",
+    "preserved_segment",
     "trigger"
+  ],
+  "/compact_metadata/preserved_messages": [
+    "all_uuids",
+    "anchor_uuid",
+    "uuids"
+  ],
+  "/compact_metadata/preserved_segment": [
+    "anchor_uuid",
+    "head_uuid",
+    "tail_uuid"
   ],
   "/hookInfos[]": [
     "command",
@@ -108,15 +157,24 @@
     "auto"
   ],
   "/message": [
+    "container",
     "content",
+    "context_management",
+    "diagnostics",
     "id",
+    "input_transformations",
     "model",
+    "provider",
     "role",
+    "stop_details",
     "stop_reason",
     "stop_sequence",
+    "type",
     "usage"
   ],
   "/message/content[]": [
+    "caller",
+    "citations",
     "content",
     "id",
     "input",
@@ -127,6 +185,9 @@
     "text",
     "thinking",
     "tool_use_id",
+    "type"
+  ],
+  "/message/content[]/caller": [
     "type"
   ],
   "/message/content[]/content[]": [
@@ -178,10 +239,41 @@
     "type"
   ],
   "/message/usage": [
+    "cache_creation",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "inference_geo",
+    "input_tokens",
+    "iterations",
+    "output_tokens",
+    "output_tokens_details",
+    "server_tool_use",
+    "service_tier",
+    "speed"
+  ],
+  "/message/usage/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/message/usage/iterations[]": [
+    "cache_creation",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
     "input_tokens",
-    "output_tokens"
+    "model",
+    "output_tokens",
+    "type"
+  ],
+  "/message/usage/iterations[]/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/message/usage/output_tokens_details": [
+    "thinking_tokens"
+  ],
+  "/message/usage/server_tool_use": [
+    "web_fetch_requests",
+    "web_search_requests"
   ],
   "/modelUsage{}": [
     "cacheCreationInputTokens",
@@ -196,6 +288,9 @@
     "provider",
     "thinkingTokens",
     "webSearchRequests"
+  ],
+  "/origin": [
+    "kind"
   ],
   "/patch": [
     "end_time",
@@ -241,10 +336,46 @@
     "resetsAt",
     "utilization"
   ],
+  "/subagent_stats": [
+    "by_type",
+    "completed",
+    "failed",
+    "killed",
+    "max_depth",
+    "refused",
+    "requested",
+    "spawned",
+    "spawned_by_subagents",
+    "started_in_background"
+  ],
+  "/subagent_stats/killed": [
+    "parent",
+    "system",
+    "user"
+  ],
+  "/subagent_stats/refused": [
+    "budget",
+    "concurrency_limit",
+    "depth_limit"
+  ],
+  "/subagent_stats/requested": [
+    "background",
+    "foreground",
+    "unset"
+  ],
   "/tasks[]": [
     "description",
     "task_id",
     "task_type"
+  ],
+  "/tool_result_meta[]": [
+    "id",
+    "non_execution_kind"
+  ],
+  "/tool_use_meta[]": [
+    "display_name",
+    "id",
+    "server_display_name"
   ],
   "/tool_use_result": [
     "agentId",
@@ -368,13 +499,44 @@
     "type"
   ],
   "/usage": [
+    "cache_creation",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
     "duration_ms",
+    "inference_geo",
     "input_tokens",
+    "iterations",
     "output_tokens",
+    "output_tokens_details",
+    "server_tool_use",
+    "service_tier",
+    "speed",
     "tool_uses",
     "total_tokens"
+  ],
+  "/usage/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/usage/iterations[]": [
+    "cache_creation",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "input_tokens",
+    "model",
+    "output_tokens",
+    "type"
+  ],
+  "/usage/iterations[]/cache_creation": [
+    "ephemeral_1h_input_tokens",
+    "ephemeral_5m_input_tokens"
+  ],
+  "/usage/output_tokens_details": [
+    "thinking_tokens"
+  ],
+  "/usage/server_tool_use": [
+    "web_fetch_requests",
+    "web_search_requests"
   ],
   "/workflow_progress[]": [
     "index",
