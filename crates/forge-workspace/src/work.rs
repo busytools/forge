@@ -241,25 +241,19 @@ impl Workspace {
     /// an arbitrarily old row; what that read answered becomes the row its
     /// viewers are already holding, so the loop announces only a change.
     ///
-    /// **A seat with no session is not held at all.** Its scan would have
-    /// nowhere to land - the store rides the seat's own record - so the rule
-    /// would read "nothing has scanned this" on every poke and scan forever,
-    /// a `gh` lookup apiece.
+    /// **A held seat waits for its session.** A seat with no session has no
+    /// store for a scan, so the watch's own loop goes quiet on it and wakes
+    /// when the session appears - the same rule that covers a session ending
+    /// under a running loop. Refusing the hold instead was the one order that
+    /// could not recover: nothing asks again when the session starts, so a
+    /// viewer that opened the seat FIRST - the everyday order for a client -
+    /// got no watch at all, and the pushed rows stood still for the life of
+    /// the connection (#1706, measured live as `work_hold_refused`).
     ///
     /// The answer says whether the hold was taken, and a caller MUST release
     /// only the holds it took: the release is counted per seat, so a second
     /// viewer giving back a hold it never got would spend the first viewer's.
     pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) -> bool {
-        if self.domain_session_for(slot).is_none() {
-            tracing::debug!(
-                target: "forge_workspace::work",
-                event_name = "work_hold_refused",
-                slot = %slot.display(),
-                reason = "no_session",
-                "a seat with no session has no store for a scan, so nothing is held",
-            );
-            return false;
-        }
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
             return true;
@@ -807,6 +801,47 @@ provider = "anthropic"
         panic!("an edit inside the staleness window never reached the seat's viewers");
     }
 
+    /// **A viewer that arrives before the seat's session does still gets the
+    /// tree once it starts** (#1706).
+    ///
+    /// The client's own order: the seat is opened, and its session comes
+    /// later. A hold refused for the missing session is never asked for again
+    /// - nothing re-subscribes when the session appears - so the seat's
+    /// viewers get no watch, and after the poll's retirement the git row is
+    /// stale for the life of the connection. Measured live
+    /// (`work_hold_refused no_session` for the seat Ved opened before
+    /// touching a file in it).
+    #[tokio::test]
+    async fn a_seat_held_before_its_session_starts_announces_the_row_once_it_does() {
+        let dir = a_repo();
+        let (workspace, mut updates, _config) = a_declared_project(dir.path());
+        let seat = seat();
+
+        assert!(
+            workspace.hold_seat(&seat).await,
+            "a sessionless seat is still held - the loop waits quietly for its session",
+        );
+        workspace.register_domain_session(seat.clone(), None);
+
+        for edit in 1..12 {
+            std::fs::write(dir.path().join("kept.txt"), "x".repeat(edit)).expect("write");
+            let Ok(Some(moved)) =
+                tokio::time::timeout(Duration::from_millis(700), updates.recv()).await
+            else {
+                continue;
+            };
+            // Other variants ride the same stream - the file index announces
+            // too - and the row under test is the work one.
+            let SessionUpdate::WorkChanged { key, work, .. } = moved else {
+                continue;
+            };
+            assert_eq!(key, seat, "and it is addressed to the seat that was held");
+            assert_eq!(work.changed, Some(1), "with the count the edit gives");
+            return;
+        }
+        panic!("a seat held before its session started never announced its row");
+    }
+
     /// The read the loop drives answers the tree's new state.
     #[tokio::test]
     async fn a_write_moves_the_row_the_read_answers() {
@@ -1236,31 +1271,35 @@ provider = "anthropic"
         );
     }
 
-    /// A refused hold is not a hold: the answer says so, and a caller that
-    /// gives back only what it took cannot spend another viewer's hold.
-    ///
-    /// The release is counted per seat, so this is the whole reason the
-    /// answer exists: a second viewer's refused subscribe followed by its own
-    /// clean-up would otherwise take the first viewer's count to zero.
+    /// **A viewer's own hold is released exactly once.** A sessionless seat
+    /// is held like any other since #1706 - its loop waits for the session -
+    /// so the release is counted per seat and the accounting is the whole
+    /// property: every viewer that subscribed holds once and gives back
+    /// exactly once, and one viewer's clean-up never spends another's count.
     #[tokio::test]
-    async fn a_refused_hold_reports_that_it_was_not_taken() {
+    async fn a_hold_is_released_exactly_once_per_viewer() {
         let dir = a_repo();
         let (workspace, _updates, _config) = a_workspace(dir.path());
         let seat = seat();
 
-        assert!(workspace.hold_seat(&seat).await, "a seat with a session is held");
+        assert!(workspace.hold_seat(&seat).await, "the first viewer holds");
 
-        // The session ends under the hold, so the next hold has nowhere to
-        // store a scan and is refused.
+        // The session ends under the hold, and the next viewer still holds:
+        // the watch waits for the session rather than refusing (#1706).
         workspace.release_session_with_cascade(&seat);
-        assert!(!workspace.hold_seat(&seat).await, "a seat with no session refuses a hold");
+        assert!(workspace.hold_seat(&seat).await, "a sessionless seat is held too");
 
-        // The taking viewer gives its hold back; the refused one gives back
-        // nothing, and the seat is only let go once.
+        // Two taken holds: one release leaves the seat held, the second lets
+        // it go.
+        workspace.release_seat(&seat);
+        assert!(
+            !workspace.held_work_seats.lock().is_empty(),
+            "one viewer is still holding the seat",
+        );
         workspace.release_seat(&seat);
         assert!(
             workspace.held_work_seats.lock().is_empty(),
-            "one taken hold means one release lets the seat go",
+            "and the last release lets the seat go",
         );
     }
 
@@ -1304,16 +1343,18 @@ provider = "anthropic"
         );
     }
 
-    /// A seat with no session is not held, so nothing watches its tree.
+    /// **A sessionless seat is held, and its loop says nothing.** The hold
+    /// waits for the session (#1706); the burn the old refusal guarded
+    /// against is the loop's own quiet rule's business - no session means no
+    /// record to store a scan in, so it waits instead of scanning once a
+    /// second forever with a `gh` lookup apiece.
     ///
-    /// **The alternative burns scans.** The store rides the seat's own record,
-    /// so with no record every write lands nowhere, the rule reads "nothing
-    /// has scanned this" on every poke, and the loop scans once a second
-    /// forever - a `gh` lookup apiece on a lead seat. Reachable the moment a
-    /// client subscribes to a declared-but-unstarted project, whose cwd
-    /// resolves from the declaration alone.
+    /// Reachable the moment a client subscribes to a declared-but-unstarted
+    /// project, whose cwd resolves from the declaration alone - and that
+    /// order is the everyday one for a client, so the hold has to be there
+    /// when the session arrives.
     #[tokio::test]
-    async fn a_seat_with_no_session_is_not_held() {
+    async fn a_sessionless_seat_is_held_and_says_nothing() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_declared_project(dir.path());
         let seat = seat();
@@ -1321,15 +1362,19 @@ provider = "anthropic"
         workspace.hold_seat(&seat).await;
 
         assert!(workspace.work_snapshot(&seat).is_none(), "nothing was read for it");
-        assert!(workspace.held_work_seats.lock().is_empty(), "and nothing holds it");
+        assert!(
+            !workspace.held_work_seats.lock().is_empty(),
+            "and the hold stands, waiting for the session",
+        );
 
-        // A tree that moves says nothing: no loop is watching it. The burn
-        // this catches emits within about a second, so the wait is a control
-        // on the loop not existing rather than on a slow one.
+        // A tree that moves says nothing while there is no session to store a
+        // scan under. A loop that lost its quiet rule emits within about a
+        // second, so the wait is a control on the quiet rather than on a slow
+        // loop.
         std::fs::write(dir.path().join("kept.txt"), "moved").expect("write");
         assert!(
             tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.is_err(),
-            "a seat with no session must not announce anything",
+            "a sessionless seat's held loop must not announce anything",
         );
     }
 
