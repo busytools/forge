@@ -371,6 +371,18 @@ mod tests {
         }
     }
 
+    /// An unmodelled fact a token frame carried, read back for the fold's
+    /// own pin.
+    fn carried(update: &SessionUpdate) -> Option<&serde_json::Value> {
+        match update {
+            SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::ThinkingTokens { extras, .. },
+                ..
+            } => extras.get("carried"),
+            _ => None,
+        }
+    }
+
     /// The id a token frame carries, which the frame a run folds into has to
     /// name.
     fn naming(update: &SessionUpdate) -> (&str, &str) {
@@ -416,17 +428,21 @@ mod tests {
         let mut sink = Recording::default();
 
         // Two blocks' worth, so the last running value is not the total: the
-        // second block restarts at 30, where the deltas sum to 280.
-        flush(
-            &mut sink,
-            vec![
-                token(&seat, 200, 200, "a"),
-                token(&seat, 250, 50, "b"),
-                token(&seat, 30, 30, "c"),
-            ],
-        )
-        .await
-        .expect("the batch writes");
+        // second block restarts at 30, where the deltas sum to 280. The last
+        // arrival carries an unmodelled fact, because the fold REBUILDS the
+        // frame it keeps: the counter is the only field it may change, so a
+        // fact riding the surviving arrival has to come through the rebuild.
+        let mut last = token(&seat, 30, 30, "c");
+        if let SessionUpdate::ChatAppended {
+            msg: forge_primitives::Message::ThinkingTokens { extras, .. },
+            ..
+        } = &mut last
+        {
+            extras.insert("carried".to_owned(), serde_json::json!(true));
+        }
+        flush(&mut sink, vec![token(&seat, 200, 200, "a"), token(&seat, 250, 50, "b"), last])
+            .await
+            .expect("the batch writes");
 
         assert_eq!(sink.flushes, 1, "the run is one flush, as any batch is");
         assert_eq!(sink.fed.len(), 1, "and one frame where the CLI sent three");
@@ -439,6 +455,11 @@ mod tests {
             naming(&frames(&sink)[0]),
             ("c", "s"),
             "and the id of the arrival the run ended on, which is the one the frame stands for",
+        );
+        assert_eq!(
+            carried(&frames(&sink)[0]),
+            Some(&serde_json::json!(true)),
+            "and a fact the surviving arrival carried must survive the fold's rebuild",
         );
     }
 
