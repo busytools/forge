@@ -3562,10 +3562,13 @@ mod tests {
     }
 
     /// The round rides the resolution: a batch reuses one tool id and
-    /// advances the question index, and the next round's request can land
-    /// before this round's resolution - so the frame names which round it
-    /// ends, and a view's clear can tell them apart (Ved's live find;
-    /// #1717).
+    /// advances the question index, and a view's clear needs the pair to
+    /// dequeue a batch's rounds one at a time (the loss itself is the
+    /// record's single ask slot - #1717's queue, its own piece).
+    ///
+    /// **This pins the ANSWER path** - one of the sites that emits the
+    /// frame; the identity drain and the orphan arms carry the same field,
+    /// and the compiler holds every site to naming it.
     #[tokio::test]
     async fn an_answered_questions_resolution_names_its_round() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");

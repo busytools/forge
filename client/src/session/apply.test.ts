@@ -112,6 +112,41 @@ describe('applyUpdate', () => {
       expect(held.pending_ask, 'and its own round settles it').toBeNull();
     });
 
+    it.fails('keeps a second parallel ask, which the single slot cannot', () => {
+      // **The real loss, measured by the review's fresh-read axis (forge's
+      // own grilling session, 2026-10-04)**: two AskUserQuestion calls in
+      // ONE assistant message run in PARALLEL with different tool ids. The
+      // record's single slot drops A the moment B parks, resolution(A)
+      // then id-mismatches and is ignored, and A's next round replaces B
+      // before B ever drew. The fix is a queue of asks per seat - its own
+      // piece - and this stays `it.fails` until that PR flips it to `it`.
+      const round = (id: string, index: number) =>
+        ({
+          question_request: {
+            key: SLOT,
+            tool_id: id,
+            request: {
+              tool_call: { tool_call_id: id },
+              prompt: { questions: [] },
+              question_index: index,
+              total_questions: 2,
+            },
+          },
+        }) as const;
+
+      let held = empty();
+      held = applyUpdate(held, round('toolu_a', 0));
+      held = applyUpdate(held, round('toolu_b', 0));
+      held = applyUpdate(held, {
+        pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_a', question_index: 0 },
+      });
+      held = applyUpdate(held, round('toolu_a', 1));
+
+      expect(JSON.stringify(held.pending_ask), "B's ask survives A's next round").toContain(
+        'toolu_b',
+      );
+    });
+
     it('clears by the tool id alone for a frame that names no round', () => {
       // An older core sends no round - the field is absent, not null - and
       // the id is all it can mean there.

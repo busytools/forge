@@ -1142,7 +1142,8 @@ pub enum SessionUpdate {
     PendingInteractionResolved {
         key: SessionSlot,
         tool_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Absent from an older core's frames, so the default carries that.
+        #[serde(default)]
         question_index: Option<u64>,
     },
     McpOperationError {
@@ -1729,10 +1730,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::PendingInteractionResolved { key, tool_id, .. } => f
+            Self::PendingInteractionResolved { key, tool_id, question_index } => f
                 .debug_struct("PendingInteractionResolved")
                 .field("key", key)
                 .field("tool_id", tool_id)
+                .field("question_index", question_index)
                 .finish(),
             Self::McpOperationError { key, .. } => {
                 f.debug_struct("McpOperationError").field("key", key).finish_non_exhaustive()
