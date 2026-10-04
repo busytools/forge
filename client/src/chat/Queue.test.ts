@@ -360,25 +360,36 @@ describe("the pile's own vocabulary", () => {
         }
       }
     };
+    // Counted at the walk, not read from the sheet: the sheet's own nested-rule
+    // count stays greater than zero even when the descent below is removed, so
+    // a denominator read off the sheet cannot die.
     let nested = 0;
-    const visit = (rules: CSSRuleList): void => {
+    const visit = (rules: CSSRuleList, depth: number): void => {
       for (const rule of rules) {
+        if (depth > 0) nested += 1;
         if ('selectorText' in rule) check((rule as CSSStyleRule).selectorText);
         const inner = 'cssRules' in rule ? (rule as CSSGroupingRule).cssRules : undefined;
-        if (inner !== undefined && inner.length > 0) {
-          nested += inner.length;
-          visit(inner);
-        }
+        if (inner !== undefined && inner.length > 0) visit(inner, depth + 1);
       }
     };
-    visit(styles.cssRules);
+    visit(styles.cssRules, 0);
 
-    // Two coverage assertions for the two ways this check went blind: the
-    // snapshot must hold the walked icon the check exists for, and the walk
-    // must have entered the at-rule bodies a bare `.row` already hides in.
+    // Coverage assertions for the ways this check went blind: the snapshot
+    // must hold the walked icon the check exists for, the pile must sit in
+    // the composer an anchored rule could otherwise hide behind, the ended
+    // line belongs to the drawn states, and the walk must have entered the
+    // at-rule bodies a bare `.row` already hides in.
     expect(
       dom.window.document.querySelector('.qcount .del .ic'),
       'the walked cancel icon is the case this check reads',
+    ).not.toBeNull();
+    expect(
+      dom.window.document.querySelector('.composer .pile'),
+      'the check must read the pile inside its composer',
+    ).not.toBeNull();
+    expect(
+      dom.window.document.querySelector('.pile .ended'),
+      'the ended line is one of the states this check reads',
     ).not.toBeNull();
     expect(nested, "the walk read the sheet's at-rule bodies").toBeGreaterThan(0);
     expect(reached, 'the sheet must not reach into the pile').toEqual([]);

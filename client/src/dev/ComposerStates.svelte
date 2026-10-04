@@ -23,6 +23,9 @@
     ComposerRecord,
     SeatRead,
   } from '../composer/view';
+  // The Queue specimen's own prop is the socket-shaped one, and the stand-in
+  // above is the composer's narrower view of it.
+  import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
