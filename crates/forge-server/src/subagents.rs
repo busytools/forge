@@ -315,6 +315,8 @@ mod tests {
             extras: serde_json::Map::new(),
         }
     }
+
+    /// The result the CLI writes when it launches a dispatch. Measured 1066
     /// of 1077 dispatch results across 220 transcripts, and it is what a
     /// page opened after the instance ran sees.
     fn launch_ack(id: &str) -> Message {
