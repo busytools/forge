@@ -101,22 +101,51 @@ describe('where a close lands the reader', () => {
    * cascades `close_session` to the project's live workers, so every seat
    * this roster still names there is closing - offering one landed the
    * reader on a session-less seat and drew the refusal before anything else
-   * happened (Ved's live find). The landing reads the rail's own order from
-   * the top instead: the first live project outside the closing one, not
-   * the walk's adjacent pick.
+   * happened (Ved's live find). The close marks the project's seats, and the
+   * landing reads the rail's own order from the top: the first live row
+   * outside the closing project, not the adjacent walk's pick.
    */
-  it("lands a lead's close on the first live project, outside its own", () => {
+  it("lands a lead's close on the first live row outside its project", () => {
     const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD, OTHER_W1);
-    expect(closeLanding(held, LEAD, NOW)).toEqual({ name: 'session', slot: OTHER_LEAD });
+    const { open, dispatch } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/lead');
+    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(dispatch).toHaveBeenCalledWith({ close_session: { session_key: LEAD } });
+    expect(location.pathname, 'the landing offered a seat of the closing project').toBe(
+      '/session/TestOrg/other/lead',
+    );
   });
 
   it('reads the rail from the top, not the walk from the closed row', () => {
-    // The closed lead sits LAST; the walk from it wraps onto the second
-    // project, and the landing must be the FIRST live project instead.
+    // The closed lead sits LAST: adjacent walking from it would wrap onto the
+    // second project, and the landing must be the rail's first live row.
     const a: SessionSlot = { org: 'TestOrg', project: 'a', label: 'lead' };
     const b: SessionSlot = { org: 'TestOrg', project: 'b', label: 'lead' };
     const held = ground(['a', 'b', 'proj'], a, b, LEAD, W1);
-    expect(closeLanding(held, LEAD, NOW)).toEqual({ name: 'session', slot: a });
+    const { open } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/lead');
+    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(location.pathname).toBe('/session/TestOrg/a/lead');
+  });
+
+  /**
+   * The reader stands on another seat of the project being closed (#1703):
+   * the marks must be in force wherever the close was clicked, because the
+   * cascade's removals arrive whatever seat the reader is on - and a removal
+   * that moves them must not land them on another seat of that same cascade.
+   */
+  it('never lands a cascade removal on the project that is closing', () => {
+    const held = ground(['proj', 'other'], LEAD, W1, W2, OTHER_LEAD, OTHER_W1);
+    const { open } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/w1');
+    expect(closeSeat(open, held, LEAD, W1, NOW)).toBe(true);
+    expect(location.pathname, 'a close elsewhere moved the reader').toBe(
+      '/session/TestOrg/proj/w1',
+    );
+    expect(
+      removedLanding(held, W1, LEAD, NOW),
+      'the removal landed the reader on a seat of the closing project',
+    ).toEqual({ name: 'session', slot: OTHER_LEAD });
   });
 
   /**

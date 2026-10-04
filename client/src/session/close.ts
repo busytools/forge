@@ -110,34 +110,22 @@ function walk(home: HomeWire, closed: SessionSlot, now: number): Route {
 }
 
 /**
- * Where the reader lands after closing `slot`.
+ * Where the reader lands after closing `slot`, read from the marks in force.
  *
  * A worker's close lands on its lead, the seat that owns it; one with no
  * live lead lands on the walk's next live row, so a close never hands the
  * reader a seat with nothing behind it.
  *
- * **A lead's close takes its whole project with it** (#1703): the core
- * cascades `close_session` to the project's live workers, so every seat the
- * roster still names there is closing - offering one landed the reader on a
- * session-less seat and drew the refusal before anything else happened
- * (Ved's live find). The project's live seats are marked closed to the
- * landing, and the fallback reads the rail's own order from the top: the
- * first live project outside the closing one, and the home when none is
- * left - not whichever row the walk happens to find first.
+ * **A lead's close is read from the top of the rail.** The walk starts a
+ * closed row it cannot find among the live ones at the rail's first live
+ * row, and [`closeSeat`] has marked the whole closing project before this
+ * runs (the cascade), so that first row is the first one outside the close,
+ * and the home is the answer when none is left.
  */
 export function closeLanding(home: HomeWire, slot: SessionSlot, now: number): Route {
   const lead: SessionSlot = { org: slot.org, project: slot.project, label: 'lead' };
   if (slot.label !== 'lead' && behind(home, lead)) {
     return { name: 'session', slot: lead };
-  }
-  if (slot.label === 'lead') {
-    for (const agent of home.agents) {
-      if (agent.slot.org !== slot.org || agent.slot.project !== slot.project) continue;
-      if (agent.lifecycle === 'Sleeping' || agent.lifecycle === 'LoggedOut') continue;
-      closedHere.add(keyOf(agent.slot));
-    }
-    const first = liveSlots(home, slot, now)[0];
-    return first === undefined ? { name: 'home' } : { name: 'session', slot: first };
   }
   return walk(home, slot, now);
 }
@@ -241,6 +229,17 @@ export function closeSeat(
   // Marked before the landing: the walk must not offer the seat that is
   // being closed, whatever the roster still says about it.
   closedHere.add(keyOf(slot));
+  // **A lead's close takes its whole project with it** (#1703): the core
+  // cascades `close_session` to the project's live workers, and marking them
+  // here - not in the landing - is what also covers a reader standing
+  // elsewhere in the project, whose move arrives through `removedLanding`.
+  if (slot.label === 'lead') {
+    for (const agent of home.agents) {
+      if (agent.slot.org !== slot.org || agent.slot.project !== slot.project) continue;
+      if (agent.lifecycle === 'Sleeping' || agent.lifecycle === 'LoggedOut') continue;
+      closedHere.add(keyOf(agent.slot));
+    }
+  }
   if (keyOf(current) === keyOf(slot)) {
     goTo(closeLanding(home, slot, now));
   }
