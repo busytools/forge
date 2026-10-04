@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import { element, list, pins, records, register, reported } from './records';
+  import { element, layout, list, pins, records, register, reported } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -80,7 +80,12 @@
   function container(node: HTMLElement): () => void {
     Object.defineProperty(node, 'scrollHeight', {
       configurable: true,
-      get: elementHeight,
+      get: () => {
+        // Counted, not cached: the column's whole #1710 saving is the read it
+        // does not make, and this is the only place that can see one.
+        layout.reads += 1;
+        return elementHeight();
+      },
     });
     Object.defineProperty(node, 'clientHeight', {
       configurable: true,
@@ -97,6 +102,11 @@
         // **A write that moved comes back as the event a browser fires, a
         // moment later** - never synchronously, or the column would read the
         // echo before the token it arms from the write's own read-back.
+        //
+        // One echo per moved write, where a browser coalesces same-task writes
+        // into one event carrying the final value: benign for everything here,
+        // and a later test that writes twice in a task wants the coalescing
+        // before it can trust the token against the second write.
         if (landed !== before) {
           queueMicrotask(() => onscroll?.(landed));
         }

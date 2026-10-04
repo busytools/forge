@@ -29,7 +29,8 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, list, pinned, setElement, setMeasured } = await import('./testing/records');
+const { clear, element, layout, list, pinned, setElement, setMeasured } =
+  await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
 
@@ -116,12 +117,17 @@ const FITS = { asked: VIEWPORT, landed: 0 };
 function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
   const watchers = new Set<(status: 'closed' | 'open') => void>();
+  /** Every ask for older turns the column made, by the cursor it asked from. */
+  const asks: Array<string | null> = [];
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
     unsubscribe: () => undefined,
     refresh: () => undefined,
     dispatch: () => null,
-    more: (_conversation: SessionSlot, _before: string | null, _turns: number) => true,
+    more: (_conversation: SessionSlot, before: string | null, _turns: number) => {
+      asks.push(before);
+      return true;
+    },
     onMessage: (fn: (message: ServerMessage) => void) => {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -143,6 +149,8 @@ function stub() {
 
   return {
     connection,
+    /** Every ask for older turns the column made, by the cursor it asked from. */
+    asks,
     /** The socket drops, the way it does mid-ask. */
     drop(): void {
       for (const fn of watchers) fn('closed');
@@ -403,6 +411,58 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the token ate the clamp, and the follow yanked them back').toEqual([]);
+  });
+
+  it("keeps the reach ask the landing's own echo carried", async () => {
+    // **A consumed echo is still an event the ask rides**, and this is the
+    // silent loss the delta restored: a history shorter than a screen and a
+    // half, whose landing PIN moves the reader (0 to the clamped 200) so the
+    // stub delivers an echo at all - and 200 is inside REACH, which is where
+    // the base app asked for the turns above from.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(500, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // A cursor: there IS something above this page to ask for.
+    server.page([turn('t1')], LEAD, 'older');
+    await settle();
+
+    // The mount's own first load asks with no cursor; the ask under test is
+    // the one from the page's own cursor, and it is the echo's.
+    expect(
+      server.asks.filter((before) => before !== null),
+      'the landing echo did not ask for the turns above it',
+    ).toEqual(['older']);
+  });
+
+  it('skips the layout read for the event its own pin wrote', async () => {
+    // **#1710's actual property, guarded hermetically.** jsdom measures no
+    // layout, but the stub's element counts what the column READ - and the
+    // echo's whole saving is the read it does not make. The token-disabling
+    // simplification arms the foot ASKED for, which `scrollTop` can never
+    // equal, so no event matches it again: the echo reads the layout back and
+    // this counts it.
+    const server = stub();
+    await draw(server);
+    await settle();
+    clear();
+
+    // The content grows under a reader at the foot and the frame's pin rides
+    // them down: the write moved, so its echo is on the way.
+    setElement(TOTAL + 80, VIEWPORT);
+    server.frame();
+    flushSync();
+    const before = layout.reads;
+    await settle();
+
+    // The frame's own passes read the height twice - the pin's land and its
+    // post-layout second look - and the echo reads it none.
+    expect(layout.reads - before, 'the echo read the layout back').toBe(2);
   });
 
   it('leaves a reader parked a few pixels short of the end alone', async () => {
