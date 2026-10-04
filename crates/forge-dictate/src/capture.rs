@@ -126,9 +126,10 @@ impl Recording {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Whether the recording has been asked to stop. Test seam: the
-    /// feeding microphone in `test_support` polls it between chunks.
-    #[cfg(any(test, feature = "test-helpers"))]
+    /// Whether the recording has been asked to stop - the cap reached
+    /// itself, or the host ended the take. What a feeder polls before
+    /// appending: the microphone stand-ins in `test_support`, and a
+    /// stream take's frame sink, which has no thread to poll it for it.
     pub(crate) fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }

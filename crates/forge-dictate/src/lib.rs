@@ -55,7 +55,8 @@ pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use capture::{Device, devices};
 pub use config::{Config, ConfigBuilder, ModelSpec};
 pub use engine::{
-    Busy, Capture, CaptureMeter, Engine, Outcome, Stages, Ticket, Transcript, WindowProgress,
+    Busy, Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket,
+    Transcript, WindowProgress,
 };
 pub use error::Error;
 pub use fetch::{Progress, prepare};
