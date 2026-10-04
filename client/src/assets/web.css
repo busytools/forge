@@ -693,7 +693,7 @@ details.sec[open] > summary .arw { color: var(--accent); }
    meanings on one thing. A refusal keeps the words here and names the reason:
    the box is never refilled, since words typed since would land over them. */
 .mine.bad { border-left-color: var(--bad); }
-.mine .st { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+.mine .st { display: flex; align-items: center; gap: 8px; margin: 9px 0 8px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .mine .why { display: flex; align-items: center; gap: 9px; margin-top: 9px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }

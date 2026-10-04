@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import axe from 'axe-core';
+import { JSDOM } from 'jsdom';
 import { flushSync, mount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -130,27 +133,28 @@ describe('the queue pile', () => {
 
     key(pile(), 'ArrowUp');
     expect(
-      pile().querySelector('.row.cur')?.getAttribute('id'),
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
       'the first up walks to the newest row',
     ).toBe('u1');
 
     key(pile(), 'ArrowUp');
-    expect(pile().querySelector('.row.cur')?.getAttribute('id'), 'the second walks older').toBe(
+    expect(pile().querySelector('.qcard.cur')?.getAttribute('id'), 'the second walks older').toBe(
       'u0',
     );
 
     key(pile(), 'ArrowUp');
     expect(
-      pile().querySelector('.row.cur')?.getAttribute('id'),
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
       'up stops on the first queued prompt',
     ).toBe('u0');
 
     key(pile(), 'ArrowDown');
-    expect(pile().querySelector('.row.cur')?.getAttribute('id'), 'down returns to the newest').toBe(
-      'u1',
-    );
+    expect(
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
+      'down returns to the newest',
+    ).toBe('u1');
     key(pile(), 'ArrowDown');
-    expect(pile().querySelector('.row.cur'), 'down past the newest lands in the box').toBeNull();
+    expect(pile().querySelector('.qcard.cur'), 'down past the newest lands in the box').toBeNull();
   });
 
   it('walks the face: its words, its place in the pile, and the cancel it offers', () => {
@@ -158,14 +162,14 @@ describe('the queue pile', () => {
     draw(rows('one', 'two', 'three'), connection);
 
     key(pile(), 'ArrowUp');
-    const face = pile().querySelector('.row.cur');
+    const face = pile().querySelector('.qcard.cur');
     expect(face?.querySelector('.w')?.textContent, 'the face is the walked row').toBe('three');
     expect(face?.querySelector('.pos')?.textContent, 'and says where that row sits').toBe('#3 / 3');
 
     key(pile(), 'ArrowUp');
     // The runner spells its rows' sources, so the second row's own label is
     // what the control should name.
-    const control = host.querySelector<HTMLButtonElement>('.head .del');
+    const control = host.querySelector<HTMLButtonElement>('.qcount .del');
     expect(control?.textContent?.trim(), 'the head offers to cancel the walked source').toBe(
       'cancel you',
     );
@@ -184,7 +188,7 @@ describe('the queue pile', () => {
 
     expect(sent).toEqual([{ command: { cancel_queued_prompt: { key: SLOT, uuid: 'u0' } } }]);
     expect(
-      pile().querySelectorAll('.row'),
+      pile().querySelectorAll('.qcard'),
       'the row leaves when the core says so, not when the key does',
     ).toHaveLength(1);
   });
@@ -193,10 +197,10 @@ describe('the queue pile', () => {
     const { connection } = recording();
     draw(rows('one', 'two', 'three', 'four'), connection);
 
-    const stack = host.querySelector<HTMLElement>('.rows');
+    const stack = host.querySelector<HTMLElement>('.qstack');
     expect(stack?.style.height, 'the face plus one step per older prompt').toBe(`${64 + 3 * 6}px`);
 
-    const drawn = host.querySelectorAll<HTMLElement>('.row');
+    const drawn = host.querySelectorAll<HTMLElement>('.qcard');
     expect(drawn[3]?.style.transform, 'the newest sits at the foot').toBe('translateY(0px)');
     expect(drawn[0]?.style.transform, 'the oldest is three steps above it').toBe(
       'translateY(-18px)',
@@ -284,5 +288,49 @@ describe('the walk and the box in one composer', () => {
     harness.page.rows = [];
     flushSync();
     expect(document.activeElement, 'the pile going takes nothing with it').toBe(harness.box());
+  });
+});
+
+/**
+ * The pile's vocabulary is its own.
+ *
+ * **A namespace, not a preference.** The sheet carries bare `.row` (the home
+ * list's own grid: `display: grid; grid-template-columns: var(--cols)`) and
+ * bare `.hint` (the composer's), and a card that shared a name let a rule it
+ * never declared - `display` - shrink its word line to a single character:
+ * measured in the real engine against Ved's screenshot, `.w` drew 13px inside
+ * a 498px card (#1705). The mock keeps the same namespaced set (`.qcard`,
+ * `.qcount`, `.qstack`, `web-queue.html`), and this is the guard that the
+ * sheet never grows a rule over one of them again.
+ */
+describe("the pile's own vocabulary", () => {
+  it('keeps every class the sheet could reach out of its markup', () => {
+    draw(rows('one', 'two'), recording().connection);
+
+    // Relative to the package root, because a jsdom test's `import.meta.url`
+    // is not a file URL - the suite always runs with the client as cwd.
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    const dom = new JSDOM(`<style>${sheet}</style>${host.innerHTML}`);
+    const styles = dom.window.document.styleSheets[0];
+    if (styles === undefined) throw new Error('the sheet did not parse');
+
+    const reached: string[] = [];
+    for (const rule of styles.cssRules) {
+      if (!('selectorText' in rule)) continue;
+      const { selectorText } = rule as CSSStyleRule;
+      // The sheet's reset matches everything in the page by design; the
+      // question here is a rule that reaches the pile because of a NAME.
+      if (selectorText.startsWith('*')) continue;
+      for (const element of dom.window.document.querySelectorAll('.pile, .pile *')) {
+        try {
+          if (element.matches(selectorText)) {
+            reached.push(`${selectorText} reaches ${element.className}`);
+          }
+        } catch {
+          // A selector this reader cannot place is not evidence of a reach.
+        }
+      }
+    }
+    expect(reached, 'the sheet must not reach into the pile').toEqual([]);
   });
 });
