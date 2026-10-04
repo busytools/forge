@@ -338,12 +338,13 @@ impl Tool for SendMessage {
          observable artifact rather than by the ack. \
          \
          When the message you are about to send asserts that work is \
-         done, reviewed, or verified, or hands over a two-sided \
-         recommendation, and the `systemone__*` tools are in your list, \
-         make one call on the claim or the pick first: put the claim and \
-         its evidence (or the options you have already enumerated) in \
-         `state` and ask; a decisive answer is permission to send it \
-         plainly."
+         done, reviewed, or verified, or hands over a pick where two \
+         readings both survive your own reasoning and nothing outside you \
+         decides between them, and the `systemone__*` tools are in your \
+         list, make one call on the claim or the pick first: put the claim \
+         and its evidence in `state` for a claim check, or the options you \
+         have already enumerated in `criteria` for a choice. A decisive \
+         answer is permission to send it plainly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1161,6 +1162,28 @@ mod tests {
         assert!(
             required.iter().any(|v| v == "charter"),
             "charter is required - there is no file to fall back to"
+        );
+    }
+
+    /// The send cue fires at the moment a report is composed, and the tools
+    /// it names can be renamed - pinned so a rename fails here rather than
+    /// shipping a cue that resolves to nothing.
+    #[test]
+    fn send_description_carries_its_systemone_cue() {
+        let host = host();
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        assert!(
+            tool.description().contains(
+                "make one call on the claim or the pick first: put the claim and its evidence in `state` for a claim check"
+            ),
+            "the report-moment cue and its fields stay: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description()
+                .contains("or the options you have already enumerated in `criteria` for a choice"),
+            "the choice half names its own field: {}",
+            tool.description()
         );
     }
 

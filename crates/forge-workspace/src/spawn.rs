@@ -6532,6 +6532,24 @@ mod lead_charter_tests {
         }
     }
 
+    /// The charter's systemone cues ship to every lead on every install, and
+    /// the names in them are tools that can be renamed - pinned so a rename
+    /// fails here instead of handing a lead a call it cannot make.
+    #[test]
+    fn the_charter_carries_its_systemone_cues() {
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("if your tools include `systemone__ask_noul`, make one claim-check"),
+            "the merge-gate claim cue and its guard are pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if your tools include `systemone__ask_choice`, weigh them with one choice over the live set"
+            ),
+            "the routing cue and its guard are pinned",
+        );
+    }
+
     /// The charter is shipped text every lead reads, so a blocked CLI tool
     /// named here would send it to a surface its own launch denies. The
     /// preamble is the other lead-facing text and carries the same test in

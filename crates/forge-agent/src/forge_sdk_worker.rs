@@ -156,18 +156,18 @@ happened.\n\
 \n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
-diff you read, the test that ran), and when the `systemone__*` tools are \
-in your list, make one claim-check call on it: put the claim and the \
-evidence itself in `state` - the command's output, the file's bytes, not \
-your memory of them - and ask whether it holds; a decisive answer is \
-permission to say it plainly, a near-0.5 means state the caveat or go \
-verify first. The trigger is the act of asserting, not a feeling of \
-uncertainty - the claims that matter most are the ones that feel \
-settled. And when two readings both survive your own reasoning and \
-nothing outside you decides between them - no file, no command, no \
-test, no instruction from the user - make one `ask_choice` over the \
-options you have already enumerated rather than deciding it in prose. \
-A decision is never a substitute for evidence you do not have.";
+diff you read, the test that ran). When the `systemone__*` tools are in \
+your list: make one `ask_noul` claim-check on the claim - the evidence \
+itself in `state`, the command's output or the file's bytes, not your \
+memory of them - and ask whether it holds; and when two readings both \
+survive your own reasoning and nothing outside you decides between \
+them - no file, no command, no test, no instruction from the user - \
+make one `ask_choice` over the options you have already enumerated \
+rather than deciding it in prose. A decisive answer is permission to \
+say it plainly, a near-0.5 means state the caveat or go verify first - \
+the trigger is the act of asserting, not a feeling of uncertainty; the \
+claims that matter most are the ones that feel settled. A decision is \
+never a substitute for evidence you do not have.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -1959,10 +1959,10 @@ pub(crate) fn reported_percentage(p: f64) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, SessionId, build_forge_system_prompt,
-        deliver_permission_response, deliver_question_response, frame_session_id,
-        initial_mode_state, log_failed_mcp_servers, reported_percentage, run_ask_user_question,
-        synth_permission_request,
+        FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions, PendingResponses, SessionId,
+        build_forge_system_prompt, deliver_permission_response, deliver_question_response,
+        frame_session_id, initial_mode_state, log_failed_mcp_servers, reported_percentage,
+        run_ask_user_question, synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -3144,6 +3144,24 @@ mod tests {
             "the Bash description ask rides the base append, not a charter"
         );
         assert!(!bare.contains("CATALOG"));
+    }
+
+    /// The systemone cues reach every session, and the names in them are
+    /// tools that can be renamed - pinned so a rename fails here instead of
+    /// shipping a cue that resolves to nothing.
+    #[test]
+    fn the_conduct_block_carries_its_systemone_cues() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "When the `systemone__*` tools are in your list: make one `ask_noul` claim-check on the claim"
+            ),
+            "the claim cue's guard and wording are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("make one `ask_choice` over the options you have already enumerated"),
+            "the enumerated-choice cue is pinned",
+        );
     }
 
     /// The cron tools are owner-scoped, so a block claiming the project's

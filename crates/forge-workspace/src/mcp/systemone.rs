@@ -211,11 +211,11 @@ impl Tool for AskChoice {
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
          to the same action; a routing call with several plausible owners and no obvious one \
          is exactly that case. List every option in `criteria`. A null value is fine when the \
-         name stands alone; describe when it applies only where a subtle distinction must be \
-         drawn, because nulls are the common case and six clauses for a five-way choice cost \
-         more than the choice returns (at most 255 options); when nothing may fit the state, \
-         include an explicit no-match option, because the model can only choose among the \
-         options you list. Reading \
+         name stands alone; add a \"when this applies\" clause only where a subtle distinction \
+         needs naming, because nulls are the common case and six clauses for a five-way choice \
+         cost more than the choice returns (at most 255 options); when nothing may fit the \
+         state, include an explicit no-match option, because the model can only choose among \
+         the options you list. Reading \
          the answer: `choice` is the highest-probability option; read `probabilities` for the \
          full distribution, and treat a close runner-up as uncertainty rather than a decision; \
          escalate to the user when the margin does not clear what the decision costs. \
