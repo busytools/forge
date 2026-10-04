@@ -194,13 +194,18 @@ const NOT_NEWS: readonly string[] = [
   'oauth_credentials_snapshot',
   'context_usage_snapshot',
   'mcp_snapshot',
-  // The seat's own working tree, its monitors, the CLI's background registry
-  // and its process walk, which a page draws in its inspector and no home row
-  // does: a row's branch, count and spinners come from the fleet's own read.
+  // The seat's own working tree, its monitors, the CLI's background registry,
+  // its process walk and its two catalogues, which a page draws in its
+  // inspector and its composer - and no home row does: a row's branch, count
+  // and spinners come from the fleet's own read.
   'background_tasks_changed',
   'monitors_changed',
   'work_changed',
   'processes_changed',
+  'slash_commands_changed',
+  'subagents_changed',
+  'dispatches_changed',
+  'file_index_changed',
   'sessions_listed',
   'service_status',
   'plugins_inventory_updated',
@@ -430,11 +435,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 61 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 65 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(61);
+    ).toBe(65);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

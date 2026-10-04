@@ -4,7 +4,7 @@
  * The server sends the update and the client applies it, which is what the
  * terminal has always done - so a page follows a busy seat without asking for
  * the whole session again on every frame. A read is for a cold load, a
- * reconnect, and the slices no update carries.
+ * reconnect and a seat swap: every slice has a frame.
  *
  * **The record's shape is `crates/forge-server/src/transport/wire.rs`', and the
  * payload's is `crates/forge-workspace/src/protocol.rs`'s `SessionUpdate`. The
@@ -139,6 +139,33 @@ export const HANDLERS: Record<string, Apply> = {
     return processes === null ? held : { ...held, processes };
   },
 
+  // The CLI's catalogues, each carried whole under the frame's own name. They
+  // are the rows `sessionFrom` keeps raw, so the same `list` narrows both.
+  slash_commands_changed: (held, payload) => ({
+    ...held,
+    slash_commands: list(payload['commands']),
+  }),
+
+  subagents_changed: (held, payload) => ({
+    ...held,
+    subagents: list(payload['subagents']),
+  }),
+
+  // The frame carries the flag's own value. A payload naming no bool is a
+  // frame this build cannot read, and it leaves the flag where a dispatch
+  // already put it rather than clearing it.
+  dispatches_changed: (held, payload) => {
+    const dispatched = payload['has_dispatches'];
+    return typeof dispatched === 'boolean' ? { ...held, has_dispatches: dispatched } : held;
+  },
+
+  // The walk the seat's own loop keeps fresh, carried whole under the frame's
+  // own name. A payload naming no index is a frame this build cannot read.
+  file_index_changed: (held, payload) => {
+    const index = payload['index'];
+    return index === undefined ? held : { ...held, file_index: index };
+  },
+
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
@@ -218,11 +245,10 @@ export const HANDLERS: Record<string, Apply> = {
    * The whole set a `/dictate` edit left behind, which the core echoes after
    * every set and reset.
    *
-   * **A handler rather than a `UNFED` entry**: the core emits this update, and
-   * a poll's merge read is for the slices no frame carries. A payload naming
-   * no set therefore leaves the held one standing, rather than reading the
-   * axes off a name nothing sent and reporting the crate defaults as the
-   * session's own.
+   * **A handler, because the core emits this update.** A payload naming no
+   * set therefore leaves the held one standing, rather than reading the axes
+   * off a name nothing sent and reporting the crate defaults as the session's
+   * own.
    */
   dictate_overrides: (held, payload) => {
     const overrides = payload['overrides'];
@@ -320,26 +346,6 @@ export const IGNORED: readonly string[] = [
   'slack_message_appended',
   'status_snapshot',
   'worker_status_changed',
-];
-
-/**
- * The fields the merge takes from a poll's answer, because no update this
- * build handles carries them.
- *
- * **The read still answers every field** - `sessionFrom` narrows the whole
- * record - and what is narrow is the MERGE: an answer is applied by taking
- * only these from it. That is what keeps a poll from reverting a pushed row,
- * since an answer is encoded before a frame lands and applied after it.
- *
- * Four remain: the CLI's catalogue pair, the composer's file list and the
- * record's own dispatch answer. Each pushed set left this list as its handler
- * landed, and this list is what retires the tick once nothing is on it.
- */
-export const UNFED: readonly (keyof SessionRecord)[] = [
-  'has_dispatches',
-  'slash_commands',
-  'subagents',
-  'file_index',
 ];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */
@@ -656,9 +662,9 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
  *
  * **The server's own words, because the same notice arrives by two paths.**
  * A record can hold this from a read, which carries what the server wrote, or
- * from this reducer; a client wording of its own would make one event read two
- * ways, and a poll re-syncs only the fields no update feeds, so the
- * disagreement would persist. Four of the notices are literals copied from
+ * from this reducer, and no update re-syncs it - so a client wording of its
+ * own would make one event read two ways until the next whole read. Four of
+ * the notices are literals copied from
  * there, the fifth is the core's own refusal message passed through, and the
  * truncated line a landed take draws is mirrored already by
  * `composer/view.ts`. The day the read path normalises what it carries, these

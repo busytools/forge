@@ -361,9 +361,10 @@ pub struct SessionWire {
     pub has_dispatches: bool,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
-    /// Shared with the cache that built it, rather than walked per subscriber:
-    /// the walk is a whole tree, and a second client on one seat would pay for
-    /// it again. Serialises as the index itself.
+    /// The seat's own walk, from the store its loop keeps fresh, or a walk
+    /// taken for the read when the loop has not run. Shared rather than walked
+    /// per subscriber: the walk is a whole tree. Serialises as the index
+    /// itself.
     pub file_index: Arc<FileIndex>,
     pub reviews: ReviewsWire,
     /// The working tree behind the git section. The diff itself is a second,
@@ -998,7 +999,7 @@ async fn session(
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
     let conversation = conversation_for(state, slot).await;
-    let (turns, compaction_count, has_dispatches) = match conversation {
+    let (turns, compaction_count) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
@@ -1006,7 +1007,6 @@ async fn session(
                     (
                         page(held.messages(), held.rendered(), None, SUBSCRIBE_TURNS).turns,
                         held.compaction_count(),
-                        held.has_dispatches(),
                     )
                 })
             })
@@ -1018,11 +1018,15 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0, false)
+                (Vec::new(), 0)
             })
         }
-        None => (Vec::new(), 0, false),
+        None => (Vec::new(), 0),
     };
+    // The dispatch flag is the workspace's, raised by the fold that can
+    // announce its raise: read here rather than recomputed, so the record and
+    // the `DispatchesChanged` frame cannot disagree about it.
+    let has_dispatches = surface.has_dispatches(slot);
     // The seat's scan, as the loop that owns it last answered it. Nothing is
     // read here: the tree is read for a seat somebody is showing, and this
     // answers what that read found - the tile's branch, count and PR are one
@@ -1033,13 +1037,27 @@ async fn session(
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
     let state_at = surface.session(slot, cwd);
+    // The seat's own loop walks the index and pushes the movement, so this
+    // answers that store - and a seat nothing has walked yet is walked here,
+    // the same fallback the work row above takes: a seat whose loop never ran
+    // (no resolvable cwd, a read before the first poke) answers its tree
+    // rather than an empty list the composer would draw nothing from. The walk
+    // is a whole tree on the calling thread, so it runs off the reactor; one
+    // that panicked reads as no files rather than as the page's problem.
+    let file_index = if let Some(index) = surface.file_index(slot) {
+        index
+    } else {
+        let walker = std::sync::Arc::clone(&state.surface);
+        let root = cwd.to_owned();
+        tokio::task::spawn_blocking(move || walker.walk_file_index(&root))
+            .await
+            .map(std::sync::Arc::new)
+            .unwrap_or_default()
+    };
 
     Ok(SessionWire {
         slot: slot.clone(),
-        // Through the shared cache rather than the surface's own walk: the
-        // walk is a full tree, and every client on this seat would otherwise
-        // pay for it again.
-        file_index: state.work.files(&state.surface, slot, &state_at.scan_cwd).await,
+        file_index,
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
         mcp: surface.mcp_servers(slot),
@@ -1800,6 +1818,75 @@ mod tests {
         assert_eq!(
             encoded["header"]["session_id"], "d4f70669-1f2a",
             "the occupant the core named crosses on the header: {encoded}"
+        );
+    }
+
+    /// **The dispatch flag the record carries is the workspace's.** It was
+    /// computed here, over the held conversation, until the push landed: the
+    /// fold that raises it is the one that announces the raise, so the record
+    /// reads it through the view surface rather than keeping a second answer
+    /// that could disagree with the frame.
+    #[tokio::test]
+    async fn the_record_reads_the_dispatch_flag_from_the_workspace() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let before =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            before["has_dispatches"], false,
+            "a seat whose fold raised nothing reads false: {before}",
+        );
+
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts { has_dispatches: true, ..ViewFacts::default() },
+        );
+
+        let after =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            after["has_dispatches"], true,
+            "and the flag the workspace holds is the one the record answers with: {after}",
+        );
+    }
+
+    /// **A seat whose loop never ran is walked at the read**, the same
+    /// fallback the work row takes. A fixture holds no seat, so no loop runs
+    /// for one: the record's index is the tree's rather than an empty list
+    /// standing in for a tree nobody looked at.
+    #[tokio::test]
+    async fn the_record_walks_the_index_when_the_store_holds_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("found.rs"), "").expect("write");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+
+        let entries = encoded["file_index"]["entries"].as_object().expect("an index crosses");
+        assert!(
+            entries.contains_key("found.rs"),
+            "a seat nothing has walked is walked at the read: {encoded}",
         );
     }
 

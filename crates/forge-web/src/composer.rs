@@ -16,6 +16,7 @@ use forge_primitives::permission_interaction::{
 use forge_primitives::question::{QuestionAnnotation, QuestionOutcome, QuestionRequest};
 use forge_primitives::session_update::ToolCall;
 use forge_server::composer::{Composer, Notice, Phase, SignIn, Take};
+use forge_server::file_index::FileIndex;
 use forge_server::live::Live;
 // One prompt as the composer draws it, whichever copy it came from: the
 // wire's, or the one the core kept beside the answer's oneshot for a view
@@ -167,7 +168,7 @@ pub enum Draft {
 }
 
 /// Render the composer for `slot`, with `draft` standing in the box.
-pub async fn render(
+pub fn render(
     home: &Home<'_>,
     slot: &SessionSlot,
     roster: &Roster,
@@ -200,7 +201,7 @@ pub async fn render(
                 (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat, draft_state))
             } @else {
                 (hint(row, held.sign_in(slot)))
-                (popover(home, slot, roster, draft).await)
+                (popover(home, slot, roster, draft))
                 (box_markup(
                     draft,
                     held.take(slot),
@@ -496,7 +497,7 @@ fn trigger_of(draft: &str) -> Option<(Trigger, &str)> {
 }
 
 /// The list a half-typed trigger opens.
-async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &str) -> Markup {
+fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &str) -> Markup {
     let Some((trigger, query)) = trigger_of(draft) else {
         return Markup::default();
     };
@@ -536,9 +537,13 @@ async fn popover(home: &Home<'_>, slot: &SessionSlot, roster: &Roster, draft: &s
             ("cmd", "commands".to_owned(), count.to_string(), rows)
         }
         Trigger::File => {
+            // **This page holds no seat, so no seat's loop walks for it.**
+            // The socket's clients read the store a held seat's loop writes;
+            // a page served from the process with no subscription behind it
+            // has no such store, and walks the tree where it stands.
             let index = match roster.cwd_for(slot) {
-                Some(cwd) => home.work.files(home.surface, slot, &cwd).await,
-                None => std::sync::Arc::default(),
+                Some(cwd) => home.surface.walk_file_index(std::path::Path::new(&cwd)),
+                None => FileIndex::default(),
             };
             let found = index.visible(query, FILE_ROWS);
             let rows: Vec<(String, Markup)> = found

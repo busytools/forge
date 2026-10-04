@@ -203,6 +203,18 @@ pub struct DomainSession {
     /// Written by the seat's watch loop while a view is showing it, so a
     /// read answers a value rather than paying for a `git` subprocess.
     pub work_snapshot: Option<crate::work::WorkSnapshot>,
+    /// Whether this conversation dispatched a sub-agent, anywhere in it.
+    ///
+    /// Assigned from the history a connect carries and raised by each dispatch
+    /// frame: it is a fact about the whole conversation rather than about a
+    /// window of it, so within one occupant's life it never goes back - but a
+    /// connect reassigns it, and a fresh `/new`, which carries no history,
+    /// leaves it false rather than inheriting the occupant before it.
+    pub has_dispatches: bool,
+    /// The seat's walked file index, and when it was taken. Written by the
+    /// seat's own loop while a view is showing it, so the composer's `@`
+    /// list reads a value rather than paying for a walk of the tree.
+    pub file_index: Option<crate::work::HeldFileIndex>,
 }
 
 impl DomainSession {
@@ -321,6 +333,8 @@ impl DomainSession {
             monitors: Vec::new(),
             process_snapshot: None,
             work_snapshot: None,
+            has_dispatches: false,
+            file_index: None,
         }
     }
 

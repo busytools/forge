@@ -625,12 +625,11 @@ fn close_traced(
     *trace = TurnTrace::default();
 }
 
-/// Whether a `parent_tool_use_id` names the dispatch a frame ran under. Set
-/// and non-empty: the wire spells "no dispatch" as null, and the terminal
-/// reads the same field with the same guard for the frames it folds.
-pub fn names_a_dispatch(parent_tool_use_id: Option<&str>) -> bool {
-    parent_tool_use_id.is_some_and(|parent| !parent.trim().is_empty())
-}
+/// Whether a `parent_tool_use_id` names the dispatch a frame ran under. The
+/// guard lives in `forge_primitives` because the folds that read the field
+/// span three crates, and this path is kept for the callers that reach it
+/// here.
+pub use forge_primitives::messages::names_a_dispatch;
 
 /// A frame a sub-agent produced. What it narrates and calls belongs to the
 /// SUBAGENTS surface, never to the session's own conversation.

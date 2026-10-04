@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyUpdate, HANDLERS, IGNORED, REPLACES, UNFED } from './apply';
+import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /**
@@ -272,6 +272,42 @@ describe('applyUpdate', () => {
       expect(next.background_tasks, 'an empty set is the frame saying nothing is running').toEqual(
         [],
       );
+    });
+
+    it('replaces each catalogue whole, off the payload key the frame carries', () => {
+      const commands = applyUpdate(empty(), {
+        slash_commands_changed: { key: SLOT, commands: [{ name: 'compact' }] },
+      });
+      const agents = applyUpdate(commands, {
+        subagents_changed: { key: SLOT, subagents: [{ name: 'reviewer' }] },
+      });
+
+      expect(agents.slash_commands).toEqual([{ name: 'compact' }]);
+      expect(agents.subagents).toEqual([{ name: 'reviewer' }]);
+    });
+
+    it('carries the dispatch flag the frame names', () => {
+      const next = applyUpdate(empty(), {
+        dispatches_changed: { key: SLOT, has_dispatches: true },
+      });
+
+      expect(next.has_dispatches).toBe(true);
+    });
+
+    it('carries the file index the frame names', () => {
+      const index = { entries: { 'src/main.rs': { rel_path: 'src/main.rs', depth: 1 } } };
+      const next = applyUpdate(empty(), { file_index_changed: { key: SLOT, index } });
+
+      expect(next.file_index, 'the walk the frame carried never reached the record').toEqual(index);
+    });
+
+    it('leaves the index alone for a frame that carries none', () => {
+      const held = applyUpdate(empty(), {
+        file_index_changed: { key: SLOT, index: { entries: { 'a.ts': {} } } },
+      });
+      const next = applyUpdate(held, { file_index_changed: { key: SLOT } });
+
+      expect(next).toBe(held);
     });
   });
 
@@ -711,16 +747,11 @@ describe('applyUpdate', () => {
       const held = empty();
       expect(applyUpdate(held, { mcp_snapshot: { key: SLOT, servers: 'not a list' } })).toBe(held);
     });
-
-    it('names every field only a read can move', () => {
-      const held = empty();
-      expect([...UNFED].every((field) => field in held)).toBe(true);
-    });
   });
 });
 
 /**
- * Every variant `SessionUpdate` carries - 61 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 65 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -765,6 +796,10 @@ const EVERY_VARIANT = [
   'monitors_changed',
   'background_tasks_changed',
   'work_changed',
+  'slash_commands_changed',
+  'subagents_changed',
+  'dispatches_changed',
+  'file_index_changed',
   'processes_changed',
   'sessions_listed',
   'service_status',
@@ -826,9 +861,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (61 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (65 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(61);
+    ).toBe(65);
   });
 
   it('classifies every variant the core can send', () => {

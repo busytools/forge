@@ -71,6 +71,7 @@ mod crons;
 mod dictate;
 mod domain_session;
 mod error;
+pub mod file_index;
 mod gotify;
 pub mod launch_settings;
 pub(crate) mod mcp;
