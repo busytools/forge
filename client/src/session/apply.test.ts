@@ -837,6 +837,29 @@ describe('applyUpdate', () => {
       });
       expect(dropped.queue).toEqual([]);
     });
+
+    it("clears a dead CLI's rows, where no per-row frame ever will", () => {
+      // The queue died with the process and the core clears its own pile on
+      // the same event; without the client doing the same the cards stand
+      // until something reads the seat again, which for a dead worker is the
+      // next spawn - and a row that vanishes with no word reads as delivered.
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+      const next = applyUpdate(held, {
+        connection_failed: { key: SLOT, message: 'the process exited', fatal: false },
+      });
+
+      expect(next.queue, 'the rows go with the process').toEqual([]);
+      expect(next.queue_ended, 'one dim line where the cards were').toEqual({
+        text: 'nightly sweep',
+        state: 'discarded',
+      });
+
+      const bare = empty();
+      const nothing = applyUpdate(bare, {
+        connection_failed: { key: SLOT, message: 'the process exited', fatal: false },
+      });
+      expect(nothing, 'a seat with no rows is left as it was').toBe(bare);
+    });
   });
 });
 

@@ -62,6 +62,26 @@ type Apply = (held: SessionRecord, payload: Record<string, unknown>) => SessionR
  * falls through.
  */
 export const HANDLERS: Record<string, Apply> = {
+  /**
+   * The CLI the waiting rows were written to is gone.
+   *
+   * Its queue died with the process, the core clears its own pile on the
+   * same event, and no per-row frame will ever say so - so the rows go here,
+   * with the ending the design gives anything that leaves without being
+   * taken: one dim line where the cards were. Without this a dead worker's
+   * cards stand until something else reads the seat, which is the next
+   * spawn.
+   */
+  connection_failed: (held) => {
+    if (held.queue.length === 0) return held;
+    const last = held.queue[held.queue.length - 1];
+    return {
+      ...held,
+      queue: [],
+      queue_ended: last === undefined ? held.queue_ended : { text: last.text, state: 'discarded' },
+    };
+  },
+
   chat_appended: (held, payload) => {
     const msg = payload['msg'];
     if (msg === undefined) return held;
@@ -367,7 +387,6 @@ export const IGNORED: readonly string[] = [
   'accounts_changed',
   'catalog_loaded',
   'cli_version_changed',
-  'connection_failed',
   'cron_prompt_appended',
   'dictate_availability',
   'dictate_device_pin',
