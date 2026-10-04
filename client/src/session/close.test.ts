@@ -125,7 +125,10 @@ describe('where a close lands the reader', () => {
     const { open } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
     expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
-    expect(location.pathname).toBe('/session/TestOrg/a/lead');
+    expect(
+      location.pathname,
+      "the landing was the walk's adjacent pick, not the rail's first live row",
+    ).toBe('/session/TestOrg/a/lead');
   });
 
   /**
@@ -256,8 +259,8 @@ describe('the walk is over seats with something behind them', () => {
    * The direction, which only a middle row can tell: closing the second
    * project's worker - a project with no live lead, so the walk answers -
    * has a live row after it and rows before it, and the walk goes FORWARD
-   * first. (A lead close would land on the first live project, which is the
-   * other describe's rule, not the walk's.)
+   * first. (A lead close would land on the rail's first live row, which is
+   * the other describe's rule, not the walk's.)
    */
   it('walks forward from a middle row rather than back', () => {
     const held = ground(['proj', 'other'], W1, OTHER_W1, OTHER_W2);
