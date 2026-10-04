@@ -303,11 +303,12 @@ describe("a rail row's close chip", () => {
   });
 
   /**
-   * A sleeping seat has no session to close, so it carries no chip: the
-   * terminal draws those rows as information, and a control that took the
-   * click and closed nothing would promise work it cannot do.
+   * A sleeping seat is information, not a way in: it has no session to close
+   * and nothing behind it to open, so the row carries neither a chip nor a
+   * link. The terminal draws these rows as labels for the same reason - its
+   * launchpad lists them with no hit target at all.
    */
-  it('draws no close chip on a sleeping seat', () => {
+  it('draws a sleeping seat as information: no chip, no link', () => {
     const home: HomeWire = {
       ...homeWire,
       agents: [row('lead', 'Running'), row('slept', 'Sleeping')],
@@ -324,5 +325,10 @@ describe("a rail row's close chip", () => {
     });
 
     expect(document.querySelector('details .x'), 'a sleeping row drew a close chip').toBeNull();
+    expect(
+      document.querySelector('details .wk a'),
+      'a sleeping row was drawn as a way in',
+    ).toBeNull();
+    expect(document.body.textContent, 'the row stopped naming the seat').toContain('slept');
   });
 });

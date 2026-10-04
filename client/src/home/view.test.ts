@@ -65,8 +65,11 @@ describe('the row marks', () => {
     // Nothing the sheet styles is unreachable, and nothing drawn is unstyled.
     // Read from the sheet rather than a list here, which could only ever fail
     // on a rename inside this table - the inverse of what it is for.
+    // `unopenable` is not a state: it says whether the row is a link, and
+    // Row.test.ts pins which rows draw it.
     const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
     const styled = new Set([...sheet.matchAll(/\.row\.([a-z-]+)/g)].map((match) => match[1]));
+    styled.delete('unopenable');
     const drawn = new Set(MARKS.map(([, klass]) => klass));
     expect([...styled].sort(), 'the sheet styles a row state nothing draws').toEqual(
       [...drawn].sort(),
