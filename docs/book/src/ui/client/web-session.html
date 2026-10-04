@@ -179,7 +179,7 @@
   .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
-    border-radius: 5px; padding: 0 5px; cursor: pointer; }
+    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer; }
   .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
   /* The seat the page is showing, marked on its own row and nowhere else: the
      name takes the accent and the mark is recoloured rather than reshaped. Only
@@ -1068,19 +1068,19 @@
       <div class="pj">
         <div class="pr"><span class="dot needs"></span><span class="nm">core-v1</span>
           <span class="org">Granite</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why">a permission prompt is waiting</div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot needs"></span><span class="nm">companies/steward</span>
           <span class="org">Personal</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why">asked you a question</div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot failed"></span><span class="nm">trader-cc</span>
           <span class="org">Busytools</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">spawn failed</div>
       </div>
 
@@ -1088,50 +1088,50 @@
       <div class="pj">
         <div class="pr"><span class="dot live"></span><span class="nm">forge</span>
           <span class="org">Busytools</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <!-- The seat the page is showing, marked on its own row. -->
         <div class="wk on"><span class="dot live" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">live-updates</span><span class="x">&#10005;</span></div>
+          <span class="nm">live-updates</span><button class="x" type="button" title="close">&#10005;</button></div>
         <!-- The seats this project has asleep, behind one row that counts
              them. Open it to see the rows it hides. -->
         <details class="sfold">
           <summary class="wk"><span class="dot off"></span>
             <span class="nm">2 asleep</span><span class="arw">&#9656;</span></summary>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">chat-kinds</span><span class="x">&#10005;</span></div>
+            <span class="nm">chat-kinds</span><button class="x" type="button" title="close">&#10005;</button></div>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">rail-footer</span><span class="x">&#10005;</span></div>
+            <span class="nm">rail-footer</span><button class="x" type="button" title="close">&#10005;</button></div>
         </details>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">hub-modules</span>
           <span class="org">Busytools</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">em-dash-sweep</span><span class="x">&#10005;</span></div>
+          <span class="nm">em-dash-sweep</span><button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">steward</span><span class="x">&#10005;</span></div>
+          <span class="nm">steward</span><button class="x" type="button" title="close">&#10005;</button></div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">busymail</span>
           <span class="org">Busytools</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">granite-backend</span>
           <span class="org">Granite</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">referral-signature-fix</span><span class="x">&#10005;</span></div>
+          <span class="nm">referral-signature-fix</span><button class="x" type="button" title="close">&#10005;</button></div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">companies</span>
           <span class="org">Personal</span>
-          <span class="x">&#10005;</span></div>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">steward</span><span class="x">&#10005;</span></div>
+          <span class="nm">steward</span><button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">inbox-triage</span><span class="x">&#10005;</span></div>
+          <span class="nm">inbox-triage</span><button class="x" type="button" title="close">&#10005;</button></div>
       </div>
 
       <!-- The asleep half of the fleet folds, and its heading counts the rows
