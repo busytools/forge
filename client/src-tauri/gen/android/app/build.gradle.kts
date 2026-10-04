@@ -1,4 +1,3 @@
-import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,11 +6,16 @@ plugins {
     id("rust")
 }
 
-val tauriProperties = Properties().apply {
-    val propFile = file("tauri.properties")
-    if (propFile.exists()) {
-        propFile.inputStream().use { load(it) }
-    }
+// The crate's own version, which `just release` bumps: tauri.properties
+// carries Android's 1.0 default, and a build labelled 1.0 would be a lie.
+val clientVersion: String = Regex("""(?m)^version = "([^"]+)"""")
+    .find(file("../../../Cargo.toml").readText())
+    ?.groupValues
+    ?.get(1) ?: "1.0"
+val clientVersionCode: Int = clientVersion.split('.').let { parts ->
+    (parts.getOrNull(0)?.toIntOrNull() ?: 1) * 1_000_000 +
+        (parts.getOrNull(1)?.toIntOrNull() ?: 0) * 1_000 +
+        (parts.getOrNull(2)?.toIntOrNull() ?: 0)
 }
 
 android {
@@ -22,8 +26,8 @@ android {
         applicationId = "dev.vedhavyas.forge"
         minSdk = 24
         targetSdk = 37
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = clientVersionCode
+        versionName = clientVersion
     }
     buildTypes {
         getByName("debug") {
