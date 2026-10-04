@@ -27,7 +27,7 @@ test-helpers = ["forge-primitives/test-helpers"]
 # `forge-gateway/testing` so their test-only constructors are visible
 # cross-crate.
 # Production builds never see this code.
-testing = ["forge-agent/testing", "forge-gateway/testing"]
+testing = ["forge-agent/testing", "forge-gateway/testing", "forge-dictate/test-helpers"]
 
 [dependencies]
 forge-primitives = { workspace = true }

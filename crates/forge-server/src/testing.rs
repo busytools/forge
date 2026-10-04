@@ -113,6 +113,17 @@ impl Fleet {
         Arc::clone(&self.surface)
     }
 
+    /// Arm dictation for `key`: an engine over a temp models directory
+    /// whose weights are absent, and the seat marked live, so a test can
+    /// drive a take without hardware, a model or a CLI. The returned
+    /// directory has to outlive the engine.
+    pub fn arm_dictation(&self, key: &SessionSlot) -> Result<tempfile::TempDir, FixtureError> {
+        let dir = tempfile::tempdir()?;
+        self.workspace.install_test_dictate_engine(dir.path())?;
+        self.workspace.mark_test_session_live(key);
+        Ok(dir)
+    }
+
     /// Push one update onto the core's stream, so a test can watch a view
     /// react to it without driving a whole session.
     pub fn emit(&self, update: SessionUpdate) {

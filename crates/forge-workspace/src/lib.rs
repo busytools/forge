@@ -94,9 +94,9 @@ pub mod work;
 mod workspace;
 
 pub use dictate::{
-    DictateBind, DictateDeviceCatalog, DictateDeviceChoice, DictateFailure, DictateMode,
-    DictateModel, DictateModelState, DictateOverrideUpdate, DictateOverrides, DictateRole,
-    DictateSettings, DictateSnapshot,
+    DictateAxes, DictateBind, DictateDeviceCatalog, DictateDeviceChoice, DictateFailure,
+    DictateMode, DictateModel, DictateModelState, DictateOverrideUpdate, DictateOverrides,
+    DictateRole, DictateSettings, DictateSnapshot,
 };
 pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 // The normalizer's prompt axes reach the TUI only through this

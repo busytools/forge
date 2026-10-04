@@ -555,6 +555,35 @@ impl Workspace {
         *self.dictate.snapshot.lock() = snapshot;
     }
 
+    /// Arm dictation with an engine over `models_dir`: its microphone is
+    /// a stand-in and its weights are absent, so a take registers, meters
+    /// and resolves without hardware or a model. The caller holds the
+    /// directory for as long as the engine is wanted. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn install_test_dictate_engine(
+        &self,
+        models_dir: &std::path::Path,
+    ) -> Result<(), forge_dictate::Error> {
+        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
+            forge_dictate::ConfigBuilder::new().models_dir(models_dir).normalizer(None).build(),
+        )?;
+        *self.dictate.engine.lock() = Some(engine);
+        Ok(())
+    }
+
+    /// Mark `key` live the way a started session is - a command sender
+    /// with nothing behind it - so a liveness gate reads true without a
+    /// CLI. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn mark_test_session_live(&self, key: &SessionSlot) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        // Held for the process's length: a dropped receiver reads as a
+        // session that has gone, which is the very state this marks the
+        // absence of.
+        Box::leak(Box::new(receiver));
+        self.command_senders.lock().insert(key.clone(), sender);
+    }
+
     /// A `testing_stub` whose `[dictate] enabled` is true, so a
     /// cross-crate test exercises the key handler's enabled path
     /// without a model download. Test-only.

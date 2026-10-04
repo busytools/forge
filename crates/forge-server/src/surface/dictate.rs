@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use forge_primitives::SessionSlot;
 use forge_workspace::DictateSnapshot;
 
 use super::ViewSurface;
@@ -34,6 +35,17 @@ pub struct DictateView {
 }
 
 impl ViewSurface {
+    /// Push one frame of client-captured audio into a seat's live take,
+    /// answering whether the samples were kept.
+    ///
+    /// A data plane rather than a command: a client sends this ~50 times a
+    /// second for as long as it talks, and the command bus's dispatch is
+    /// for the actions a view takes on the user's behalf, not for the
+    /// audio itself.
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
+        self.workspace.dictate_push(key, samples)
+    }
+
     pub fn dictate(&self) -> DictateView {
         DictateView {
             enabled: self.workspace.dictate_enabled(),
