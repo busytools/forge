@@ -12,7 +12,7 @@ use forge_agent::client::SessionLaunchSettings;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{
-    Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
+    Command, PromptSource, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
 use crate::workspace::LiveWorkerRefusal;
@@ -364,9 +364,12 @@ pub(crate) fn handle_deliver_peer_prompt(
         // envelopes come back), so the TUI gets no inbound user-turn
         // signal from the SDK side - `PeerEnvelopeAppended` is how
         // the TUI knows to render the peer block.
-        push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, text) {
+        if let Err(err) =
+            workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Peer, uuid)
+        {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 target_project = %target_project,
@@ -470,10 +473,18 @@ pub(crate) fn deliver_cron_prompt(
 
     if let Some(target_key) = live_cron_slot(workspace, &view, team_role) {
         // Echo the cron block BEFORE the LLM-side dispatch so it renders in
-        // order regardless of which event the TUI reducer drains first.
+        // order regardless of which event the TUI reducer drains first. The id
+        // is minted here so the block's row and the dispatched prompt's
+        // lifecycle frames are one thing by id.
         let text = missed_cron_text(&prompt, missed);
-        push_cron_prompt_into_chat(workspace, &target_key, &text);
-        return match workspace.dispatch_workspace_prompt(&target_key, text) {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        push_cron_prompt_into_chat(workspace, &target_key, &text, &uuid);
+        return match workspace.dispatch_workspace_prompt_under(
+            &target_key,
+            text,
+            PromptSource::Cron,
+            uuid,
+        ) {
             Ok(()) => CronFireOutcome::Delivered,
             Err(err) => {
                 tracing::warn!(
@@ -685,10 +696,14 @@ pub(crate) fn deliver_gotify_message(
             // Echo the notification block BEFORE the LLM-side dispatch so
             // it renders in order regardless of which event the TUI reducer
             // drains first (mirrors handle_deliver_peer_prompt).
-            push_gotify_notification_into_chat(workspace, &worker_key, &notification);
-            if let Err(err) =
-                workspace.dispatch_workspace_prompt(&worker_key, notification.to_prose())
-            {
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            push_gotify_notification_into_chat(workspace, &worker_key, &notification, &uuid);
+            if let Err(err) = workspace.dispatch_workspace_prompt_under(
+                &worker_key,
+                notification.to_prose(),
+                PromptSource::Gotify,
+                uuid,
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -713,9 +728,14 @@ pub(crate) fn deliver_gotify_message(
         });
 
     if let Some(target_key) = running_lead {
-        push_gotify_notification_into_chat(workspace, &target_key, &notification);
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, notification.to_prose())
-        {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        push_gotify_notification_into_chat(workspace, &target_key, &notification, &uuid);
+        if let Err(err) = workspace.dispatch_workspace_prompt_under(
+            &target_key,
+            notification.to_prose(),
+            PromptSource::Gotify,
+            uuid,
+        ) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -866,7 +886,13 @@ pub(crate) fn deliver_slack_message(
             .domain_session_for(&worker_key)
             .is_some_and(|d| d.lock().session_id.is_some());
         if connected {
-            if let Err(err) = workspace.dispatch_workspace_prompt(&worker_key, prose.clone()) {
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            if let Err(err) = workspace.dispatch_workspace_prompt_under(
+                &worker_key,
+                prose.clone(),
+                PromptSource::Slack,
+                uuid.clone(),
+            ) {
                 tracing::warn!(
                     target: "forge_workspace::spawn",
                     project = %project,
@@ -880,7 +906,7 @@ pub(crate) fn deliver_slack_message(
             // Echo only once the dispatch lands: a failed one returns false so
             // the sweep re-runs the batch, and an echo pushed before it would
             // paint the block twice for a turn the LLM sees once.
-            push_slack_message_into_chat(workspace, &worker_key, &prose);
+            push_slack_message_into_chat(workspace, &worker_key, &prose, &uuid);
             workspace.slack_delivery_commit(project, team_role, &pending);
         } else {
             // Still spawning: commit the dedupe (the sweep must not
@@ -901,7 +927,13 @@ pub(crate) fn deliver_slack_message(
         });
 
     if let Some(target_key) = running_lead {
-        if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, prose.clone()) {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        if let Err(err) = workspace.dispatch_workspace_prompt_under(
+            &target_key,
+            prose.clone(),
+            PromptSource::Slack,
+            uuid.clone(),
+        ) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project,
@@ -913,7 +945,7 @@ pub(crate) fn deliver_slack_message(
         }
         // Echo after the dispatch lands, so the sweep's re-run of a failed
         // delivery does not paint a second block for the same batch.
-        push_slack_message_into_chat(workspace, &target_key, &prose);
+        push_slack_message_into_chat(workspace, &target_key, &prose, &uuid);
         workspace.slack_delivery_commit(project, team_role, &pending);
         return true;
     }
@@ -971,10 +1003,12 @@ pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
     wrapped: &WrappedPrompt,
+    uuid: &str,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::PeerEnvelopeAppended {
         key: target_key.clone(),
         wrapped: wrapped.clone(),
+        uuid: uuid.to_owned(),
     });
 }
 
@@ -987,10 +1021,12 @@ pub(crate) fn push_gotify_notification_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
     notification: &GotifyNotification,
+    uuid: &str,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::GotifyNotificationAppended {
         key: target_key.clone(),
         notification: notification.clone(),
+        uuid: uuid.to_owned(),
     });
 }
 
@@ -1003,10 +1039,13 @@ pub(crate) fn push_cron_prompt_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
     text: &str,
+    uuid: &str,
 ) {
-    let _ = workspace
-        .update_sender()
-        .send(SessionUpdate::CronPromptAppended { key: target_key.clone(), text: text.to_owned() });
+    let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
+        key: target_key.clone(),
+        text: text.to_owned(),
+        uuid: uuid.to_owned(),
+    });
 }
 
 /// Emit a typed `SlackMessageAppended` so the target session's TUI chat buffer
@@ -1018,10 +1057,12 @@ pub(crate) fn push_slack_message_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
     prose: &str,
+    uuid: &str,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::SlackMessageAppended {
         key: target_key.clone(),
         prose: prose.to_owned(),
+        uuid: uuid.to_owned(),
     });
 }
 
@@ -2278,9 +2319,12 @@ pub(crate) fn handle_deliver_worker_prompt(
     // `wrapped` exactly once (the push_peer_user_turn_into_chat helper
     // takes `&WrappedPrompt` and clones internally).
     let text = wrapped.to_prose();
-    push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
+    let uuid = forge_sdk::request_id::next_prompt_id();
+    push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
     drop(wrapped);
-    if let Err(err) = workspace.dispatch_workspace_prompt(&target_key, text) {
+    if let Err(err) =
+        workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Forge, uuid)
+    {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
@@ -2333,9 +2377,12 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     };
 
     let text = wrapped.to_prose();
-    push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped);
+    let uuid = forge_sdk::request_id::next_prompt_id();
+    push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped, &uuid);
     drop(wrapped);
-    if let Err(err) = workspace.dispatch_workspace_prompt(target_lead_key, text) {
+    if let Err(err) =
+        workspace.dispatch_workspace_prompt_under(target_lead_key, text, PromptSource::Forge, uuid)
+    {
         tracing::warn!(
             target: "forge_workspace::spawn",
             slot = %target_lead_key.display(),
@@ -2837,6 +2884,7 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|c| matches!(
                 c, crate::protocol::Command::Prompt { key, text, .. }
+                    | crate::protocol::Command::PromptUnder { key, text, .. }
                     if *key == worker_key && text.contains("hello")
             )),
             "the worker receives the message as a prompt: {dispatched:?}",
@@ -2846,7 +2894,7 @@ provider = "anthropic"
         while let Ok(u) = update_rx.try_recv() {
             if matches!(
                 u,
-                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose }
+                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == worker_key
                         && prose.starts_with("[Slack")
                         && prose.contains("hello")

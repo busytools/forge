@@ -63,10 +63,10 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 34
+A command's variant is its name around its field bag - `Command` has 36
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 60 of `SessionUpdate`'s 65 variants are struct variants too. The other
+and 63 of `SessionUpdate`'s 68 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -251,7 +251,7 @@ conversation, and what the composer is doing.
 | `pending_ask` | The prompt the seat is waiting on, `null` when there is none. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them. |
-| `state` | The seat's scan cwd and what it dictates with, where it has overridden the defaults. |
+| `state` | The seat's scan cwd, what it dictates with where it has overridden the defaults, and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it. |
 | `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The ask it is answering rides `pending_ask` rather than being copied here. |
 
 **`usage`** is the token/cost pool behind a `/usage` view, scanned on the
@@ -301,11 +301,14 @@ submitted them and has already drawn them, which is what lets the terminal
 skip its own words while drawing everyone else's; nothing else reads it,
 because no other view's composer is optimistic.
 
-**A forged turn carries no `uuid`**, because the CLI mints
-the transcript's id for that turn after the fact and never sends it, so
-there is no honest one for forge to put there. What the frame and the
-page's copy of the same turn agree on is the prose; a client that matches a
-live turn to its settled copy by id alone will not match these.
+**A forged turn carries the prompt's own `uuid`**, the id the prompt was
+dispatched under. The CLI stamps the prompt's id into the transcript it
+persists - on the user row of a prompt that started a turn, and inside the
+`queued_command` block's `source_uuid` when a mid-turn prompt is delivered
+as an attachment - so the frame and the page's later copy of the same
+message agree on it, and a client reconciles the two by id. It is also what
+lets a view hold the forged row while the prompt waits in the pile: the
+`command_lifecycle` frames carry the same id.
 
 **The server's fold is not what a terminal reads.** The terminal groups a
 message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the

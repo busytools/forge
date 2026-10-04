@@ -38,6 +38,9 @@ import {
 /** `EffortLevel`, as the core's own enum serialises. */
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+/** The lifecycle states this build reads as settled - the row leaves the pile. */
+const SETTLED_STATES = new Set(['started', 'completed', 'cancelled', 'discarded', 'refused']);
+
 /** `PermissionMode`, as its own serde writes it: camelCase, not snake. */
 const MODES: PermissionMode[] = [
   'default',
@@ -59,6 +62,26 @@ type Apply = (held: SessionRecord, payload: Record<string, unknown>) => SessionR
  * falls through.
  */
 export const HANDLERS: Record<string, Apply> = {
+  /**
+   * The CLI the waiting rows were written to is gone.
+   *
+   * Its queue died with the process, the core clears its own pile on the
+   * same event, and no per-row frame will ever say so - so the rows go here,
+   * with the ending the design gives anything that leaves without being
+   * taken: one dim line where the cards were. Without this a dead worker's
+   * cards stand until something else reads the seat, which is the next
+   * spawn.
+   */
+  connection_failed: (held) => {
+    if (held.queue.length === 0) return held;
+    const last = held.queue[held.queue.length - 1];
+    return {
+      ...held,
+      queue: [],
+      queue_ended: last === undefined ? held.queue_ended : { text: last.text, state: 'discarded' },
+    };
+  },
+
   chat_appended: (held, payload) => {
     const msg = payload['msg'];
     if (msg === undefined) return held;
@@ -167,6 +190,63 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   permission_request: (held, payload) => parked(held, 'permission', payload['request']),
+
+  /**
+   * A prompt entered the CLI's queue: the row's words and sender arrive here,
+   * where the lifecycle frames carry only the id and the state. The row is
+   * keyed by the uuid its sender minted, so a view's own optimistic row and
+   * this one are the same row rather than two.
+   */
+  prompt_queued: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    const words = text(payload['text']);
+    if (uuid === null || words === null) return held;
+    if (held.queue.some((row) => row.uuid === uuid)) return held;
+    return {
+      ...held,
+      // A new row is the next thing to look at, so the last ending goes with
+      // it rather than standing beside a queue that has moved on.
+      queue_ended: null,
+      queue: [...held.queue, { uuid, source: text(payload['source']) ?? 'forge', text: words }],
+    };
+  },
+
+  /**
+   * The CLI moved a prompt.
+   *
+   * The pile holds only prompts still waiting, so a settled state drops the
+   * row. **Only a state this build knows settles it**: a word the CLI adds
+   * later leaves the row standing, because dropping on a parse miss is the
+   * one failure a reader cannot see.
+   */
+  prompt_lifecycle: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    const state = text(payload['state']);
+    if (uuid === null || state === null || !SETTLED_STATES.has(state)) return held;
+    const leaving = held.queue.find((row) => row.uuid === uuid);
+    if (leaving === undefined) return held;
+    const queue = held.queue.filter((row) => row.uuid !== uuid);
+    // Two states leave with a word rather than silently: a session that ended
+    // with the prompt waiting, and a hook that refused it. Being taken and
+    // being cancelled are the row doing its job, and neither says anything.
+    const ending =
+      state === 'discarded' || state === 'refused'
+        ? { text: leaving.text, state }
+        : held.queue_ended;
+    return { ...held, queue, queue_ended: ending };
+  },
+
+  /**
+   * A cancel the CLI confirmed; `cancelled: false` means it had already taken
+   * the prompt, and its own `started` frame is what settles the row then.
+   */
+  prompt_cancel_resolved: (held, payload) => {
+    const uuid = text(payload['uuid']);
+    if (uuid === null || payload['cancelled'] !== true) return held;
+    const queue = held.queue.filter((row) => row.uuid !== uuid);
+    return queue.length === held.queue.length ? held : { ...held, queue };
+  },
+
   question_request: (held, payload) => parked(held, 'question', payload['request']),
 
   pending_interaction_resolved: (held, payload) => {
@@ -307,7 +387,6 @@ export const IGNORED: readonly string[] = [
   'accounts_changed',
   'catalog_loaded',
   'cli_version_changed',
-  'connection_failed',
   'cron_prompt_appended',
   'dictate_availability',
   'dictate_device_pin',

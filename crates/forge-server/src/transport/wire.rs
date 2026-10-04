@@ -390,6 +390,13 @@ pub struct SessionStateWire {
     pub scan_cwd: std::path::PathBuf,
     /// What this session dictates with, where it has overridden the defaults.
     pub dictate_overrides: forge_workspace::DictateOverrides,
+    /// The prompts still waiting in the CLI's queue, oldest first.
+    ///
+    /// The read path for the pile: `prompt_queued` and `prompt_lifecycle`
+    /// speak only on a change, so a client attaching mid-queue - a fresh
+    /// load, a refresh, a seat switch - has nothing else to draw the waiting
+    /// prompts from, and two attached clients have to agree about them.
+    pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
 }
 
 /// What one seat's composer is doing.
@@ -1091,6 +1098,7 @@ async fn session(
             slot: state_at.slot,
             scan_cwd: state_at.scan_cwd,
             dictate_overrides: state_at.dictate_overrides,
+            queue: state_at.queue,
         },
         composer: {
             let live = crate::live::Live::lock(&state.live).snapshot();

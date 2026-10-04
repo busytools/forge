@@ -7,6 +7,7 @@
   import { subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
+  import { mintPromptId } from '../wire/ids';
   import type { SessionSlot } from '../wire/types';
   import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
   import Compacting from './Compacting.svelte';
@@ -183,11 +184,18 @@
     // The newest turn's own state, which is what says whether this send starts
     // a turn: one retried into a turn already running is not taken by it, so
     // the mark holds until the words themselves arrive.
-    echoes.post(seat, held.words, newestTurn?.running === true);
+    //
+    // The id is this send's own, freshly minted: the prompt the first attempt
+    // sent is dead, so the retry is a new prompt that happens to say the same
+    // words - and the pile settles each by id, never by text.
+    const id = mintPromptId();
+    echoes.post(seat, held.words, newestTurn?.running === true, id);
     try {
       // Fire-and-forget like the composer's own send: the outcome rides the
       // subscription rather than a reply, so there is nothing to await.
-      void connection.dispatch({ prompt: { key: slot, text: held.words, attachments: [] } });
+      void connection.dispatch({
+        prompt_under: { key: slot, text: held.words, attachments: [], uuid: id, source: 'you' },
+      });
     } catch {
       // A closed socket throws rather than answering, so the row says why
       // rather than the words going with a command that never left.

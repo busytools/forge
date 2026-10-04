@@ -76,7 +76,11 @@ async fn forge_sdk_e2e_round_trip() {
 
     // Send a tiny prompt.
     agent
-        .prompt_text(session_id.clone(), "Reply with exactly the word OK.".to_owned())
+        .prompt_text(
+            session_id.clone(),
+            "Reply with exactly the word OK.".to_owned(),
+            "smoke-1".to_owned(),
+        )
         .expect("prompt_text queued");
 
     // Wait for the result frame within 60s and verify the assistant said something.
@@ -111,6 +115,7 @@ async fn forge_sdk_e2e_multi_turn() {
         .prompt_text(
             session_id.clone(),
             "Remember the codeword PUMPKIN. Just acknowledge.".to_owned(),
+            "smoke-2".to_owned(),
         )
         .expect("turn 1 queued");
     let turn1 = await_turn(&mut event_rx, Duration::from_secs(60)).await;
@@ -122,7 +127,11 @@ async fn forge_sdk_e2e_multi_turn() {
     // only assert that another full turn round-trips without errors,
     // which proves the worker doesn't re-spawn the CLI between turns.
     agent
-        .prompt_text(session_id, "What was the codeword? One word.".to_owned())
+        .prompt_text(
+            session_id,
+            "What was the codeword? One word.".to_owned(),
+            "smoke-3".to_owned(),
+        )
         .expect("turn 2 queued");
     let turn2 = await_turn(&mut event_rx, Duration::from_secs(60)).await;
     assert!(turn2.saw_text, "turn 2 produced no assistant text");
@@ -160,6 +169,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
             session_id,
             "Use the Bash tool to run `echo OK_FROM_BASH` and report the output verbatim."
                 .to_owned(),
+            "smoke-4".to_owned(),
         )
         .expect("prompt queued");
 
@@ -199,6 +209,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         .prompt_text(
             session_id.clone(),
             "Write a 500-word poem about Rust ownership semantics.".to_owned(),
+            "smoke-5".to_owned(),
         )
         .expect("prompt queued");
 
@@ -270,7 +281,9 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
     // Drive a tiny prompt so the CLI's account info and context-usage
     // numbers are populated. account_info() returns None until at
     // least one stream-json frame mentions it.
-    agent.prompt_text(session_id.clone(), "Reply with OK.".to_owned()).expect("prompt queued");
+    agent
+        .prompt_text(session_id.clone(), "Reply with OK.".to_owned(), "smoke-6".to_owned())
+        .expect("prompt queued");
     let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 
     agent.get_status_snapshot(session_id.clone()).expect("status queued");
@@ -373,7 +386,11 @@ async fn forge_sdk_e2e_resume_session() {
         eprintln!("e2e resume: fresh session {sid}");
 
         agent
-            .prompt_text(sid.clone(), "Reply with the word PERSIST.".to_owned())
+            .prompt_text(
+                sid.clone(),
+                "Reply with the word PERSIST.".to_owned(),
+                "smoke-7".to_owned(),
+            )
             .expect("first prompt queued");
         let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 

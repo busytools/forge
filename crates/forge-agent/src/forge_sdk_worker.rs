@@ -866,12 +866,13 @@ fn log_failed_mcp_servers(msg: &forge_primitives::Message, session_id: &str) {
 pub(crate) async fn send_prompt(
     client: &Client,
     chunks: Vec<forge_primitives::PromptChunk>,
+    uuid: &str,
 ) -> anyhow::Result<()> {
     debug_assert!(!chunks.is_empty(), "send_prompt called with empty chunks");
     if chunks.iter().all(|c| c.kind == "text") {
         let prompt: String =
             chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
-        client.send_user_message(&prompt).await?;
+        client.send_user_message_under(&prompt, uuid).await?;
     } else {
         let content: Vec<serde_json::Value> = chunks
             .into_iter()
@@ -891,7 +892,7 @@ pub(crate) async fn send_prompt(
                 _ => c.value,
             })
             .collect();
-        client.send_user_message_with_content(&content).await?;
+        client.send_user_message_with_content_under(&content, uuid).await?;
     }
     Ok(())
 }

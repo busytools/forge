@@ -259,8 +259,28 @@ pub enum Command {
         text: String,
         attachments: Vec<ImageAttachment>,
     },
+    /// [`Self::Prompt`], under an id the caller already minted.
+    ///
+    /// A view mints its own so it can draw the prompt's row and key it to the
+    /// CLI's `command_lifecycle` frames by id, without matching on order or
+    /// text - two sends with a cron fire between them cannot be told apart any
+    /// other way. Every other dispatcher uses [`Self::Prompt`] and lets the
+    /// core mint.
+    PromptUnder {
+        key: SessionSlot,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+        uuid: String,
+        /// Who dispatched it, for the queued row's label.
+        source: PromptSource,
+    },
     Cancel {
         key: SessionSlot,
+    },
+    /// Drop one prompt still in the CLI's queue, by the uuid it was sent under.
+    CancelQueuedPrompt {
+        key: SessionSlot,
+        uuid: String,
     },
     /// Ask the session task to emit the conversation it is carrying, as
     /// [`SessionUpdate::HistoryReplayed`].
@@ -609,7 +629,9 @@ impl Command {
     pub fn key(&self) -> Option<&SessionSlot> {
         match self {
             Self::Prompt { key, .. }
+            | Self::PromptUnder { key, .. }
             | Self::Cancel { key }
+            | Self::CancelQueuedPrompt { key, .. }
             | Self::ReplayConversation { key }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
@@ -656,7 +678,15 @@ impl std::fmt::Debug for Command {
             Self::Prompt { key, .. } => {
                 f.debug_struct("Prompt").field("key", key).finish_non_exhaustive()
             }
+            Self::PromptUnder { key, uuid, .. } => f
+                .debug_struct("PromptUnder")
+                .field("key", key)
+                .field("uuid", uuid)
+                .finish_non_exhaustive(),
             Self::Cancel { key } => f.debug_struct("Cancel").field("key", key).finish(),
+            Self::CancelQueuedPrompt { key, uuid } => {
+                f.debug_struct("CancelQueuedPrompt").field("key", key).field("uuid", uuid).finish()
+            }
             Self::ReplayConversation { key } => {
                 f.debug_struct("ReplayConversation").field("key", key).finish()
             }
@@ -876,6 +906,40 @@ pub enum PromptOrigin {
     /// A view submitted it over the socket, and no view drew it: a composer
     /// that is not optimistic has only this frame to draw its own send from.
     View,
+}
+
+/// Who dispatched a prompt, for a queued row's label.
+///
+/// Distinct from [`PromptOrigin`], which says whether a VIEW drew the words
+/// already: this one is about the sender, and every frame forge writes as a
+/// user message gets one. Serialised as the label itself.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptSource {
+    /// A person's own send - this view's or another's.
+    You,
+    Cron,
+    Gotify,
+    Slack,
+    Peer,
+    /// forge's own machinery: a worker kick, an auto-continue, a replayed
+    /// parked delivery whose kind is no longer known.
+    Forge,
+}
+
+/// One prompt waiting in the CLI's queue, as a view reads it.
+///
+/// The pile holds only prompts that are still waiting: an entry is appended
+/// where the prompt is sent (the only place that knows its source and words)
+/// and leaves on a lifecycle state the core NAMES as settled.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct QueuedPrompt {
+    /// The uuid the prompt was sent under, which its lifecycle frames carry.
+    pub uuid: String,
+    /// Who dispatched it.
+    pub source: PromptSource,
+    /// The prompt's words, as they were written.
+    pub text: String,
 }
 
 /// How loudly a [`SessionUpdate::Notice`] reads.
@@ -1318,6 +1382,10 @@ pub enum SessionUpdate {
     PeerEnvelopeAppended {
         key: SessionSlot,
         wrapped: crate::mcp::peers::types::WrappedPrompt,
+        /// The id the delivered prompt was dispatched under, which the
+        /// drawn row carries: a view holds the row while that prompt waits in
+        /// the pile and draws it when it starts.
+        uuid: String,
     },
     /// A matched Gotify notification arrived at `key`.
     /// Carries the typed `GotifyNotification` so the TUI reducer builds
@@ -1327,6 +1395,9 @@ pub enum SessionUpdate {
     GotifyNotificationAppended {
         key: SessionSlot,
         notification: crate::mcp::gotify::types::GotifyNotification,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A due cron fired into `key`. Carries the fired
     /// prompt text so the TUI reducer builds the chat-side echo (mirrors
@@ -1336,6 +1407,9 @@ pub enum SessionUpdate {
     CronPromptAppended {
         key: SessionSlot,
         text: String,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A matched Slack message arrived at `key`. Carries the
     /// prose rather than the typed message: the prose builder is `pub(crate)`
@@ -1346,6 +1420,9 @@ pub enum SessionUpdate {
     SlackMessageAppended {
         key: SessionSlot,
         prose: String,
+        /// The id the delivered prompt was dispatched under, which the drawn
+        /// row carries - see `PeerEnvelopeAppended`.
+        uuid: String,
     },
     /// A composed Slack message is waiting for the user's decision in the
     /// dock prompt. The authoring tool handler is blocked on a oneshot
@@ -1371,6 +1448,39 @@ pub enum SessionUpdate {
     /// rides the usual `Command::Prompt` dispatch.
     PromptQueuedWhileBusy {
         key: SessionSlot,
+    },
+    /// A prompt entered the CLI's queue: the row a view draws as waiting,
+    /// with the words and the sender the lifecycle frames do not carry.
+    ///
+    /// Emitted where the prompt is dispatched, keyed by the uuid it was sent
+    /// under - so a view keys its own optimistic row to this one by id rather
+    /// than by order or text.
+    PromptQueued {
+        key: SessionSlot,
+        uuid: String,
+        source: PromptSource,
+        text: String,
+    },
+    /// Where one prompt is in the CLI's queue, as the CLI itself reports it:
+    /// `queued`, `started`, `completed` and the terminal states
+    /// (`cancelled`, `discarded`, `refused`). Keyed by the uuid the prompt was
+    /// sent under, which is what lets a view key its queued row to its own
+    /// send by id rather than by order or text.
+    ///
+    /// `state` stays a free-form string so a state this build has not seen
+    /// reaches a view rather than being dropped.
+    PromptLifecycle {
+        key: SessionSlot,
+        uuid: String,
+        state: String,
+    },
+    /// The CLI answered a `cancel_async_message`: `cancelled: false` means the
+    /// prompt was already dequeued for execution, so a reader that asked to
+    /// drop it has to say it is on its way instead.
+    PromptCancelResolved {
+        key: SessionSlot,
+        uuid: String,
+        cancelled: bool,
     },
     /// A worker's review turn addressed review comments; `key` is the
     /// session that authored the review (the submit origin). The TUI drops
@@ -1470,6 +1580,9 @@ impl SessionUpdate {
             | Self::DictateTranscribing { key }
             | Self::DictateProgress { key, .. }
             | Self::PromptQueuedWhileBusy { key }
+            | Self::PromptQueued { key, .. }
+            | Self::PromptLifecycle { key, .. }
+            | Self::PromptCancelResolved { key, .. }
             | Self::DictateEnded { key, .. }
             | Self::SlackPostPending { key, .. }
             | Self::SlackDraftResolved { key, .. }
@@ -1697,13 +1810,13 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("label", &status.label)
                 .field("worktree", worktree)
                 .finish_non_exhaustive(),
-            Self::PeerEnvelopeAppended { key, wrapped } => f
+            Self::PeerEnvelopeAppended { key, wrapped, .. } => f
                 .debug_struct("PeerEnvelopeAppended")
                 .field("key", key)
                 .field("id", &wrapped.id)
                 .field("kind", &wrapped.kind)
                 .finish_non_exhaustive(),
-            Self::GotifyNotificationAppended { key, notification } => f
+            Self::GotifyNotificationAppended { key, notification, .. } => f
                 .debug_struct("GotifyNotificationAppended")
                 .field("key", key)
                 .field("app", &notification.app)
@@ -1730,6 +1843,23 @@ impl std::fmt::Debug for SessionUpdate {
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
             }
+            Self::PromptQueued { key, uuid, .. } => f
+                .debug_struct("PromptQueued")
+                .field("key", key)
+                .field("uuid", uuid)
+                .finish_non_exhaustive(),
+            Self::PromptLifecycle { key, uuid, state } => f
+                .debug_struct("PromptLifecycle")
+                .field("key", key)
+                .field("uuid", uuid)
+                .field("state", state)
+                .finish(),
+            Self::PromptCancelResolved { key, uuid, cancelled } => f
+                .debug_struct("PromptCancelResolved")
+                .field("key", key)
+                .field("uuid", uuid)
+                .field("cancelled", cancelled)
+                .finish(),
             Self::ReviewActivityNotice { key, branch, waiting, .. } => f
                 .debug_struct("ReviewActivityNotice")
                 .field("key", key)

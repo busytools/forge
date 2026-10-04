@@ -7,6 +7,7 @@
   import { slotOf } from '../protocol';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
+  import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import Dictation from './Dictation.svelte';
@@ -431,10 +432,17 @@
     // out as `/compact ` is one nothing asked for.
     const text = box.draft.trim();
     if (text === '') return;
+    // The prompt's own id is minted here and rides the frame: the CLI emits
+    // that prompt's lifecycle frames only under a client-supplied uuid, and
+    // the queued row the core echoes back carries the same id - so this send,
+    // its row and its frames are one thing by id, never by order or text.
+    const uuid = mintPromptId();
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
-      void connection.dispatch({ prompt: { key: slot, text, attachments: [] } });
+      void connection.dispatch({
+        prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+      });
     } catch {
       // A closed socket throws rather than answering, and it is the one
       // channel left: the words stay in the box rather than going with a
@@ -452,7 +460,7 @@
     // frame can be applied and not yet drawn - and a send posted as
     // not-running is taken by the very publish that carries the turn, where a
     // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running));
+    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid);
     box.draft = '';
   }
 
@@ -480,6 +488,19 @@
       if (event.key === 'Enter') {
         event.preventDefault();
         pick(box.marked);
+        return;
+      }
+    }
+    if (event.key === 'ArrowUp' && box.draft === '') {
+      // An empty box hands up to the queue: the pile takes the keyboard, and
+      // its own down comes back here. Only when the box is empty - a draft
+      // uses up and down for its own lines.
+      const queue = field
+        ?.closest('.composer')
+        ?.querySelector<HTMLElement>('.pile [role="listbox"]');
+      if (queue !== null && queue !== undefined) {
+        event.preventDefault();
+        queue.focus();
         return;
       }
     }

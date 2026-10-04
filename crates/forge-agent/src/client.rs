@@ -123,6 +123,13 @@ pub enum AgentEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
+    /// The CLI answered a `cancel_async_message`. `cancelled: false` means the
+    /// prompt was already dequeued for execution - it is on its way to the
+    /// model, and a reader has to say so rather than pretend it was dropped.
+    PromptCancelResolved {
+        uuid: String,
+        cancelled: bool,
+    },
     McpOperationError {
         session_id: String,
         error: types::McpOperationError,

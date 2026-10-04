@@ -20,18 +20,29 @@ pub struct SessionState {
     /// dictate read instead, because it is one answer for the process rather
     /// than the session.
     pub dictate_overrides: forge_workspace::DictateOverrides,
+    /// The prompts still waiting in the CLI's queue, oldest first - the pile a
+    /// client draws.
+    ///
+    /// The same read path: `prompt_lifecycle` frames speak only on a change,
+    /// so a client attaching mid-queue would otherwise draw nothing until the
+    /// next prompt moved. Held by the core, so two clients agree.
+    pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
 }
 
 impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
-        let dictate_overrides = workspace
+        let (dictate_overrides, queue) = workspace
             .domain_session_for(slot)
-            .map(|domain| domain.lock().dictate_overrides)
+            .map(|domain| {
+                let guard = domain.lock();
+                (guard.dictate_overrides, guard.prompt_queue.clone())
+            })
             .unwrap_or_default();
         Self {
             slot: slot.clone(),
             scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw),
             dictate_overrides,
+            queue,
         }
     }
 }

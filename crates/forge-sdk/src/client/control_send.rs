@@ -26,6 +26,28 @@ impl Client {
         Ok(())
     }
 
+    /// Drop one prompt still sitting in the CLI's queue, by the uuid it was
+    /// sent under.
+    ///
+    /// Answers whether the CLI cancelled it. `false` means it was not in the
+    /// queue - already dequeued for execution, or never enqueued - and the
+    /// prompt is on its way to the model regardless; a malformed or missing
+    /// answer reads the same way (false), which fails closed: the prompt stays
+    /// queued rather than a caller believing it was dropped.
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases.
+    pub async fn cancel_queued_message(&self, message_uuid: &str) -> Result<bool, Error> {
+        let response = self
+            .send_control(
+                "cancel_async_message",
+                serde_json::json!({ "message_uuid": message_uuid }),
+            )
+            .await?;
+        Ok(response.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false))
+    }
+
     /// Switch the permission mode mid-session.
     ///
     /// # Errors

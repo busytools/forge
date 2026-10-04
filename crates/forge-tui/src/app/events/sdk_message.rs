@@ -77,6 +77,10 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // - 2.1.280 `permission_denied`: the CLI refused a tool call;
         //   forge surfaces the refusal through the tool result, so the
         //   frame is a no-op.
+        // - 2.1.280 `command_lifecycle`: the per-prompt queue state
+        //   (queued/started/...). The queued-prompt pile that reads it is
+        //   the client's; the terminal's own queued row is unchanged, so
+        //   the frame is a no-op here.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
@@ -84,6 +88,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         | Message::HookProgress { .. }
         | Message::HookResponse { .. }
         | Message::Notification { .. }
+        | Message::CommandLifecycle { .. }
         | Message::PermissionDenied { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens_delta, .. } => {
@@ -3767,6 +3772,7 @@ mod inbound_message_surfacing_tests {
             forge_workspace::SessionUpdate::CronPromptAppended {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
+                uuid: "cap-cron".to_owned(),
             },
         );
 
@@ -3814,6 +3820,7 @@ mod inbound_message_surfacing_tests {
             forge_workspace::SessionUpdate::CronPromptAppended {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
+                uuid: "cap-cron".to_owned(),
             },
         );
 
@@ -3849,6 +3856,7 @@ mod inbound_message_surfacing_tests {
             forge_workspace::SessionUpdate::CronPromptAppended {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
+                uuid: "cap-cron".to_owned(),
             },
         );
         assert!(
@@ -5501,7 +5509,10 @@ mod forged_user_frame_tests {
 
         handle_user(
             &mut app,
-            Message::display_only_user("[Cron]\n\nrun the morning summary".to_owned()),
+            Message::display_only_user(
+                "[Cron]\n\nrun the morning summary".to_owned(),
+                "cap-1".to_owned(),
+            ),
         );
         let drawn = rows(&app);
         assert!(
@@ -5509,7 +5520,10 @@ mod forged_user_frame_tests {
             "a delivery's forged turn draws a row of its own: {before} before, {drawn} after",
         );
 
-        handle_user(&mut app, Message::display_only_user("what the reader typed".to_owned()));
+        handle_user(
+            &mut app,
+            Message::display_only_user("what the reader typed".to_owned(), "cap-2".to_owned()),
+        );
         assert_eq!(
             rows(&app),
             drawn,

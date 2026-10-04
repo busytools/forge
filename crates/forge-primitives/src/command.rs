@@ -58,14 +58,28 @@ pub enum AgentCommand {
     Prompt {
         session_id: SessionId,
         text: String,
+        /// The prompt's own id, stamped on the frame. The CLI emits this
+        /// prompt's `command_lifecycle` frames only under a stamped id, and a
+        /// view keys its row to those frames by it. Minted by whoever
+        /// dispatches the prompt.
+        uuid: String,
     },
     PromptWithImages {
         session_id: SessionId,
         text: String,
         images: Vec<ImageAttachment>,
+        /// As on [`Self::Prompt`].
+        uuid: String,
     },
     Cancel {
         session_id: SessionId,
+    },
+    /// Drop one prompt still sitting in the CLI's queue, by the uuid it was
+    /// sent under. Answered by [`crate::Message`]-side lifecycle state: a
+    /// prompt the CLI already took cannot be reached this way.
+    CancelQueuedPrompt {
+        session_id: SessionId,
+        uuid: String,
     },
 
     // --- Controls ---

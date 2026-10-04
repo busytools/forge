@@ -41,10 +41,15 @@ export type Echo =
    * the next turn going in flight is not this send being taken. A send wrongly
    * read as taken cannot be refused any more - `refuse` rewrites only what is
    * still on its way - so the refusal would be lost in silence.
+   *
+   * **`id` is the prompt's own**, minted where the send left, on every state:
+   * words alone cannot tell two sends of the same text apart, and the pile's
+   * cancel is settled per prompt - so the arm that clears a pending mark on a
+   * cancel compares this, not the words.
    */
-  | { state: 'sending'; words: string; running: boolean }
-  | { state: 'taken'; words: string }
-  | { state: 'failed'; words: string; why: string };
+  | { state: 'sending'; words: string; running: boolean; id: string }
+  | { state: 'taken'; words: string; id: string }
+  | { state: 'failed'; words: string; why: string; id: string };
 
 /** A send the core's copy of has arrived leaves nothing behind, which is a delete rather than a fourth state. */
 export class Echoes {
@@ -66,8 +71,8 @@ export class Echoes {
    * left, which is what tells a send that started a turn from one that landed
    * in a turn already running.
    */
-  post(key: string, words: string, running: boolean): void {
-    this.#held.set(key, { state: 'sending', words, running });
+  post(key: string, words: string, running: boolean, id: string): void {
+    this.#held.set(key, { state: 'sending', words, running, id });
   }
 
   /**
@@ -85,7 +90,7 @@ export class Echoes {
   take(key: string): void {
     const held = this.#held.get(key);
     if (held === undefined || held.state !== 'sending' || held.running) return;
-    this.#held.set(key, { state: 'taken', words: held.words });
+    this.#held.set(key, { state: 'taken', words: held.words, id: held.id });
   }
 
   /**
@@ -98,7 +103,7 @@ export class Echoes {
   refuse(key: string, why: string): void {
     const held = this.#held.get(key);
     if (held === undefined || held.state !== 'sending') return;
-    this.#held.set(key, { state: 'failed', words: held.words, why });
+    this.#held.set(key, { state: 'failed', words: held.words, why, id: held.id });
   }
 
   /**

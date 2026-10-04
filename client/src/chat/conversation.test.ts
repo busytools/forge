@@ -4,11 +4,12 @@
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { MORE_TURNS } from '../protocol';
+import { MORE_TURNS, subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
+import { echoes } from './echoes.svelte';
 
 // Every record the class publishes is frozen, so an in-place edit where a
 // record should have been replaced throws here as well as in a mounted column.
@@ -114,12 +115,13 @@ const dispatched = (): unknown => ({
 });
 
 /**
- * A delivery frame as forge forges it: the reader's words and NO id.
+ * A forged row with NO id: the arm a frame without one still reconciles
+ * through.
  *
- * Nobody on the server can supply one - the outbound prompt carries none, the
- * CLI mints the transcript's own afterwards, and the CLI never echoes what it
- * was given - so a turn opened by one is matched to its page copy by the
- * frames the two share.
+ * The live forge now stamps every forged prompt row with the prompt's uuid,
+ * so a turn opened by one reconciles by id - but the prose arm is what a
+ * frame carrying neither id nor match must still fall back to, and this
+ * helper is that frame.
  */
 const forged = (text: string): unknown => ({
   type: 'user',
@@ -1493,5 +1495,445 @@ describe('the conversation the chat draws', () => {
       after.find((row) => row.key === exchange)?.messages[0],
       'the exchange row still opens on its own frame',
     ).toEqual(typed('mine'));
+  });
+});
+
+describe('the chat holds a queued prompt until the CLI takes it', () => {
+  afterEach(() => {
+    // The pending send outlives the store, so a case that leaves one behind
+    // would hand it to the next.
+    echoes.clear(subjectKey({ session: LEAD }));
+  });
+
+  /** The core's own turn for words nobody typed, carrying the prompt's id. */
+  const forgedUnder = (text: string, id: string): unknown => ({
+    type: 'user',
+    uuid: id,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+
+  const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
+
+  it('holds the forged row while the pile is drawing it, and drains it at started', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The core announces the queue and forges the user turn beside it, in
+    // that order: the pile draws the card, and the chat holds its copy.
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'hold me' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('hold me', 'p1') } });
+    expect(words(chat), 'the card is the only thing drawing it').not.toContain('hold me');
+
+    // A state this build does not act on keeps the hold: dropping on a parse
+    // miss is the one failure nobody can see.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'queued' } });
+    expect(words(chat), 'queued keeps the wait').not.toContain('hold me');
+
+    // `started` is the drain, and the wait is written on the row.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the drain draws the words').toContain('hold me');
+    expect(words(chat), 'an instant wait is sent, said plainly').toContain('"forge_note":"sent"');
+
+    // The lifecycle repeats (a second frame for the same id) and the row is
+    // not drawn twice.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'completed' } });
+    expect(words(chat).split('hold me').length - 1, 'one row, once').toBe(1);
+  });
+
+  it('retracts a row the announcement follows, which is the real wire order', () => {
+    // The dispatcher emits the user turn as it routes; the task's announcement
+    // comes a beat behind, so the frame usually arrives first. The hold has to
+    // come from that side of the race too, or a live send is drawn by the chat
+    // and the pile at once.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('raced words', 'p1') } });
+    expect(words(chat), 'the frame lands first and is drawn').toContain('raced words');
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'raced words' } });
+    expect(words(chat), 'the announcement pulls it back into the hold').not.toContain(
+      'raced words',
+    );
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'and the drain draws it once, when it starts').toContain('raced words');
+    expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
+  });
+
+  it('holds the row a page carries while the prompt still waits', () => {
+    // The transport keeps the forged turn it was sent, so a read taken while
+    // the prompt waits hands the words back as conversation - and a reader
+    // attaching mid-queue would meet the card and the row at once.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'page-carried' },
+    });
+    server.send(
+      page(
+        [turn('t1', 'first'), { key: 't2', messages: [forgedUnder('page-carried', 'p1')] }],
+        null,
+      ),
+    );
+    expect(words(chat), 'the card is the only drawing, page or not').not.toContain('page-carried');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the drain draws it').toContain('page-carried');
+    expect(words(chat).split('page-carried').length - 1, 'once').toBe(1);
+  });
+
+  it('settles the pending mark when its own prompt is cancelled, and only its own', () => {
+    // The cancelled arm is the only thing that settles the mark of a send
+    // posted into a running turn - nothing else will ever carry its words, so
+    // a regression here leaves "sending" up forever. And it keys on the ID:
+    // two sends of the same text compare equal by words, so the words cannot
+    // be what separates them.
+    const seatKey = subjectKey({ session: LEAD });
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    echoes.post(seatKey, 'same words', true, 'e-other');
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'same words' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('same words', 'p1') } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+    expect(
+      echoes.of(seatKey)?.id,
+      "a second send of the same words is not this cancel's to settle",
+    ).toBe('e-other');
+
+    echoes.post(seatKey, 'other words', true, 'p2');
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'other words' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('other words', 'p2') } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
+    expect(echoes.of(seatKey), "the prompt's own mark goes with it").toBeUndefined();
+  });
+
+  it('holds a forged row a page joins frames to, which is the ordinary shape', () => {
+    // The server's fold opens a turn AT the forged user row and the frames
+    // that follow join that span - so the row never stands alone, and a
+    // quieting that only spliced when a row EMPTIED would keep the copy
+    // beside the card and drain it a second time.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'partial words' },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: 't2',
+            messages: [forgedUnder('partial words', 'p1'), said('answer in between')],
+          },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'the card is the only drawing of the words').not.toContain('partial words');
+    expect(words(chat), 'while the frames around them still draw').toContain('answer in between');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat).split('partial words').length - 1, 'the drain draws it once').toBe(1);
+    expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
+  });
+
+  it("arms from the read's own queue, which is all a fresh attacher is handed", () => {
+    // A socket client attaching mid-queue gets no backlog of `prompt_queued`
+    // frames - the pending backlog goes to the first-ever subscriber alone -
+    // so the snapshot's queue is the only word this reader ever gets, and the
+    // card deliberately comes from the read for exactly this reader.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p1', source: 'you', text: 'fresh words' }] },
+      },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('fresh words', 'p1'), said('answer in between')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'no announcement ever came, and the row is still held').not.toContain(
+      'fresh words',
+    );
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat).split('fresh words').length - 1, 'the drain draws it once').toBe(1);
+    expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
+  });
+
+  it('releases a hold the read no longer lists, so a drop cannot strand the words', () => {
+    // Queued, then the socket drops: the prompt settles during the gap and
+    // its lifecycle frames die on the dead connection. The reconnect's
+    // snapshot is the first word after it, and the invariant is that the
+    // hold never outlives the queue's listing of the id - a uuid it no
+    // longer lists has settled, so the words DRAW rather than being filtered
+    // from every surface forever with the card gone too.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'lost words' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('lost words', 'p1') } });
+    expect(words(chat), 'held while the queue lists it').not.toContain('lost words');
+
+    server.reach('closed');
+    server.reach('open');
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    expect(words(chat), 'the read no longer lists it, so it draws').toContain('lost words');
+
+    server.send(
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('lost words', 'p1')] }], null),
+    );
+    expect(words(chat).split('lost words').length - 1, 'and the page pairs with it, once').toBe(1);
+  });
+
+  it('pulls back a copy drawn before the snapshot armed, which is the page-first order', () => {
+    // A cold load asks `more` before it re-subscribes, so the page can land
+    // FIRST - with the forged row unfiltered, because nothing had armed yet.
+    // The snapshot then lists the uuid and must retract that copy, or the
+    // words stand in both surfaces for the whole wait.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('early words', 'p1'), said('answer in between')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'the page landed first, unfiltered').toContain('early words');
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p1', source: 'you', text: 'early words' }] },
+      },
+    });
+    expect(words(chat), 'the read claims it, and the drawn copy is pulled back').not.toContain(
+      'early words',
+    );
+    expect(words(chat), 'while the frames around it stay').toContain('answer in between');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat).split('early words').length - 1, 'the drain draws it once').toBe(1);
+    expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
+  });
+
+  it('settles the pending mark on the id even when the hold has been released', () => {
+    // The cancel is the mark's only settler, and it must survive a hold
+    // cleared out from under it: a snapshot release (a drop mid-queue)
+    // between the send and the cancel would otherwise leave "sending" up
+    // forever.
+    const seatKey = subjectKey({ session: LEAD });
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    echoes.post(seatKey, 'orphan words', true, 'p1');
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'orphan words' },
+    });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('orphan words', 'p1') } });
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true }, state: { queue: [] } },
+    });
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+    expect(echoes.of(seatKey), 'the id is the whole test, held row or not').toBeUndefined();
+  });
+
+  it('draws the frame the last pull named, which is what the hold keeps', () => {
+    // The two pulls do not order themselves - a page can land before the
+    // frame or after it - and whichever names the uuid LAST holds the copy
+    // that draws at the drain. The words are the same either way; only the
+    // frame differs, so the choice is pinned rather than left to drift back
+    // behind a keep-first guard nothing measures.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'either words' },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: 't2',
+            messages: [
+              {
+                type: 'user',
+                uuid: 'p1',
+                message: { role: 'user', content: [{ type: 'text', text: 'either words' }] },
+                forge_marker: 'page',
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'p1',
+          message: { role: 'user', content: [{ type: 'text', text: 'either words' }] },
+          forge_marker: 'live',
+        },
+      },
+    });
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the last pull holds the frame that draws').toContain(
+      '"forge_marker":"live"',
+    );
+    expect(words(chat).split('either words').length - 1, 'and it draws once').toBe(1);
+  });
+
+  it('writes the wait the row spent in the pile, in the pile vocabulary', () => {
+    vi.useFakeTimers();
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'cron', text: 'wait for it' },
+    });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('wait for it', 'p1') } });
+    vi.advanceTimersByTime(4_000);
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+
+    expect(words(chat), 'four seconds of waiting, and the drain').toContain(
+      'queued 0:04 \u{b7} sent',
+    );
+  });
+
+  it('draws refused words without the note, and drops cancelled ones', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'refuse me' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('refuse me', 'p1') } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'refused' } });
+    expect(words(chat), 'a hook-refused prompt still draws its words').toContain('refuse me');
+    expect(words(chat), 'and says nothing it cannot know').not.toContain('forge_note');
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'drop me' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('drop me', 'p2') } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
+    expect(words(chat), 'a cancelled prompt goes with its card').not.toContain('drop me');
+  });
+
+  it('releases a held row when the process that would start it fails', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'doomed' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('doomed', 'p1') } });
+    server.update({
+      connection_failed: { key: LEAD, message: 'the process exited', fatal: false },
+    });
+
+    // A later lifecycle for the dead occupant's id draws nothing: the wait
+    // went with the process that held it.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'no start is owed to a dead occupant').not.toContain('doomed');
+  });
+
+  it('pairs the drained row with the page copy carried by its attachment', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'mid-turn words' },
+    });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('mid-turn words', 'p1') } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'precondition: the drain drew it').toContain('mid-turn words');
+
+    // The page's own copy of a mid-turn prompt is its attachment row, whose top
+    // uuid is the CLI's while the prompt's id rides `source_uuid`. A copy that
+    // matched on the top uuid would land as a SECOND row for one prompt.
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: null,
+            messages: [
+              {
+                type: 'user',
+                uuid: 'cli-row-1',
+                message: {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'queued_command',
+                      prompt: 'mid-turn words',
+                      source_uuid: 'p1',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    expect(words(chat).split('mid-turn words').length - 1, 'one prompt, one row').toBe(1);
   });
 });

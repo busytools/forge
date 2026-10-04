@@ -49,17 +49,24 @@
   });
 </script>
 
-<div class="mine" class:bad={echo.state === 'failed'}>
-  <Prose text={echo.words} preserveLines />
-  {#if echo.state === 'failed'}
-    <div class="why">
-      <Icon name="x" class="ic" />not sent · {echo.why}
-      <button class="retry" type="button" onclick={onretry}>retry</button>
-    </div>
-  {:else if marked}
-    <!-- The rule above is unchanged while this shows: it means the words are
-         the reader's, and a mark that also meant "in flight" would be two
-         meanings on one thing. -->
-    <div class="st"><span class="ring"></span>sending</div>
-  {/if}
-</div>
+{#if echo.state !== 'sending' || !echo.running}
+  <!-- A send posted while the seat was already running is the CLI QUEUEING it,
+       so its words wait in the pile above the box - drawing them here as well
+       would put "sent" and "queued" on one prompt, which is the complaint this
+       work exists to answer. An idle send keeps this row, because there is no
+       wait to show. -->
+  <div class="mine" class:bad={echo.state === 'failed'}>
+    <Prose text={echo.words} preserveLines />
+    {#if echo.state === 'failed'}
+      <div class="why">
+        <Icon name="x" class="ic" />not sent · {echo.why}
+        <button class="retry" type="button" onclick={onretry}>retry</button>
+      </div>
+    {:else if marked}
+      <!-- The rule above is unchanged while this shows: it means the words are
+           the reader's, and a mark that also meant "in flight" would be two
+           meanings on one thing. -->
+      <div class="st"><span class="ring"></span>sending</div>
+    {/if}
+  </div>
+{/if}

@@ -2547,6 +2547,7 @@ async fn a_cron_delivery_is_drawn_as_the_turn_it_is() {
     fleet.emit(forge_server::SessionUpdate::CronPromptAppended {
         key: SessionSlot::lead("Busytools", "forge"),
         text: "the nightly sweep is due".to_owned(),
+        uuid: "cap-cron".to_owned(),
     });
     let region = next_session_event(stream).await.expect("the delivery redraws the region");
 
@@ -4879,7 +4880,12 @@ async fn the_send_reaches_the_core() {
     assert_eq!(status, reqwest::StatusCode::OK, "a send the core accepts answers with the box");
     let dispatched = fleet.dispatched();
     assert_eq!(dispatched.len(), 1, "exactly one command: {dispatched:?}");
-    let forge_server::Command::Prompt { key, text, .. } = &dispatched[0] else {
+    // The dispatcher rewrites a plain send into the `PromptUnder` the rest of
+    // the tree treats identically, minting its id on the way: either shape is
+    // a send, and both carry the same seat and words.
+    let (forge_server::Command::Prompt { key, text, .. }
+    | forge_server::Command::PromptUnder { key, text, .. }) = &dispatched[0]
+    else {
         panic!("a send is a prompt: {:?}", dispatched[0]);
     };
     assert_eq!(key, &lead(), "addressed to the seat the composer belongs to");

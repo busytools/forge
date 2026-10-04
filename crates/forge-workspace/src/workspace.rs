@@ -23,7 +23,9 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate};
+use crate::protocol::{
+    Command, DispatchError, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
+};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3566,6 +3568,38 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
+        self.dispatch_workspace_prompt_from(key, text, PromptSource::Forge)
+    }
+
+    /// [`Self::dispatch_workspace_prompt`], with the row's source label named
+    /// by the caller: a delivery knows what it is (a cron fire, a Gotify
+    /// notification, a peer comm) and the queued row has to say so.
+    pub fn dispatch_workspace_prompt_from(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        source: PromptSource,
+    ) -> Result<(), DispatchError> {
+        self.dispatch_workspace_prompt_under(
+            key,
+            text,
+            source,
+            forge_sdk::request_id::next_prompt_id(),
+        )
+    }
+
+    /// [`Self::dispatch_workspace_prompt_from`] with the id supplied by the
+    /// caller, for a site that already minted one: a delivery that draws its
+    /// own envelope row passes the same id to both, so the row a view holds
+    /// while the prompt queues and the prompt's lifecycle frames are one thing
+    /// by id.
+    pub fn dispatch_workspace_prompt_under(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        source: PromptSource,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
         // Busy is captured before the dispatch: dispatching first would
         // read the turn_pending stamp the dispatch itself just set.
         // Signalling only on success keeps a failed dispatch (the
@@ -3574,10 +3608,15 @@ impl Workspace {
         // residual signals at all depends on a session_state_changed
         // mirror being present, so it is CLI-version-dependent.
         let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
-        // `route` rather than `dispatch`: the delivery's frame is the envelope
-        // one its own update forges, not a bare user turn.
-        let result =
-            self.route(Command::Prompt { key: key.clone(), text, attachments: Vec::new() });
+        // `route` rather than `dispatch`: the delivery's frame is the
+        // envelope one its own update forges, not a bare user turn.
+        let result = self.route(Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source,
+        });
         if busy && result.is_ok() {
             let _ = self
                 .update_sender()
@@ -3596,8 +3635,14 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
-        let frame = Message::display_only_user(text.clone());
-        let result = self.dispatch_workspace_prompt(key, text);
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        let frame = Message::display_only_user(text.clone(), uuid.clone());
+        let result = self.dispatch_workspace_prompt_under(
+            key,
+            text,
+            crate::protocol::PromptSource::Forge,
+            uuid,
+        );
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -3661,13 +3706,30 @@ impl Workspace {
         cmd: Command,
         origin: PromptOrigin,
     ) -> Result<(), DispatchError> {
+        // The id is minted HERE, before the prose is taken, so the prompt, its
+        // lifecycle frames and the user turn below all carry one thing by id:
+        // a plain `Prompt` becomes the `PromptUnder` the rest of the tree
+        // already treats identically, keeping the mint on one path instead of
+        // two.
+        let cmd = match cmd {
+            Command::Prompt { key, text, attachments } => Command::PromptUnder {
+                key,
+                text,
+                attachments,
+                uuid: forge_sdk::request_id::next_prompt_id(),
+                source: crate::protocol::PromptSource::You,
+            },
+            other => other,
+        };
         // The prose is taken before the move and emitted only once the command
         // reached a session. A refused prompt never reached a model, so no view
         // draws it as a turn - and the frame for one would open a live turn in
         // every view but the sender, with nothing left to close it: the refusal
         // is written to the asking socket alone.
         let prompt = match &cmd {
-            Command::Prompt { key, text, .. } => Some((key.clone(), text.clone())),
+            Command::PromptUnder { key, text, uuid, .. } => {
+                Some((key.clone(), text.clone(), uuid.clone()))
+            }
             _ => None,
         };
         // A composer's text that names a forge command is FORGE'S, not the
@@ -3682,7 +3744,7 @@ impl Workspace {
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
         let (outcome, answer) = match &cmd {
-            Command::Prompt { key, text, .. } => match crate::prompt::forge_invocation(text) {
+            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
                 Some(crate::prompt::Invocation::Command(prompt)) => {
                     self.run_forge_prompt(key, &prompt)
                 }
@@ -3697,11 +3759,11 @@ impl Workspace {
             _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
-            && let Some((key, text)) = prompt
+            && let Some((key, text, uuid)) = prompt
         {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
-                msg: Message::display_only_user(text),
+                msg: Message::display_only_user(text, uuid),
                 origin: Some(origin),
             });
             if let Some((severity, answer)) = answer {
@@ -4030,7 +4092,7 @@ impl Workspace {
                 // Stamp turn_pending only on the routed path (set + route
                 // together) so the in-flight guards can't race a Prompt
                 // whose wire-lagged `Running` echo hasn't landed yet.
-                if matches!(cmd, Command::Prompt { .. })
+                if matches!(cmd, Command::Prompt { .. } | Command::PromptUnder { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
                     domain.lock().turn_pending = true;
@@ -6059,7 +6121,13 @@ impl Workspace {
                     sender_org: String::new(),
                     body: reason.clone(),
                 };
-                if let Err(err) = self.dispatch_workspace_prompt(&lead_slot, wrapped.to_prose()) {
+                let uuid = forge_sdk::request_id::next_prompt_id();
+                if let Err(err) = self.dispatch_workspace_prompt_under(
+                    &lead_slot,
+                    wrapped.to_prose(),
+                    PromptSource::Peer,
+                    uuid.clone(),
+                ) {
                     tracing::warn!(
                         target: "forge_workspace::worker_async_failure",
                         project = %project_key.as_str(),
@@ -6072,7 +6140,7 @@ impl Workspace {
                 // paints one: the CLI does not echo a prompt it was handed on
                 // stdin, so a view that only drew the wire would show nothing
                 // until the page reloaded.
-                crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped);
+                crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped, &uuid);
             } else {
                 tracing::warn!(
                     target: "forge_workspace::worker_async_failure",
@@ -6756,8 +6824,14 @@ impl Workspace {
         };
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
-        crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice);
-        if let Err(err) = self.dispatch_workspace_prompt(sender, notice.to_prose()) {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice, &uuid);
+        if let Err(err) = self.dispatch_workspace_prompt_under(
+            sender,
+            notice.to_prose(),
+            PromptSource::Peer,
+            uuid,
+        ) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 slot = %sender.display(),
@@ -8826,7 +8900,9 @@ provider = "anthropic"
         assert!(
             dispatched.iter().any(|cmd| matches!(
                 cmd,
-                crate::protocol::Command::Prompt { key, .. } if *key == lead_key
+                crate::protocol::Command::Prompt { key, .. }
+                    | crate::protocol::Command::PromptUnder { key, .. }
+                    if *key == lead_key
             )),
             "the running lead receives the message as a prompt: {dispatched:?}",
         );
@@ -8851,7 +8927,7 @@ provider = "anthropic"
         let echoed = drain_updates(&mut update_rx).into_iter().any(|u| {
             matches!(
                 u,
-                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose }
+                crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == lead_key
                         && prose.starts_with("[Slack")
                         && prose.contains("ping")
@@ -8925,7 +9001,11 @@ provider = "anthropic"
             "the asleep project is spawned: {dispatched:?}",
         );
         assert!(
-            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            dispatched.iter().all(|cmd| !matches!(
+                cmd,
+                crate::protocol::Command::Prompt { .. }
+                    | crate::protocol::Command::PromptUnder { .. }
+            )),
             "no session is prompted directly",
         );
         assert_eq!(
@@ -8957,7 +9037,11 @@ provider = "anthropic"
 
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
-            dispatched.iter().all(|cmd| !matches!(cmd, crate::protocol::Command::Prompt { .. })),
+            dispatched.iter().all(|cmd| !matches!(
+                cmd,
+                crate::protocol::Command::Prompt { .. }
+                    | crate::protocol::Command::PromptUnder { .. }
+            )),
             "the asleep path buffers; the second delivery added no prompt",
         );
         assert_eq!(parked_slack_count(&ws, "glead", None), 1, "one buffered message, not two");
@@ -10811,7 +10895,7 @@ provider = "anthropic"
 
         let mut echo = None;
         while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
                 echo = Some((key, wrapped));
             }
         }
@@ -10831,11 +10915,11 @@ provider = "anthropic"
         let dispatched = ws.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 1, "the notice is also dispatched as a turn");
         match &dispatched[0] {
-            Command::Prompt { key, text, .. } => {
+            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
                 assert_eq!(*key, sender, "the dispatched turn goes to the sender");
                 assert!(text.contains("failed to deliver"), "carrying the failure prose: {text}");
             }
-            other => panic!("expected Command::Prompt, got {other:?}"),
+            other => panic!("expected a prompt command, got {other:?}"),
         }
     }
 }
@@ -14165,10 +14249,14 @@ mod async_worker_spawn_failure_tests {
 
         // Notice dispatched via Command::Prompt to the lead's key.
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "exactly one WorkerSpawnFailedNotice envelope");
-        if let Command::Prompt { key, text, .. } = prompts[0] {
+        if let Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } =
+            prompts[0]
+        {
             assert_eq!(*key, lead_key, "notice targets the lead session id");
             assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
             assert!(text.contains("already used by worktree"));
@@ -14178,7 +14266,7 @@ mod async_worker_spawn_failure_tests {
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|update| {
             matches!(
                 update,
-                SessionUpdate::PeerEnvelopeAppended { key, wrapped }
+                SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
                     if key == lead_key
                         && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
             )
@@ -14217,8 +14305,10 @@ mod async_worker_spawn_failure_tests {
         assert!(handled);
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert!(prompts.is_empty(), "non-worktree classifier outcome must NOT dispatch a notice");
         let entries = workspace.list_live_workers(&project_key);
         assert_eq!(entries.len(), 1, "non-worktree failure keeps the entry visible");
@@ -14577,7 +14667,7 @@ mod async_worker_spawn_failure_tests {
 
         let mut echo = None;
         while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped } = update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
                 echo = Some((key, wrapped));
             }
         }
@@ -14660,8 +14750,10 @@ mod async_worker_spawn_failure_tests {
         assert!(handled, "still consumes the failure even when lead is gone");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert!(prompts.is_empty(), "no notice dispatched when lead session is gone");
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
@@ -15830,7 +15922,7 @@ mod kick_dispatcher_tests {
         let keys: Vec<SessionSlot> = dispatched
             .into_iter()
             .filter_map(|c| match c {
-                Command::Prompt { key, .. } => Some(key),
+                Command::Prompt { key, .. } | Command::PromptUnder { key, .. } => Some(key),
                 _ => None,
             })
             .collect();
@@ -15923,8 +16015,10 @@ mod kick_dispatcher_tests {
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
         let dispatched = workspace.drain_test_dispatch_buffer();
-        let prompts: Vec<&Command> =
-            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
         assert_eq!(prompts.len(), 1, "second start_kick_dispatcher must not duplicate dispatches");
     }
 
@@ -16406,6 +16500,45 @@ mod prompt_frame_origin_tests {
         );
     }
 
+    /// The frame a typed dispatch forges carries the SAME id the wired prompt
+    /// runs under.
+    ///
+    /// The lifecycle frames name only the id, so a frame minted apart from the
+    /// wire would hold a row nothing can ever settle - the pile dead for that
+    /// prompt in every view - and a page's copy of the message, which the CLI
+    /// writes under the same id, would arrive as a stranger rather than as the
+    /// row already held.
+    #[test]
+    fn a_prompt_frames_uuid_is_the_uuid_it_runs_under() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        let dispatched = ws.dispatch_from_view(a_prompt(&seat));
+        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+
+        let wired = ws.drain_test_dispatch_buffer();
+        let wired_id = match wired.as_slice() {
+            [Command::PromptUnder { uuid, .. }] => uuid.clone(),
+            other => panic!("a typed dispatch wires the prompt under a minted id: {other:?}"),
+        };
+        assert!(!wired_id.is_empty(), "and a real one, not a blank");
+
+        let mut frame_id: Option<String> = None;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::User { uuid, .. },
+                ..
+            } = update
+            {
+                frame_id = uuid;
+            }
+        }
+        assert_eq!(
+            frame_id.as_deref(),
+            Some(wired_id.as_str()),
+            "the forged frame and the wired prompt are one thing by id",
+        );
+    }
+
     /// `/new` from any composer is forge's own command, never the CLI's. The
     /// CLI answers that name as its own `/clear`, which rotates a
     /// conversation forge never records - no id minted, no `SessionReplaced` -
@@ -16427,7 +16560,9 @@ mod prompt_frame_origin_tests {
             "the seat is restarted: {commands:?}",
         );
         assert!(
-            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. })),
             "and the words are never forwarded to the CLI: {commands:?}",
         );
     }
@@ -16457,7 +16592,9 @@ mod prompt_frame_origin_tests {
             "the named session is resumed: {commands:?}",
         );
         assert!(
-            !commands.iter().any(|c| matches!(c, Command::Prompt { .. })),
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. })),
             "and the words are never forwarded to the CLI: {commands:?}",
         );
     }
@@ -16742,7 +16879,10 @@ mod prompt_frame_origin_tests {
             } else {
                 let commands = ws.drain_test_dispatch_buffer();
                 assert!(
-                    matches!(commands.as_slice(), [Command::Prompt { .. }]),
+                    matches!(
+                        commands.as_slice(),
+                        [Command::Prompt { .. } | Command::PromptUnder { .. }]
+                    ),
                     "{text} is the CLI's: {commands:?}",
                 );
             }
@@ -16859,7 +16999,11 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/compact"),
+            matches!(
+                commands.as_slice(),
+                [Command::Prompt { text, .. } | Command::PromptUnder { text, .. }]
+                    if text == "/compact"
+            ),
             "an advertised name is the CLI's: {commands:?}",
         );
     }
@@ -16880,7 +17024,7 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { .. }]),
+            matches!(commands.as_slice(), [Command::Prompt { .. } | Command::PromptUnder { .. }]),
             "nothing is refused before the CLI has said what it has: {commands:?}",
         );
     }
@@ -16900,7 +17044,11 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let commands = ws.drain_test_dispatch_buffer();
         assert!(
-            matches!(commands.as_slice(), [Command::Prompt { text, .. }] if text == "/newer please"),
+            matches!(
+                commands.as_slice(),
+                [Command::Prompt { text, .. } | Command::PromptUnder { text, .. }]
+                    if text == "/newer please"
+            ),
             "a near miss is prose: {commands:?}",
         );
     }

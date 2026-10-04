@@ -218,6 +218,21 @@ impl Workspace {
         rx
     }
 
+    /// Put a prompt in a seat's queue exactly as a dispatch leaves it: the row
+    /// a client attaching mid-queue reads, with no dispatch to drive.
+    pub fn seed_queued_prompt(
+        &self,
+        key: &SessionSlot,
+        uuid: &str,
+        source: crate::protocol::PromptSource,
+        text: &str,
+    ) {
+        let domain = self
+            .domain_session_for(key)
+            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
+        domain.lock().record_queued_prompt(uuid, source, text);
+    }
+
     /// Construct an empty `Workspace` for use in unit tests. Skips
     /// the on-disk `forge.toml` load + catalog scan that
     /// [`Workspace::new`] performs; the returned workspace carries an

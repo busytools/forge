@@ -723,22 +723,36 @@ mod tests {
 
         // The running lead receives the raw cron prompt as a plain user turn.
         let dispatched = ws.drain_test_dispatch_buffer();
-        assert!(
-            dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, text, .. } if key == &lead_key && text == "morning"
-            )),
-            "the running lead receives the fired cron prompt verbatim",
-        );
+        let wired_id = dispatched
+            .iter()
+            .find_map(|c| match c {
+                Command::PromptUnder { key, text, uuid, .. }
+                    if key == &lead_key && text == "morning" =>
+                {
+                    Some(uuid.clone())
+                }
+                _ => None,
+            })
+            .expect("the running lead receives the fired cron prompt verbatim, wired under an id");
 
-        // AND the delivery echoes a CronPromptAppended so the chat shows a block.
-        let echoed = drain_updates(&mut rx).into_iter().any(|u| {
-            matches!(
-                u,
-                SessionUpdate::CronPromptAppended { key, text }
-                    if key == lead_key && text == "morning"
-            )
+        // AND the delivery echoes a CronPromptAppended so the chat shows a
+        // block - under the SAME id the prompt runs under, which is what lets
+        // a view hold the block's row while the prompt waits and pair it with
+        // the page's copy later.
+        let echoed_id = drain_updates(&mut rx).into_iter().find_map(|u| match u {
+            SessionUpdate::CronPromptAppended { key, text, uuid }
+                if key == lead_key && text == "morning" =>
+            {
+                Some(uuid)
+            }
+            _ => None,
         });
-        assert!(echoed, "a running-lead cron fire emits a CronPromptAppended echo");
+        assert_eq!(
+            echoed_id.as_deref(),
+            Some(wired_id.as_str()),
+            "the block and the fired prompt are one thing by id",
+        );
+        assert!(!wired_id.is_empty(), "and the id is real, not a blank");
     }
 
     #[test]
@@ -762,7 +776,7 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, text, .. }
+                c, Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. }
                     if key == &worker_key && text == "review the diff"
             )),
             "a live worker's cron fires straight into the worker",
@@ -831,7 +845,8 @@ mod tests {
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             !dispatched.iter().any(|c| matches!(
-                c, Command::Prompt { key, .. } if key == &worker_key
+                c, Command::Prompt { key, .. } | Command::PromptUnder { key, .. }
+                    if key == &worker_key
             )),
             "no bare Prompt to the still-spawning worker (would be dropped)",
         );
@@ -1234,7 +1249,9 @@ provider = "anthropic"
         let texts: Vec<String> = dispatched
             .iter()
             .filter_map(|c| match c {
-                Command::Prompt { text, .. } => Some(text.clone()),
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -1290,7 +1307,9 @@ provider = "anthropic"
             .drain_test_dispatch_buffer()
             .iter()
             .filter_map(|c| match c {
-                Command::Prompt { text, .. } => Some(text.clone()),
+                Command::Prompt { text, .. } | Command::PromptUnder { text, .. } => {
+                    Some(text.clone())
+                }
                 _ => None,
             })
             .collect();

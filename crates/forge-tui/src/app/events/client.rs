@@ -56,6 +56,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
         forge_primitives::Message::Assistant { .. } => "Assistant",
         forge_primitives::Message::User { .. } => "User",
         forge_primitives::Message::System { .. } => "System",
+        forge_primitives::Message::CommandLifecycle { .. } => "CommandLifecycle",
         forge_primitives::Message::Result { .. } => "Result",
         forge_primitives::Message::TaskStarted { .. } => "TaskStarted",
         forge_primitives::Message::TaskUpdated { .. } => "TaskUpdated",
@@ -362,6 +363,38 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
+        }
+        SessionUpdate::PromptQueued { key, uuid, .. } => {
+            // The pile's own row, which the client draws above its composer;
+            // the terminal's queued row is drawn from the frame it already
+            // gets, so this is a breadcrumb rather than a drawing here.
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_queued",
+                session_slot = %key.display(),
+                uuid = %uuid,
+            );
+        }
+        SessionUpdate::PromptLifecycle { key, uuid, state } => {
+            // A prompt's queue state drives the client's pile; the terminal's
+            // own queued row is drawn from the frame it already gets, so this
+            // is a breadcrumb rather than a drawing here.
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_lifecycle",
+                session_slot = %key.display(),
+                uuid = %uuid,
+                state = %state,
+            );
+        }
+        SessionUpdate::PromptCancelResolved { key, uuid, cancelled } => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "prompt_cancel_resolved",
+                session_slot = %key.display(),
+                uuid = %uuid,
+                cancelled,
+            );
         }
         SessionUpdate::PromptQueuedWhileBusy { key } => {
             // TurnComplete settles regardless; a queued turn
@@ -1577,7 +1610,7 @@ mod tests {
     fn a_prompt_frame(text: &str, origin: Option<PromptOrigin>) -> SessionUpdate {
         SessionUpdate::ChatAppended {
             key: test_key(),
-            msg: forge_primitives::Message::display_only_user(text.to_owned()),
+            msg: forge_primitives::Message::display_only_user(text.to_owned(), "cap-1".to_owned()),
             origin,
         }
     }
@@ -2141,6 +2174,7 @@ mod tests {
             SessionUpdate::CronPromptAppended {
                 key: key_a.clone(),
                 text: "run the morning summary".to_owned(),
+                uuid: "cap-cron".to_owned(),
             },
         );
 
@@ -2195,7 +2229,11 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::SlackMessageAppended { key: key_a.clone(), prose: prose.to_owned() },
+            SessionUpdate::SlackMessageAppended {
+                key: key_a.clone(),
+                prose: prose.to_owned(),
+                uuid: "cap-slack".to_owned(),
+            },
         );
 
         let slack_msg = app

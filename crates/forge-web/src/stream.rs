@@ -301,6 +301,7 @@ fn message_id(msg: &Message) -> Option<&str> {
         | Message::TaskProgress { uuid, .. }
         | Message::TaskNotification { uuid, .. }
         | Message::ThinkingTokens { uuid, .. }
+        | Message::CommandLifecycle { uuid, .. }
         | Message::TurnDuration { uuid, .. }
         | Message::StopHookSummary { uuid, .. }
         | Message::BackgroundTasksChanged { uuid, .. }

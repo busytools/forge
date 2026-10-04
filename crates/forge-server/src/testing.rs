@@ -331,6 +331,18 @@ impl Fleet {
         self.workspace.install_testing_stub(&slot)
     }
 
+    /// Put a prompt in a seat's queue exactly as a dispatch leaves it: the row
+    /// a client attaching mid-queue reads, with no dispatch to drive.
+    pub fn seed_queued_prompt(
+        &self,
+        slot: &SessionSlot,
+        uuid: &str,
+        source: forge_workspace::protocol::PromptSource,
+        text: &str,
+    ) {
+        self.workspace.seed_queued_prompt(slot, uuid, source, text);
+    }
+
     /// Catch every command the core is dispatched, so a test can assert
     /// what a view asked for without driving a session.
     pub fn intercept_dispatch(&self) {

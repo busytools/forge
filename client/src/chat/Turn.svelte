@@ -162,6 +162,11 @@
           {#if file.bytes !== null}<span class="n">{bytes(file.bytes)}</span>{/if}
         </div>
       {/each}
+      {#if block.unit.note !== undefined}
+        <!-- The drained prompt's own wait, written where the client released
+             the row - the pile's vocabulary, kept as the row's record of it. -->
+        <div class="st">{block.unit.note}</div>
+      {/if}
     </div>
   {:else}
     <div class="work">

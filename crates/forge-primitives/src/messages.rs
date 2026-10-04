@@ -417,6 +417,29 @@ pub enum Message {
         session_id: String,
     },
 
+    /// The CLI's own lifecycle for one prompt, keyed by the uuid forge
+    /// stamped on the frame that carried it. Top-level `command_lifecycle`.
+    ///
+    /// Emitted only for prompts that carried a `uuid` when written (measured:
+    /// zero frames without one), and it is what lets a view say queued versus
+    /// taken: `queued` lands 1-5 ms after the write, `started` 2-3 ms after
+    /// the turn boundary that delivers the prompt.
+    ///
+    /// `state` stays a free-form string so a state this build has not seen
+    /// decodes without a primitives bump; the known set is `queued`,
+    /// `started`, `completed`, `cancelled`, `discarded`, `refused`.
+    CommandLifecycle {
+        /// The uuid the prompt was sent under - the reader's own, or the
+        /// one forge minted for it.
+        command_uuid: String,
+        /// Where the prompt is in the CLI's queue.
+        state: String,
+        /// Unique identifier for this lifecycle event (the CLI's own).
+        uuid: String,
+        /// Session id the prompt belongs to.
+        session_id: String,
+    },
+
     /// End-of-turn or end-of-session summary with cost and usage.
     ///
     /// Only six fields are required on the wire (`subtype`,
@@ -555,6 +578,7 @@ impl Message {
             | Message::Notification { session_id, .. }
             | Message::CompactBoundary { session_id, .. }
             | Message::Result { session_id, .. }
+            | Message::CommandLifecycle { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
             Message::RateLimitEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {
@@ -566,10 +590,12 @@ impl Message {
     /// A user turn forged rather than read off the wire, for prose the model
     /// received and the CLI does not echo back.
     ///
-    /// Carries no id: the forge happens before the CLI has written the turn to
-    /// its transcript, and the CLI never sends that id, so no honest one exists
-    /// to put here. Nothing routes on the empty `session_id` either.
-    pub fn display_only_user(text: String) -> Self {
+    /// **The id is the prompt's own**, the one its `command_lifecycle` frames
+    /// carry: it is what lets a view hold this row while the prompt waits in
+    /// the queue, and pair it with the page's later copy of the same message -
+    /// which carries the same id, the CLI writing the client's uuid into the
+    /// transcript it delivers. Nothing routes on the empty `session_id`.
+    pub fn display_only_user(text: String, uuid: String) -> Self {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
@@ -577,7 +603,7 @@ impl Message {
             },
             session_id: String::new(),
             parent_tool_use_id: None,
-            uuid: None,
+            uuid: Some(uuid),
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
@@ -981,6 +1007,12 @@ enum MessageRepr {
     System(SystemRepr),
     RateLimitEvent {
         rate_limit_info: RateLimitInfo,
+        uuid: String,
+        session_id: String,
+    },
+    CommandLifecycle {
+        command_uuid: String,
+        state: String,
         uuid: String,
         session_id: String,
     },
@@ -1453,6 +1485,9 @@ impl From<MessageRepr> for Message {
             MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 Message::RateLimitEvent { rate_limit_info, uuid, session_id }
             }
+            MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id } => {
+                Message::CommandLifecycle { command_uuid, state, uuid, session_id }
+            }
             MessageRepr::Result {
                 subtype,
                 session_id,
@@ -1755,6 +1790,9 @@ impl From<Message> for MessageRepr {
             }
             Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
+            }
+            Message::CommandLifecycle { command_uuid, state, uuid, session_id } => {
+                MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id }
             }
             Message::Result {
                 subtype,

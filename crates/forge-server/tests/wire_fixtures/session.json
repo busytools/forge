@@ -15,7 +15,8 @@
       "styling": null,
       "structure": null,
       "context": null
-    }
+    },
+    "queue": []
   },
   "composer": {
     "take": null,

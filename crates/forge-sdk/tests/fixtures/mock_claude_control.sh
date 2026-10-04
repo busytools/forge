@@ -53,6 +53,14 @@ print(json.dumps({
         printf '%s\n' "$subtype" >> "$FORGED_MOCK_ECHO_SUBTYPE"
     fi
 
+    # Optional: echo the whole request line so a test can assert a
+    # request BODY (e.g. cancel_async_message's `message_uuid`), not just
+    # the subtype. Gated the same way, so other tests' contracts are
+    # untouched.
+    if [[ -n "${FORGED_MOCK_ECHO_REQUEST:-}" ]]; then
+        printf '%s\n' "$ctrl_req" >> "$FORGED_MOCK_ECHO_REQUEST"
+    fi
+
     # Optional: never answer the named subtype so tests can drive the
     # response-timeout path. Gated on env var; unset keeps the mock
     # byte-for-byte compatible with existing forge-sdk tests.
@@ -66,6 +74,9 @@ print(json.dumps({
             ;;
         get_context_usage)
             response_payload='{"categories":[],"totalTokens":0,"maxTokens":200000,"rawMaxTokens":200000,"percentage":0,"model":"claude-opus-4-5","isAutoCompactEnabled":false,"memoryFiles":[],"mcpTools":[],"agents":[],"gridRows":[]}'
+            ;;
+        cancel_async_message)
+            response_payload='{"cancelled":true}'
             ;;
         *)
             response_payload='{}'

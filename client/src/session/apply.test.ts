@@ -748,10 +748,135 @@ describe('applyUpdate', () => {
       expect(applyUpdate(held, { mcp_snapshot: { key: SLOT, servers: 'not a list' } })).toBe(held);
     });
   });
+
+  describe('the queue', () => {
+    const queued = { key: SLOT, uuid: 'u7', source: 'cron', text: 'nightly sweep' };
+
+    it('adds a row from the update that carries its words and sender', () => {
+      const next = applyUpdate(empty(), { prompt_queued: queued });
+
+      expect(next.queue).toEqual([{ uuid: 'u7', source: 'cron', text: 'nightly sweep' }]);
+    });
+
+    it('keeps one row when the same id arrives twice', () => {
+      const once = applyUpdate(empty(), { prompt_queued: queued });
+      const twice = applyUpdate(once, { prompt_queued: queued });
+
+      expect(twice.queue).toHaveLength(1);
+      expect(twice, 'a duplicate leaves the record as it was').toBe(once);
+    });
+
+    it('drops the row on a state the CLI settled, and keeps it while queued', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const still = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'queued' },
+      });
+      expect(still.queue, 'a second queued frame is not a delivery').toHaveLength(1);
+
+      const delivered = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+      });
+      expect(delivered.queue, 'started is the CLI taking the prompt').toEqual([]);
+    });
+
+    it('says so when a row left by discard or refusal, and not when it was taken', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const delivered = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+      });
+      expect(delivered.queue_ended, 'being taken is the row doing its job').toBeNull();
+
+      const discarded = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+      });
+      expect(discarded.queue, 'the row leaves either way').toEqual([]);
+      expect(discarded.queue_ended).toEqual({ text: 'nightly sweep', state: 'discarded' });
+
+      const refused = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'refused' },
+      });
+      expect(refused.queue_ended).toEqual({ text: 'nightly sweep', state: 'refused' });
+    });
+
+    it('clears the last ending when the next prompt is queued', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+      const ended = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+      });
+
+      const next = applyUpdate(ended, {
+        prompt_queued: { key: SLOT, uuid: 'u8', source: 'you', text: 'the next thing' },
+      });
+
+      expect(next.queue_ended, 'the ending goes with the queue that moved on').toBeNull();
+    });
+
+    it('keeps the row on a state this build cannot name', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const next = applyUpdate(held, {
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'preempted' },
+      });
+
+      expect(next.queue, 'a word the CLI adds later must not empty the pile').toHaveLength(1);
+      expect(next).toBe(held);
+    });
+
+    it('drops the row when a cancel is confirmed, and keeps it when it was too late', () => {
+      const held = applyUpdate(empty(), { prompt_queued: queued });
+
+      const late = applyUpdate(held, {
+        prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: false },
+      });
+      expect(late.queue, 'already taken is not dropped').toHaveLength(1);
+
+      const dropped = applyUpdate(held, {
+        prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: true },
+      });
+      expect(dropped.queue).toEqual([]);
+    });
+
+    it("clears a dead CLI's rows, where no per-row frame ever will", () => {
+      // The refuting sequence, on the seat kind it strands: a NON-LEAD seat,
+      // a queue the read carried, and the death event - the lead seats
+      // self-heal through the auto-respawn's REPLACES, workers do not, and
+      // the handler is label-blind. The queue died with the process and the
+      // core clears its own pile on the same event; without the client doing
+      // the same the cards stand until something reads the seat again, which
+      // for a dead worker is its next spawn - and a row that vanishes with
+      // no word reads as one that was delivered.
+      const worker = sessionFrom({
+        slot: { org: 'Busytools', project: 'forge', label: 'w1' },
+        state: { scan_cwd: '/tmp' },
+      });
+      const held = applyUpdate(worker, { prompt_queued: queued });
+      const next = applyUpdate(held, {
+        connection_failed: {
+          key: { org: 'Busytools', project: 'forge', label: 'w1' },
+          message: 'the process exited',
+          fatal: false,
+        },
+      });
+
+      expect(next.queue, 'the rows go with the process, on the death event').toEqual([]);
+      expect(next.queue_ended, 'one dim line where the cards were').toEqual({
+        text: 'nightly sweep',
+        state: 'discarded',
+      });
+
+      const bare = empty();
+      const nothing = applyUpdate(bare, {
+        connection_failed: { key: SLOT, message: 'the process exited', fatal: false },
+      });
+      expect(nothing, 'a seat with no rows is left as it was').toBe(bare);
+    });
+  });
 });
 
 /**
- * Every variant `SessionUpdate` carries - 65 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 68 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -822,6 +947,9 @@ const EVERY_VARIANT = [
   'slack_post_pending',
   'slack_draft_resolved',
   'prompt_queued_while_busy',
+  'prompt_queued',
+  'prompt_lifecycle',
+  'prompt_cancel_resolved',
   'review_activity_notice',
   'dictate_availability',
   'dictate_started',
@@ -837,9 +965,10 @@ const EVERY_VARIANT = [
  *
  * **The server ships ahead of the client**, so a frame from a newer core
  * arrives here before anything reads it: an update naming a variant this
- * build does not know has to be a no-op - the pane keeps what its own poll
- * read - rather than a crash or a field defaulted back. `HANDLERS`'s miss is
- * what makes that true, and this pins the arm rather than assuming it.
+ * build does not know has to be a no-op - the pane keeps what the last read
+ * answered and its own frames have carried since - rather than a crash or a
+ * field defaulted back. `HANDLERS`'s miss is what makes that true, and this
+ * pins the arm rather than assuming it.
  */
 it('leaves the record alone for a variant it does not know', () => {
   const held = empty();
@@ -861,9 +990,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (65 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (68 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(65);
+    ).toBe(68);
   });
 
   it('classifies every variant the core can send', () => {

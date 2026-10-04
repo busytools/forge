@@ -265,18 +265,80 @@ describe('the box', () => {
     );
     flushSync();
 
-    expect(harness.sent, 'the command is the text as typed, addressed to this seat').toEqual([
-      {
-        command: {
-          prompt: {
-            key: { org: 'Busytools', project: 'forge', label: 'lead' },
-            text: 'push it once CI is green',
-            attachments: [],
-          },
-        },
-      },
-    ]);
+    const [sent] = harness.sent;
+    const under = sent?.command['prompt_under'] ?? {};
+    expect(under['key'], 'the command is the text as typed, addressed to this seat').toEqual({
+      org: 'Busytools',
+      project: 'forge',
+      label: 'lead',
+    });
+    expect(under['text']).toBe('push it once CI is green');
+    expect(under['attachments']).toEqual([]);
+    expect(under['source']).toBe('you');
+    expect(
+      typeof under['uuid'],
+      "the id is the send's own, minted here so the CLI's lifecycle frames and the queued row carry it back",
+    ).toBe('string');
     expect(field().value, 'the box is empty once the words have gone').toBe('');
+  });
+
+  it('hands an empty box up to the pile, and only an empty one', () => {
+    // The page's own shape: `Session.svelte` renders the pile and the composer
+    // inside one `.composer` div, and this is the container the up-entry
+    // reaches through. The pile next to it is the minimal thing the query
+    // finds - what the walk does once it has the keyboard is Queue's own test.
+    const shell = document.createElement('div');
+    shell.className = 'composer';
+    const pile = document.createElement('div');
+    pile.className = 'pile';
+    const list = document.createElement('div');
+    list.setAttribute('role', 'listbox');
+    list.tabIndex = -1;
+    pile.append(list);
+    shell.append(pile);
+    const target = document.createElement('div');
+    shell.append(target);
+    document.body.append(shell);
+    app = mount(Harness, { target, props: { wire: wire(), initial: {}, dictation: false } });
+    flushSync();
+
+    field().focus();
+    press('ArrowUp');
+    expect(document.activeElement, 'the empty box hands the keyboard to the pile').toBe(list);
+
+    field().focus();
+    type('a draft');
+    press('ArrowUp');
+    expect(document.activeElement, 'a draft keeps the key for its own lines').toBe(field());
+  });
+
+  it('sends on a plain-http origin, where randomUUID does not exist', () => {
+    // This client is reached over a LAN, and `crypto.randomUUID` is
+    // secure-context-only: the send has to leave under a real id anyway, which
+    // is what the mint's own fallbacks are for. Stubbed at the global rather
+    // than the helper, because the helper being right is not the send being
+    // right.
+    const real = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { getRandomValues: real.getRandomValues.bind(real) },
+      configurable: true,
+    });
+    try {
+      const harness = open();
+      type('no secure context here');
+      field().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+
+      const [sent] = harness.sent;
+      const under = sent?.command['prompt_under'] ?? {};
+      expect(under['text'], 'the words went').toBe('no secure context here');
+      expect(typeof under['uuid'], 'and an id went with them').toBe('string');
+      expect(under['uuid'], 'a real one, not a blank').not.toBe('');
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { value: real, configurable: true });
+    }
   });
 
   /**
