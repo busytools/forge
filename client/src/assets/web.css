@@ -1110,6 +1110,27 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   .banner .close { min-width: 44px; }
 }
 
+/* The same reach, keyed on the POINTER rather than the width: the step above
+   fires only at a phone's width, and an Android tablet is wide and still
+   finger-driven. A control whose own height is its target takes the 44 here
+   too. */
+@media (pointer: coarse) {
+  button, input, select, textarea, details > summary { min-height: 44px; }
+  .rail-tog { width: 44px; height: 44px; }
+  .banner .close { min-width: 44px; }
+  /* A row's own link is the finger's target. The name cell carries
+     `overflow: hidden` so a long name ellipsises, and that clips an
+     absolutely positioned stretch of the row, so the link's own box is what
+     grows - to the row's height, on the home rows and the rail's alike. */
+  .pr .nm a, .wk .nm a, .row .name a { display: inline-flex; align-items: center; min-height: 44px; }
+  /* A row's chip is not the target, so it gives the height back. */
+  .pr .x, .wk .x { min-height: 0; }
+  /* The header's brand is a way home, and the session's more disclosure is a
+     chevron: neither is 44 by its own box. */
+  .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+  .sess > .more > summary { min-width: 44px; }
+}
+
 /* A delivery keeps the lines it arrived with: its body is often a second
    line under the header the envelope carries. Scoped to the conversation,
    because the composer's notice row shares the name and states its own

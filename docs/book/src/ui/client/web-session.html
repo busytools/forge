@@ -989,6 +989,14 @@
     .prail { display: none; }
     .pmain { grid-column: 1; }
   }
+  /* The reach a finger needs, keyed on the pointer rather than the width:
+     the brand is a way home and the more disclosure is a chevron, so both
+     take more than their own box. The app's sheet carries the same rules. */
+  @media (pointer: coarse) {
+    .banner .close { min-width: 44px; }
+    .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+    .sess > .more > summary { min-width: 44px; }
+  }
 </style>
 </head>
 <body>
