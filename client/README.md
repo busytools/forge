@@ -1,7 +1,7 @@
 # forge client
 
 The app that connects to a running forge and draws it. Svelte 5 on Vite,
-with a Tauri shell for the desktop.
+with a Tauri shell for the desktop and Android.
 
 It is not a second forge. Every client connects to a forge someone else
 started, and the socket carries everything the pages draw.
@@ -79,6 +79,40 @@ The version is this crate's own rather than the workspace's: it sits in this
 crate's `Cargo.toml`, because the shell is its own workspace root and the
 workspace bump cannot reach it. `just release` bumps it to the release
 version, so the tag and the installed app carry the same number.
+
+## The Android target
+
+The same shell builds for Android through Tauri's own CLI. It wants the
+Android SDK with an NDK, and a JDK 17 or newer, and it reads `ANDROID_HOME`
+or `ANDROID_SDK_ROOT`, `NDK_HOME` and `JAVA_HOME`:
+
+```sh
+export ANDROID_HOME=/path/to/sdk     # a root with cmdline-tools in it
+export NDK_HOME="$ANDROID_HOME/ndk/<version>"
+export JAVA_HOME=/path/to/jdk
+```
+
+`src-tauri/gen/android/` is the Gradle project `tauri android init`
+generates, and it is committed: the manifest, the Kotlin activity and the
+Gradle files are project source rather than build output, so its two local
+edits - the manifest's mic permissions and the activity's back-navigation
+override - survive a clean clone. Re-running `tauri android init`
+overwrites them, so re-apply either change after one. The debug APK is one
+command, and it builds the frontend first the same way the desktop build
+does:
+
+```sh
+npm run tauri -- android build --debug --apk --ci
+```
+
+It lands at
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`,
+signed with the debug keystore under `~/.android/`, and side-loads onto a
+phone. `--target aarch64` builds one ABI rather than all four.
+
+The manifest declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`: wry's
+`WebChromeClient` requests both together for a `getUserMedia` prompt, so one
+missing from the manifest denies the whole request.
 
 ## What is here
 

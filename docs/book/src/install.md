@@ -15,11 +15,13 @@
   verifies a UI change with `mdbook serve docs/book`.
 - **`just`**, if you want the task recipes. Most wrap a cargo
   invocation you can also type out.
-- **Node and npm, for the desktop client.** `just check` runs the client's
+- **Node and npm, for the client.** `just check` runs the client's
   Prettier, ESLint, `svelte-check`, `tsc` and vitest steps, and
   `just client-tauri-check` builds the shell in its shipping configuration;
   `just release` builds and installs it. CI uses Node 24, and
-  `npm --prefix client ci` fetches the client's dependencies.
+  `npm --prefix client ci` fetches the client's dependencies. The client
+  also builds for Android, which additionally wants the Android SDK, its
+  NDK and a JDK 17 or newer; the recipe is in `client/README.md`.
 - **A C and C++ toolchain, `cmake`, and `libclang`.** `forge-workspace`
   depends on `forge-dictate`, which builds two native model runtimes
   (`transcribe-cpp-sys`, `llama-cpp-sys-2`) - so these are needed to
