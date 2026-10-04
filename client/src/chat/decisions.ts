@@ -14,6 +14,22 @@ export interface Decision {
   model: string;
   usage: { input_tokens: number; output_tokens: number; cost: number | null } | null;
   answer: DecisionAnswer;
+  /**
+   * The question the call asked, whole - the row's title holds one line of it.
+   *
+   * The input's `instructions`, which is what the model was asked and the one
+   * thing a reader qualifying the answer needs (Ved, 2026-10-04).
+   */
+  question: string | null;
+  /**
+   * The descriptions the options were given, by the name the block's rows use.
+   *
+   * A noul's two sides land under `yes` and `no`, the words its rows draw; a
+   * choice maps option name to its description, and an option whose
+   * description was null stands alone; a score's levels ARE their
+   * descriptions, so its map is empty.
+   */
+  criteria: Record<string, string>;
 }
 
 /** One typed answer, as the three tools return them. */
@@ -63,7 +79,41 @@ export function decisionOf(
   const json = obj(parsedText(result.content));
   const answer = answerOf(json['answer'], input);
   if (answer === null) return null;
-  return { model: str(json, 'model') ?? '', usage: usageOf(json['usage']), answer };
+  return {
+    model: str(json, 'model') ?? '',
+    usage: usageOf(json['usage']),
+    answer,
+    question: instructionsOf(input),
+    criteria: criteriaOf(answer, input),
+  };
+}
+
+/** The question the call asked, whole, or null when it said nothing. */
+function instructionsOf(input: unknown): string | null {
+  const said = str(obj(input), 'instructions')?.trim() ?? '';
+  return said === '' ? null : said;
+}
+
+/** The per-option descriptions, under the names the block's rows draw. */
+function criteriaOf(answer: DecisionAnswer, input: unknown): Record<string, string> {
+  const held = obj(obj(input)['criteria']);
+  const out: Record<string, string> = {};
+  if (answer.kind === 'noul') {
+    for (const [key, name] of [
+      ['true', 'yes'],
+      ['false', 'no'],
+    ] as const) {
+      const said = str(held, key)?.trim() ?? '';
+      if (said !== '') out[name] = said;
+    }
+    return out;
+  }
+  if (answer.kind === 'choice') {
+    for (const [name, said] of Object.entries(held)) {
+      if (typeof said === 'string' && said.trim() !== '') out[name] = said;
+    }
+  }
+  return out;
 }
 
 /** A value as a JSON object, or an empty one for every other shape. */

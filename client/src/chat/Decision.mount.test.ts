@@ -24,6 +24,8 @@ const decision = (levels: { name: string; value: number | null }[]): Parsed => (
   model: 'jev-1.13.0',
   usage: null,
   answer: { kind: 'score', score: 1.5, levels, confidence: null },
+  question: null,
+  criteria: {},
 });
 
 describe('the distribution the runtime draws', () => {

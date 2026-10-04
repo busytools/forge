@@ -48,7 +48,56 @@ describe('reading the three primitives', () => {
       model: 'jev-1.13.0',
       usage: { input_tokens: 392, output_tokens: 20, cost: null },
       answer: { kind: 'noul', noul: 0.93 },
+      question: 'Is this mechanical?',
+      criteria: {},
     });
+  });
+
+  it('keeps the whole question and the options the call was made with', () => {
+    // The row's title cuts the question to its first line, and the block drew
+    // the answer alone - so nothing on the page held the rest of it, or what
+    // the options meant (Ved, 2026-10-04: "I'm not able to see the question,
+    // the full question, even after I expand - and also full options").
+    const text = JSON.stringify({ model: 'm', answer: { type: 'noul', noul: 0.93 } });
+    const noul = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      {
+        state: 'a one-line import fix',
+        instructions: 'Is this mechanical?\nOr does it touch the shared module?',
+        criteria: { true: 'a single import line', false: 'anything else moves' },
+      },
+      result(text),
+    );
+    expect(noul?.question, 'the question whole, not its first line').toBe(
+      'Is this mechanical?\nOr does it touch the shared module?',
+    );
+    expect(noul?.criteria, "and what yes and no meant, under the rows' own words").toEqual({
+      yes: 'a single import line',
+      no: 'anything else moves',
+    });
+
+    const choiceText = JSON.stringify({
+      model: 'm',
+      answer: { type: 'choice', choice: 'payments', probabilities: { payments: 0.84 } },
+    });
+    const choice = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      { instructions: 'Which team?', criteria: { payments: 'owns the ledger', frontend: null } },
+      result(choiceText),
+    );
+    expect(choice?.question).toBe('Which team?');
+    expect(choice?.criteria, 'a null description stands alone rather than drawing').toEqual({
+      payments: 'owns the ledger',
+    });
+
+    // A score's levels ARE their descriptions, so nothing sits beside them.
+    const scoreText = JSON.stringify({
+      model: 'm',
+      answer: { type: 'score', score: 1.0, probabilities: { 0: 0.5, 1: 0.5 } },
+    });
+    const score = decisionOf('mcp__forge__systemone__ask_score', SCORE_INPUT, result(scoreText));
+    expect(score?.question).toBe('How urgent?');
+    expect(score?.criteria).toEqual({});
   });
 
   it('refuses a noul that is not a probability', () => {
@@ -86,6 +135,8 @@ describe('reading the three primitives', () => {
         ],
         confidence: 0.72,
       },
+      question: null,
+      criteria: {},
     });
   });
 

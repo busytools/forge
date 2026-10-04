@@ -218,6 +218,8 @@ describe('the row one call draws', () => {
             model: 'jev-1.13.0',
             usage: { input_tokens: 392, output_tokens: 20, cost: null },
             answer: { kind: 'noul', noul: 0.93 },
+            question: null,
+            criteria: {},
           },
           skill: null,
           image: null,

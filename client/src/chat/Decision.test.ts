@@ -9,6 +9,8 @@ const decision = (over: Partial<Parsed>): Parsed => ({
   model: 'jev-1.13.0',
   usage: { input_tokens: 392, output_tokens: 20, cost: null },
   answer: { kind: 'noul', noul: 0.93 },
+  question: null,
+  criteria: {},
   ...over,
 });
 
@@ -27,6 +29,22 @@ describe('the block one decision draws', () => {
     expect(body, 'the number carries the sure tone').toContain('num sure');
     expect(body, 'and the side that won carries the mark').toContain('opt win');
     expect(body, 'the derived side fills at the rounded grain').toContain('width:7%');
+  });
+
+  it('draws the whole question over the answer, and each option its description', () => {
+    const body = drawn({
+      question: 'Is this mechanical?\nOr does it touch the shared module?',
+      criteria: { yes: 'a single import line', no: 'anything else moves' },
+    });
+    expect(body, 'the whole question, joined and its marks kept').toContain(
+      'Is this mechanical? Or does it touch the shared module?',
+    );
+    expect(body, 'and what the winning side meant').toContain('a single import line');
+    expect(body, 'under the row that side names').toContain('anything else moves');
+
+    expect(drawn({}), 'a call that asked nothing draws no question line').not.toContain(
+      'class="q"',
+    );
   });
 
   it('tones a coin flip without changing the words', () => {
