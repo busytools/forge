@@ -1129,8 +1129,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
   /* An artifact link inside a home row is its own control, above that row's
      stretch, and takes the 44 the same way - the width too, since a short
-     label draws one narrower than a finger. */
-  .row .what a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; }
+     label draws one narrower than a finger. Block rather than flex, and the
+     height in the line, so a long label still ellipsises. */
+  .row .what a { display: inline-block; min-width: 44px; min-height: 44px;
+    line-height: 44px; }
   /* The header's brand is a way home, and the session's more disclosure is a
      chevron: neither is 44 by its own box. */
   .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
