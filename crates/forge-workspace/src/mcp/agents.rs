@@ -1173,6 +1173,11 @@ mod tests {
         let host = host();
         let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         assert!(
+            tool.description().contains("and the `systemone__*` tools are in your list"),
+            "the cue's guard names the family, so a rename of it fails here: {}",
+            tool.description()
+        );
+        assert!(
             tool.description().contains(
                 "make one call on the claim or the pick first: put the claim and its evidence in `state` for a claim check"
             ),
