@@ -1259,44 +1259,72 @@ export class Chat {
   }
 
   /**
-   * Arm the hold from the read's own queue, for a reader the frame never
-   * reached.
+   * Reconcile the hold against the read's own queue, which is the reader the
+   * hold was built for and the invariant that keeps it from stranding.
    *
-   * Add-only, deliberately: the snapshot is the current waiting set, and a
-   * prompt it does not list has either settled - settled frames are what the
-   * lifecycle arms clear on - or belongs to no reader here. What it lists is
-   * waiting, and the words it carries are only here for the note's text; the
-   * frame's own announcement, where one comes, is what re-dates the wait.
+   * **The hold must never outlive the queue's listing of the id.** A socket
+   * drop loses the lifecycle frames of anything that settles during the gap,
+   * and the reconnect's snapshot is the first word after it - so a uuid the
+   * snapshot no longer lists has settled, and its held row releases: the
+   * words draw rather than being filtered from every surface forever with
+   * the card gone too. In the other direction a listed uuid ARMS - the read
+   * that hands an attacher its card is the only word that reader gets - and
+   * any copy a page drew before this snapshot arrived is pulled back into
+   * the hold, the same way the live retraction pulls one.
    */
   private armed(data: unknown): void {
     // `state` is the wire's own record inside the snapshot, the same nesting
     // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.
-    const held = (data ?? {}) as { state?: unknown };
-    const state = (held.state ?? {}) as { queue?: unknown };
+    const root = (data ?? {}) as { state?: unknown };
+    const state = (root.state ?? {}) as { queue?: unknown };
     const queue = state.queue;
     if (!Array.isArray(queue)) return;
+    const listed = new Set<string>();
     for (const row of queue) {
-      const held = row as { uuid?: unknown; text?: unknown } | null;
-      if (typeof held?.uuid !== 'string' || held.uuid === '') continue;
-      if (this.waiting.has(held.uuid)) continue;
-      this.waiting.set(held.uuid, {
+      const entry = row as { uuid?: unknown; text?: unknown } | null;
+      if (typeof entry?.uuid !== 'string' || entry.uuid === '') continue;
+      listed.add(entry.uuid);
+      if (this.waiting.has(entry.uuid) || this.drained.has(entry.uuid)) continue;
+      this.waiting.set(entry.uuid, {
         since: Date.now(),
-        text: typeof held.text === 'string' ? held.text : '',
+        text: typeof entry.text === 'string' ? entry.text : '',
       });
+      // A page asked before this snapshot landed draws the forged row
+      // unfiltered; arming now pulls that copy back into the hold.
+      this.retract(entry.uuid);
     }
+    for (const uuid of [...this.waiting.keys()]) {
+      if (!listed.has(uuid)) this.release(uuid);
+    }
+    for (const uuid of [...this.drained.keys()]) {
+      if (!listed.has(uuid)) this.release(uuid);
+    }
+  }
+
+  /**
+   * A held prompt the read no longer lists: it settled while this page was
+   * not listening, so its row draws - bare, because nothing here observed
+   * whether a turn took it - and a later page pairs with it by id.
+   */
+  private release(uuid: string): void {
+    const held = this.drained.get(uuid);
+    this.waiting.delete(uuid);
+    this.drained.delete(uuid);
+    if (held !== undefined) this.append(held);
   }
 
   /**
    * Whether this message is the row of a prompt the pile is still holding,
    * taking it into the hold on the way.
    *
-   * The first frame kept is the one that draws at the drain: a live frame the
-   * seat already had is preferred over a page's later copy of it.
+   * Whichever pull names a uuid last holds the frame that draws at the
+   * drain - the pulls do not order themselves, and every copy says the same
+   * words, so the choice only decides which one stands.
    */
   private heldBack(message: unknown): boolean {
     const id = uuidOf(message);
     if (id === null || !this.waiting.has(id)) return false;
-    if (!this.drained.has(id)) this.drained.set(id, message);
+    this.drained.set(id, message);
     return true;
   }
 
@@ -1347,24 +1375,27 @@ export class Chat {
     const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
     const state = textIn(update, 'prompt_lifecycle', 'state');
     if (uuid === null || state === null) return;
+    // **The cancel settles on the id alone, before the hold's own guard**: the
+    // pending mark is this prompt's whether or not a row is still held here -
+    // a snapshot's release or a swap can have cleared the hold out from under
+    // it - and skipping that test on the guard would leave the mark saying
+    // "sending" forever. The store holds one send per seat, and the id is
+    // what separates a second send from a first prompt's cancel; words could
+    // not, since two sends of the same text compare equal.
+    if (state === 'cancelled') {
+      if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
+      this.waiting.delete(uuid);
+      this.drained.delete(uuid);
+      return;
+    }
     const entry = this.waiting.get(uuid);
     const held = this.drained.get(uuid);
     if (entry === undefined && held === undefined) return;
-    const dropped = state === 'cancelled' || state === 'refused' || state === 'discarded';
+    const dropped = state === 'refused' || state === 'discarded';
     const drawn = state === 'started' || state === 'completed';
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
-    if (state === 'cancelled') {
-      // Only when the pending send is THIS prompt's: the store holds one send
-      // per seat, and the id is what separates a second send from a first
-      // prompt's cancel. Words could not - two sends of the same text compare
-      // equal - so they are not asked.
-      if (entry !== undefined && echoes.of(this.key)?.id === uuid) {
-        echoes.clear(this.key);
-      }
-      return;
-    }
     if (held === undefined) return;
     const waited = entry === undefined ? 0 : Date.now() - entry.since;
     this.append(dropped ? held : this.noted(held, waited));

@@ -1012,5 +1012,9 @@ describe('the reader own words before the core has them', () => {
     expect(resentUuid, 'not the id the first attempt went under').not.toBe('e-gate');
     const resent = echoes.of(key);
     expect(resent?.state, 'and the row is back to saying it is on its way').toBe('sending');
+    // **The mark carries the DISPATCHED id**, not merely some id: the pile
+    // settles the mark by that id, so a second mint beside it would leave the
+    // cancel unable to reach the retry.
+    expect(resent?.id, 'and the mark names the id the retry went out under').toBe(resentUuid);
   });
 });
