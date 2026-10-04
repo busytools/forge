@@ -818,8 +818,9 @@ details.leaf.running > summary { color: var(--text); }
    summary half, and a task that ended badly is the same line in the bad tone. */
 .term .sum { color: var(--ok); }
 .term .fail { color: var(--bad); }
-/* A systemone decision's block: the answer, its distribution, and what it
-   cost. The winner's fill is the shipped teal, which no other rule uses. */
+/* A systemone decision's block: the question it answered, the answer, its
+   distribution with each option's own description under it, and what it cost.
+   The winner's fill is the shipped teal, which no other rule uses. */
 .dec { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
   background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
 /* The question the call asked, which the row's own title cuts to one line. */

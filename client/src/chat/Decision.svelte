@@ -4,8 +4,9 @@
   import { joinedLine } from './text';
 
   /**
-   * One System One decision, drawn as the block the mock settled: the answer
-   * first, its distribution under it, and what it cost along the bottom.
+   * One System One decision, drawn as the block the mock settled: the
+   * question it answered, the answer first, its distribution with each
+   * option's own description under it, and what it cost along the bottom.
    *
    * The verdict line draws only what the result carries. What the session
    * then did with the answer - applied it, escalated it - is not on the wire,
