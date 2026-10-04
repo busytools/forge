@@ -1687,6 +1687,44 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
   });
 
+  it('a read asked before the send answers after it, and the hold stays', () => {
+    // **The read is a round trip: its listing is taken when the server
+    // answers, not when the client asked.** A snapshot requested a beat
+    // before a send carries a queue that PREDATES the prompt - releasing on
+    // it would draw the row the pile is holding, and no later snapshot comes
+    // until the next re-read.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The store's own first snapshot, which every subscribe is answered with.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('stale racing words', 'p1') } });
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'stale racing words' },
+    });
+    expect(words(chat), 'held while the queue lists it').not.toContain('stale racing words');
+
+    // The read's answer, whose queue was snapshotted before the prompt.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true }, state: { queue: [] } },
+    });
+    expect(words(chat), 'an older listing must not draw the row').not.toContain(
+      'stale racing words',
+    );
+
+    // And the lifecycle still drains it when the CLI takes the prompt.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the drain draws it').toContain('stale racing words');
+  });
+
   it('releases a hold the read no longer lists, so a drop cannot strand the words', () => {
     // Queued, then the socket drops: the prompt settles during the gap and
     // its lifecycle frames die on the dead connection. The reconnect's
