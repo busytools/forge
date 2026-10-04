@@ -1184,6 +1184,13 @@ export class Chat {
       const words = textIn(update, 'prompt_queued', 'text');
       if (uuid !== null) {
         this.waiting.set(uuid, { since: Date.now(), text: words ?? '' });
+        // **The card is what carries a waiting prompt's words, so the send's
+        // own mark goes with them.** The mark stands in for the row the words
+        // will occupy, and while the prompt waits the pile's card IS that row -
+        // left up, the mark draws the words a second time, in the chat, saying
+        // "sending" over a card already showing them (Ved, 2026-10-04). Ids
+        // only: two sends of the same text compare equal by words.
+        if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
         // **The two frames race, and this side of the race is the retraction.**
         // The dispatcher emits the user turn as it routes the prompt; the
         // task's queue announcement follows it, so a frame often arrives before

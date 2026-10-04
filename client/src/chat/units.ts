@@ -13,16 +13,16 @@
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
  *   it;
- * - peer traffic and calls share one group: a message does not close the calls
- *   above it, and the lane that took the latest row draws last;
- * - a thinking block draws as a lane of that group, where the terminal has no
+ * - peer traffic and calls share one list: a message does not close the calls
+ *   above it, and no row ever moves - every row keeps its arrival place;
+ * - a thinking block draws as a row of that list, where the terminal has no
  *   row for one at all - its arm only sets a running status and counts
  *   characters;
  * - a question the assistant asked is a card rather than a call;
  * - an envelope that is not agent traffic is a notice rather than the reader's
  *   own turn, and the three external kinds that carry something to read - a
- *   cron fire, a Slack message, a Gotify push - join the group as lanes of
- *   their own kind, the same shape every other lane draws;
+ *   cron fire, a Slack message, a Gotify push - join the list as rows of
+ *   their own kind, the same shape every other row draws;
  * - the harness's own reminder that a skill was already loaded draws as a
  *   notice rather than the reader's turn, where the terminal drops every wire
  *   user text live as an input echo and draws this one as a user turn on
@@ -42,14 +42,7 @@
  * they duplicate that surface inside every turn that used one.
  */
 
-import {
-  aggregateStatus,
-  labelOf,
-  rowOf,
-  taskStatus,
-  type CallStatus,
-  type KindRow,
-} from './families';
+import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 import { firstLine, stripEscapes } from './text';
 
@@ -60,7 +53,7 @@ export interface AnsweredQuestion {
   typed_note: string | null;
 }
 
-/** One call on a family's lane, with what the fold lists it by. */
+/** One call, as a row of the turn's work. */
 export interface CallLeaf {
   /**
    * The fold's own name for the row.
@@ -73,16 +66,6 @@ export interface CallLeaf {
    */
   key: string;
   leaf: ToolLeaf;
-}
-
-/** One family's calls inside a group. */
-export interface FamilyLeaves {
-  tag: 'family';
-  /** The class the row belongs to, which is what a view picks its glyph from. */
-  row: KindRow;
-  /** The word the row draws. */
-  label: string;
-  calls: CallLeaf[];
 }
 
 /** How loudly a notice reads. */
@@ -113,9 +96,9 @@ export interface Notice {
  * verb whose answer the row holds.
  *
  * **Direction is carried by the words, and the mark reinforces them.** The
- * lane is one, so the row's own word is what says which way a message went;
- * a verb's card says what it is by its title rather than by a direction at
- * all.
+ * rows share one list, so the row's own word is what says which way a message
+ * went; a verb's card says what it is by its title rather than by a direction
+ * at all.
  */
 export type PeerRow = 'sent' | 'arrived' | 'failed' | 'whoami' | 'list';
 
@@ -189,35 +172,14 @@ export interface PeerCard {
   seats: SeatRow[];
 }
 
-/** One lane of peer traffic: every card, in the order the turn produced them. */
-export interface MessageLane {
-  tag: 'message';
-  cards: PeerCard[];
-}
-
-/** One thing the model thought, as a lane's row. */
+/** One thing the model thought, as a row of the work. */
 export interface ThoughtLeaf {
   /** The frame and block it came from, which is what the row is keyed by. */
   key: string;
   text: string;
 }
 
-/**
- * One lane of thinking: what the model said to itself across a stretch of work.
- *
- * The terminal draws none of this - its own arm for a thinking block sets a
- * running status and counts characters - so this lane exists because the words
- * are on the wire and dropping them is the one thing a frame may not be. It
- * rides the group rather than sitting between the calls: a thought is
- * commentary ON the work, and its lane takes its place in the recency order
- * like any other.
- */
-export interface ThoughtLane {
-  tag: 'thought';
-  thoughts: ThoughtLeaf[];
-}
-
-/** One hook run, as a lane's row. */
+/** One hook run, as a row of the work. */
 export interface HookLeaf {
   /** The run's own id, or the frame it arrived on where the wire gave none. */
   key: string;
@@ -225,20 +187,18 @@ export interface HookLeaf {
 }
 
 /**
- * One lane of hooks: the runs that fired across a stretch of work.
+ * One row of a turn's work, in the order it arrived.
  *
- * A run is one row - its start, its progress and its ending are the same hook
- * arriving three times - and the lane rides the group the way the thinking
- * does, so a hook that fires between two calls sits among them in the recency
- * order rather than as a row of its own kind.
+ * Every row a stretch draws - a call, a peer card, a thought, a hook run, a
+ * delivery - is one of these, and the list never reorders: a row that arrived
+ * stays where it landed, so the fold's item sequence IS the drawn order.
  */
-export interface HookLane {
-  tag: 'hook';
-  runs: HookLeaf[];
-}
-
-/** One lane of a group: a family's calls, peer traffic, thinking, hooks, deliveries. */
-export type Lane = FamilyLeaves | MessageLane | ThoughtLane | HookLane | InboundLane;
+export type WorkRow =
+  | ({ tag: 'call' } & CallLeaf)
+  | { tag: 'card'; card: PeerCard }
+  | ({ tag: 'thought' } & ThoughtLeaf)
+  | ({ tag: 'hook' } & HookLeaf)
+  | ({ tag: 'inbound' } & InboundLeaf);
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -339,21 +299,15 @@ export type Unit =
   /** Prose the assistant wrote. */
   | { kind: 'text'; key: string; text: string }
   /**
-   * A stretch of work: a lane per tool family, per kind of peer traffic and for
-   * the thinking, drawn as one group.
+   * A stretch of work: every call, message, thought, hook run and delivery on
+   * its own row, in the order it arrived.
    *
-   * **The lanes are a timeline rather than a taxonomy.** An item joins the lane
-   * it belongs to - a call its family, a message its kind, a thought the
-   * thinking - wherever it lands in the stretch, and the lane that took the
-   * latest row draws last, so the one still working sits where the eye already
-   * is. The order derives from the item sequence, so a page re-read from the
-   * transcript draws what the live one drew.
-   *
-   * A lone message is a group of one lane, which is the one place this shape
-   * departs from the terminal: its own fold holds a messaging group back until
-   * it holds two.
+   * **The rows never reorder.** An item lands where it arrived and stays
+   * there, so the list reads as the turn happened and the order derives from
+   * the item sequence - a page re-read from the transcript draws what the
+   * live one drew.
    */
-  | { kind: 'group'; key: string; lanes: Lane[]; status: CallStatus }
+  | { kind: 'leaves'; key: string; rows: WorkRow[] }
   | { kind: 'question'; key: string; asked: AnsweredQuestion[] }
   | { kind: 'notice'; key: string; notice: Notice }
   /**
@@ -1126,7 +1080,7 @@ function lower(word: string): string {
  * The peer card an outbound call draws, when it is one.
  *
  * **The card IS the row**: a call that draws one is not drawn as a tool row as
- * well, which is what keeps a lane's rows one per event rather than two.
+ * well, which is what keeps the rows one per event rather than two.
  *
  * Each name carries its own input and answer shape. A send names a target and
  * answers with the id it went out under; `whoami` answers with this seat's
@@ -1480,7 +1434,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * The `Skill` calls this turn holds, by the name each asked for and with the
    * row each drew, so a body arriving behind its call still finds the row that
    * should open onto it - and does so even across a flush, because the leaf is
-   * the row the lane holds rather than a copy.
+   * the row the list holds rather than a copy.
    */
   const skillCalls: Array<{ want: string; leaf: ToolLeaf }> = [];
   for (const [at, frame] of frames.entries()) {
@@ -1580,27 +1534,13 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
 
   const units: Unit[] = [];
   /**
-   * The stretch's items, in the order they arrived: tool calls, peer cards and
-   * thoughts.
+   * The stretch's rows, before they flush: tool calls, peer cards, thoughts,
+   * hook runs and deliveries, in the order they arrived.
    *
    * A peer message does not close the calls above it, and a call does not close
-   * the traffic: the lane an item belongs to is what it joins, wherever in the
-   * stretch it lands.
+   * the traffic: the list is one sequence, and an item joins it where it lands.
    */
-  type Item =
-    | { tag: 'call'; row: KindRow; label: string; leaf: ToolLeaf; key: string }
-    | { tag: 'card'; card: PeerCard }
-    | { tag: 'thought'; key: string; text: string }
-    | { tag: 'hook'; key: string; run: HookRun }
-    | {
-        tag: 'inbound';
-        kind: InboundKind;
-        key: string;
-        title: string;
-        body: string;
-        elevated: boolean;
-      };
-  let pending: Item[] = [];
+  let pending: WorkRow[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
   /**
@@ -1655,24 +1595,23 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * Rewrite the row a hook run opened, wherever it currently sits.
    *
    * A later frame of one run replaces that run's row rather than drawing
-   * beside it - and the replacement counts as the stretch's latest, which is
-   * what the lane order reads, so a run still working sits at the group's end.
+   * beside it, in place: the list never reorders, so an update never moves a
+   * row the reader is looking at.
    */
   const rewriteHook = (key: string, run: HookRun): boolean => {
     for (const [index, item] of pending.entries()) {
       if (item.tag !== 'hook' || item.key !== key) continue;
-      pending.splice(index, 1);
-      pending.push({ tag: 'hook', key, run });
+      pending[index] = { tag: 'hook', key, run };
       return true;
     }
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
-      if (unit?.kind !== 'group') continue;
-      const lane = unit.lanes.find(
-        (held): held is HookLane => held.tag === 'hook' && held.runs.some((one) => one.key === key),
+      if (unit?.kind !== 'leaves') continue;
+      const held = unit.rows.find((row) => row.tag === 'hook' && row.key === key);
+      if (held === undefined) continue;
+      unit.rows = unit.rows.map((row) =>
+        row.tag === 'hook' && row.key === key ? { tag: 'hook', key, run } : row,
       );
-      if (lane === undefined) continue;
-      lane.runs = lane.runs.map((held) => (held.key === key ? { key, run } : held));
       return true;
     }
     return false;
@@ -1751,110 +1690,15 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   const flushWork = (): void => {
     const items = pending;
     pending = [];
-    // The first item is the guard and the group's name in one: it always
+    // The first item is the guard and the unit's name in one: it always
     // carries its own id, so no counter is invented here - one would move as
     // the turn grows, which is the remount this keying exists to stop.
     const first = items[0];
     if (first === undefined) return;
-    /** When each lane last took a row, which is the lane order's only input. */
-    const families: Array<{ lane: FamilyLeaves; at: number }> = [];
-    const traffic: Array<{ lane: MessageLane; at: number }> = [];
-    const thought: Array<{ lane: ThoughtLane; at: number }> = [];
-    const hooks: Array<{ lane: HookLane; at: number }> = [];
-    const inbounds: Array<{ lane: InboundLane; at: number }> = [];
-    /** What each row came back as, which is what the group's roll-up reads. */
-    const statuses: CallStatus[] = [];
-    for (const [index, item] of items.entries()) {
-      if (item.tag === 'call') {
-        statuses.push(item.leaf.status);
-        const held = families.find(
-          (entry) => entry.lane.label === item.label && entry.lane.row.kind === item.row.kind,
-        );
-        if (held === undefined) {
-          families.push({
-            lane: {
-              tag: 'family',
-              row: item.row,
-              label: item.label,
-              calls: [{ key: item.key, leaf: item.leaf }],
-            },
-            at: index,
-          });
-        } else {
-          held.lane.calls.push({ key: item.key, leaf: item.leaf });
-          held.at = index;
-        }
-        continue;
-      }
-      if (item.tag === 'thought') {
-        const held = thought[0];
-        if (held === undefined) {
-          thought.push({
-            lane: { tag: 'thought', thoughts: [{ key: item.key, text: item.text }] },
-            at: index,
-          });
-        } else {
-          held.lane.thoughts.push({ key: item.key, text: item.text });
-          held.at = index;
-        }
-        continue;
-      }
-      if (item.tag === 'hook') {
-        const held = hooks[0];
-        if (held === undefined) {
-          hooks.push({
-            lane: { tag: 'hook', runs: [{ key: item.key, run: item.run }] },
-            at: index,
-          });
-        } else {
-          held.lane.runs.push({ key: item.key, run: item.run });
-          held.at = index;
-        }
-        continue;
-      }
-      if (item.tag === 'inbound') {
-        // One lane per kind, like the traffic: a lane's word is what a view
-        // opens it by, and two lanes of one kind would give two lanes the
-        // same word, which a keyed list refuses at mount.
-        const row = {
-          key: item.key,
-          kind: item.kind,
-          title: item.title,
-          body: item.body,
-          elevated: item.elevated,
-        };
-        const held = inbounds.find((entry) => entry.lane.kind === item.kind);
-        if (held === undefined) {
-          inbounds.push({ lane: { tag: 'inbound', kind: item.kind, rows: [row] }, at: index });
-        } else {
-          held.lane.rows.push(row);
-          held.at = index;
-        }
-        continue;
-      }
-      statuses.push(item.card.status);
-      // One lane for every peer card: the direction and the verb are the ROW's
-      // business rather than the lane's, so splitting the lane per kind would
-      // give two lanes one word apiece and read as two systems.
-      const held = traffic[0];
-      if (held === undefined) {
-        traffic.push({ lane: { tag: 'message', cards: [item.card] }, at: index });
-      } else {
-        held.lane.cards.push(item.card);
-        held.at = index;
-      }
-    }
-    // The lane that took the latest row draws last: the one still working sits
-    // where the eye already is, and the order derives from the item sequence,
-    // so a page reopened from the transcript draws what the live one drew.
-    const lanes = [...families, ...traffic, ...thought, ...hooks, ...inbounds]
-      .sort((a, b) => a.at - b.at)
-      .map((entry) => entry.lane);
     units.push({
-      kind: 'group',
+      kind: 'leaves',
       key: first.tag === 'card' ? `p-${first.card.id}` : first.key,
-      lanes,
-      status: aggregateStatus(statuses),
+      rows: items,
     });
   };
 
@@ -1966,9 +1810,8 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
       }
       // A hook's own lifecycle: one row per RUN, because the frames are one
       // hook's start, its interim output and its ending - the later frames
-      // rewrite the run's own row rather than drawing beside it. The run rides
-      // the group as a lane of its own, so a hook that fired between two calls
-      // sits among them in the recency order.
+      // rewrite the run's own row rather than drawing beside it. The run lands
+      // where it fired, so a hook that fired between two calls sits among them.
       if (
         frame.subtype === 'hook_started' ||
         frame.subtype === 'hook_progress' ||
@@ -2077,9 +1920,9 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
                 },
               });
             } else if (envelope.kind === 'inbound') {
-              // A delivery by cron, Slack or Gotify joins the work as a lane
+              // A delivery by cron, Slack or Gotify joins the work as a row
               // of its own kind, the way a family's calls do - one shape for
-              // every lane, so a new external kind is a lane and a glyph.
+              // every row, so a new external kind is a row and a glyph.
               pending.push({
                 tag: 'inbound',
                 kind: envelope.inbound,
@@ -2168,8 +2011,8 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         if (block.thinking.trim() !== '') {
           // Not `push`: a thought is commentary ON the work rather than a
           // separator between pieces of it, so nothing is flushed here. The
-          // stretch stays whole across it, and the thinking lane takes its
-          // place in the recency order like any other lane.
+          // stretch stays whole across it, and the thought takes its place in
+          // the arrival order like any other row.
           pending.push({ tag: 'thought', key: keyOf(at, frame, blockAt), text: block.thinking });
         }
         continue;
@@ -2260,8 +2103,6 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         }
         pending.push({
           tag: 'call',
-          row: rowOf(name),
-          label: labelOf(name),
           key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
           leaf,
         });

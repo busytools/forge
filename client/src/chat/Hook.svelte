@@ -80,11 +80,7 @@
 
 <details class="leaf hookrow">
   <summary>
-    {#if run.failed}
-      <Icon name="x" class="st err" />
-    {:else}
-      <Icon name="check" class="st" />
-    {/if}
+    <Icon name="hook" class={`gl${run.failed ? ' err' : ' ok'}`} />
     <span class="tn"
       >{run.name}{#if run.event !== null}
         ({run.event}){/if}</span

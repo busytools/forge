@@ -5,6 +5,7 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import { iconOf } from './families';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
@@ -159,6 +160,19 @@
       ? null
       : `${call.mutation.hunks} ${call.mutation.hunks === 1 ? 'hunk' : 'hunks'} \u{b7} +${call.mutation.added} \u{2212}${call.mutation.removed}`,
   );
+
+  /**
+   * The tone the kind's glyph takes once the call settles - green came back,
+   * red failed - and nothing while it still runs: the loader is what says so
+   * then.
+   */
+  const tone = $derived(
+    call.status === 'completed'
+      ? ' ok'
+      : call.status === 'failed' || call.status === 'killed'
+        ? ' err'
+        : '',
+  );
 </script>
 
 <details
@@ -168,11 +182,8 @@
   data-k={`call-${k}`}
 >
   <summary>
-    {#if call.status === 'completed'}
-      <Icon name="check" class="st" />
-    {:else if call.status === 'failed' || call.status === 'killed'}
-      <Icon name="x" class="st err" />
-    {:else}
+    <Icon name={iconOf(call.row)} class={`gl${tone}`} />
+    {#if call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'}
       <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>

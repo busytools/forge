@@ -1,5 +1,6 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
+  import Icon from '../components/Icon.svelte';
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine } from './text';
@@ -45,10 +46,14 @@
    * pass would rewrite what the name literally is, so it stays text.
    */
   const title = $derived(row.kind === 'cron' ? renderInlineProse(joinedLine(row.title)) : null);
+
+  /** The kind's own glyph, which the row leads with. */
+  const glyph = $derived(row.kind === 'cron' ? 'schedules' : row.kind);
 </script>
 
 <details class="leaf inboundrow">
   <summary>
+    <Icon name={glyph} class="gl" />
     {#if title !== null}
       <!-- A cron fire's title, rendered from escaped input: the same renderer
            the body and the tail line use. -->

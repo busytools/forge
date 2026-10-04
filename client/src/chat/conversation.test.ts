@@ -444,10 +444,10 @@ describe('the conversation the chat draws', () => {
     const turns = get(chat.value).turns;
     expect(turns, 'one turn, not a row beside it').toHaveLength(1);
     const units = fold(turns[0]?.messages ?? []);
-    const [group] = units.filter((unit) => unit.kind === 'group');
+    const [group] = units;
     const calls =
-      group?.kind === 'group'
-        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+      group?.kind === 'leaves'
+        ? group.rows.flatMap((row) => (row.tag === 'call' ? [row] : []))
         : [];
     expect(calls[0]?.leaf.skill, "the call's row is where the body landed").toBe(
       '# Unslop\n\nEdit text.',
@@ -535,11 +535,11 @@ describe('the conversation the chat draws', () => {
     expect(
       units.map((unit) => unit.kind),
       'and no row of its own',
-    ).toEqual(['group']);
-    const [group] = units.filter((unit) => unit.kind === 'group');
+    ).toEqual(['leaves']);
+    const [group] = units;
     const calls =
-      group?.kind === 'group'
-        ? group.lanes.flatMap((lane) => (lane.tag === 'family' ? lane.calls : []))
+      group?.kind === 'leaves'
+        ? group.rows.flatMap((row) => (row.tag === 'call' ? [row] : []))
         : [];
     expect(calls[0]?.leaf.imageNote, "the call's row carries it").toContain('Multiply coordinates');
   });
@@ -1234,7 +1234,7 @@ describe('the conversation the chat draws', () => {
     expect(
       fold(held, LEAD).map((unit) => unit.kind),
       'the forged frame draws as traffic, not as the reader own turn',
-    ).toEqual(['group']);
+    ).toEqual(['leaves']);
   });
 
   it('keeps every row keyed when older turns arrive', () => {
@@ -1590,12 +1590,38 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split('page-carried').length - 1, 'once').toBe(1);
   });
 
+  it('settles the pending mark when its own prompt reaches the queue, and only its own', () => {
+    // **The card is what carries a waiting prompt's words.** The mark stands
+    // in for the row the words will occupy - and the pile's card IS that row
+    // while the prompt waits, so the mark left up would draw the words twice:
+    // once in the pile, once in the chat saying "sending" (Ved's live find,
+    // 2026-10-04). Keyed on the id, like the cancel: two sends of the same
+    // text compare equal by words.
+    const seatKey = subjectKey({ session: LEAD });
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    echoes.post(seatKey, 'queue words', true, 'p9');
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p-other', source: 'you', text: 'x' } });
+    expect(echoes.of(seatKey)?.id, "another prompt's queueing is not this send's to settle").toBe(
+      'p9',
+    );
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p9', source: 'you', text: 'queue words' } });
+    expect(
+      echoes.of(seatKey),
+      'the card carries them now, so the mark goes with it',
+    ).toBeUndefined();
+  });
+
   it('settles the pending mark when its own prompt is cancelled, and only its own', () => {
-    // The cancelled arm is the only thing that settles the mark of a send
-    // posted into a running turn - nothing else will ever carry its words, so
-    // a regression here leaves "sending" up forever. And it keys on the ID:
-    // two sends of the same text compare equal by words, so the words cannot
-    // be what separates them.
+    // The cancelled arm settles a mark the queue arm has not: a cancel that
+    // beats its own queueing frame, or one for a send the core took another
+    // way - so a regression here leaves "sending" up forever. And it keys on
+    // the ID: two sends of the same text compare equal by words, so the words
+    // cannot be what separates them.
     const seatKey = subjectKey({ session: LEAD });
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

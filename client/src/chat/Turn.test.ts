@@ -350,8 +350,8 @@ describe('one turn, as the page draws it', () => {
       result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
     );
 
-    const lanes = body.match(/<div class="knd"/g) ?? [];
-    expect(lanes, 'two runs, so two family rows').toHaveLength(2);
+    const runs = body.match(/<div class="leaves"/g) ?? [];
+    expect(runs, 'two runs, so two leaf lists').toHaveLength(2);
     expect(body).toContain('<div class="card">');
     expect(body, 'and each run keeps its own call').toContain('a.rs');
     expect(body, 'and the other its own').toContain('b.rs');

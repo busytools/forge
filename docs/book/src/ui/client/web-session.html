@@ -21,20 +21,20 @@
      are the session page's, and so is the seat's id cell (.sid) that took
      the slot the account chip left.
      New here, and the shape the pages after this should take:
-     .rail + .pane-tog (a collapsible pane and its handle), .leaves + .lane
-     (a stretch of work: a lane per tool family, per kind of peer traffic and
-     for the thinking, with every call, message or thought a row that opens on
-     its own), .mine (a user turn - the orange rule is the attribution, so it
+     .rail + .pane-tog (a collapsible pane and its handle), .leaves
+     (a stretch of work: every call, message or thought a row of its own in
+     the order it arrived, the kind's glyph leading it, opening on its own),
+     .mine (a user turn - the orange rule is the attribution, so it
      carries no label - whose words are markdown, like the work's, because the
      terminal folds a prompt as a document too),
      .attrow (what a turn attached),
      .code, .dif, .notice, .card (an answered question), .mon,
      details.cpoint (the compaction point: the settled form of the in-flight
      line, a hairline carrying the word and the count read before the cut).
-     A run of peer messages is a tool run, and a thought is one too: each takes
-     a .lane and details.leaf rows - .mk, .k and .org for a counterparty, the
-     bulb for the thinking - so traffic, reasoning and work read as one system
-     rather than three. */
+     A run of peer messages is a tool run, and a thought is one too: each is a
+     details.leaf row - .mk, .k and .org for a counterparty, the bubble for the
+     thinking - so traffic, reasoning and work read as one system rather than
+     three. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --sel:#20140a; --line:#222a3c; --ctl:#516590;
@@ -71,8 +71,11 @@
   }
   .mono { font-family: var(--mono); }
   /* One icon rule for the whole page: a sprite reference inherits the
-     colour of whatever row it sits in, so nothing draws its own. */
-  .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+     colour of whatever row it sits in, so nothing draws its own - and the
+     optical nudge lives here, because an icon centered against a text line
+     box reads low: the box carries the descender space the ink does not. */
+  .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block;
+    position: relative; top: -1px; }
   /* One chevron, turned by the open state, on every disclosure on the page. */
   .arw { transition: transform .12s ease; }
   details[open] > summary .arw { transform: rotate(90deg); }
@@ -226,7 +229,10 @@
      hairline is what separates the app's brand from the seat's own. */
   .sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
     color: inherit; text-decoration: none; }
-  .sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent); }
+  /* The mark rides the same optical lift the icon rule carries: svg ink
+     centered against a text line box reads low. */
+  .sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent);
+    position: relative; top: -1px; }
   .sess .brand .mark svg { display: block; width: 100%; height: 100%; }
   .sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
   .sess .brand:hover .word { text-decoration: underline; }
@@ -342,7 +348,7 @@
      own padding add up to about a line each way, where the trailing padding
      used to make the seam under a tool block half again as tall as the one
      above it. */
-  .mine { margin: 12px 0; padding: 10px 15px; border-left: 1px solid var(--accent); }
+  .mine { margin: 4px 0; padding: 4px 15px; border-left: 1px solid var(--accent); }
   /* The echo: the reader's words from submit until the core has them. The word
      carries the state rather than the rule, because the accent line means
      "these words are yours" and a mark that also meant "in flight" would be
@@ -350,7 +356,7 @@
      beside them: the box is never refilled, since words typed since would land
      over them. */
   .mine.bad { border-left-color: var(--bad); }
-  .mine .st { display: flex; align-items: center; gap: 8px; margin-top: 9px;
+  .mine .st { display: flex; align-items: center; gap: 8px; margin-top: 4px;
     font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .mine .why { display: flex; align-items: center; gap: 9px; margin-top: 9px;
     font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
@@ -365,7 +371,7 @@
     font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
   .attrow .gl { color: var(--dim); }
   .attrow .n { color: var(--dim); }
-  .work { padding: 4px 0; }
+  .work { padding: 2px 0; }
   /* Prose draws in both blocks - the work a turn did, and what the reader typed,
      which the terminal folds as a document too - so these read `.prose` alone. */
   /* One blank line between blocks, which is the terminal's whole spacing policy:
@@ -428,29 +434,29 @@
     border-bottom: 1px solid var(--line); }
   .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
-  /* ---------- a stretch of work: one lane per kind ---------- */
-  /* No disclosure around the group - no count, no roll-up: a stretch of work
-     is not a thing to hide, the lane rows say what ran, and every row still
-     opens on its own. */
-  .leaves { padding: 0 0 6px 4px; }
-  /* One family inside a group: a label, and its calls indented behind a
-     rail so what is a group and what is a call never reads alike. */
-  .knd { display: flex; align-items: center; gap: 8px; padding: 9px 8px 3px;
-    font-family: var(--mono); font-size: var(--fs-base); }
-  .knd .gl { width: 16px; flex: 0 0 16px; color: var(--dim); }
-  .knd .nm { color: var(--muted); font-weight: 700; }
-  .knd .c { color: var(--dim); }
+  /* ---------- a stretch of work: every row on its own ---------- */
+  /* No disclosure around the run - no count, no roll-up, no family row:
+     a row carries its own kind on its own glyph, and each call still opens
+     on its own. */
+  .leaves { padding: 0 0 4px 4px; }
+  /* The kind's glyph, leading every row: the mark the family row used to
+     carry. Muted while the row runs, and the tone it settles into is the
+     outcome - green came back, red failed - so a settled row carries no
+     second mark. */
+  details.leaf > summary .gl { color: var(--muted); }
+  details.leaf > summary .gl.ok { color: var(--ok); }
+  details.leaf > summary .gl.err { color: var(--bad); }
 
-  /* one call, opening on its own */
-  details.leaf { margin-left: 15px; }
+  /* one call, opening on its own - a half-step under the prose, kept distinct
+     by its muted tone rather than by the size alone */
   details.leaf > summary { list-style: none; display: flex; align-items: center; gap: 8px;
-    padding: 4px 9px 4px 14px; border-radius: 0 7px 7px 0; cursor: pointer;
-    font-family: var(--mono); font-size: var(--fs-base); color: var(--muted); }
+    padding: 3px 9px 3px 8px; border-radius: 7px; cursor: pointer;
+    font-family: var(--mono); font-size: 15px; color: var(--muted); }
   details.leaf > summary::-webkit-details-marker { display: none; }
   details.leaf > summary:hover { background: rgba(27,33,48,.4); }
-  /* Every call carries its own status; the group's is only the roll-up. */
+  /* The loader a running row carries is the one state a settled row has none
+     of, because its glyph is already wearing the outcome by then. */
   details.leaf > summary .st { color: var(--ok); }
-  details.leaf > summary .st.err { color: var(--bad); }
   details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* A row's inline marks - a thought row renders emphasis and code - take the
      prose tone rather than the row's own muting, so a mark reads as a mark. */
@@ -585,16 +591,6 @@
   .dif .ln.a .n { background: var(--add-bg); color: var(--ok); }
   .dif .ln.d .n { background: var(--del-bg); color: var(--bad); }
 
-  /* The bulb's ink nearly fills its box, so at the marks' 15px its base sat
-     below the text's baseline and the row read low; 13 with a 1px lift sits it
-     with the words. */
-  details.leaf > summary .st.bulb { width: 13px; height: 13px; flex: 0 0 13px;
-    transform: translateY(-1px); }
-
-  /* A skill row's mark says what the row is, not how it ended, so it takes the
-     lane's dim rather than the ok tone a check wears. */
-  details.leaf > summary .st.sk { color: var(--dim); }
-
   /* peer traffic, drawn as tool rows: the mark says which way it went, the words
      say it first, and the label names the seat the row is about */
   details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
@@ -607,6 +603,9 @@
   details.leaf > summary .tn.warn .k { color: var(--warn); }
   details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
     border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none; }
+  /* The marks a row draws take the row's own size; the lift they need is the
+     .ic rule's, shared with every icon on the page. */
+  details.leaf > summary .ic { width: 14px; height: 14px; flex: 0 0 14px; }
   .pbody { font-family: var(--ui); font-size: var(--fs-base); color: var(--muted);
     border-left: 1px solid var(--line); padding: 2px 0 2px 13px; margin: 5px 0; }
   .pbody p + p { margin-top: 9px; }
@@ -667,7 +666,7 @@
   /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
   details.hooks > summary .st.err { color: var(--bad); }
 
-  /* A hook's own run draws as a tool row: the lane says the kind, the mark says
+  /* A hook's own run draws as a tool row: the glyph says the kind, the mark says
      how the run exited, and the state reads beside the name. The lifecycle
      frames the CLI sends while one hook runs fold to a row per run rather than a
      row per frame, with what it printed behind the row's own open - a
@@ -1005,10 +1004,12 @@
   <symbol id="i-read" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
   <symbol id="i-bash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 4 4-4 4"/><path d="M13 16h6"/></symbol>
+  <symbol id="i-square-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></symbol>
   <symbol id="i-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></symbol>
   <symbol id="i-lsp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
   <symbol id="i-skill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></symbol>
   <symbol id="i-toolsearch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
   <symbol id="i-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="7" x="3" y="3" rx="2"/><rect width="18" height="7" x="3" y="14" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></symbol>
   <symbol id="i-tool" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></symbol>
@@ -1032,6 +1033,7 @@
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
   <symbol id="i-away" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/><path d="M12 12h9"/><path d="m18 9 3 3-3 3"/></symbol>
   <symbol id="i-brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></symbol>
+  <symbol id="i-message-circle-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/></symbol>
   <symbol id="i-lightbulb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
   <symbol id="i-plane" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
@@ -1255,7 +1257,7 @@
 
       <div class="work">
         <div class="prose">
-          <p>One lane per family, its calls on their own rows, and a call opens on its own. Edits are the exception: their diff is already there.</p>
+          <p>Every call, message and thought on its own row, in the order it arrived, the kind's glyph leading it - and a call opens on its own. Edits are the exception: their diff is already there.</p>
         </div>
 
         <!-- The units a message's markdown can carry, drawn: a heading, a
@@ -1287,52 +1289,44 @@ Set `service_key` per environment in the bot's own config.</pre>
           </table>
         </div>
 
-        <!-- A stretch of work is one group of lanes: a lane per family, a lane
-             per kind of peer traffic, and the thinking as one of them. The
-             model's own reasoning is on the wire and the terminal does not draw
-             it: the row is its text joined into one line - block marks off,
-             inline marks rendered - and the body is the whole text as markdown.
-             It is drawn from the live frames, so it goes at the next page read,
+        <!-- A stretch of work: every call, message and thought on its own row
+             in the order it arrived, the kind's glyph leading it. The model's
+             own reasoning is on the wire and the terminal does not draw it: the
+             row is its text joined into one line - block marks off, inline
+             marks rendered - and the body is the whole text as markdown. It is
+             drawn from the live frames, so it goes at the next page read,
              which strips thinking blocks. -->
         <div class="leaves">
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-brain"/></svg><span class="nm">thinking</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st bulb"><use href="#i-lightbulb"/></svg>
-                <span class="tn">one group Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="prose">
-                <h2>one group</h2>
-                <p>Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</p>
-              </div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic gl"><use href="#i-message-circle-more"/></svg>
+              <span class="tn">one group Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <h2>one group</h2>
+              <p>Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</p>
+            </div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-skill"/></svg><span class="nm">skill</span></div>
-            <!-- A Skill call's own result is the CLI's launching line; the row
-                 opens onto the skill itself, which is what anyone opening it
-                 wants to read. -->
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">pr-review-loop &#183; PR #1204</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="prose">
-                <h2>pr-review-loop</h2>
-                <p>Run parallel reviewers over the diff, each on its own axis, and drive every finding to resolution.</p>
-                <ul>
-                  <li>three rounds at most, then the loop escalates</li>
-                </ul>
-              </div></div>
-            </details>
-          </div>
+          <!-- A Skill call's own result is the CLI's launching line; the row
+               opens onto the skill itself, which is what anyone opening it
+               wants to read. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-skill"/></svg><span class="tn">pr-review-loop &#183; PR #1204</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <h2>pr-review-loop</h2>
+              <p>Run parallel reviewers over the diff, each on its own axis, and drive every finding to resolution.</p>
+              <ul>
+                <li>three rounds at most, then the loop escalates</li>
+              </ul>
+            </div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="code">
-                  <div class="lang">rust</div>
-                  <pre><span class="c2">/// The group a tool's calls are summarised under.</span>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code">
+                <div class="lang">rust</div>
+                <pre><span class="c2">/// The group a tool's calls are summarised under.</span>
 <span class="k">pub enum</span> <span class="f">ToolFamily</span> {
     <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span>,
     <span class="f">Skill</span>, <span class="f">ToolSearch</span>, <span class="f">Config</span>,
@@ -1340,327 +1334,293 @@ Set `service_key` per environment in the bot's own config.</pre>
     <span class="f">Tool</span>,
     <span class="f">Own</span>(<span class="k">&amp;'static</span> <span class="k">str</span>),
 }</pre>
-                </div>
               </div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="code">
-                  <div class="lang">rust</div>
-                  <pre><span class="k">pub fn</span> <span class="f">partition_blocks_into_render_units</span>(
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code">
+                <div class="lang">rust</div>
+                <pre><span class="k">pub fn</span> <span class="f">partition_blocks_into_render_units</span>(
     blocks: <span class="k">&amp;</span>[<span class="f">Block</span>],
 ) -&gt; <span class="f">Vec</span>&lt;<span class="f">RenderUnit</span>&gt; {</pre>
-                </div>
               </div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="code">
-                  <div class="lang">rust</div>
-                  <pre><span class="k">pub fn</span> <span class="f">kl</span>(row: <span class="f">KindRow</span>, name: <span class="k">&amp;str</span>, n: <span class="k">usize</span>, targets: <span class="k">&amp;</span>[<span class="k">&amp;str</span>]) -&gt; <span class="f">KindLine</span> {</pre>
-                </div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="code">
+                <div class="lang">rust</div>
+                <pre><span class="k">pub fn</span> <span class="f">kl</span>(row: <span class="f">KindRow</span>, name: <span class="k">&amp;str</span>, n: <span class="k">usize</span>, targets: <span class="k">&amp;</span>[<span class="k">&amp;str</span>]) -&gt; <span class="f">KindLine</span> {</pre>
               </div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term">## Tool-call grouping (L2 / L1 / L0)
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term">## Tool-call grouping (L2 / L1 / L0)
 Consecutive tool calls between two user messages fold into one group.</div>
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">"render_group_summary" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="searchhit"><span class="ln">142:</span> <span class="fl">crates/forge-server/src/grouping.rs</span>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"render_group_summary" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="searchhit"><span class="ln">142:</span> <span class="fl">crates/forge-server/src/grouping.rs</span>
 <span class="hit">render_group_summary</span>(unit, width)</div>
-                <div class="searchhit"><span class="ln">88:</span> <span class="fl">crates/forge-tui/src/ui/tool_call/group.rs</span>
+              <div class="searchhit"><span class="ln">88:</span> <span class="fl">crates/forge-tui/src/ui/tool_call/group.rs</span>
 <span class="hit">render_group_summary</span>(&amp;unit, width)</div>
-              </div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">"KindLine" &#183; 2 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="searchhit"><span class="ln">31:</span> <span class="fl">crates/forge-server/src/family.rs</span>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"KindLine" &#183; 2 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="searchhit"><span class="ln">31:</span> <span class="fl">crates/forge-server/src/family.rs</span>
 <span class="k">pub struct</span> <span class="hit">KindLine</span> {</div>
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-edit"/></svg><span class="nm">edit</span></div>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dif">
-                  <div class="h">@@ -30,4 +30,5 @@</div>
-                  <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
-                  <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
-                  <div class="ln ctx"><span class="on">32</span><span class="nn">31</span><span class="n"></span><span class="l">  }</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">33</span><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
-                  <div class="ln ctx"><span class="on">33</span><span class="nn">34</span><span class="n"></span><span class="l">  }</span></div>
-                  <div class="h">@@ -72,2 +73,3 @@</div>
-                  <div class="ln ctx"><span class="on">72</span><span class="nn">73</span><span class="n"></span><span class="l">  .row .what a:hover { color: var(--accent); }</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
-                  <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
-                </div>
-                <div class="patchline"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dif">
+                <div class="h">@@ -30,4 +30,5 @@</div>
+                <div class="ln ctx"><span class="on">30</span><span class="nn">30</span><span class="n"></span><span class="l">  display: flex;</span></div>
+                <div class="ln d"><span class="on">31</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">  text-decoration: none; flex: none;</span></div>
+                <div class="ln ctx"><span class="on">32</span><span class="nn">31</span><span class="n"></span><span class="l">  }</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">32</span><span class="n">+</span><span class="l">  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">33</span><span class="n">+</span><span class="l">  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
+                <div class="ln ctx"><span class="on">33</span><span class="nn">34</span><span class="n"></span><span class="l">  }</span></div>
+                <div class="h">@@ -72,2 +73,3 @@</div>
+                <div class="ln ctx"><span class="on">72</span><span class="nn">73</span><span class="n"></span><span class="l">  .row .what a:hover { color: var(--accent); }</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">74</span><span class="n">+</span><span class="l">  .row .what a:focus-visible { outline: 2px solid var(--accent); }</span></div>
+                <div class="ln ctx"><span class="on">73</span><span class="nn">75</span><span class="n"></span><span class="l">  }</span></div>
               </div>
-            </details>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dif">
-                  <div class="h">@@ -195,3 +197,6 @@</div>
-                  <div class="ln ctx"><span class="on">195</span><span class="nn">197</span><span class="n"></span><span class="l">             footer {</span></div>
-                  <div class="ln d"><span class="on">196</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">198</span><span class="n">+</span><span class="l">                 div .versions {</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">199</span><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">200</span><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">201</span><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
-                  <div class="ln ctx"><span class="on">197</span><span class="nn">202</span><span class="n"></span><span class="l">                 }</span></div>
-                </div>
-                <div class="patchline"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
+              <div class="patchline"><span class="patchsize">2 hunks &#183; +4 &#8722;1</span><span class="patchmark">every match</span></div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dif">
+                <div class="h">@@ -195,3 +197,6 @@</div>
+                <div class="ln ctx"><span class="on">195</span><span class="nn">197</span><span class="n"></span><span class="l">             footer {</span></div>
+                <div class="ln d"><span class="on">196</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">198</span><span class="n">+</span><span class="l">                 div .versions {</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">199</span><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">200</span><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">201</span><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
+                <div class="ln ctx"><span class="on">197</span><span class="nn">202</span><span class="n"></span><span class="l">                 }</span></div>
               </div>
-            </details>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dif">
-                  <div class="h">@@ -74,2 +74,5 @@</div>
-                  <div class="ln ctx"><span class="on">74</span><span class="nn">74</span><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">75</span><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">76</span><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
-                  <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
-                </div>
-                <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/surface.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dif">
+                <div class="h">@@ -74,2 +74,5 @@</div>
+                <div class="ln ctx"><span class="on">74</span><span class="nn">74</span><span class="n"></span><span class="l">    pub fn reviews(&amp;self) -&gt; Vec&lt;ReviewView&gt; {</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">75</span><span class="n">+</span><span class="l">    pub fn cli_version(&amp;self) -&gt; Option&lt;CliVersionInfo&gt; {</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">76</span><span class="n">+</span><span class="l">        self.workspace.cli_version()</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">77</span><span class="n">+</span><span class="l">    }</span></div>
+                <div class="ln ctx"><span class="on">75</span><span class="nn">78</span><span class="n"></span><span class="l">    }</span></div>
               </div>
-            </details>
-            <!-- A file the call created carries no patch on the wire at all, so
-                 the row draws the first hunk git writes for one, from line zero,
-                 with every line an addition - and no old-number column, because
-                 a fixed column of blanks is dead space on every line. -->
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme/tokens.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dif added">
-                  <div class="h">@@ -0,0 +1,3 @@</div>
-                  <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">export const CHIP_BG = 'rgba(244,118,0,.1)';</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l">export const HAIRLINE = '1px solid var(--line)';</span></div>
-                  <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
-                </div>
-                <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+            </div>
+          </details>
+          <!-- A file the call created carries no patch on the wire at all, so
+               the row draws the first hunk git writes for one, from line zero,
+               with every line an addition - and no old-number column, because
+               a fixed column of blanks is dead space on every line. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme/tokens.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dif added">
+                <div class="h">@@ -0,0 +1,3 @@</div>
+                <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">export const CHIP_BG = 'rgba(244,118,0,.1)';</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l">export const HAIRLINE = '1px solid var(--line)';</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
               </div>
-            </details>
-            <!-- A failed edit: the diff it meant to make, and the CLI's own
-                 reason under it in the caption chrome - the envelope's tags
-                 are read off in the fold and never reach the page. -->
-            <details class="leaf" open>
-              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dif bare">
-                  <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
-                  <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
-                </div>
-                <div class="errhint">
-                  <div class="m">String to replace not found in file.</div>
-                  <div class="d">String:   fn outcome(answer: Answer) -&gt; AskOutcome {
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
+            </div>
+          </details>
+          <!-- A failed edit: the diff it meant to make, and the CLI's own
+               reason under it in the caption chrome - the envelope's tags
+               are read off in the fold and never reach the page. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dif bare">
+                <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
+                <div class="ln a"><span class="n">+</span><span class="l">  flex: 0 1 auto;</span></div>
+              </div>
+              <div class="errhint">
+                <div class="m">String to replace not found in file.</div>
+                <div class="d">String:   fn outcome(answer: Answer) -&gt; AskOutcome {
     AskOutcome { model: "test-model".to_owned(), answer, usage: Usage { input_tokens: 10, output_tokens: 3, cost: None } }
   }</div>
-                </div>
-                <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span></div>
               </div>
-            </details>
-          </div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span></div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term"><span class="pfx">$</span> just check
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term"><span class="pfx">$</span> just check
    Compiling forge-primitives v1.0.90
    Compiling forge-tui v1.0.90
     Finished in 41.2s
 <span class="sum">Summary [92.418s] 1258 tests run: 1258 passed, 1174 skipped</span></div>
-              </div>
-            </details>
-            <details class="leaf running">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-            <details class="leaf running">
-              <summary><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-            <!-- A call the reader backgrounded: its own result says the command
-                 STARTED, and the ending arrives later as a frame of its own. -->
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
+            </div>
+          </details>
+          <details class="leaf running">
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf running">
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <!-- A call the reader backgrounded: its own result says the command
+               STARTED, and the ending arrives later as a frame of its own. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">Echo test string after brief sleep</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term"><span class="pfx">$</span> sleep 2 &amp;&amp; echo test string
 Command running in background with ID: bj5g0t2kq.
 <span class="sum">Background command "Echo test string after brief sleep" completed (exit code 0)</span></div>
-              </div>
-            </details>
-            <!-- The other ending a backgrounded call gets, in the tone the
-                 harness's own word earns. -->
-            <details class="leaf">
-              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
+            </div>
+          </details>
+          <!-- The other ending a backgrounded call gets, in the tone the
+               harness's own word earns. -->
+          <details class="leaf">
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">Run slow counting loop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term"><span class="pfx">$</span> for i in $(seq 1 10000); do echo $i; sleep 1; done
 Command running in background with ID: a69098eff5f5d405a.
 <span class="fail">Run slow counting loop &middot; stopped</span></div>
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-web"/></svg><span class="nm">web</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term">List &#183; ratatui 0.29.0
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-web"/></svg><span class="tn">docs.rs/ratatui/latest/ratatui/widgets/struct.List.html</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term">List &#183; ratatui 0.29.0
 A widget that renders a scrollable list of items.</div>
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-lsp"/></svg><span class="nm">lsp</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="term">fn <span class="f">render_body</span>(&amp;self, area: <span class="f">Rect</span>) -&gt; <span class="f">Vec</span>&lt;<span class="f">Line</span>&gt;
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term">fn <span class="f">render_body</span>(&amp;self, area: <span class="f">Rect</span>) -&gt; <span class="f">Vec</span>&lt;<span class="f">Line</span>&gt;
 docs: Render the message body into rows.</div>
-              </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">playwright</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">browser_navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">http://127.0.0.1:8765/web-session.html &#183; forge &#183; session</div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st err"><use href="#i-x"/></svg><span class="tn">browser_click &#183; label[for="diff"]</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">browser_navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">http://127.0.0.1:8765/web-session.html &#183; forge &#183; session</div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl err"><use href="#i-mcp"/></svg><span class="tn">browser_click &#183; label[for="diff"]</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-mcp"/></svg><span class="nm">forge</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">2 tasks in flight</div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">tasks__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">2 tasks in flight</div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-decide"/></svg><span class="nm">systemone</span></div>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Is this one-line import fix mechanical and reversible?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dec">
-                  <div class="verdict"><span class="num sure">0.93</span><span class="read">yes</span></div>
-                  <div class="dist">
-                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:93%"></span></span><span class="p">0.93</span></div>
-                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:7%"></span></span><span class="p">0.07</span></div>
-                  </div>
-                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>392 in - 20 out</span></div>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask noul - Is this one-line import fix mechanical and reversible?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dec">
+                <div class="verdict"><span class="num sure">0.93</span><span class="read">yes</span></div>
+                <div class="dist">
+                  <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:93%"></span></span><span class="p">0.93</span></div>
+                  <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:7%"></span></span><span class="p">0.07</span></div>
                 </div>
+                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>392 in - 20 out</span></div>
               </div>
-            </details>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask choice - Which team should handle this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dec">
-                  <div class="verdict"><span class="read">pick: <b>payments</b> - confidence 0.72</span></div>
-                  <div class="dist">
-                    <div class="opt"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div>
-                    <div class="opt win"><span class="name">payments</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div>
-                  </div>
-                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask choice - Which team should handle this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dec">
+                <div class="verdict"><span class="read">pick: <b>payments</b> - confidence 0.72</span></div>
+                <div class="dist">
+                  <div class="opt"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div>
+                  <div class="opt win"><span class="name">payments</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div>
                 </div>
+                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
               </div>
-            </details>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask score - How urgent is this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dec">
-                  <div class="verdict"><span class="num">1.79</span><span class="read">of 2 - between Soon and Urgent</span></div>
-                  <div class="dist">
-                    <div class="opt"><span class="name">Routine</span><span class="track"><span class="fill" style="width:8%"></span></span><span class="p">0.08</span></div>
-                    <div class="opt win"><span class="name">Soon</span><span class="track"><span class="fill win" style="width:31%"></span></span><span class="p">0.31</span></div>
-                    <div class="opt win"><span class="name">Urgent</span><span class="track"><span class="fill win" style="width:61%"></span></span><span class="p">0.61</span></div>
-                  </div>
-                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>410 in - 24 out</span></div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask score - How urgent is this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dec">
+                <div class="verdict"><span class="num">1.79</span><span class="read">of 2 - between Soon and Urgent</span></div>
+                <div class="dist">
+                  <div class="opt"><span class="name">Routine</span><span class="track"><span class="fill" style="width:8%"></span></span><span class="p">0.08</span></div>
+                  <div class="opt win"><span class="name">Soon</span><span class="track"><span class="fill win" style="width:31%"></span></span><span class="p">0.31</span></div>
+                  <div class="opt win"><span class="name">Urgent</span><span class="track"><span class="fill win" style="width:61%"></span></span><span class="p">0.61</span></div>
                 </div>
+                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>410 in - 24 out</span></div>
               </div>
-            </details>
-            <details class="leaf" open>
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">ask noul - Should the rename touch the shared module now?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body">
-                <div class="dec">
-                  <div class="verdict"><span class="num unsure">0.52</span><span class="read">yes</span></div>
-                  <div class="dist">
-                    <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:52%"></span></span><span class="p">0.52</span></div>
-                    <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div>
-                  </div>
-                  <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask noul - Should the rename touch the shared module now?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dec">
+                <div class="verdict"><span class="num unsure">0.52</span><span class="read">yes</span></div>
+                <div class="dist">
+                  <div class="opt win"><span class="name">yes</span><span class="track"><span class="fill win" style="width:52%"></span></span><span class="p">0.52</span></div>
+                  <div class="opt"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div>
                 </div>
+                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
               </div>
-            </details>
-          </div>
+            </div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-bot"/></svg><span class="nm">peer</span></div>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn"><span class="dir">sent to</span><span class="k">forge/steward</span> &#183; picking it up</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose"><p>picking it up</p></div><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-inbox"/></svg><span class="tn"><span class="dir">from</span><span class="k">gateway-backend</span> &#183; the gate is green, shipping</span><span class="org">Granite</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose"><p>the gate is green, shipping</p></div></div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn warn"><span class="k">companies</span> &#183; failed to deliver: channel closed</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-badge"/></svg><span class="tn"><span class="k">whoami</span> &#183; where this session sits</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="kv"><span class="k">org</span><span class="v">Busytools</span></div><div class="kv"><span class="k">project</span><span class="v">forge</span></div><div class="kv"><span class="k">label</span><span class="v">lead</span></div><div class="kv"><span class="k">path</span><span class="v">~/Projects/forge</span></div><div class="kv"><span class="k">status</span><span class="v">running</span></div></div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-users"/></svg><span class="tn"><span class="k">list</span> &#183; who you can send to</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="kv"><span class="k">lead</span><span class="v">forge &#183; this session</span></div><div class="kv"><span class="k">steward</span><span class="v">forge &#183; picking up the render half &#183; running</span></div><div class="kv"><span class="k">lead</span><span class="v">companies &#183; another project</span></div></div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn"><span class="dir">sent to</span><span class="k">forge/steward</span> &#183; picking it up</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose"><p>picking it up</p></div><div class="kv"><span class="k">sent</span><span class="v">id m-7f3a92e0 &#183; to Busytools/forge/steward</span></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-inbox"/></svg><span class="tn"><span class="dir">from</span><span class="k">gateway-backend</span> &#183; the gate is green, shipping</span><span class="org">Granite</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose"><p>the gate is green, shipping</p></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-plane"/></svg><span class="tn warn"><span class="k">companies</span> &#183; failed to deliver: channel closed</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-badge"/></svg><span class="tn"><span class="k">whoami</span> &#183; where this session sits</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="kv"><span class="k">org</span><span class="v">Busytools</span></div><div class="kv"><span class="k">project</span><span class="v">forge</span></div><div class="kv"><span class="k">label</span><span class="v">lead</span></div><div class="kv"><span class="k">path</span><span class="v">~/Projects/forge</span></div><div class="kv"><span class="k">status</span><span class="v">running</span></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-users"/></svg><span class="tn"><span class="k">list</span> &#183; who you can send to</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="kv"><span class="k">lead</span><span class="v">forge &#183; this session</span></div><div class="kv"><span class="k">steward</span><span class="v">forge &#183; picking up the render half &#183; running</span></div><div class="kv"><span class="k">lead</span><span class="v">companies &#183; another project</span></div></div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-toolsearch"/></svg><span class="nm">toolsearch</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-toolsearch"/></svg><span class="tn">select:TaskStop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">Found KillShell, BashOutput</div></div>
+          </details>
 
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-tool"/></svg><span class="nm">tool</span></div>
-            <details class="leaf">
-              <summary><svg class="ic st"><use href="#i-check"/></svg><span class="tn">mcp__forge__cron__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="term">[] &#183; no crons registered</div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-tool"/></svg><span class="tn">mcp__forge__cron__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">[] &#183; no crons registered</div></div>
+          </details>
         </div>
 
         <!-- A skill whose body no call in the turn claimed, which the CLI
@@ -1668,7 +1628,7 @@ docs: Render the message body into rows.</div>
              and holds the whole body as markdown, so the text wears no
              attribution nobody earned. -->
         <details class="leaf">
-          <summary><svg class="ic st sk"><use href="#i-skill"/></svg><span class="tn">skill /unslop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <summary><svg class="ic gl"><use href="#i-skill"/></svg><span class="tn">skill /unslop</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="body"><div class="prose">
             <h2>unslop</h2>
             <p>Edit text to remove AI patterns.</p>
@@ -1689,41 +1649,35 @@ docs: Render the message body into rows.</div>
         </div>
 
         <div class="leaves">
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">message</span></div>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
-                <span class="tn"><span class="k">forge/steward</span> &#183; is the cron issue filed?</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose">
-                <p>is the cron issue filed? the <strong>wake</strong> dies on the 2nd.</p></div></div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
-                <span class="tn"><span class="k">forge/steward</span> &#183; IT IMPORTED. The window is lost</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose">
-                <p>IT IMPORTED. The window is lost, so the report has to come from the capture.</p></div></div></div>
-            </details>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-away"/></svg>
-                <span class="tn"><span class="k">companies</span> &#183; picking up the migration now</span>
-                <span class="org">Gateway</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose">
-                <p>picking up the migration now. Nothing blocked on your side.</p></div></div></div>
-            </details>
-          </div>
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-in"/></svg><span class="nm">reply</span></div>
-            <details class="leaf">
-              <summary><svg class="ic mk"><use href="#i-bot"/></svg>
-                <span class="tn"><span class="k">forge/tester</span> &#183; take the render half, I&#39;ll take the partition</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="pbody"><div class="prose">
-                <p>take the render half, I&#39;ll take the partition.</p></div></div></div>
-            </details>
-          </div>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+              <span class="tn"><span class="k">forge/steward</span> &#183; is the cron issue filed?</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose">
+              <p>is the cron issue filed? the <strong>wake</strong> dies on the 2nd.</p></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+              <span class="tn"><span class="k">forge/steward</span> &#183; IT IMPORTED. The window is lost</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose">
+              <p>IT IMPORTED. The window is lost, so the report has to come from the capture.</p></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-away"/></svg>
+              <span class="tn"><span class="k">companies</span> &#183; picking up the migration now</span>
+              <span class="org">Gateway</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose">
+              <p>picking up the migration now. Nothing blocked on your side.</p></div></div></div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic mk"><use href="#i-bot"/></svg>
+              <span class="tn"><span class="k">forge/tester</span> &#183; take the render half, I&#39;ll take the partition</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose">
+              <p>take the render half, I&#39;ll take the partition.</p></div></div></div>
+          </details>
         </div>
 
         <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
@@ -1853,7 +1807,7 @@ docs: Render the message body into rows.</div>
             <p>This session is being continued from a previous conversation that ran out of context.</p>
             <h2>What happened</h2>
             <ul>
-              <li>the lanes rework landed</li>
+              <li>the rows rework landed</li>
             </ul>
           </div></div></div>
       </details>
@@ -1881,63 +1835,51 @@ docs: Render the message body into rows.</div>
 
       <div class="work">
         <div class="leaves">
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-hook"/></svg><span class="nm">hook</span></div>
-            <details class="leaf hookrow">
-              <summary><svg class="ic st"><use href="#i-check"/></svg>
-                <span class="tn">SessionStart:startup</span>
-                <span class="ev">repository is clean</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-            <details class="leaf hookrow">
-              <summary><svg class="ic st err"><use href="#i-x"/></svg>
-                <span class="tn">PostToolUse:Edit</span>
-                <span class="ev">format check failed: 2 files</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-            <details class="leaf hookrow">
-              <summary><svg class="ic st"><use href="#i-check"/></svg>
-                <span class="tn">notify.sh</span>
-                <span class="ev">(SessionStart)</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-          </div>
-          <!-- The external deliveries: a lane per kind, the same shape every
-               other lane draws - a glyph, a name, rows that open. -->
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-schedules"/></svg><span class="nm">cron</span></div>
-            <details class="leaf inboundrow">
-              <!-- A cron fire's title IS its body's first line, so no tail is
-                   drawn: a tail that repeats the title is not a tail. -->
-              <summary><span class="tn">morning sweep</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="prose">
-                <p>morning sweep</p></div></div>
-            </details>
-          </div>
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-slack"/></svg><span class="nm">slack</span></div>
-            <details class="leaf inboundrow">
-              <summary><span class="tn">Trust Machines &#183; #alerts &#183; ved</span>
-                <span class="ev">disk almost full on srv2</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-              <div class="body"><div class="prose">
-                <p>disk almost full on <code>srv2</code> - 92% on /var</p></div></div>
-            </details>
-            <details class="leaf inboundrow">
-              <summary><span class="tn">Trust Machines &#183; #general &#183; priya</span>
-                <span class="ev">standup at 11 moved to 11:30</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-          </div>
-          <div class="lane">
-            <div class="knd"><svg class="ic gl"><use href="#i-gotify"/></svg><span class="nm">gotify</span></div>
-            <details class="leaf inboundrow">
-              <summary><span class="tn">homelab &#183; priority 6</span>
-                <span class="ev warn">backup failed: restic repo locked</span>
-                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            </details>
-          </div>
+          <details class="leaf hookrow">
+            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+              <span class="tn">SessionStart:startup</span>
+              <span class="ev">repository is clean</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf hookrow">
+            <summary><svg class="ic gl err"><use href="#i-hook"/></svg>
+              <span class="tn">PostToolUse:Edit</span>
+              <span class="ev">format check failed: 2 files</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf hookrow">
+            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+              <span class="tn">notify.sh</span>
+              <span class="ev">(SessionStart)</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <!-- The external deliveries: each row of its own kind, the same shape
+               every other row draws - a glyph, a name, a row that opens. -->
+          <details class="leaf inboundrow">
+            <!-- A cron fire's title IS its body's first line, so no tail is
+                 drawn: a tail that repeats the title is not a tail. -->
+            <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">morning sweep</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <p>morning sweep</p></div></div>
+          </details>
+          <details class="leaf inboundrow">
+            <summary><svg class="ic gl"><use href="#i-slack"/></svg><span class="tn">Trust Machines &#183; #alerts &#183; ved</span>
+              <span class="ev">disk almost full on srv2</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <p>disk almost full on <code>srv2</code> - 92% on /var</p></div></div>
+          </details>
+          <details class="leaf inboundrow">
+            <summary><svg class="ic gl"><use href="#i-slack"/></svg><span class="tn">Trust Machines &#183; #general &#183; priya</span>
+              <span class="ev">standup at 11 moved to 11:30</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf inboundrow">
+            <summary><svg class="ic gl"><use href="#i-gotify"/></svg><span class="tn">homelab &#183; priority 6</span>
+              <span class="ev warn">backup failed: restic repo locked</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
         </div>
       </div>
 
@@ -2034,42 +1976,33 @@ branch main, nothing to commit</div>
         <div class="beat" data-beat="2">
           <div class="leaves">
             <div class="beat" data-beat="2">
-              <div class="lane">
-                <div class="knd"><svg class="ic gl"><use href="#i-read"/></svg><span class="nm">read</span></div>
-                <details class="leaf" id="lv-a">
-                  <summary><span class="st" id="lv-a-st"><span class="ring"></span></span>
-                    <span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span>
-                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                  <div class="body"><div class="code"><div class="lang">rust</div>
-                    <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
-                </details>
-              </div>
+              <details class="leaf" id="lv-a">
+                <summary><svg class="ic gl"><use href="#i-read"/></svg><span class="st" id="lv-a-st"><span class="ring"></span></span>
+                  <span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span>
+                  <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                <div class="body"><div class="code"><div class="lang">rust</div>
+                  <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
+              </details>
             </div>
 
             <div class="beat" data-beat="3">
-              <div class="lane">
-                <div class="knd"><svg class="ic gl"><use href="#i-search"/></svg><span class="nm">search</span></div>
-                <details class="leaf" id="lv-b">
-                  <summary><span class="st" id="lv-b-st"><span class="ring"></span></span>
-                    <span class="tn">"render_group_summary"</span>
-                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                  <div class="body"><div class="searchhit"><span class="ln">142:</span>
-                    <span class="fl">crates/forge-server/src/grouping.rs</span></div></div>
-                </details>
-              </div>
+              <details class="leaf" id="lv-b">
+                <summary><svg class="ic gl"><use href="#i-search"/></svg><span class="st" id="lv-b-st"><span class="ring"></span></span>
+                  <span class="tn">"render_group_summary"</span>
+                  <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                <div class="body"><div class="searchhit"><span class="ln">142:</span>
+                  <span class="fl">crates/forge-server/src/grouping.rs</span></div></div>
+              </details>
             </div>
 
             <div class="beat" data-beat="4">
-              <div class="lane">
-                <div class="knd"><svg class="ic gl"><use href="#i-bash"/></svg><span class="nm">bash</span></div>
-                <details class="leaf" id="lv-c">
-                  <summary><span class="st" id="lv-c-st"><span class="ring"></span></span>
-                    <span class="tn">just check</span>
-                    <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                  <div class="body"><div class="term">   Compiling forge-server v1.0.91
+              <details class="leaf" id="lv-c">
+                <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st" id="lv-c-st"><span class="ring"></span></span>
+                  <span class="tn">just check</span>
+                  <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+                <div class="body"><div class="term">   Compiling forge-server v1.0.91
     Running unittests...</div></div>
-                </details>
-              </div>
+              </details>
             </div>
           </div>
         </div>

@@ -3,7 +3,7 @@
   import Card from './Card.svelte';
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
-  import Group from './Group.svelte';
+  import Leaves from './Leaves.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
@@ -139,8 +139,8 @@
         <div class="unit" data-k={`${turn.key}:${unit.key}`}>
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
-          {:else if unit.kind === 'group'}
-            <Group lanes={unit.lanes} />
+          {:else if unit.kind === 'leaves'}
+            <Leaves rows={unit.rows} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}

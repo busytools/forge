@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import { familyOf } from './families';
 import {
   fold,
-  type FamilyLeaves,
   type HookLeaf,
   type HookRun,
-  type InboundLane,
-  type MessageLane,
-  type ThoughtLane,
+  type InboundLeaf,
+  type PeerCard,
   type ThoughtLeaf,
   type Unit,
+  type WorkRow,
 } from './units';
 
 /** An assistant frame carrying `content`. */
@@ -57,37 +57,28 @@ const call = (family: string, n = 0): unknown =>
 /** The kinds a fold produced, in order. */
 const kinds = (units: Unit[]): string[] => units.map((unit) => unit.kind);
 
-/** The family lanes of a group, in the order the fold drew them. */
-const families = (unit: Unit | undefined): FamilyLeaves[] =>
-  unit?.kind === 'group'
-    ? unit.lanes.filter((lane): lane is FamilyLeaves => lane.tag === 'family')
-    : [];
+/** The rows of the one work unit, or none for every other kind of unit. */
+const rowsOf = (unit: Unit | undefined): WorkRow[] => (unit?.kind === 'leaves' ? unit.rows : []);
 
-/** The peer traffic lanes of a group, in the order the fold drew them. */
-const traffic = (unit: Unit | undefined): MessageLane[] =>
-  unit?.kind === 'group'
-    ? unit.lanes.filter((lane): lane is MessageLane => lane.tag === 'message')
-    : [];
+/** The call rows of a unit, in the order they arrived. */
+const callsOf = (unit: Unit | undefined): Extract<WorkRow, { tag: 'call' }>[] =>
+  rowsOf(unit).filter((row): row is Extract<WorkRow, { tag: 'call' }> => row.tag === 'call');
 
-/** The thought rows of a group, in the order the fold drew them. */
-const thoughts = (unit: Unit | undefined): ThoughtLeaf[] =>
-  unit?.kind === 'group'
-    ? unit.lanes
-        .filter((lane): lane is ThoughtLane => lane.tag === 'thought')
-        .flatMap((lane) => lane.thoughts)
-    : [];
+/** The peer cards of a unit, in the order they arrived. */
+const cardsOf = (unit: Unit | undefined): PeerCard[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'card' ? [row.card] : []));
 
-/** The inbound lanes of a group, in the order the fold drew them. */
-const deliveries = (unit: Unit | undefined): InboundLane[] =>
-  unit?.kind === 'group'
-    ? unit.lanes.filter((lane): lane is InboundLane => lane.tag === 'inbound')
-    : [];
+/** The thought rows of a unit, in the order they arrived. */
+const thoughtsOf = (unit: Unit | undefined): ThoughtLeaf[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'thought' ? [row] : []));
 
-/** The hook runs a fold drew, in the lane order. */
+/** The inbound rows of a unit, in the order they arrived. */
+const inboundsOf = (unit: Unit | undefined): InboundLeaf[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'inbound' ? [row] : []));
+
+/** The hook runs a fold drew, in the order they arrived. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
-  units
-    .filter((unit): unit is Extract<Unit, { kind: 'group' }> => unit.kind === 'group')
-    .flatMap((unit) => unit.lanes.flatMap((lane) => (lane.tag === 'hook' ? lane.runs : [])));
+  units.flatMap((unit) => rowsOf(unit).flatMap((row) => (row.tag === 'hook' ? [row] : [])));
 
 /** The first hook run a fold drew, or null when it drew none. */
 const runOf = (units: Unit[]): HookRun | null => runsOf(units)[0]?.run ?? null;
@@ -153,34 +144,38 @@ const hookFrames = (): unknown[] => [
 ];
 
 describe('one turn folded into the units a view draws', () => {
-  it('folds consecutive calls into one group', () => {
+  it('folds consecutive calls into one list', () => {
     // The rule the mockup was built on and the one a reader gets wrong first:
-    // a run of calls between two prompts is ONE group, not one row each.
+    // a run of calls between two prompts is ONE unit, not one row each - and
+    // the rows inside it keep their arrival order.
     const units = fold([call('read', 0), call('search', 1), call('read', 2)]);
 
     expect(units).toHaveLength(1);
     const [group] = units;
-    expect(group?.kind).toBe('group');
-    // The read ran last, so its lane is drawn last - the order is a timeline,
-    // not first-seen.
-    expect(families(group).map((f) => f.label)).toEqual(['search', 'read']);
-    expect(families(group)[1]?.calls.length).toBe(2);
+    expect(group?.kind).toBe('leaves');
+    // Arrival order, not grouped: the read, the search, then the read again.
+    expect(callsOf(group).map((call) => familyOf(call.leaf.name))).toEqual([
+      'read',
+      'search',
+      'read',
+    ]);
   });
 
-  it('draws the family that ran last last, and the same order on a re-read', () => {
-    // The lane order is a timeline, so the family still working sits where the
-    // eye already is - and it derives from the call sequence, so a page
-    // reopened from the transcript draws what the live one drew.
+  it('draws the rows in arrival order, and the same order on a re-read', () => {
+    // The rows never reorder, and the order derives from the call sequence, so
+    // a page reopened from the transcript draws what the live one drew.
     const frames = [call('read', 0), call('search', 1), call('bash', 2), call('search', 3)];
-    const lanes = (units: Unit[]): string[] => families(units[0]).map((family) => family.label);
+    const order = (units: Unit[]): string[] =>
+      callsOf(units[0]).map((call) => familyOf(call.leaf.name));
 
-    expect(lanes(fold(frames)), 'the family still working sits last').toEqual([
+    expect(order(fold(frames)), 'every row keeps its arrival place').toEqual([
       'read',
+      'search',
       'bash',
       'search',
     ]);
-    expect(lanes(fold(structuredClone(frames))), 'and a re-read derives the same').toEqual(
-      lanes(fold(frames)),
+    expect(order(fold(structuredClone(frames))), 'and a re-read derives the same').toEqual(
+      order(fold(frames)),
     );
   });
 
@@ -199,7 +194,7 @@ describe('one turn folded into the units a view draws', () => {
       said([use('toolu_01', 'Bash', { command: 'just check' })], { uuid: 'a3' }),
     ]);
 
-    const calls = families(units[0])[0]?.calls ?? [];
+    const calls = callsOf(units[0]);
 
     expect(
       calls.map((call) => call.key),
@@ -212,9 +207,12 @@ describe('one turn folded into the units a view draws', () => {
 
     expect(units, 'the mutation does not break the run').toHaveLength(1);
     const [group] = units;
-    const labels = families(group).map((f) => f.label);
-    // And the read still took the latest call, so its lane still draws last.
-    expect(labels).toEqual(['edit', 'read']);
+    // The mutation sits between the reads, in arrival order.
+    expect(callsOf(group).map((call) => familyOf(call.leaf.name))).toEqual([
+      'read',
+      'edit',
+      'read',
+    ]);
   });
 
   it('splits the run on the calls the mockup draws alone', () => {
@@ -237,24 +235,23 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
   });
 
-  it('keeps a peer message from closing the calls around it, as lanes of one group', () => {
-    // A message is a lane, not a separator: the call below it joins the family
-    // lane the call above it opened, and the lane that took the latest row
-    // draws last - so the message lane sits above a family still working.
+  it('keeps a peer message from closing the calls around it, as rows of one list', () => {
+    // A message is a row, not a separator: the call below it joins the list
+    // the call above it opened, and every row keeps its arrival place.
     const peer = [
       said([use('toolu_p', 'mcp__forge__agents__send_message', { project: 'x', message: 'hi' })]),
     ];
 
     const units = fold([call('read', 0), ...peer, call('read', 1)]);
 
-    expect(units, 'one group rather than three units').toHaveLength(1);
+    expect(units, 'one unit rather than three').toHaveLength(1);
     const [group] = units;
     expect(
-      group?.kind === 'group' ? group.lanes.map((lane) => lane.tag) : [],
-      'the message took the earlier row, so it draws first',
-    ).toEqual(['message', 'family']);
-    expect(families(group)[0]?.calls.length, 'and both calls sit on the one family lane').toBe(2);
-    expect(traffic(group)[0]?.cards.length).toBe(1);
+      group?.kind === 'leaves' ? group.rows.map((row) => row.tag) : [],
+      'the message arrived between the calls and draws between them',
+    ).toEqual(['call', 'card', 'call']);
+    expect(callsOf(group).length, 'and both calls drew').toBe(2);
+    expect(cardsOf(group).length).toBe(1);
   });
 
   it('draws what the model thought, which the wire carries and nothing drew', () => {
@@ -266,9 +263,11 @@ describe('one turn folded into the units a view draws', () => {
     const empty = said([{ type: 'thinking', thinking: '', signature: 'sig' }]);
 
     const units = fold([thought]);
-    expect(kinds(units), 'the thinking is a row rather than a drop').toEqual(['group']);
-    expect(thoughts(units[0])[0]?.text, 'words and all').toBe('the model wondered');
-    expect(thoughts(units[0])[0]?.key, 'keyed by the frame and block they came from').toBe('a1#0');
+    expect(kinds(units), 'the thinking is a row rather than a drop').toEqual(['leaves']);
+    expect(thoughtsOf(units[0])[0]?.text, 'words and all').toBe('the model wondered');
+    expect(thoughtsOf(units[0])[0]?.key, 'keyed by the frame and block they came from').toBe(
+      'a1#0',
+    );
     expect(kinds(fold([empty])), 'and an empty one is not a row').toEqual([]);
   });
 
@@ -321,17 +320,15 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([load('unslop'), body]);
-    expect(kinds(units), 'the call group alone, no second row').toEqual(['group']);
+    expect(kinds(units), 'the call unit alone, no second row').toEqual(['leaves']);
     const [group] = units;
-    const held = families(group)
-      .flatMap((family) => family.calls)
-      .map((call) => call.leaf);
+    const held = callsOf(group).map((call) => call.leaf);
     expect(held, 'one call drew').toHaveLength(1);
     expect(held[0]?.skill, "carrying the skill's own words").toBe('# Unslop\n\nEdit text.');
 
     const [plugin] = fold([load('ui-ux-pro-max:ui-ux-pro-max'), cached]);
     expect(
-      plugin?.kind === 'group' ? families(plugin)[0]?.calls[0]?.leaf.skill : null,
+      plugin?.kind === 'leaves' ? callsOf(plugin)[0]?.leaf.skill : null,
       'and a plugin skill matches though the two spellings differ',
     ).toBe('# Ux\n\nDo it.');
   });
@@ -377,9 +374,9 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([read, picture, note]);
-    const [group] = units.filter((unit) => unit.kind === 'group');
-    const held =
-      group?.kind === 'group' ? families(group).flatMap((f) => f.calls)[0]?.leaf : undefined;
+    const [group] = units;
+    const held = group?.kind === 'leaves' ? callsOf(group)[0]?.leaf : undefined;
+
     expect(held?.image, 'the picture is on the call that read it').toEqual({
       mime: 'image/png',
       data: 'AAAA',
@@ -387,7 +384,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(held?.imageNote, "and the harness's line is its caption").toContain(
       'original 2782x1034',
     );
-    expect(kinds(units), 'nothing of the reader draws here').toEqual(['group']);
+    expect(kinds(units), 'nothing of the reader draws here').toEqual(['leaves']);
 
     // A note with no picture behind it still draws, as a line of its own.
     const orphan = fold([
@@ -411,10 +408,9 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([load, body]);
-    expect(kinds(units), 'nothing draws as the reader').toEqual(['group']);
+    expect(kinds(units), 'nothing draws as the reader').toEqual(['leaves']);
     const [group] = units;
-    const held =
-      group?.kind === 'group' ? families(group).flatMap((f) => f.calls)[0]?.leaf : undefined;
+    const held = group?.kind === 'leaves' ? callsOf(group)[0]?.leaf : undefined;
     expect(held?.skill, "the call's row opens onto the skill").toContain('# PR Review Loop');
   });
 
@@ -501,30 +497,28 @@ describe('one turn folded into the units a view draws', () => {
     expect(row?.kind === 'compaction' ? row.postTokens : 0).toBeNull();
   });
 
-  it('keeps a run whole across a thinking row, and draws the thought above it', () => {
+  it('keeps a run whole across a thinking row, and draws the thought where it landed', () => {
     // A thinking block is commentary ON the work rather than a separator
     // between pieces of it: the terminal has no thinking variant at all, so its
     // run cannot break on one. The regression was measured on a real turn:
     // drawing each thought as its own unit split one run of 24 calls into
-    // twelve groups, where the same turn drew four. As a lane it still draws
-    // where its own row landed - above a family that ran after it.
+    // twelve groups, where the same turn drew four. As a row it draws where it
+    // arrived - between the two calls.
     const units = fold([
       call('read', 0),
       said([{ type: 'thinking', thinking: 'about the file', signature: 's' }]),
       call('read', 1),
     ]);
 
-    const groups = units.filter((unit) => unit.kind === 'group');
-    expect(units, 'one group, not a row beside it').toHaveLength(1);
-    expect(kinds(units)).toEqual(['group']);
+    expect(units, 'one unit, not a row beside it').toHaveLength(1);
+    expect(kinds(units)).toEqual(['leaves']);
     const [group] = units;
     expect(
-      group?.kind === 'group' ? group.lanes.map((lane) => lane.tag) : [],
-      'the thought took the earlier row, so it draws above the run it interrupted',
-    ).toEqual(['thought', 'family']);
-    expect(thoughts(group)[0]?.text, 'the words still draw').toBe('about the file');
-    expect(groups, 'one run, not two').toHaveLength(1);
-    expect(families(groups[0])[0]?.calls.length).toBe(2);
+      group?.kind === 'leaves' ? group.rows.map((row) => row.tag) : [],
+      'the thought sits where it arrived, between the calls',
+    ).toEqual(['call', 'thought', 'call']);
+    expect(thoughtsOf(group)[0]?.text, 'the words still draw').toBe('about the file');
+    expect(callsOf(group).length, 'one run, not two').toBe(2);
   });
 
   it('keeps a message batch whole across a thinking row', () => {
@@ -546,15 +540,15 @@ describe('one turn folded into the units a view draws', () => {
       tell(2),
     ]);
 
-    const batches = units.filter((unit) => unit.kind === 'group');
-    expect(kinds(units), 'the thought is a lane, not a unit of its own').toEqual(['group']);
-    expect(batches, 'one batch, not two').toHaveLength(1);
-    expect(batches[0]?.key, 'named by the first message, which is data the turn cannot move').toBe(
+    expect(kinds(units), 'the thought is a row, not a unit of its own').toEqual(['leaves']);
+    expect(units, 'one batch, not two').toHaveLength(1);
+    const [group] = units;
+    expect(group?.key, 'named by the first message, which is data the turn cannot move').toBe(
       'p-toolu_tell_1',
     );
-    const cards = traffic(batches[0]).flatMap((lane) => lane.cards);
+    const cards = cardsOf(group);
     expect(cards, 'with both messages in it').toHaveLength(2);
-    expect(thoughts(batches[0]), 'and the words still draw').toHaveLength(1);
+    expect(thoughtsOf(group), 'and the words still draw').toHaveLength(1);
   });
 
   it('names a batch by its first card even when the wire gave the card no id', () => {
@@ -735,7 +729,7 @@ describe('one turn folded into the units a view draws', () => {
   it('breaks the run on anything that is not a call', () => {
     const units = fold([call('read', 0), said([text('here it is')]), call('bash', 1)]);
 
-    expect(kinds(units)).toEqual(['group', 'text', 'group']);
+    expect(kinds(units)).toEqual(['leaves', 'text', 'leaves']);
   });
 
   it('draws nothing for a monitor', () => {
@@ -746,8 +740,7 @@ describe('one turn folded into the units a view draws', () => {
 
     expect(units).toHaveLength(1);
     const [group] = units;
-    expect(families(group)).toHaveLength(1);
-    expect(families(group)[0]?.calls.length).toBe(2);
+    expect(callsOf(group).length, 'the two reads drew and the monitor did not').toBe(2);
   });
 
   it('draws nothing for a dispatched agent, and the same frames without one are the chat', () => {
@@ -774,8 +767,10 @@ describe('one turn folded into the units a view draws', () => {
 
     expect(units).toHaveLength(1);
     const [group] = units;
-    expect(families(group).map((f) => f.label)).toEqual(['read']);
-    expect(families(group)[0]?.calls.length).toBe(2);
+    expect(
+      callsOf(group).map((call) => familyOf(call.leaf.name)),
+      'the dispatched grep is out, both reads are in',
+    ).toEqual(['read', 'read']);
   });
 
   it("reads an empty parent id as the session's own frame", () => {
@@ -786,14 +781,13 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([blank])).toHaveLength(1);
   });
 
-  it('draws peer traffic as one message group, a lone message included', () => {
+  it('draws peer traffic as cards in the one list, a lone message included', () => {
     // The strings are the producers' own, from `peers/types.rs`'s
     // `to_prose`: a test using a shape nothing writes is what let three
     // envelopes draw as the reader's own turn with the suite green.
     //
-    // **And a lone message groups**, which is the one place this shape departs
-    // from the terminal: its own `merge_messaging_groups` holds a group back
-    // until it holds two, where this draws a group of one.
+    // **And a lone message draws on its own**, where the terminal's own
+    // `merge_messaging_groups` holds a group back until it holds two.
     const one = heard([
       text("[Message id=t-1 from agent 'steward' (org 'Busytools')]\n\nIT IMPORTED"),
     ]);
@@ -801,11 +795,10 @@ describe('one turn folded into the units a view draws', () => {
       text("[Message id=t-2 from agent 'planner' (org 'Busytools')]\n\npicking it up"),
     ]);
 
-    expect(kinds(fold([one])), 'a lone message is a group of one').toEqual(['group']);
-    expect(kinds(fold([one, two]))).toEqual(['group']);
+    expect(kinds(fold([one])), 'a lone message draws its own row').toEqual(['leaves']);
+    expect(kinds(fold([one, two]))).toEqual(['leaves']);
     const [group] = fold([one, two]);
-    expect(traffic(group).length, 'one kind, one lane').toBe(1);
-    expect(traffic(group)[0]?.cards.length).toBe(2);
+    expect(cardsOf(group).length, 'both cards drew').toBe(2);
   });
 
   it('reads a recorded question and reply as the one message row they became', () => {
@@ -829,29 +822,25 @@ describe('one turn folded into the units a view draws', () => {
     const message = heard([text("[Message id=m-3 from agent 'steward' (org 'Busytools')]\n\nFYI")]);
 
     const [group] = fold([question, reply, message]);
-    const lanes = traffic(group);
+    const cards = cardsOf(group);
 
-    expect(lanes.length, 'every card draws on the one lane').toBe(1);
-    expect(lanes[0]?.cards.length).toBe(3);
-    expect(lanes[0]?.cards.map((card) => card.row)).toEqual(['arrived', 'arrived', 'arrived']);
-    expect(lanes[0]?.cards[0]?.body).toBe('is the cron issue filed?');
-    expect(lanes[0]?.cards[0]?.peer).toBe('steward');
+    expect(cards.length, 'every card draws in the one list').toBe(3);
+    expect(cards.map((card) => card.row)).toEqual(['arrived', 'arrived', 'arrived']);
+    expect(cards[0]?.body).toBe('is the cron issue filed?');
+    expect(cards[0]?.peer).toBe('steward');
   });
 
-  it('keeps every row on the one lane however the messages interleave', () => {
-    // **One lane, not one per envelope kind**, which is what the row's own
-    // words carry now: two lanes of one kind would give two lanes the same
-    // word, which a keyed list refuses at mount - the whole turn stops
-    // drawing, with nothing in an SSR render to show it.
+  it('keeps every card in arrival order however the messages interleave', () => {
+    // One list for every envelope kind: the direction and the verb are the
+    // row's business, and each card keeps its arrival place.
     const message = (id: string, body: string): unknown =>
       heard([text(`[Message id=${id} from agent 'steward' (org 'Busytools')]\n\n${body}`)]);
 
     const [group] = fold([message('m-1', 'one'), message('m-2', 'two'), message('m-3', 'three')]);
-    const lanes = traffic(group);
+    const cards = cardsOf(group);
 
-    expect(lanes.length, 'one lane however many rows it took').toBe(1);
     expect(
-      lanes[0]?.cards.map((card) => card.body),
+      cards.map((card) => card.body),
       'in the order they arrived',
     ).toEqual(['one', 'two', 'three']);
   });
@@ -871,17 +860,15 @@ describe('one turn folded into the units a view draws', () => {
         input: { project: 'forge', label: 'steward', message: 'hi' },
       },
     ]);
-    const cardOf = (units: Unit[]): { id?: string } | undefined => traffic(units[0])[0]?.cards[0];
+    const cardOf = (units: Unit[]): { id?: string } | undefined => cardsOf(units[0])[0];
 
     expect(cardOf(fold([arrived]))?.id, 'an envelope is named by its own id').toBe('m-9c1');
     expect(cardOf(fold([sent]))?.id, 'and a call by the id the wire gave it').toBe('toolu_01Bg');
   });
 
-  it('rolls a message group up from what each send came back with', () => {
-    // The mark on a group is its aggregate, so a send that failed draws the
-    // failure mark and one still out draws the ring - the sheet's own sentence,
-    // "a failed delivery included", and what the terminal's `aggregate_status`
-    // does for the same run.
+  it("settles each send's card from what it came back with", () => {
+    // The card's own mark is what says how it went: a send that failed draws
+    // the failure mark and one still out draws the ring.
     const ask = (id: string): unknown =>
       said([
         {
@@ -900,8 +887,7 @@ describe('one turn folded into the units a view draws', () => {
           is_error: failed,
         },
       ]);
-    const status = (units: Unit[]): string | null =>
-      units[0]?.kind === 'group' ? units[0].status : null;
+    const status = (units: Unit[]): string | null => cardsOf(units[0])[0]?.status ?? null;
 
     expect(status(fold([ask('toolu_a'), answer('toolu_a', false)])), 'a send that landed').toBe(
       'completed',
@@ -929,7 +915,7 @@ describe('one turn folded into the units a view draws', () => {
     const self = { org: 'Busytools', project: 'forge', label: 'chat-kinds' };
 
     const [group] = fold([here, other, away], self);
-    const cards = traffic(group)[0]?.cards ?? [];
+    const cards = cardsOf(group) ?? [];
 
     expect(
       cards.map((card) => card.peer),
@@ -941,31 +927,29 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual([null, null, 'Gateway']);
   });
 
-  it('draws an external delivery as a lane of its own kind, not as a turn of the reader', () => {
+  it('draws an external delivery as a row of its own kind, not as a turn of the reader', () => {
     // A Gotify body sits ONE newline after the bracket: a title line, then the
     // message. A cron wrapper lands its prompt after `]\n\n`. Each delivery
-    // joins the work as a lane, the way a family's calls do.
+    // joins the work as a row, the way a family's calls do.
     const gotify = heard([text("[Gotify - app 'ci', priority 9]\nbuild failed\nrun 412")]);
     const cron = heard([text('[Cron]\n\nthe morning sweep')]);
 
     const units = fold([gotify, cron]);
-    expect(kinds(units), 'both deliveries join one group').toEqual(['group']);
-    const lanes = deliveries(units[0]);
+    expect(kinds(units), 'both deliveries join one list').toEqual(['leaves']);
+    const rows = inboundsOf(units[0]);
     expect(
-      lanes.map((lane) => lane.kind),
-      'one lane per kind, in arrival order',
+      rows.map((row) => row.kind),
+      'each row of its own kind, in arrival order',
     ).toEqual(['gotify', 'cron']);
-    const [pushed] = lanes[0]?.rows ?? [];
-    expect(pushed?.elevated, 'priority 9 is elevated').toBe(true);
-    expect(pushed?.title, 'the app and its priority').toBe('ci \u{b7} priority 9');
-    expect(pushed?.body, 'the whole of what arrived, title line first').toBe(
+    expect(rows[0]?.elevated, 'priority 9 is elevated').toBe(true);
+    expect(rows[0]?.title, 'the app and its priority').toBe('ci \u{b7} priority 9');
+    expect(rows[0]?.body, 'the whole of what arrived, title line first').toBe(
       'build failed\nrun 412',
     );
-    const [fired] = lanes[1]?.rows ?? [];
-    expect(fired?.title, "a cron fire leads with its prompt's first line").toBe(
+    expect(rows[1]?.title, "a cron fire leads with its prompt's first line").toBe(
       'the morning sweep',
     );
-    expect(fired?.body, 'no leading blank line').toBe('the morning sweep');
+    expect(rows[1]?.body, 'no leading blank line').toBe('the morning sweep');
   });
 
   it('reads a Slack id the way the server reads one', () => {
@@ -978,16 +962,16 @@ describe('one turn folded into the units a view draws', () => {
         text(`[Slack - workspace 'Busytools', general] id C1 ts 1.2\n${author}: the gate is green`),
       ]);
 
-    const named = deliveries(fold([line('steward')])[0])[0]?.rows[0];
+    const named = inboundsOf(fold([line('steward')])[0])[0];
     expect(named?.title, 'a name is printed in the row title').toContain('steward');
 
     for (const id of ['U9', 'B09ABC123', 'C0C0T5E6RM1', 'DEPLOYS']) {
-      const held = deliveries(fold([line(id)])[0])[0]?.rows[0];
+      const held = inboundsOf(fold([line(id)])[0])[0];
       expect(held?.title, `${id} is an id, not a name`).not.toContain(id);
     }
   });
 
-  it('draws a Slack bundle as rows of one lane, bare channel and all', () => {
+  it('draws a Slack bundle as its rows, bare channel and all', () => {
     // The producer writes the conversation LABEL, not a `#`-prefixed channel -
     // `granite-staging-alerts`, `general` - so a matcher requiring `#` puts
     // every Slack message in the chat as the person's own words.
@@ -1003,13 +987,12 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([one, bundle]);
-    expect(kinds(units)).toEqual(['group']);
-    const lanes = deliveries(units[0]);
+    expect(kinds(units)).toEqual(['leaves']);
+    const rows = inboundsOf(units[0]);
     expect(
-      lanes.map((lane) => lane.kind),
-      'one lane, two rows',
-    ).toEqual(['slack']);
-    const rows = lanes[0]?.rows ?? [];
+      rows.map((row) => row.kind),
+      'both deliveries are slack rows',
+    ).toEqual(['slack', 'slack']);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.title, 'the bare channel label rides the title').toContain(
       'granite-staging-alerts',
@@ -1025,11 +1008,11 @@ describe('one turn folded into the units a view draws', () => {
     const spawn = heard([text("[Worker 'planner' spawn failed id=w-1: ENOENT]")]);
 
     const units = fold([delivery, spawn]);
-    expect(kinds(units), 'the failure joins the peer lane; the spawn is a notice').toEqual([
-      'group',
+    expect(kinds(units), 'the failure joins the list; the spawn is a notice').toEqual([
+      'leaves',
       'notice',
     ]);
-    const card = traffic(units[0])[0]?.cards[0];
+    const card = cardsOf(units[0])[0];
     expect(card?.row, 'the delivery keeps the outgoing row, warn-toned').toBe('failed');
     expect(card?.peer).toBe('companies');
     expect(card?.status).toBe('failed');
@@ -1095,7 +1078,7 @@ describe('one turn folded into the units a view draws', () => {
       project: 'forge',
       label: 'reviewer',
     });
-    const seats = traffic(group)[0]?.cards[0]?.seats ?? [];
+    const seats = cardsOf(group)[0]?.seats ?? [];
 
     expect(
       seats.map((seat) => seat.label),
@@ -1125,7 +1108,7 @@ describe('one turn folded into the units a view draws', () => {
       project: 'forge',
       label: 'lead',
     });
-    const leadSeats = traffic(asLead)[0]?.cards[0]?.seats ?? [];
+    const leadSeats = cardsOf(asLead)[0]?.seats ?? [];
 
     expect(
       leadSeats[3]?.what,
@@ -1162,7 +1145,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const [group] = fold([call, refused]);
-    const card = traffic(group)[0]?.cards[0];
+    const card = cardsOf(group)[0];
 
     expect(card?.row, 'the send draws its failure row').toBe('failed');
     expect(card?.body, 'with the refusal under it').toContain(
@@ -1184,7 +1167,7 @@ describe('one turn folded into the units a view draws', () => {
       ]),
       heard([{ type: 'tool_result', tool_use_id: 'toolu_y', content: '', is_error: true }]),
     ]);
-    expect(traffic(wordless[0])[0]?.cards[0]?.body, 'a wordless refusal adds nothing').toBe('');
+    expect(cardsOf(wordless[0])[0]?.body, 'a wordless refusal adds nothing').toBe('');
   });
 
   it('reads the reason out of the CLI envelope a wrapped refusal arrives in', () => {
@@ -1212,7 +1195,7 @@ describe('one turn folded into the units a view draws', () => {
         },
       ]),
     ]);
-    const card = traffic(group)[0]?.cards[0];
+    const card = cardsOf(group)[0];
 
     expect(card?.row, 'the send draws its failure row').toBe('failed');
     expect(card?.body, 'the reason crosses the envelope').toContain(
@@ -1234,7 +1217,7 @@ describe('one turn folded into the units a view draws', () => {
       failed('u1', `${header}channel closed]`),
       failed('u2', `${header}target session connection lost]`),
     ]);
-    const cards = traffic(group)[0]?.cards ?? [];
+    const cards = cardsOf(group) ?? [];
 
     expect(cards.length, 'both notices drew').toBe(2);
     expect(
@@ -1251,7 +1234,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const [group] = fold([recorded]);
-    const card = traffic(group)[0]?.cards[0];
+    const card = cardsOf(group)[0];
     expect(card?.row).toBe('failed');
     expect(card?.peer).toBe('companies');
     expect(card?.body).toContain('channel closed');
@@ -1342,7 +1325,7 @@ describe('one turn folded into the units a view draws', () => {
     });
 
     const units = fold([call('read', 0), hook(1)]);
-    expect(kinds(units), 'the chip follows the run it came after').toEqual(['group', 'hooks']);
+    expect(kinds(units), 'the chip follows the run it came after').toEqual(['leaves', 'hooks']);
     const chip = units[1];
     expect(chip?.kind === 'hooks' ? chip.actions : null).toBe(1);
     expect(
@@ -1399,7 +1382,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(
       kinds(units),
       'one row for the run, rather than one for each frame - a lane of the group',
-    ).toEqual(['group']);
+    ).toEqual(['leaves']);
     const run = runOf(units);
     expect(run?.name, 'the hook the CLI matched, under its own name').toBe('SessionStart:startup');
     expect(run?.body, 'with the output it settled on').toBe('<redacted-hook-body>');
@@ -1416,7 +1399,7 @@ describe('one turn folded into the units a view draws', () => {
     const frames = hookFrames();
     const running = fold(frames.slice(0, 3));
 
-    expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['group']);
+    expect(kinds(running), 'the row is drawn while the hook still runs').toEqual(['leaves']);
     expect(runOf(running)?.body, 'with the output it has printed so far').toContain(
       'capture-line-2',
     );
@@ -1455,7 +1438,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(runOf(renamed)?.event, 'and the event beside it').toBe('SessionStart');
   });
 
-  it('settles each call with the result that answers it, and rolls the run up', () => {
+  it('settles each call with the result that answers it', () => {
     const units = fold([
       call('read', 0),
       heard([result('toolu_read_0', 'output')]),
@@ -1463,12 +1446,8 @@ describe('one turn folded into the units a view draws', () => {
       heard([{ type: 'tool_result', tool_use_id: 'toolu_read_1', content: 'no', is_error: true }]),
     ]);
 
-    const [group] = units;
-    const calls = (families(group)[0]?.calls ?? []).map((call) => call.leaf);
+    const calls = callsOf(units[0]).map((call) => call.leaf);
     expect(calls.map((leaf) => leaf.status)).toEqual(['completed', 'failed']);
-    expect(group?.kind === 'group' ? group.status : null, 'and the run reports the failure').toBe(
-      'failed',
-    );
   });
 
   it('draws a prompt that landed mid-turn as a turn of the reader', () => {
@@ -1524,9 +1503,9 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([queued]);
-    expect(kinds(units), 'not a turn of the reader').toEqual(['group']);
+    expect(kinds(units), 'not a turn of the reader').toEqual(['leaves']);
     const first = units[0];
-    expect(traffic(first)[0]?.cards[0]?.peer).toBe('lead');
+    expect(cardsOf(first)[0]?.peer).toBe('lead');
   });
 
   it('keeps the completion notice the harness sends out of the conversation', () => {
@@ -1567,7 +1546,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const [group] = fold([drew, answered]);
-    const leaf = families(group)[0]?.calls[0]?.leaf;
+    const leaf = callsOf(group)[0]?.leaf;
     expect(leaf?.body, 'the image, under the name the wire gives it').toEqual([
       { kind: 'image', mime: 'image/png', uri: null },
     ]);
@@ -1667,7 +1646,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const [group, notice] = fold([running, fatal]);
-    const call = families(group)[0]?.calls[0]?.leaf;
+    const call = callsOf(group)[0]?.leaf;
     expect(call?.status, 'the turn is over, so the call it held is not still out').toBe('failed');
     expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
     expect(notice?.kind === 'notice' ? notice.notice.text : '').toBe(
@@ -1682,8 +1661,8 @@ describe('one turn folded into the units a view draws', () => {
       [{ type: 'error', error: null }, 'a value that is not a string'],
     ] as const) {
       const units = fold([running, said]);
-      expect(kinds(units), `no notice for ${why}`).toEqual(['group']);
-      const held = families(units[0])[0]?.calls[0]?.leaf;
+      expect(kinds(units), `no notice for ${why}`).toEqual(['leaves']);
+      const held = callsOf(units[0])[0]?.leaf;
       expect(held?.status, `and the turn still ended: ${why}`).toBe('failed');
     }
 
@@ -1692,9 +1671,9 @@ describe('one turn folded into the units a view draws', () => {
     // read one would finalize a call the page never drew a row for.
     const child = { ...fatal, parent_tool_use_id: 'toolu_dispatch' };
     const units = fold([running, child]);
-    const held = families(units[0])[0]?.calls[0]?.leaf;
+    const held = callsOf(units[0])[0]?.leaf;
     expect(held?.status, 'a sub-agent failing says nothing about this turn').toBe('pending');
-    expect(kinds(units), 'and draws no failure line here').toEqual(['group']);
+    expect(kinds(units), 'and draws no failure line here').toEqual(['leaves']);
   });
 
   it('sweeps only the calls that were open when the turn failed', () => {
@@ -1712,9 +1691,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([before, ended, after]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     expect(calls.map((leaf) => leaf.id)).toEqual(['toolu_before', 'toolu_after']);
     expect(calls[0]?.status, 'the call the turn ended on is abandoned').toBe('failed');
@@ -1735,9 +1712,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([first, failed, second, failed]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     expect(
       calls.map((leaf) => leaf.status),
@@ -1781,14 +1756,11 @@ describe('one turn folded into the units a view draws', () => {
 
     const units = fold([answered, itsResult, running, interrupted, ended]);
     const [group, , report, notice] = units;
-    const calls = families(group)
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const calls = callsOf(group).map((call) => call.leaf);
     expect(
       calls.map((leaf) => leaf.status),
       'only the call left open failed',
     ).toEqual(['completed', 'failed']);
-    expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe('failed');
     expect(report?.kind, 'the report row still reports what the turn spent').toBe('report');
     expect(report?.kind === 'report' ? report.info.failed : null, 'and marks it failed').toBe(true);
     expect(notice?.kind === 'notice' ? notice.notice.severity : null).toBe('error');
@@ -1846,9 +1818,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const [group] = fold([launch, started, ended]);
-    const calls = families(group)
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const calls = callsOf(group).map((call) => call.leaf);
     expect(calls, 'one call, patched rather than joined by a second row').toHaveLength(1);
     expect(calls[0]?.id, 'and the call the launch opened').toBe('toolu_01Bg');
     expect(calls[0]?.status, 'the update alone is the ending').toBe('completed');
@@ -1860,9 +1830,7 @@ describe('one turn folded into the units a view draws', () => {
       started,
       { type: 'system', subtype: 'task_updated', task_id: 'bj5g0t2kq', patch: { status: '?' } },
     ]);
-    const held = families(odd[0])
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const held = callsOf(odd[0]).map((call) => call.leaf);
     expect(held[0]?.status, 'an unknown word changes nothing').toBe('in_progress');
 
     // And an update whose own `task_started` was never seen is dropped rather
@@ -1879,9 +1847,7 @@ describe('one turn folded into the units a view draws', () => {
         patch: { status: 'killed' },
       },
     ]);
-    const alone = families(orphan[0])
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const alone = callsOf(orphan[0]).map((call) => call.leaf);
     expect(alone[0]?.status, 'an unplaced update leaves the call where it was').toBe('pending');
   });
 
@@ -1911,9 +1877,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const [group] = fold([launch, notice]);
-    const calls = families(group)
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const calls = callsOf(group).map((call) => call.leaf);
     expect(calls[0]?.status, 'a stopped task draws as the kill it is').toBe('killed');
     expect(calls[0]?.note, 'and carries what the notice said').toEqual({
       text: 'Watch the docs workflow run \u{b7} stopped',
@@ -1934,9 +1898,7 @@ describe('one turn folded into the units a view draws', () => {
         },
       ]),
     ]);
-    const odd = families(unknown[0])
-      .flatMap((one) => one.calls)
-      .map((call) => call.leaf);
+    const odd = callsOf(unknown[0]).map((call) => call.leaf);
     expect(odd[0]?.note?.tone, 'a word it does not know is not a failure').toBeNull();
   });
 
@@ -1978,9 +1940,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const units = fold([launch, started, killed, wordless]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     expect(calls[0]?.status, 'the notice keeps the status the frames set').toBe('killed');
   });
@@ -2015,9 +1975,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const units = fold([launch, started, notified]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     // The absent field is its own case, and the corpus carries it: a
     // `local_workflow` task's `task_started` names no `is_backgrounded` at all,
@@ -2026,9 +1984,7 @@ describe('one turn folded into the units a view draws', () => {
     // above exists to remove. (`legacy-surface` carries the same shape with
     // `false`.)
     const unstated = fold([launch, { ...started, is_backgrounded: undefined }, notified]);
-    const silent = unstated
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const silent = unstated.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
     expect(silent[0]?.note, 'a task that does not say is not treated as backgrounded').toBeNull();
 
     expect(calls[0]?.status, 'the ending still settles the call').toBe('completed');
@@ -2087,9 +2043,7 @@ describe('one turn folded into the units a view draws', () => {
       killedSecond,
       finishedFirst,
     ]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
     expect(calls.map((leaf) => [leaf.id, leaf.status])).toEqual([
       ['toolu_01', 'completed'],
       ['toolu_02', 'killed'],
@@ -2109,9 +2063,7 @@ describe('one turn folded into the units a view draws', () => {
         patch: { status: 'killed' },
       },
     ]);
-    const held = orphan
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const held = orphan.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
     expect(
       held.map((leaf) => leaf.status),
       'both are still out',
@@ -2152,9 +2104,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const units = fold([launch, started, finished, unreadable]);
-    const calls = units
-      .flatMap((unit) => families(unit).flatMap((one) => one.calls))
-      .map((call) => call.leaf);
+    const calls = units.flatMap((unit) => callsOf(unit)).map((call) => call.leaf);
 
     expect(calls[0]?.status, 'the call stays where the readable frame put it').toBe('completed');
   });
@@ -2196,11 +2146,8 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const [group] = fold([launch, launched, started]);
-    const call = families(group)[0]?.calls[0]?.leaf;
+    const call = callsOf(group)[0]?.leaf;
     expect(call?.status, 'the launch result is not the end of a backgrounded call').toBe(
-      'in_progress',
-    );
-    expect(group?.kind === 'group' ? group.status : null, 'and the run says so').toBe(
       'in_progress',
     );
   });
@@ -2245,7 +2192,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const first = fold([launch, launched, started, ended, notified]);
-    const done = families(first[0])[0]?.calls[0]?.leaf;
+    const done = callsOf(first[0])[0]?.leaf;
     expect(done?.status).toBe('completed');
     expect(done?.note, 'the harness sentence, drawn as it wrote it').toEqual({
       text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
@@ -2271,7 +2218,7 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const second = fold([launch, launched, started, killed, stopped]);
-    const dead = families(second[0])[0]?.calls[0]?.leaf;
+    const dead = callsOf(second[0])[0]?.leaf;
     expect(dead?.status, 'a stopped task draws as the kill it is').toBe('killed');
     expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
   });
@@ -2296,7 +2243,7 @@ describe('one turn folded into the units a view draws', () => {
     const ended = { type: 'result', is_error: true, subtype: 'error_during_execution' };
 
     const interrupted = fold([launch, started, ended]);
-    const row = families(interrupted[0])[0]?.calls[0]?.leaf;
+    const row = callsOf(interrupted[0])[0]?.leaf;
     expect(row?.status, 'an abandoned foreground call draws failed, not running').toBe('failed');
 
     // The flag-less shape the corpus carries (`workflow.jsonl`), whose task does
@@ -2308,7 +2255,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const settled = fold([launch, unnamed, answered]);
-    const second = families(settled[0])[0]?.calls[0]?.leaf;
+    const second = callsOf(settled[0])[0]?.leaf;
     expect(second?.status, 'and a failing result still settles it').toBe('failed');
   });
 
@@ -2386,7 +2333,7 @@ describe('one turn folded into the units a view draws', () => {
       heard([result('toolu_bash_0', 'all green')]),
     ]);
 
-    expect(kinds(units)).toEqual(['user', 'group']);
+    expect(kinds(units)).toEqual(['user', 'leaves']);
     expect(units[0]?.kind === 'user' ? units[0].text : null).toBe('run the gate');
   });
 });

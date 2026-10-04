@@ -267,11 +267,10 @@ describe('the chat column as it draws', () => {
     expect(drawn()).toContain('no model declared');
   });
 
-  it('draws a turn of interleaved peer messages as one group, both asks on one lane', () => {
+  it('draws a turn of interleaved peer messages as rows of one turn, both asks included', () => {
     // **This one mounts rather than renders**, because the row is where a keyed
-    // list lives: two runs of the same kind once drew two lanes with one name,
-    // and a duplicate key stops the whole turn drawing at mount - which an SSR
-    // render shows none of, because it writes duplicate-keyed markup happily.
+    // list lives: duplicate keys stop the whole turn drawing at mount, which an
+    // SSR render shows none of.
     const envelope = (text: string): unknown => ({
       type: 'user',
       uuid: `u-${text.length}`,
@@ -294,20 +293,17 @@ describe('the chat column as it draws', () => {
 
     const html = document.body.innerHTML;
     expect(drawn(), 'every message is on the page, both asks included').toContain('is it filed?');
-    expect((html.match(/>peer</g) ?? []).length, 'every row draws on the one lane').toBe(1);
-    expect((html.match(/class="knd"/g) ?? []).length, 'and there is one of it').toBe(1);
     expect(html, 'the rows say which way each went').toContain('>from</span>');
     expect(html, 'carrying the incoming mark').toContain('i-inbox');
     expect(html, 'with the org of a counterparty outside the reader own').toContain('Gateway');
   });
 
-  it('draws a tool run whose lanes share a word, which a server named after a family reaches', () => {
-    // A lane's word is not an identity: `labelOf` writes a family word for a
-    // built-in and an MCP SERVER's name for its tools, so a `Read` beside
-    // `mcp__read__query` is two lanes both called `read`. The fold's own dedupe
-    // reads a family as `(label, row kind)`, and the lane's handle is that pair
-    // - keying it by the word alone is the duplicate-key crash one component
-    // over from the message rows, and this mount is what reaches it.
+  it('draws a built-in call beside a server tool named after a family', () => {
+    // `mcp__read__query` beside a `Read` was once two lanes both called
+    // `read`, and a word-keyed handle is a duplicate-key crash at mount - so
+    // this mount is what catches a regression to keying rows by anything
+    // shared. The rows now carry their own kinds: the family's glyph and the
+    // mcp one.
     const server = stub();
     draw({}, server);
     server.answer([
@@ -332,13 +328,14 @@ describe('the chat column as it draws', () => {
 
     const html = document.body.innerHTML;
     expect(drawn(), 'both calls drew, so the turn drew').toContain('a.rs');
-    expect((html.match(/>read</g) ?? []).length, 'and each lane kept its own word').toBe(2);
+    expect(html, 'the read row carries its own glyph').toContain('i-read');
+    expect(html, 'and the server tool the mcp glyph').toContain('i-mcp');
   });
 
   it('draws a message whose body repeats a paragraph, which a text key refuses', () => {
-    // The same class as the lanes: a paragraph keyed by its own words collides
-    // the moment a body says the same thing twice, and a keyed list refuses the
-    // duplicate at mount.
+    // The same class as the rows' keys: a paragraph keyed by its own words
+    // collides the moment a body says the same thing twice, and a keyed list
+    // refuses the duplicate at mount.
     const server = stub();
     draw({}, server);
     server.answer([
@@ -502,7 +499,7 @@ describe('the chat column as it draws', () => {
 
     const html = document.body.innerHTML;
     expect(drawn(), 'the message is on the page').toContain('picking it up');
-    expect(html, 'marked by the counterparty class').toContain('i-bot');
+    expect(html, 'marked by the incoming direction').toContain('i-inbox');
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
 
