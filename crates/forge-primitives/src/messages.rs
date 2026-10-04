@@ -13,6 +13,13 @@ use serde_json::Value;
 use crate::content::ContentBlock;
 use crate::runtime::TerminalReason;
 
+/// Whether a `parent_tool_use_id` names the dispatch a frame ran under. Set
+/// and non-empty: the wire spells "no dispatch" as null, and every fold that
+/// reads the field guards on the same thing.
+pub fn names_a_dispatch(parent_tool_use_id: Option<&str>) -> bool {
+    parent_tool_use_id.is_some_and(|parent| !parent.trim().is_empty())
+}
+
 /// One stream-json message.
 ///
 /// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is

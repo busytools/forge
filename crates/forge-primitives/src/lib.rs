@@ -105,6 +105,7 @@ pub use messages::WorkflowProgressEvent;
 pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
+    names_a_dispatch,
 };
 pub use options::{SdkPluginConfig, SystemPromptKind};
 pub use permission::PermissionMode;

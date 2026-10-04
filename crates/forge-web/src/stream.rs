@@ -221,8 +221,7 @@ fn session_updates(
                         &agents,
                         "",
                         crate::composer::Draft::Unknown,
-                    )
-                    .await;
+                    );
                     events.push(Ok(Event::default()
                         .event(COMPOSER_EVENT)
                         .data(region.into_string())));

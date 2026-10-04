@@ -1231,6 +1231,49 @@ pub enum SessionUpdate {
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },
+    /// The `/` menu's catalogue moved, as the whole list the core holds.
+    ///
+    /// **Pushed rather than read.** The CLI advertises it on a turn's init and
+    /// re-sends it when a plugin changes it (`commands_changed`), so the frame
+    /// that moved it announces it and a turn's init repeating the same list
+    /// says nothing.
+    SlashCommandsChanged {
+        key: SessionSlot,
+        commands: Vec<forge_primitives::runtime::AvailableCommand>,
+    },
+    /// The agent-type catalogue moved, as the whole list the core holds.
+    ///
+    /// **Pushed rather than read.** The CLI advertises it on a turn's init,
+    /// once per turn, so this is that one frame - and an init that repeats the
+    /// list the last turn advertised says nothing.
+    SubagentsChanged {
+        key: SessionSlot,
+        subagents: Vec<forge_primitives::runtime::AvailableAgent>,
+    },
+    /// The conversation dispatched a sub-agent, and did not before.
+    ///
+    /// **Pushed rather than read.** A dispatch is a call frame the CLI already
+    /// sends, so the fold that sees it announces the raise - the section the
+    /// flag gates appears as the dispatch happens rather than on the next
+    /// read. A connect reassigns the flag from the history it carries and is
+    /// not announced, because the read on that same event answers it.
+    DispatchesChanged {
+        key: SessionSlot,
+        has_dispatches: bool,
+    },
+    /// The tree's file index moved, as the whole index the core holds.
+    ///
+    /// **Pushed rather than read, and throttled here rather than by the
+    /// socket.** The socket's batch folds only consecutive token appends, so
+    /// a burst of index frames would go out one per change: the walk runs at
+    /// most once per poke while the watch says the tree is moving - so a
+    /// build's writes inside one poke become one walk - and once per
+    /// `INDEX_STALENESS` when it is still. The frame goes out only when the
+    /// index actually differs from the one last announced.
+    FileIndexChanged {
+        key: SessionSlot,
+        index: std::sync::Arc<crate::file_index::FileIndex>,
+    },
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
@@ -1552,6 +1595,10 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::SlashCommandsChanged { key, .. }
+            | Self::SubagentsChanged { key, .. }
+            | Self::DispatchesChanged { key, .. }
+            | Self::FileIndexChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
             | Self::BackgroundTasksChanged { key, .. }
@@ -1679,6 +1726,26 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::SlashCommandsChanged { key, commands } => f
+                .debug_struct("SlashCommandsChanged")
+                .field("key", key)
+                .field("count", &commands.len())
+                .finish(),
+            Self::SubagentsChanged { key, subagents } => f
+                .debug_struct("SubagentsChanged")
+                .field("key", key)
+                .field("count", &subagents.len())
+                .finish(),
+            Self::DispatchesChanged { key, has_dispatches } => f
+                .debug_struct("DispatchesChanged")
+                .field("key", key)
+                .field("has_dispatches", has_dispatches)
+                .finish(),
+            Self::FileIndexChanged { key, index } => f
+                .debug_struct("FileIndexChanged")
+                .field("key", key)
+                .field("count", &index.entries.len())
+                .finish(),
             Self::ProcessesChanged { key, snapshot } => f
                 .debug_struct("ProcessesChanged")
                 .field("key", key)
@@ -1978,11 +2045,12 @@ mod session_update_variants {
         closed: bool,
     }
 
-    /// The names the client's three classifying tables hold.
+    /// The names the client's classifying tables hold.
     ///
-    /// The handler table's keys, and the quoted entries of the two lists. The
-    /// `UNFED` export is skipped rather than read: those are the record's field
-    /// names, and a field is not a variant.
+    /// The handler table's keys, and the quoted entries of the two lists. An
+    /// export of anything else is skipped rather than read: a table of the
+    /// record's FIELD names would answer a variant check with names the enum
+    /// never declares.
     fn classified_names(client: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut table = "";
@@ -2033,12 +2101,21 @@ mod session_update_variants {
                         };
                         if let Some((entries, _)) = after.split_once(']') {
                             names.extend(quoted_names(entries).map(str::to_owned));
+                            // Opened and closed on one line: the export carried
+                            // its whole list, and what follows is not it.
+                            table = "";
                         } else {
                             open = true;
                             names.extend(quoted_names(after).map(str::to_owned));
                         }
                     } else if trimmed.starts_with(']') {
                         open = false;
+                        // **The array is the whole of what its export
+                        // classifies.** The mode used to end at the next
+                        // `export const`, which made the LAST list in the file
+                        // read every `[` below it - a client helper's own
+                        // literals answering as variants.
+                        table = "";
                     } else if trimmed.starts_with('\'') {
                         names.extend(quoted_names(trimmed).map(str::to_owned));
                     }

@@ -46,6 +46,10 @@ pub struct ViewFacts {
     /// would have left it.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
+    /// Whether the conversation dispatched a sub-agent. Seeded by hand
+    /// because the fold that raises it runs in the session task, which a
+    /// fixture does not start.
+    pub has_dispatches: bool,
 }
 
 /// A view surface over a stub workspace, plus the seeding a test needs to
@@ -275,9 +279,9 @@ impl Fleet {
     /// converted shape would exercise something production never seeds from,
     /// so a defect in the seed's own conversion could not be seen here.
     ///
-    /// `has_dispatches` is left to the conversation's own rule rather than
-    /// passed in: a fixture that set it by hand would pin a value the fold
-    /// computes, and the two could disagree without a test saying so.
+    /// The dispatch flag is NOT seeded here: it is the workspace's, raised by
+    /// the session task's fold, and a fixture that wants it says so through
+    /// [`ViewFacts::has_dispatches`].
     pub fn hold_conversation(
         &self,
         state: &TransportState,
@@ -504,6 +508,7 @@ impl Fleet {
         held.process_snapshot = facts.process_snapshot;
         held.background_tasks = facts.background_tasks;
         held.monitors = facts.monitors;
+        held.has_dispatches = facts.has_dispatches;
     }
 
     fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {

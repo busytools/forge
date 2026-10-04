@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::file_index::FileIndex;
 use crate::git_diff;
-use crate::surface::ViewSurface;
 use forge_primitives::SessionSlot;
 
 // The row a view draws, and the gate that qualifies it, live where the
@@ -37,15 +35,6 @@ struct Entry {
     /// The last read, `None` until the first one lands.
     state: Option<WorkState>,
     read_at: Instant,
-    /// The file walk the composer's `@` list reads. Its own window: a walk
-    /// costs more than the row's read does.
-    file_index: Option<Arc<FileIndex>>,
-    /// The ignore preference read for that walk, `None` until one lands.
-    /// The walk's answer depends on it, so it is part of what the cache is
-    /// a cache of: a flip re-walks rather than serving the old answer for
-    /// the rest of the window.
-    files_respecting: Option<bool>,
-    files_read_at: Instant,
     /// Held across a refresh so two callers for one slot do not both probe
     /// the same tree.
     refreshing: Arc<tokio::sync::Mutex<()>>,
@@ -57,9 +46,6 @@ impl Entry {
             cwd: cwd.to_owned(),
             state: None,
             read_at: Instant::now(),
-            file_index: None,
-            files_respecting: None,
-            files_read_at: Instant::now(),
             refreshing: Arc::default(),
         }
     }
@@ -111,69 +97,6 @@ impl WorkCache {
         entry.state = Some(state.clone());
         entry.read_at = Instant::now();
         state
-    }
-
-    /// One root's files, walked at most `REFRESH_INTERVAL` old. The `@`
-    /// list reads this: a typeahead walks on every keystroke, and the tree
-    /// a reader is naming a file in does not change between two of them.
-    ///
-    /// The walk is blocking, so it runs off the reactor. A walk that
-    /// panicked reads as no files rather than as the page's problem: the
-    /// same answer a root that is not there gives.
-    ///
-    /// The surface comes along because the walk runs with the user's own
-    /// gitignore preference, which is the core's read rather than the
-    /// view's: the terminal's `@` list answers from the same rule. That read
-    /// is a file parse, so it happens off the reactor too, whether the call
-    /// walks or answers from the cache.
-    pub async fn files(
-        &self,
-        surface: &Arc<ViewSurface>,
-        slot: &SessionSlot,
-        root: &Path,
-    ) -> Arc<FileIndex> {
-        let reader = Arc::clone(surface);
-        let respecting =
-            tokio::task::spawn_blocking(move || reader.respect_gitignore()).await.unwrap_or(true);
-        let refreshing = {
-            let mut entries = self.entries();
-            Arc::clone(&entries.entry(slot.clone()).or_insert_with(|| Entry::new(root)).refreshing)
-        };
-        let _refreshing = refreshing.lock().await;
-        {
-            let entries = self.entries();
-            if let Some(index) = entries
-                .get(slot)
-                .filter(|entry| {
-                    entry.cwd == root
-                        && entry.files_respecting == Some(respecting)
-                        && entry.files_read_at.elapsed() < REFRESH_INTERVAL
-                })
-                .and_then(|entry| entry.file_index.as_ref())
-            {
-                return Arc::clone(index);
-            }
-        }
-        let walked = root.to_owned();
-        let surface = Arc::clone(surface);
-        let (walked_index, walked_under) = tokio::task::spawn_blocking(move || {
-            // Read beside the walk rather than at the cache check below: the
-            // two reads are a moment apart, and this is the one the entry
-            // stores. A walk that panicked keeps the key it was asked for,
-            // which is why this is not `unwrap_or_default`.
-            let respecting = surface.respect_gitignore();
-            (surface.file_index(&walked), respecting)
-        })
-        .await
-        .unwrap_or_else(|_| (FileIndex::default(), respecting));
-        let index = Arc::new(walked_index);
-        let mut entries = self.entries();
-        let entry = entries.entry(slot.clone()).or_insert_with(|| Entry::new(root));
-        root.clone_into(&mut entry.cwd);
-        entry.file_index = Some(Arc::clone(&index));
-        entry.files_respecting = Some(walked_under);
-        entry.files_read_at = Instant::now();
-        index
     }
 
     /// A panicking task must not take the cache with it: the map holds no
@@ -350,36 +273,6 @@ mod tests {
             second.changed,
             Some(0),
             "a read inside the refresh window answers what the cache holds",
-        );
-    }
-
-    /// A walk is an answer for the preference it was built under, so a flip
-    /// inside the window re-walks: the preference decides which files come
-    /// back, and serving the old answer for the rest of the window is the two
-    /// views disagreeing for five seconds.
-    #[tokio::test]
-    async fn a_flip_inside_the_window_re_walks() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let fleet =
-            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["tree"])]).expect("fleet");
-        let root = dir.path().join("tree");
-        std::fs::create_dir_all(root.join(".git")).expect("mkdir");
-        std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write");
-        std::fs::write(root.join("ignored.rs"), "").expect("write");
-        let cache = WorkCache::new();
-
-        let first = cache.files(&fleet.surface(), &slot(), &root).await;
-        assert!(
-            !first.entries.contains_key("ignored.rs"),
-            "precondition: the walk respects the file",
-        );
-
-        fleet.set_user_preferences(serde_json::json!({ "respectGitignore": false }));
-        let second = cache.files(&fleet.surface(), &slot(), &root).await;
-
-        assert!(
-            second.entries.contains_key("ignored.rs"),
-            "a flip inside the window re-walks rather than serving the old answer",
         );
     }
 }

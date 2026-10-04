@@ -16,8 +16,6 @@
 //! keeping: whether the init frame and `commands_changed` retain anything
 //! at all is pinned by `forge-workspace`'s session-task tests.
 
-use std::path::Path;
-
 use forge_primitives::{AvailableAgent, AvailableCommand, SessionSlot};
 
 use crate::commands::ForgeCommand;
@@ -70,36 +68,39 @@ impl ViewSurface {
         self.workspace.available_agents_for(slot)
     }
 
-    /// One working tree's files, walked on demand. `root` is the
-    /// session's own scan cwd, which a git worker's worktree overrides.
+    /// Whether the conversation at `slot` dispatched a sub-agent.
     ///
-    /// This walks the whole tree on the calling thread, the way
-    /// [`Self::conversation`] reads a whole transcript: a caller offloads
-    /// it rather than running it in a handler.
+    /// A fact about the whole conversation rather than about a window of it,
+    /// and one the session task's fold raises and announces - so this answers
+    /// what that fold holds rather than scanning the messages again here.
+    pub fn has_dispatches(&self, slot: &SessionSlot) -> bool {
+        self.workspace.has_dispatches_for(slot)
+    }
+
+    /// The seat's file index, as the seat's own loop last walked it, or
+    /// `None` until the first walk lands.
     ///
-    /// The walk runs the way the user asked for it: gitignore is honoured
-    /// unless the CLI's own `respectGitignore` preference turns it off.
-    /// The preference is read here rather than parsed by a view, and read
-    /// on each walk rather than held, so a flip reaches this read at once.
-    /// The terminal answers from the same rule but on its own cadence: it
-    /// re-reads the document when its settings reload, so a flip mid-run
-    /// moves this list first and its own at the next reload.
+    /// **Held rather than walked here.** The walk is a whole tree, and the
+    /// seat's loop is the one that takes it - throttled, and announced as
+    /// `FileIndexChanged` when it moves - so this answers the store the loop
+    /// writes rather than paying for a walk of its own.
+    pub fn file_index(&self, slot: &SessionSlot) -> Option<std::sync::Arc<FileIndex>> {
+        self.workspace.file_index(slot).map(|held| held.index)
+    }
+
+    /// One working tree's files, walked on demand. `root` is the session's
+    /// own scan cwd, which a git worker's worktree overrides.
     ///
-    /// `self` is for that read alone: nothing else here is a fact about
-    /// the core, so the command table is reached at the surface rather
-    /// than through an instance of it.
-    pub fn file_index(&self, root: &Path) -> FileIndex {
+    /// **The parked web view's path.** A page that holds no seat - forge-web
+    /// serves from the process and subscribes to nothing, so no seat's loop
+    /// runs for it - has no store to read, and walks where it stands.
+    pub fn walk_file_index(&self, root: &std::path::Path) -> FileIndex {
         FileIndex::scan(root, self.respect_gitignore())
     }
 
     /// The user's own `respectGitignore`, the preference
-    /// [`Self::file_index`] walks with. Read on each call from the CLI's
-    /// per-user preferences document, which is the core's document rather
-    /// than a view's.
-    ///
-    /// A caller that caches a walk reads this to key its cache: the
-    /// preference decides what the walk returns, so a cached walk is only
-    /// an answer for the preference it was built under.
+    /// [`Self::walk_file_index`] runs with. Read on each call from the CLI's
+    /// per-user preferences document, so a flip reaches the next walk.
     pub fn respect_gitignore(&self) -> bool {
         let preferences = self.workspace.user_preferences();
         crate::file_index::respect_gitignore(preferences.as_ref())
@@ -164,49 +165,36 @@ mod tests {
         assert_eq!(agents[0].name, "reviewer");
     }
 
-    /// The file index is walked on demand over the same walker the TUI
-    /// streams from, rooted where the caller says.
-    #[test]
-    fn file_index_walks_the_root_it_is_given() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(root.path().join("src")).expect("mkdir");
-        std::fs::write(root.path().join("src/main.rs"), "").expect("write");
+    /// The index is the seat's own: a slot nothing has walked reads as
+    /// `None` rather than paying for a walk of the tree here, and what the
+    /// seat's loop stores is what this answers.
+    ///
+    /// The walk itself is the workspace's (`a_walk_happens_only_once_the_
+    /// window_has_passed` and its siblings, beside the seat's loop).
+    #[tokio::test]
+    async fn the_file_index_answers_the_seat_that_was_walked() {
         let (workspace, _dir) = crate::surface::testing::workspace();
-        // The walk's ignore preference comes from the CLI's per-user
-        // document, which this fixture holds rather than the machine's.
-        workspace.seed_test_user_preferences(serde_json::json!({}));
-
-        let index = ViewSurface::new(std::sync::Arc::clone(&workspace)).file_index(root.path());
-
-        assert!(index.entries.contains_key("src/main.rs"), "the walk reaches the files");
-        let ranked = index.visible("main", 10);
-        assert_eq!(ranked.len(), 1, "and the verb's own ranking finds them: {ranked:?}");
-        assert_eq!(ranked[0].rel_path, "src/main.rs");
-    }
-
-    /// The preference is read on each walk rather than held: the user can
-    /// flip it while forge runs, and the walk a view asks for next has to
-    /// answer the new one rather than the one forge started with.
-    #[test]
-    fn file_index_walks_under_the_preference_read_at_that_call() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(root.path().join(".git")).expect("mkdir");
-        std::fs::write(root.path().join(".gitignore"), "ignored.rs\n").expect("write");
-        std::fs::write(root.path().join("ignored.rs"), "").expect("write");
-        let (workspace, _dir) = crate::surface::testing::workspace();
-        workspace.seed_test_user_preferences(serde_json::json!({}));
         let surface = ViewSurface::new(std::sync::Arc::clone(&workspace));
+        let seat = slot();
+        workspace.register_domain_session(seat.clone(), None);
 
-        assert!(
-            !surface.file_index(root.path()).entries.contains_key("ignored.rs"),
-            "the walk respects the file while the preference says so",
+        assert!(surface.file_index(&seat).is_none(), "a slot nothing walked reads as none");
+
+        let mut index = forge_workspace::file_index::FileIndex::default();
+        index.entries.insert(
+            "src/main.rs".to_owned(),
+            forge_workspace::file_index::FileCandidate {
+                rel_path: "src/main.rs".to_owned(),
+                rel_path_lower: "src/main.rs".to_owned(),
+                basename_lower: "main.rs".to_owned(),
+                depth: 1,
+            },
         );
+        workspace.store_file_index(&seat, std::sync::Arc::new(index));
 
-        workspace.seed_test_user_preferences(serde_json::json!({"respectGitignore": false}));
-
-        assert!(
-            surface.file_index(root.path()).entries.contains_key("ignored.rs"),
-            "and takes the preference read at the next call",
-        );
+        let held = surface.file_index(&seat).expect("the walk the seat holds comes back");
+        assert!(held.entries.contains_key("src/main.rs"), "with the files the walk found");
+        let other = SessionSlot::worker("TestOrg", "forge", "worker");
+        assert!(surface.file_index(&other).is_none(), "and it is the seat's own, not another's");
     }
 }

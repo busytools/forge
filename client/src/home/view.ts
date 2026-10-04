@@ -60,6 +60,30 @@ export interface TaskCell {
   artifact: string | null;
 }
 
+/**
+ * Whether the seat's page answers: a lead's always does - the core resolves
+ * its directory from the project declaration, and opening one starts it - and
+ * a worker's only while it has a session behind it.
+ *
+ * A row whose seat refuses is information rather than a way in: opening it is
+ * refused by the core - "forge holds no session for" and the seat's name -
+ * where "this seat has no session behind it" is the page's own not-running
+ * line. The terminal draws a sleeping worker row the same way, as a label
+ * with no hit target.
+ *
+ * `LoggedOut` shares the arm with `Sleeping` so a row's mark and its link
+ * cannot disagree: the two are one mark in the parked web view's grouping,
+ * and no worker row carries the state today.
+ */
+export function openable(row: Pick<Row, 'slot' | 'state'>): boolean {
+  if (row.slot.label === 'lead') return true;
+  const { state } = row;
+  return !(
+    state.kind === 'lifecycle' &&
+    (state.lifecycle === 'Sleeping' || state.lifecycle === 'LoggedOut')
+  );
+}
+
 /** One row: the same shape for a lead and for a worker. */
 export interface Row {
   slot: { org: string; project: string; label: string };

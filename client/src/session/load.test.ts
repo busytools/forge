@@ -10,7 +10,6 @@ import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { freeze } from '../chat/testing/frozen';
-import { POLL_MS } from './live';
 
 /**
  * Every builder the inspector reaches through is wrapped, so what one arriving
@@ -146,6 +145,9 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     /** One pushed process walk for this seat, the frame a held seat's own loop sends. */
     walk: (snapshot: unknown) =>
       emit({ kind: 'update', update: { processes_changed: { key: LEAD, snapshot } } }),
+    /** The pushed flag a seat's dispatch raises. */
+    dispatched: () =>
+      emit({ kind: 'update', update: { dispatches_changed: { key: LEAD, has_dispatches: true } } }),
     /** One frame for a seat this page is not looking at. */
     other: () => emit({ kind: 'update', update: { chat_appended: { key: OTHER, msg: block() } } }),
     /** One frame that names no seat at all. */
@@ -237,8 +239,8 @@ function openSection(name: string): void {
 
 beforeEach(() => {
   counts.clear();
-  // The seat's read poll is an INTERVAL, so it has to be faked with the two
-  // timeouts: a file that fakes only those cannot advance a poll at all.
+  // The page schedules paints on animation frames, and a case that drives one
+  // needs a clock it can advance.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
@@ -376,10 +378,11 @@ describe('what one arriving frame costs the inspector', () => {
     counts.clear();
     const before = drawn().map((section) => section.key);
 
-    // A dispatch arrives as a frame. What the section draws from is the
-    // record's answer, which this seat's read has already given - the reducer
-    // does not re-derive it, so a later READ is what moves it, and a poll's
-    // read is a merge.
+    // A dispatch arrives as a chat frame. What the section draws from is the
+    // record's answer, and this build does not re-derive it from the
+    // conversation: the CORE folds the frame and raises the flag itself, so
+    // the frame below moves the section only through the pushed update that
+    // follows it - and this case sends none.
     arrive(() => server.update(dispatched()));
 
     const after = drawn().map((section) => section.key);
@@ -391,14 +394,12 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **The process walk reaches the section as a pushed row, and a poll's
-   * answer cannot put it back.** The walk was one of the slices the merge took
-   * from a poll's answer; now the seat's own hold sends it, so the section
-   * appearing on a frame is this slice's user-visible claim - and the poll
-   * still carrying the empty walk, landing after the frame, is the revert a
-   * merge that still took `processes` would allow.
+   * **The process walk reaches the section as a pushed row.** The walk was one
+   * of the slices a poll's answer carried; now the seat's own hold sends it, so
+   * the section appearing on a frame - without the page asking anything - is
+   * the slice's user-visible claim.
    */
-  it('draws a section from a pushed walk and keeps it through a poll', () => {
+  it('draws a section from a pushed walk', () => {
     const fields: Record<string, unknown> = {
       processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
     };
@@ -418,48 +419,26 @@ describe('what one arriving frame costs the inspector', () => {
     expect(keys, `a pushed walk drew no section: ${JSON.stringify(keys)}`).toContain(
       'sec-processes',
     );
-
-    vi.advanceTimersByTime(POLL_MS + 1);
-    flushSync();
-
-    const after = drawn().map((section) => section.key);
-    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
-    expect(after, `a poll put the pushed walk back: ${JSON.stringify(after)}`).toContain(
-      'sec-processes',
-    );
+    expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });
 
   /**
-   * **A dispatch made while this page is open reaches the section through a
-   * read and nothing else.** The server folds the answer on append and no frame
-   * carries it, so the poll is the only path that moves it - and a merge that
-   * dropped it would leave the section absent for a seat that dispatched with
-   * the page in front of the reader, which is the mistake the section exists to
-   * avoid. The poll this case waits on is asserted to have asked, so a section
-   * that never drew is not the poll having stayed quiet.
+   * **A dispatch made while this page is open reaches the section as a pushed
+   * frame.** The core raises the flag on the frame the CLI already sends, so
+   * the section appears as the dispatch happens, with nothing asked for.
    */
-  it("takes the record's own dispatch answer from what the poll answered with", () => {
+  it('draws the subagents section from a pushed dispatch', () => {
     const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };
     const server = open([], fields);
     expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
 
-    // The seat dispatches; the server's own fold records it on append. The
-    // answer also carries a field a frame feeds, which is the other half of
-    // the claim: a merge keeps this page's value for it, a replacement does
-    // not.
-    fields['has_dispatches'] = true;
-    fields['mcp'] = { servers: [{ name: 'forge', status: 'connected', tools: [] }], error: null };
-    vi.advanceTimersByTime(POLL_MS + 1);
-    flushSync();
+    arrive(() => server.dispatched());
 
     const keys = drawn().map((section) => section.key);
-    expect(server.asked.length, 'the poll never asked').toBeGreaterThan(0);
-    expect(keys, `a poll's answer did not reach the section: ${JSON.stringify(keys)}`).toContain(
+    expect(keys, `a pushed dispatch drew no section: ${JSON.stringify(keys)}`).toContain(
       'sec-subagents',
     );
-    expect(keys, 'the answer replaced the record rather than merging into it').not.toContain(
-      'sec-mcp servers',
-    );
+    expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });
 });
 

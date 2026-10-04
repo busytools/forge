@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Row } from '../home/view';
   import Chevron from '../components/Chevron.svelte';
-  import { hrefForSlot } from '../routes';
   import { railMark } from './view';
 
   /**
@@ -14,9 +13,10 @@
    * it - an occupant swap onto a sleeping seat reaches this without a fresh
    * mount - and never closes on its own.
    *
-   * No close chip: a sleeping seat has no session to close, and the
-   * terminal's own answer for these rows is to draw them as information and
-   * not as controls.
+   * A sleeping row is information, not a way in: its seat has no session
+   * behind it, so opening it draws a refusal, and the terminal's own answer
+   * for these rows is a label with no hit target. So no link, and no close
+   * chip - there is nothing behind either of them to act on.
    */
   let { sleeping, shown }: { sleeping: Row[]; shown: string | null } = $props();
 
@@ -38,7 +38,7 @@
   {#each sleeping as worker (worker.slot.label)}
     <div class="wk" class:on={shown === worker.slot.label}>
       <span class="dot {railMark(worker.state)}"></span>
-      <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
+      <span class="nm">{worker.slot.label}</span>
     </div>
   {/each}
 </details>
