@@ -275,10 +275,12 @@ describe('whether the column follows the newest end', () => {
     const server = stub();
     await draw(server);
 
-    // Nothing has touched the list here: these pins are the landing's own, and
-    // they are what says the column OPENS following rather than following once
-    // the reader has moved.
-    expect(pinned(), 'the page landing pins the foot by itself').toEqual([PIN, PIN]);
+    // Nothing has touched the list here: this pin is the landing's own, and it
+    // is what says the column OPENS following rather than following once the
+    // reader has moved. One pass, because this frame's layout did not move the
+    // height: a second look finding the same foot is a write and an event per
+    // frame, which is the cost issue #1710 measured.
+    expect(pinned(), 'the page landing pins the foot by itself').toEqual([PIN]);
   });
 
   it('pins the foot again when a frame lands below the reader', async () => {
@@ -291,10 +293,39 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    // One pin now and one after this frame's layout: a row that grew in this
-    // same update is measured a moment later, and the foot it moves to is what
-    // the second pass is for.
-    expect(pinned(), 'the frame is what put these here').toEqual([PIN, PIN]);
+    // One pass, because this frame carried no layout change: the second look
+    // is for a row laid out after this update's effects ran, and its own test
+    // below moves the height between the two passes to see it land.
+    expect(pinned(), 'the frame is what put these here').toEqual([PIN]);
+  });
+
+  it('takes its second look only when the layout moved between the passes', async () => {
+    // **One pass per size change** (issue #1710). A row laid out after this
+    // update's effects ran moves the foot a moment later, and the frame's own
+    // second look is for exactly that; a look that finds the same height has
+    // nothing to correct and is skipped. The height is moved here between the
+    // two passes, the way a late layout moves it.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    server.frame();
+    // The draw lands a painted frame after the frame arrives - the pin - and
+    // the second look is the pass after that; the height moves between them,
+    // the way a row laid out late moves it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    element.height = TOTAL + 80;
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+
+    const grown = Math.floor(TOTAL + 80);
+    expect(pinned(), 'the late layout lands one more pin, at the new foot').toEqual([
+      PIN,
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
   });
 
   it('does not move a reader who has scrolled up', async () => {
@@ -330,7 +361,7 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    expect(pinned(), 'the end they came back to is followed again').toEqual([PIN, PIN]);
+    expect(pinned(), 'the end they came back to is followed again').toEqual([PIN]);
   });
 
   it('leaves a reader parked a few pixels short of the end alone', async () => {
@@ -400,7 +431,7 @@ describe('whether the column follows the newest end', () => {
     server.page([turn('o1'), turn('o2')], OTHER);
     await settle();
 
-    expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN, PIN]);
+    expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN]);
   });
 
   it('lands back at the foot when the reader returns to a seat they left scrolled up', async () => {
@@ -441,7 +472,7 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(list(), 'the kept conversation is drawn again').not.toBeNull();
-    expect(pinned(), 'the return lands at the foot, not where it was left').toEqual([PIN, PIN]);
+    expect(pinned(), 'the return lands at the foot, not where it was left').toEqual([PIN]);
 
     // **And a seat left AT its foot still re-pins on the way back.** This leg
     // is that path's own regression guard: the conversation's follow is
@@ -466,7 +497,7 @@ describe('whether the column follows the newest end', () => {
     flushSync();
     await settle();
 
-    expect(pinned(), 'a return to a seat left at its foot lands there too').toEqual([PIN, PIN]);
+    expect(pinned(), 'a return to a seat left at its foot lands there too').toEqual([PIN]);
   });
 
   it('re-arms at the foot the element clamps to while the model reads long', async () => {
@@ -487,14 +518,13 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     // **The count is the passes, and the value is the property.** A frame's
-    // draw now lands on a painted frame rather than at the write (#1670), so
-    // the layout settles over one more pass and the observer pins once more
-    // than the effect's pair. What the test is about is WHICH foot every pin
-    // asks for - the element's numbers, never the model's longer ones - so
-    // that is what is asserted, and a pin asking for anything else fails
-    // whichever pass it came from.
+    // draw now lands on a painted frame rather than at the write (#1670), and
+    // the passes that find nothing moved no longer pin at all (issue #1710) -
+    // what the test is about is WHICH foot every pin asks for: the element's
+    // numbers, never the model's longer ones. A pin asking for anything else
+    // fails whichever pass it came from.
     const pins = pinned();
-    expect(pins.length, 'the column pinned, over its passes').toBeGreaterThanOrEqual(2);
+    expect(pins.length, 'the column pinned, over its passes').toBeGreaterThanOrEqual(1);
     expect(
       [...new Set(pins.map((pin) => JSON.stringify(pin)))],
       "and every pin asked for the element's foot, not the model's",
@@ -518,7 +548,6 @@ describe('whether the column follows the newest end', () => {
 
     expect(pinned(), 'the pin is the column moving the reader, not the reader moving').toEqual([
       PIN,
-      PIN,
     ]);
   });
 
@@ -539,7 +568,6 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the pin left the reader at the foot it could see').toEqual([
-      { asked: ASKED + 400, landed: FOOT + 400 },
       { asked: ASKED + 400, landed: FOOT + 400 },
     ]);
   });
@@ -586,7 +614,6 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the landing is the column moving the reader, not the reader moving').toEqual([
-      { asked: ASKED + 400, landed: FOOT + 400 },
       { asked: ASKED + 400, landed: FOOT + 400 },
     ]);
   });
@@ -816,10 +843,7 @@ describe('whether the column follows the newest end', () => {
     server.prompt();
     await settle();
 
-    expect(pinned(), 'a prompt is where the reader wants to be, wherever they were').toEqual([
-      PIN,
-      PIN,
-    ]);
+    expect(pinned(), 'a prompt is where the reader wants to be, wherever they were').toEqual([PIN]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
@@ -949,6 +973,6 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    expect(pinned(), 'the end they are sitting at is followed again').toEqual([FITS, FITS]);
+    expect(pinned(), 'the end they are sitting at is followed again').toEqual([FITS]);
   });
 });
