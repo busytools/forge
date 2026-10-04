@@ -7,7 +7,7 @@ import { flushSync, mount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Connection } from '../socket';
-import type { QueuedPromptRow } from '../session/wire';
+import type { QueueEnding, QueuedPromptRow } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import Queue from './Queue.svelte';
 import { faceAt, walk } from './queue';
@@ -56,8 +56,15 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function draw(held: QueuedPromptRow[], connection: Connection): void {
-  const app = mount(Queue, { target: host, props: { rows: held, slot: SLOT, connection } });
+function draw(
+  held: QueuedPromptRow[],
+  connection: Connection,
+  ended: QueueEnding | null = null,
+): void {
+  const app = mount(Queue, {
+    target: host,
+    props: { rows: held, ended, slot: SLOT, connection },
+  });
   flushSync();
   // The unmount rides the afterEach that empties the host.
   void app;
@@ -302,35 +309,78 @@ describe('the walk and the box in one composer', () => {
  * a 498px card (#1705). The mock keeps the same namespaced set (`.qcard`,
  * `.qcount`, `.qstack`, `web-queue.html`), and this is the guard that the
  * sheet never grows a rule over one of them again.
+ *
+ * **The one shared name is `.ic`, on purpose**: `Icon.svelte` applies it to
+ * every icon the app draws, the cancel control's included. Every other name
+ * the sheet could reach the pile by, the pile must not carry.
  */
 describe("the pile's own vocabulary", () => {
-  it('keeps every class the sheet could reach out of its markup', () => {
-    draw(rows('one', 'two'), recording().connection);
+  /** The sheet's icon name, which `Icon.svelte` gives every icon there is. */
+  const SHARED = new Set(['ic']);
 
-    // Relative to the package root, because a jsdom test's `import.meta.url`
-    // is not a file URL - the suite always runs with the client as cwd.
+  it('keeps every named rule off the pile, in the walked state too', () => {
+    // The walked state is the one carrying the cancel control and its icon,
+    // and the ended line belongs to the same check: guarding only the states
+    // the app draws for a frame is how a live reach passed this test.
+    draw(rows('one', 'two'), recording().connection, { text: 'gone', state: 'discarded' });
+    key(pile(), 'ArrowUp');
+
+    // Inside the composer, where the page mounts the pile: a rule anchored on
+    // an ancestor the snapshot omits would pass a flatter tree.
+    // From the suite's own root, which the runner sets to the client: jsdom
+    // rewrites `import.meta.url` to a non-file URL, so the sheet has no file
+    // URL to be read by, and vitest hands a css `?raw` import back empty.
     const sheet = readFileSync('src/assets/web.css', 'utf8');
-    const dom = new JSDOM(`<style>${sheet}</style>${host.innerHTML}`);
+    const dom = new JSDOM(`<style>${sheet}</style><div class="composer">${host.innerHTML}</div>`);
     const styles = dom.window.document.styleSheets[0];
     if (styles === undefined) throw new Error('the sheet did not parse');
 
     const reached: string[] = [];
-    for (const rule of styles.cssRules) {
-      if (!('selectorText' in rule)) continue;
-      const { selectorText } = rule as CSSStyleRule;
-      // The sheet's reset matches everything in the page by design; the
-      // question here is a rule that reaches the pile because of a NAME.
-      if (selectorText.startsWith('*')) continue;
-      for (const element of dom.window.document.querySelectorAll('.pile, .pile *')) {
-        try {
-          if (element.matches(selectorText)) {
-            reached.push(`${selectorText} reaches ${element.className}`);
+    const check = (selectorText: string): void => {
+      for (const part of selectorText.split(',')) {
+        const selector = part.trim();
+        // An element-only selector is the sheet's touch and type rules, not a
+        // name the pile carries by accident - and it is where the reset and
+        // its `*::before` companions sit, so they leave by the same door.
+        if (!selector.includes('.') && !selector.includes('#') && !selector.includes('[')) {
+          continue;
+        }
+        const names = selector.match(/\.[A-Za-z0-9_-]+/g) ?? [];
+        if (names.length > 0 && names.every((name) => SHARED.has(name.slice(1)))) continue;
+        for (const element of dom.window.document.querySelectorAll('.pile, .pile *')) {
+          try {
+            if (element.matches(selector)) {
+              reached.push(
+                `${selector} reaches ${element.getAttribute('class') ?? element.tagName}`,
+              );
+            }
+          } catch {
+            // A selector this reader cannot place is not evidence of a reach.
           }
-        } catch {
-          // A selector this reader cannot place is not evidence of a reach.
         }
       }
-    }
+    };
+    let nested = 0;
+    const visit = (rules: CSSRuleList): void => {
+      for (const rule of rules) {
+        if ('selectorText' in rule) check((rule as CSSStyleRule).selectorText);
+        const inner = 'cssRules' in rule ? (rule as CSSGroupingRule).cssRules : undefined;
+        if (inner !== undefined && inner.length > 0) {
+          nested += inner.length;
+          visit(inner);
+        }
+      }
+    };
+    visit(styles.cssRules);
+
+    // Two coverage assertions for the two ways this check went blind: the
+    // snapshot must hold the walked icon the check exists for, and the walk
+    // must have entered the at-rule bodies a bare `.row` already hides in.
+    expect(
+      dom.window.document.querySelector('.qcount .del .ic'),
+      'the walked cancel icon is the case this check reads',
+    ).not.toBeNull();
+    expect(nested, "the walk read the sheet's at-rule bodies").toBeGreaterThan(0);
     expect(reached, 'the sheet must not reach into the pile').toEqual([]);
   });
 });
