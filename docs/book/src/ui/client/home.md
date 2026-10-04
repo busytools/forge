@@ -42,8 +42,9 @@ it is empty. A seat forge holds no directory for draws the cell empty rather
 than borrowing another seat's tree - a despawned worker's label is the one
 that happens - and a project nobody has started draws the project's own read,
 which is the only row with no seat behind it. `what` says one thing,
-and the order it picks by is the order a reader needs them: what the seat is
-waiting on a person for, else the task it holds with that task's status chip
+and the order it picks by is the order a reader needs them: `asleep` first,
+for a row that is not a link, else what the seat is waiting on a person for,
+else the task it holds with that task's status chip
 and artifact, else why a spawn here would be refused, else why the tree could
 not be read (`not a git repository`, `its working directory is not there`),
 and a middot when none of those is true.
