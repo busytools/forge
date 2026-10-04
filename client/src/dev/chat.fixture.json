@@ -392,6 +392,63 @@
           }
         }
       ]
+    },
+    {
+      "key": "2026-10-04T12:00:00.000Z",
+      "messages": [
+        {
+          "type": "user",
+          "uuid": "u-dec",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Decide whether the import fix is mechanical before touching it."
+              }
+            ]
+          }
+        },
+        {
+          "type": "assistant",
+          "uuid": "a-dec",
+          "message": {
+            "id": "msg_dec",
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "tu-dec",
+                "name": "mcp__forge__systemone__ask_noul",
+                "input": {
+                  "state": "A one-line import fix, covered by the existing tests.",
+                  "instructions": "Is this one-line import fix mechanical and reversible?",
+                  "criteria": {
+                    "true": "a single import line, covered by tests",
+                    "false": "it touches more than the import"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "user",
+          "uuid": "r-dec",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "tu-dec",
+                "content": "{\"model\":\"jev-1.13.0\",\"answer\":{\"type\":\"noul\",\"noul\":0.93}}",
+                "is_error": false
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -1,9 +1,12 @@
 <script lang="ts">
   import type { Decision } from './decisions';
+  import { renderInlineProse } from './prose';
+  import { joinedLine } from './text';
 
   /**
-   * One System One decision, drawn as the block the mock settled: the answer
-   * first, its distribution under it, and what it cost along the bottom.
+   * One System One decision, drawn as the block the mock settled: the
+   * question it answered, the answer first, its distribution with each
+   * option's own description under it, and what it cost along the bottom.
    *
    * The verdict line draws only what the result carries. What the session
    * then did with the answer - applied it, escalated it - is not on the wire,
@@ -105,6 +108,17 @@
 </script>
 
 <div class="dec">
+  {#if decision.question !== null}
+    <!-- The whole question over the answer: the call's own row holds one line
+         of it, and the block used to draw none - so expanding showed the
+         answer with nothing saying what it answered (Ved, 2026-10-04). -->
+    <div class="q">
+      <!-- Rendered from escaped input: the same renderer the row's own line
+           and a thought's row use. -->
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      {@html renderInlineProse(joinedLine(decision.question))}
+    </div>
+  {/if}
   <div class="verdict">
     {#if noulValue !== null}
       <span class="num" class:sure class:unsure>{num(noulValue)}</span>
@@ -124,12 +138,17 @@
     <div class="dist">
       {#each rows as row, at (at)}
         <div class="opt" class:win={row.win}>
-          <span class="name">{row.name}</span>
-          <span class="track"
-            ><span class="fill" class:win={row.win} style={`width:${width(row.value)}`}
-            ></span></span
-          >
-          <span class="p">{row.value === null ? '' : num(row.value)}</span>
+          <div class="oline">
+            <span class="name">{row.name}</span>
+            <span class="track"
+              ><span class="fill" class:win={row.win} style={`width:${width(row.value)}`}
+              ></span></span
+            >
+            <span class="p">{row.value === null ? '' : num(row.value)}</span>
+          </div>
+          {#if decision.criteria[row.name] !== undefined}
+            <div class="crit">{decision.criteria[row.name]}</div>
+          {/if}
         </div>
       {/each}
     </div>
