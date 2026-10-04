@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use forge_primitives::SessionSlot;
 use forge_workspace::DictateSnapshot;
 
 use super::ViewSurface;
@@ -34,6 +35,33 @@ pub struct DictateView {
 }
 
 impl ViewSurface {
+    /// The connection that was streaming a take for `key` has gone: submit
+    /// what arrived and free the seat for the next take.
+    ///
+    /// A connection's own lifecycle rather than a user action, which is why
+    /// it is a verb here and not a command: nothing a view dispatches means
+    /// "the client went away".
+    pub fn dictate_close(&self, key: &SessionSlot) -> bool {
+        self.workspace.dictate_close(key)
+    }
+
+    /// The axes a client that captures starts on and resets to: the
+    /// `[dictate]` keys over the crate's own defaults.
+    pub fn dictate_axes(&self) -> forge_workspace::DictateAxes {
+        self.workspace.dictate_axes()
+    }
+
+    /// Push one frame of client-captured audio into a seat's live take,
+    /// answering whether the samples were kept.
+    ///
+    /// A data plane rather than a command: a client sends this ~50 times a
+    /// second for as long as it talks, and the command bus's dispatch is
+    /// for the actions a view takes on the user's behalf, not for the
+    /// audio itself.
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
+        self.workspace.dictate_push(key, samples)
+    }
+
     pub fn dictate(&self) -> DictateView {
         DictateView {
             enabled: self.workspace.dictate_enabled(),

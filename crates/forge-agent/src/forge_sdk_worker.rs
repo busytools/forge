@@ -154,13 +154,20 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.\n\
 \n\
-Before you report work as done, reviewed, or verified, be able to name \
-the evidence - the command and its output, the diff you read, the test \
-that ran. If the `systemone__*` tools are in your list and the claim is \
-genuinely uncertain, put the claim and that evidence in `state` and \
-ask; a decisive answer is permission to say it plainly, a near-0.5 \
-means state the caveat or go verify first. A decision is never a \
-substitute for evidence you do not have.";
+Before you report work as done, reviewed, or verified - to a lead, a PR \
+body, or the user - name the evidence (the command and its output, the \
+diff you read, the test that ran). When the `systemone__*` tools are in \
+your list: make one `ask_noul` claim-check on the claim - the evidence \
+itself in `state`, the command's output or the file's bytes, not your \
+memory of them - and ask whether it holds; and when two readings both \
+survive your own reasoning and nothing outside you decides between \
+them - no file, no command, no test, no instruction from the user - \
+make one `ask_choice` over the options you have already enumerated \
+rather than deciding it in prose. A decisive answer is permission to \
+say it plainly, a near-0.5 means state the caveat or go verify first - \
+the trigger is the act of asserting, not a feeling of uncertainty; the \
+claims that matter most are the ones that feel settled. A decision is \
+never a substitute for evidence you do not have.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -1952,10 +1959,10 @@ pub(crate) fn reported_percentage(p: f64) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, SessionId, build_forge_system_prompt,
-        deliver_permission_response, deliver_question_response, frame_session_id,
-        initial_mode_state, log_failed_mcp_servers, reported_percentage, run_ask_user_question,
-        synth_permission_request,
+        FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions, PendingResponses, SessionId,
+        build_forge_system_prompt, deliver_permission_response, deliver_question_response,
+        frame_session_id, initial_mode_state, log_failed_mcp_servers, reported_percentage,
+        run_ask_user_question, synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -2321,16 +2328,19 @@ mod tests {
         );
     }
 
-    /// **The property this change turns on**: a boundary the CLI sends live and
-    /// the same boundary read back from a transcript reach a client as one
-    /// frame, carrying the same three facts.
+    /// **The property this change turns on**: a boundary read back from a
+    /// transcript reaches a client in the wire's own shape, carrying every
+    /// fact the transcript row holds - and the live frame carries the extra
+    /// facts the transcript does not persist on top of those.
     ///
     /// The two paths share no code - the live one decodes the wire's nested
     /// `compact_metadata`, the resumed one normalises the transcript's flat
     /// `compactMetadata` into it - so a fact either path drops is a row that
-    /// draws differently depending on how the reader arrived.
+    /// draws differently depending on how the reader arrived, and the two
+    /// frames diverging by MORE than the transcript's own omissions is the
+    /// read-side normaliser losing a fact.
     #[test]
-    fn a_live_boundary_and_a_resumed_one_reach_the_client_as_the_same_frame() {
+    fn a_boundary_read_back_from_disk_reaches_the_client_as_the_wire_shape() {
         // A uuid, because the scan refuses a session id that is not one.
         let session_id = "550e8400-e29b-41d4-a716-446655440000";
         let live: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -2417,13 +2427,40 @@ mod tests {
 
         let live_frame = serde_json::to_value(&live).expect("the live frame encodes");
         let disk_frame = serde_json::to_value(from_disk).expect("the disk frame encodes");
+        // Every fact the transcript row carries reaches the client in the
+        // wire's own shape.
         assert_eq!(
-            disk_frame, live_frame,
-            "a boundary read back from disk must reach the client as the live one does",
+            disk_frame,
+            serde_json::json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "session_id": session_id,
+                "uuid": "cb-uuid",
+                "compact_metadata": {
+                    "trigger": "manual",
+                    "pre_tokens": 68_031,
+                    "post_tokens": 9_149,
+                },
+            }),
+            "a boundary read back from disk reaches the client as the wire shape",
+        );
+        // The live frame carries MORE: the wire's extra facts cross whole,
+        // and a transcript persists a flat camelCase row the scan's
+        // normalizer maps only the three fields above out of. So the two
+        // frames agree on what the transcript holds and diverge by exactly
+        // what it does not - the read-side mapping, not the wire, is what
+        // loses those siblings.
+        assert_eq!(
+            live_frame["compact_metadata"]["cumulative_dropped_tokens"], 58_882,
+            "the live frame keeps the metadata siblings the wire sent",
+        );
+        assert_eq!(
+            live_frame["logical_parent_uuid"], "lp-uuid",
+            "and the frame-level ones with them",
         );
         assert_eq!(
             live_frame["compact_metadata"]["post_tokens"], 9_149,
-            "with the count carried after the cut, which is the fact both paths dropped",
+            "with the count carried after the cut",
         );
 
         let lost = resumed
@@ -3107,6 +3144,24 @@ mod tests {
             "the Bash description ask rides the base append, not a charter"
         );
         assert!(!bare.contains("CATALOG"));
+    }
+
+    /// The systemone cues reach every session, and the names in them are
+    /// tools that can be renamed - pinned so a rename fails here instead of
+    /// shipping a cue that resolves to nothing.
+    #[test]
+    fn the_conduct_block_carries_its_systemone_cues() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "When the `systemone__*` tools are in your list: make one `ask_noul` claim-check on the claim"
+            ),
+            "the claim cue's guard and wording are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("make one `ask_choice` over the options you have already enumerated"),
+            "the enumerated-choice cue is pinned",
+        );
     }
 
     /// The cron tools are owner-scoped, so a block claiming the project's

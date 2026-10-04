@@ -71,7 +71,10 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 # A session's dictation overrides are this crate's to carry, and their axes
 # are `forge-dictate`'s types, so the test that they arrive populated names
 # them here rather than asserting a shape without a value.
-forge-dictate = { workspace = true }
+# The socket's frame intake is tested against an engine that registers
+# takes without weights, which is the dictation crate's test-only
+# constructor.
+forge-dictate = { workspace = true, features = ["test-helpers"] }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
 # A test reads back the records a site emitted, which needs a subscriber to

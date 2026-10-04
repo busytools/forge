@@ -4,8 +4,7 @@ import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { seatState } from '../session/view';
 import { sessionFrom } from '../session/wire';
-import type { Connection } from '../socket';
-import { dictationOffered, type ComposerProps } from './view';
+import { dictationOffered, type ComposerConnection, type ComposerProps } from './view';
 
 /** Nothing is dispatched here: the check is the assignment, not a render. */
 const idle = {
@@ -13,7 +12,7 @@ const idle = {
   devices: () => true,
   onMessage: () => () => {},
   store: () => undefined,
-} as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
+} as unknown as ComposerConnection;
 
 /**
  * The seam the session page hands the composer across.

@@ -345,13 +345,13 @@ pub fn render(messages: &[Message]) -> Rendered {
                 // call's turn - the second telling of what the call's row
                 // already carries - and a body no call holds falls through to
                 // the arms below and opens a turn as it always did.
-                ContentBlock::Text { text }
+                ContentBlock::Text { text, .. }
                     if !assistant && claims_skill_call(&mut turn_skills, text) => {}
                 // The continuation prompt a compaction leaves behind, which
                 // belongs in the boundary's own turn: the client hangs it on
                 // that row, and a turn of its own draws the compaction twice.
                 // With no boundary in this turn it opens one as it always did.
-                ContentBlock::Text { text }
+                ContentBlock::Text { text, .. }
                     if !assistant && turn_boundary && is_continuation(text) =>
                 {
                     turn_boundary = false;
@@ -360,15 +360,16 @@ pub fn render(messages: &[Message]) -> Rendered {
                 // belongs in the open turn, right behind the call whose result
                 // carried the picture, where the view hangs it on that call's
                 // row as the caption. It draws no unit of its own either way.
-                ContentBlock::Text { text } if !assistant && turn_calls && is_image_note(text) => {}
+                ContentBlock::Text { text, .. }
+                    if !assistant && turn_calls && is_image_note(text) => {}
                 // The harness's task ending in its other carrier: the same XML
                 // written into a user row, which the scan hands on as this
                 // plain text. A turn opened for it draws a task id and an
                 // output path attributed to the reader, so the row opens none -
                 // and the ending it carries was read in the pre-pass above,
                 // which is the only place that can see across turns.
-                ContentBlock::Text { text } if !assistant && is_task_notice(text) => {}
-                ContentBlock::Text { text } => match text_unit(assistant, text) {
+                ContentBlock::Text { text, .. } if !assistant && is_task_notice(text) => {}
+                ContentBlock::Text { text, .. } => match text_unit(assistant, text) {
                     TextUnit::Peer(card) => {
                         flush(&mut run, &mut units);
                         // A peer message is a user row the CLI answered as a
@@ -426,8 +427,8 @@ pub fn render(messages: &[Message]) -> Rendered {
                         turn_calls = false;
                     }
                 }
-                ContentBlock::ToolUse { id, name, input }
-                | ContentBlock::ServerToolUse { id, name, input } => {
+                ContentBlock::ToolUse { id, name, input, .. }
+                | ContentBlock::ServerToolUse { id, name, input, .. } => {
                     turn_calls = true;
                     // A `Skill` call's own name for the skill it loads, held
                     // until that skill's body arrives: the body is what this
@@ -1002,6 +1003,7 @@ pub(crate) fn notice_block(text: &str) -> ContentBlock {
         prompt: serde_json::Value::String(text.to_owned()),
         command_mode: Some("task-notification".to_owned()),
         source_uuid: None,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -1018,7 +1020,7 @@ pub(crate) fn notices_as_blocks(mut messages: Vec<Message>) -> Vec<Message> {
             continue;
         };
         for block in &mut envelope.content {
-            if let ContentBlock::Text { text } = block
+            if let ContentBlock::Text { text, .. } = block
                 && is_task_notice(text)
             {
                 *block = notice_block(text);
@@ -1313,7 +1315,7 @@ pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> 
         };
         for block in &envelope.content {
             let text = match block {
-                ContentBlock::Text { text } => text.clone(),
+                ContentBlock::Text { text, .. } => text.clone(),
                 ContentBlock::QueuedCommand { prompt, .. } => queued_command_text(prompt),
                 _ => continue,
             };
@@ -1339,7 +1341,7 @@ pub(crate) fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded>
         match message {
             Message::User { message: envelope, tool_use_result, .. } => {
                 for block in &envelope.content {
-                    if let ContentBlock::ToolResult { tool_use_id, content, is_error } = block {
+                    if let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = block {
                         let status = if *is_error {
                             ToolCallStatus::Failed
                         } else {
@@ -1358,7 +1360,7 @@ pub(crate) fn result_statuses(messages: &[Message]) -> HashMap<String, Recorded>
             }
             Message::Assistant { message: envelope, .. } => {
                 for block in &envelope.content {
-                    if let ContentBlock::ServerToolResult { tool_use_id, content } = block {
+                    if let ContentBlock::ServerToolResult { tool_use_id, content, .. } = block {
                         out.insert(
                             tool_use_id.clone(),
                             Recorded {
@@ -1428,12 +1430,14 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1452,6 +1456,7 @@ mod tests {
             id: format!("toolu_{family}_{n}"),
             name: sdk_name.to_owned(),
             input: serde_json::json!({"file_path": "src/lib.rs", "command": "just check"}),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -1466,6 +1471,7 @@ mod tests {
             id: format!("toolu_{name}"),
             name: name.to_owned(),
             input: serde_json::json!({"file_path": "src/lib.rs"}),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -1487,6 +1493,7 @@ mod tests {
             parent_tool_use_id: None,
             session_id: "session".to_owned(),
             uuid: "hooks-1".to_owned(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1527,7 +1534,10 @@ mod tests {
     }
 
     fn assistant_text(text: &str) -> Message {
-        assistant(vec![ContentBlock::Text { text: text.to_owned() }])
+        assistant(vec![ContentBlock::Text {
+            text: text.to_owned(),
+            extras: serde_json::Map::new(),
+        }])
     }
 
     /// Consecutive tool calls with nothing between them are ONE group.
@@ -1612,6 +1622,7 @@ mod tests {
             id: "toolu_monitor".to_owned(),
             name: "Monitor".to_owned(),
             input: serde_json::json!({"description": "watch the deploy", "command": "tail -f log"}),
+            extras: serde_json::Map::new(),
         }]);
         let messages = [tool_call_at("read", 0), monitor, tool_call_at("read", 1)];
 
@@ -1662,6 +1673,7 @@ mod tests {
             id: "toolu_peer".to_owned(),
             name: "mcp__forge__agents__send_message".to_owned(),
             input: serde_json::json!({"project": "companies", "message": "did it land?"}),
+            extras: serde_json::Map::new(),
         }]);
         let edit = tool_call("edit");
         let read = tool_call_at("read", 9);
@@ -1715,17 +1727,21 @@ mod tests {
     fn an_external_envelope_is_a_notice_and_not_a_turn() {
         let quiet = user(vec![ContentBlock::Text {
             text: "[Gotify - app 'watcher', priority 3]\n\ndeploy finished".to_owned(),
+            extras: serde_json::Map::new(),
         }]);
         let loud = user(vec![ContentBlock::Text {
             text: "[Gotify - app 'ci', priority 9]\n\nbuild failed".to_owned(),
+            extras: serde_json::Map::new(),
         }]);
         let slack = user(vec![ContentBlock::Text {
             text: "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
                 .to_owned(),
+            extras: serde_json::Map::new(),
         }]);
         let failed = user(vec![ContentBlock::Text {
             text: "[Ask id=q-1 to agent 'companies' (org 'Busytools') failed to deliver: channel closed]"
                 .to_owned(),
+            extras: serde_json::Map::new(),
         }]);
 
         let units = render_units(&[quiet, loud, slack, failed]);
@@ -1778,6 +1794,7 @@ mod tests {
     fn peer_message(id: &str, from: &str, body: &str) -> Message {
         user(vec![ContentBlock::Text {
             text: format!("[Message id={id} from agent '{from}' (org 'Busytools')]\n\n{body}"),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -1800,6 +1817,7 @@ mod tests {
                 "multiSelect": false,
                 "options": [{"label": "Red"}, {"label": "Blue"}, {"label": "Green"}],
             }]}),
+            extras: serde_json::Map::new(),
         }]);
         let answered = user_answered(
             "toolu_q",
@@ -1834,6 +1852,7 @@ mod tests {
                 "multiSelect": true,
                 "options": [{"label": "Red"}, {"label": "Blue"}],
             }]}),
+            extras: serde_json::Map::new(),
         }]);
         let answered = user_answered(
             "toolu_q",
@@ -1866,6 +1885,7 @@ mod tests {
                 "question": "Which colour do you prefer?",
                 "options": [{"label": "Red"}],
             }]}),
+            extras: serde_json::Map::new(),
         }]);
         let unanswered = user_answered("toolu_q", serde_json::json!({"answers": {}}));
 
@@ -1882,13 +1902,18 @@ mod tests {
     /// A user turn carrying `content`.
     fn user(content: Vec<ContentBlock>) -> Message {
         Message::User {
-            message: UserEnvelope { role: "user".to_owned(), content },
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content,
+                extras: serde_json::Map::new(),
+            },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1899,6 +1924,7 @@ mod tests {
             prompt: serde_json::Value::String(text.to_owned()),
             command_mode: Some("prompt".to_owned()),
             source_uuid: None,
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -1914,7 +1940,9 @@ mod tests {
                         "Your questions have been answered".to_owned(),
                     ),
                     is_error: false,
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
@@ -1922,6 +1950,7 @@ mod tests {
             tool_use_result: Some(recorded),
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1931,6 +1960,7 @@ mod tests {
             tool_use_id: tool_use_id.to_owned(),
             content: serde_json::Value::String("output".to_owned()),
             is_error,
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -2020,14 +2050,18 @@ mod tests {
                 id: format!("toolu_{want}"),
                 name: "Skill".to_owned(),
                 input: serde_json::json!({ "skill": want }),
+                extras: serde_json::Map::new(),
             }])
         };
         let body = |path: &str| {
             user(vec![ContentBlock::Text {
                 text: format!("Base directory for this skill: {path}\n\n# The skill\n\nDo it."),
+                extras: serde_json::Map::new(),
             }])
         };
-        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+        let prompt = || {
+            user(vec![ContentBlock::Text { text: "go".to_owned(), extras: serde_json::Map::new() }])
+        };
 
         let rendered =
             render(&[prompt(), call("unslop"), body("/Users/ved/.claude/skills/unslop")]);
@@ -2057,6 +2091,7 @@ mod tests {
             call("pr-review-loop"),
             user(vec![ContentBlock::Text {
                 text: "# PR Review Loop\n\nReview a change with parallel reviewers.".to_owned(),
+                extras: serde_json::Map::new(),
             }]),
         ]);
         assert_eq!(titled.turns.len(), 1, "a titled body stays in its call's turn");
@@ -2065,6 +2100,7 @@ mod tests {
         // call that read it, where the view hangs it on that call's row.
         let note = user(vec![ContentBlock::Text {
             text: "[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]".to_owned(),
+            extras: serde_json::Map::new(),
         }]);
         let pictured = render(&[prompt(), tool_call("read"), note.clone()]);
         assert_eq!(pictured.turns.len(), 1, "the image line opens no turn of its own");
@@ -2086,11 +2122,16 @@ mod tests {
             post_tokens: 9_149,
             uuid: "cb-1".to_owned(),
             session_id: "session".to_owned(),
+            metadata_extras: serde_json::Map::new(),
+            extras: serde_json::Map::new(),
         };
         let summary = user(vec![ContentBlock::Text {
             text: "This session is being continued from a previous conversation that ran out of context. And so on.".to_owned(),
+            extras: serde_json::Map::new(),
         }]);
-        let prompt = || user(vec![ContentBlock::Text { text: "go".to_owned() }]);
+        let prompt = || {
+            user(vec![ContentBlock::Text { text: "go".to_owned(), extras: serde_json::Map::new() }])
+        };
 
         let rendered = render(&[prompt(), boundary(), summary.clone()]);
         assert_eq!(rendered.turns.len(), 1, "the prompt opens no turn of its own");
@@ -2111,6 +2152,7 @@ mod tests {
             prompt: serde_json::Value::String("Task bj5g0t2kq done".to_owned()),
             command_mode: Some("task-notification".to_owned()),
             source_uuid: None,
+            extras: serde_json::Map::new(),
         }]);
         let by_tag = user(vec![ContentBlock::QueuedCommand {
             prompt: serde_json::Value::String(
@@ -2118,6 +2160,7 @@ mod tests {
             ),
             command_mode: Some("prompt".to_owned()),
             source_uuid: None,
+            extras: serde_json::Map::new(),
         }]);
 
         for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag")] {
@@ -2220,6 +2263,7 @@ mod tests {
                 "<task-notification>\n<tool-use-id>{call}</tool-use-id>\n\
                  <status>{status}</status>\n<summary>{summary}</summary>\n</task-notification>"
             ),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -2366,6 +2410,7 @@ mod tests {
             id: "toolu_ending".to_owned(),
             name: "Bash".to_owned(),
             input: serde_json::json!({"command": "just check"}),
+            extras: serde_json::Map::new(),
         }]);
         let failed = tool_result("toolu_ending", true);
 
@@ -2393,7 +2438,10 @@ mod tests {
     /// that dropped them all could not pass this.
     #[test]
     fn a_sub_agents_frames_are_not_the_chat() {
-        let prompt = user(vec![ContentBlock::Text { text: "run the tests".to_owned() }]);
+        let prompt = user(vec![ContentBlock::Text {
+            text: "run the tests".to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
         let prose = assistant_text("the second one failed");
         let call = tool_call("search");
 
@@ -2510,6 +2558,7 @@ mod tests {
                 "old_string": "  text-decoration: none; flex: none;",
                 "new_string": "  text-decoration: none; flex: 0 1 auto;",
             }),
+            extras: serde_json::Map::new(),
         }])
     }
 
@@ -2562,10 +2611,12 @@ mod tests {
             id: "srvtoolu_1".to_owned(),
             name: "web_search".to_owned(),
             input: serde_json::json!({"query": "ratatui list widget"}),
+            extras: serde_json::Map::new(),
         }]);
         let result = assistant(vec![ContentBlock::ServerToolResult {
             tool_use_id: "srvtoolu_1".to_owned(),
             content: serde_json::json!({"type": "web_search_result"}),
+            extras: serde_json::Map::new(),
         }]);
 
         let units = render_units(&[call, result]);
@@ -2594,11 +2645,13 @@ mod tests {
         let arrived = user(vec![ContentBlock::Text {
             text: "[Message id=m-1 from agent 'companies' (org 'Busytools')]\n\nis the cron issue filed?"
                 .to_owned(),
+            extras: serde_json::Map::new(),
         }]);
         let sent = assistant(vec![ContentBlock::ToolUse {
             id: "toolu_ask".to_owned(),
             name: "mcp__forge__agents__send_message".to_owned(),
             input: serde_json::json!({"project": "forge", "message": "did it land?"}),
+            extras: serde_json::Map::new(),
         }]);
 
         let inbound = render_units(&[arrived]);
@@ -2806,16 +2859,21 @@ mod turn_report_tests {
                 id: "msg_01".to_owned(),
                 role: "assistant".to_owned(),
                 model: "claude-opus-5".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
                 stop_reason: Some(stop),
                 stop_sequence: None,
                 usage,
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: Some(at.to_owned()),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2823,7 +2881,11 @@ mod turn_report_tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: "session".to_owned(),
             parent_tool_use_id: None,
@@ -2831,6 +2893,7 @@ mod turn_report_tests {
             tool_use_result: None,
             timestamp: Some(at.to_owned()),
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2858,6 +2921,7 @@ mod turn_report_tests {
             id: id.to_owned(),
             name: "Read".to_owned(),
             input: serde_json::json!({"file_path": "/tmp/a.rs"}),
+            extras: serde_json::Map::new(),
         }];
         Message::Assistant {
             message,
@@ -2866,6 +2930,7 @@ mod turn_report_tests {
             error,
             uuid,
             timestamp: Some(at.to_owned()),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2905,6 +2970,7 @@ mod turn_report_tests {
             usage: None,
             result: None,
             structured_output: None,
+            extras: serde_json::Map::new(),
             model_usage: None,
             permission_denials: None,
             errors: None,
@@ -3137,7 +3203,11 @@ mod turn_report_tests {
             Message::User {
                 message: UserEnvelope {
                     role: "user".to_owned(),
-                    content: vec![ContentBlock::Text { text: "no clocks here".to_owned() }],
+                    content: vec![ContentBlock::Text {
+                        text: "no clocks here".to_owned(),
+                        extras: serde_json::Map::new(),
+                    }],
+                    extras: serde_json::Map::new(),
                 },
                 session_id: "session".to_owned(),
                 parent_tool_use_id: None,
@@ -3145,22 +3215,28 @@ mod turn_report_tests {
                 tool_use_result: None,
                 timestamp: None,
                 synthetic: false,
+                extras: serde_json::Map::new(),
             },
             Message::Assistant {
                 message: AssistantEnvelope {
                     id: "msg_01".to_owned(),
                     role: "assistant".to_owned(),
                     model: "claude-opus-5".to_owned(),
-                    content: vec![ContentBlock::Text { text: "nor here".to_owned() }],
+                    content: vec![ContentBlock::Text {
+                        text: "nor here".to_owned(),
+                        extras: serde_json::Map::new(),
+                    }],
                     stop_reason: Some(StopReason::EndTurn),
                     stop_sequence: None,
                     usage: None,
+                    extras: serde_json::Map::new(),
                 },
                 session_id: "session".to_owned(),
                 parent_tool_use_id: None,
                 error: None,
                 uuid: None,
                 timestamp: None,
+                extras: serde_json::Map::new(),
             },
         ];
         let units = render_units(&messages);
@@ -3183,10 +3259,16 @@ mod turn_report_tests {
             output_tokens: 999,
             cache_read_input_tokens: 1_000,
             cache_creation_input_tokens: 200,
+            extras: serde_json::Map::new(),
         };
         let messages = [
             user_at("count it", "2026-04-22T04:15:27.000Z"),
-            assistant_at("part one", "2026-04-22T04:15:31.000Z", StopReason::ToolUse, Some(usage)),
+            assistant_at(
+                "part one",
+                "2026-04-22T04:15:31.000Z",
+                StopReason::ToolUse,
+                Some(usage.clone()),
+            ),
             assistant_at("part two", "2026-04-22T04:15:33.000Z", StopReason::EndTurn, Some(usage)),
         ];
         let units = render_units(&messages);

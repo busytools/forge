@@ -23,6 +23,7 @@ import {
 } from './protocol';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
+import { settingsFrom } from './wire/types';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
@@ -115,6 +116,15 @@ export interface Connection {
    * coming.
    */
   devices(): boolean;
+  /**
+   * Send one binary frame: dictation audio, and nothing else the socket
+   * carries.
+   *
+   * Answers whether it went. `false` means the socket is not open, and the
+   * take holding that frame keeps it rather than losing it - which is what
+   * the ring is for.
+   */
+  frame(bytes: Uint8Array): boolean;
   /** Every message the server sent, unparsed by anything here. Answers a function that stops listening. */
   onMessage(fn: (message: ServerMessage) => void): () => void;
   /**
@@ -280,7 +290,7 @@ export function connect(url: string): Connection {
   function handle(message: ServerMessage): void {
     switch (message.kind) {
       case 'greeting':
-        settings = message.settings;
+        settings = settingsFrom(message.settings);
         // Checked on every greeting rather than only the first: a page left
         // open across a forge upgrade reconnects to a protocol it cannot
         // read, and drawing against it silently is what this arm exists to
@@ -508,6 +518,18 @@ export function connect(url: string): Connection {
     devices() {
       if (!isOpen()) return false;
       sendNow({ kind: 'devices' });
+      return true;
+    },
+    frame(bytes) {
+      if (!isOpen()) return false;
+      try {
+        // `send` takes an ArrayBufferView over an ArrayBuffer; the encoder's
+        // own view is one, and TS cannot see that through the default.
+        socket?.send(bytes as Uint8Array<ArrayBuffer>);
+      } catch (why) {
+        report('a dictation frame could not be sent', why);
+        return false;
+      }
       return true;
     },
     onMessage(fn) {

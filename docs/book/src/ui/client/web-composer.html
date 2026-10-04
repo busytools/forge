@@ -410,9 +410,10 @@ heading, and a query drops the headings and leaves the order.</p>
 
 <h2>Dictation</h2>
 <p class="note">The TUI draws a 26-cell character meter and a dB figure. The web can do the
-same job honestly with a level bar that has real resolution, and can show the settled words
-landing as they arrive rather than only counting them. The row still lives inside the box,
-grows it by one line, and collapses when the take resolves.</p>
+same job honestly with a level bar that has real resolution. The row still lives inside the
+box, grows it by one line, and collapses when the take resolves, and the settled count is the
+terminal's own string &#8212; shown in the recording phase too, where the terminal has always
+had it.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
@@ -423,13 +424,14 @@ grows it by one line, and collapses when the take resolves.</p>
             <span class="db">-18 dB</span>
             <span class="wave">
             </span>
-            <span class="lbl">listening</span>
+            <span class="lbl">listening &#183; 2 ready</span>
             <span class="esc">esc cancel</span></div>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0">The settled segments are the words already
-      transcribed while you are still speaking &#8212; shown here rather than only counted.</p>
+      <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
+      is still running: the segments already transcribed, with no total, because a live take
+      cannot know how many it will produce.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>
@@ -492,7 +494,7 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
         </div>
         <div class="pop">
           <div class="hd"><span class="t">Dictation</span><span class="k"><b>&#8984; right</b> to talk</span></div>
-          <div class="scope">axes this session &#183; device until restart</div>
+          <div class="scope">axes this session &#183; input on this machine</div>
           <div class="ax">
             <div class="lbl">VOICE <span class="src">&#183; this session</span></div>
             <div class="chips">
@@ -518,7 +520,7 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="ax">
             <div class="lbl">INPUT DEVICE</div>
             <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
-            <div class="note">from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's own device comes back</div>
+            <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
           </div>
           <div class="ft"><span class="rst">Reset all to defaults</span></div>
         </div>
@@ -527,16 +529,15 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
       as coloured</b>, so the state is not carried by hue alone.</p>
     </div>
     <div class="col">
-      <p class="note" style="margin-top:0"><b>Two rows are stated rather than offered, because
-      nothing in the core can set them.</b> The mode and the input device are both configured in
-      <span class="mono">forge.toml</span> and both live outside this page - the device's pick rides
-      the home snapshot, and the mode has no command at all - so each says where it comes from and
-      neither offers a click nothing could honour. The terminal's own overlay keeps the mode in the
-      config too, so this is its shape rather than a compromise.</p>
-      <p class="note"><b>The device row is the one that has to say when it goes back</b>: a pick
-      moves the process's input for the rest of the run, so the row says it reverts on restart and
-      that the config's own device comes back - which is what happens rather than merely that it is
-      temporary.</p>
+      <p class="note" style="margin-top:0"><b>One row is stated rather than offered, because nothing
+      in the core can set it.</b> The mode is configured in <span class="mono">forge.toml</span> and
+      has no command at all, so it says where it comes from rather than offering a click nothing
+      could honour. The terminal's own overlay keeps the mode in the config too, so this is its shape
+      rather than a compromise.</p>
+      <p class="note"><b>The axes and the input are this page's own.</b> A client that captures
+      records from its own machine, so it lists its own inputs rather than asking the server for its.
+      Both are remembered per seat on this machine, and the values the reset row returns to are the
+      ones <span class="mono">forge.toml</span> set, which reach the client in the greeting.</p>
     </div>
   </div>
   <div class="row">
@@ -547,28 +548,26 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="lbl">INPUT DEVICE</div>
           <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
           <div class="list">
-            <div class="note bad">no permission to the microphone</div>
+            <div class="note bad">the inputs could not be listed &#183; try again</div>
           </div>
-          <div class="note">from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's own device comes back</div>
+          <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0"><b>The refusal is drawn where the list would have
-      been</b>, which is the socket's own contract for that message: an empty region would read as
-      a walk that found nothing.</p>
+      been</b>: an empty region would read as a walk that found nothing.</p>
     </div>
     <div class="col">
-      <div class="lab">a pin the walk could not find</div>
+      <div class="lab">an input that is not there any more</div>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
-          <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present &#183; pinned in forge.toml</span><span class="chev">&#9656;</span></div>
-          <div class="note">from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's own device comes back</div>
+          <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present</span><span class="chev">&#9656;</span></div>
+          <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0"><b>A pin that is absent is named and marked</b> rather
-      than drawn as an input that is there. A pick that is gone reads <b>not present</b> without
-      the pin's words, which is the terminal's own distinction between the reader's choice and the
-      config's.</p>
+      <p class="note" style="margin:8px 0 0"><b>An input that is absent is named and marked</b>
+      rather than drawn as one that is there: a device can be unplugged between takes, and the row
+      says so before the next take fails to open.</p>
     </div>
   </div>
 </div>

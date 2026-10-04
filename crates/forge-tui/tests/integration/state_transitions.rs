@@ -29,6 +29,7 @@ async fn full_turn_lifecycle_text_only() {
         assistant_message(vec![forge_primitives::ContentBlock::Thinking {
             thinking: "Planning...".to_owned(),
             signature: String::new(),
+            extras: serde_json::Map::new(),
         }]),
     );
     assert!(matches!(app.status, AppStatus::Thinking));

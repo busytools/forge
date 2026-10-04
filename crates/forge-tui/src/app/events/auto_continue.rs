@@ -443,7 +443,8 @@ mod tests {
         let forge_primitives::Message::User { message, .. } = frame else {
             panic!("the frame is the user turn the model received, got {frame:?}")
         };
-        let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+        let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first()
+        else {
             panic!("the turn carries the continuation prompt: {message:?}")
         };
         assert!(

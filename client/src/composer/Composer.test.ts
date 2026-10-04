@@ -3,12 +3,57 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * A microphone that opens without an audio stack.
+ *
+ * jsdom has no `getUserMedia`, and these cases are about the key, the
+ * dispatch and the record rather than the audio: what the microphone DOES
+ * with the frames is `capture.test.ts`'s and `take.test.ts`'s, and what it
+ * costs to open one is nobody's here.
+ */
+const mic = vi.hoisted(() => {
+  const held: {
+    onFrame: ((bytes: Uint8Array) => void) | null;
+    stops: number;
+    gated: boolean;
+    release: (() => void) | null;
+  } = { onFrame: null, stops: 0, gated: false, release: null };
+  const source = {
+    get onFrame(): ((bytes: Uint8Array) => void) | null {
+      return held.onFrame;
+    },
+    set onFrame(fn: ((bytes: Uint8Array) => void) | null) {
+      held.onFrame = fn;
+    },
+    flush: (): Uint8Array | null => null,
+    stop: (): void => {
+      held.stops += 1;
+    },
+  };
+  return {
+    held,
+    /** Open at once, or wait for `held.release()` while gated. */
+    open: (): Promise<unknown> =>
+      held.gated
+        ? new Promise((resolve) => {
+            held.release = () => resolve(source);
+          })
+        : Promise.resolve(source),
+  };
+});
+
+vi.mock('./mic', () => ({
+  Microphone: { open: mic.open },
+  // A walk a case drives: `mockResolvedValueOnce`/`mockRejectedValueOnce`.
+  inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
+  inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+}));
+
 import Harness from './Harness.svelte';
 import { echoes, type Echo } from '../chat/echoes.svelte';
 import { boxKey } from './box.svelte';
-import sessionFixture from '../dev/fixtures/session.json';
-import type { ServerMessage } from '../protocol';
-import { sessionFrom } from '../session/wire';
+import { subjectKey, type ServerMessage } from '../protocol';
+import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 import {
   permissionAsk,
   questionAsk,
@@ -20,7 +65,9 @@ import {
   wire,
   type Wire,
 } from './testing';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
+import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
+import { inputs } from './mic';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
 
 /** Everything the page is drawing, as a reader reads it. */
@@ -872,7 +919,19 @@ describe('the key', () => {
     flushSync();
   }
 
-  it('brings the keyboard to the box before the take starts', () => {
+  /**
+   * Let a take's start settle.
+   *
+   * Opening the microphone is a promise - the browser's permission round
+   * trip - and the command goes once it resolves, so a test that read the
+   * wire on the same tick would see a take that had not started.
+   */
+  async function opened(): Promise<void> {
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    flushSync();
+  }
+
+  it('brings the keyboard to the box before the take starts', async () => {
     const harness = open({ dictation: true });
     harness.page.record = bound('right_cmd', 'auto');
     flushSync();
@@ -887,10 +946,11 @@ describe('the key', () => {
 
     key('ControlRight', 'keydown');
     expect(document.activeElement, 'the start brings the keyboard to the box').toBe(field());
+    await opened();
     expect(harness.sent, 'and only then starts listening').toHaveLength(1);
   });
 
-  it('starts a take on the bound key, and transcribes it when the key is held', () => {
+  it('starts a take on the bound key, and transcribes it when the key is held', async () => {
     vi.useFakeTimers();
     try {
       const harness = open({ dictation: true });
@@ -898,10 +958,14 @@ describe('the key', () => {
       flushSync();
 
       key('ControlRight', 'keydown');
+      await opened();
       expect(harness.sent, 'the key is how a take begins').toEqual([
         {
           command: {
-            dictate_start: { key: { org: 'Busytools', project: 'forge', label: 'lead' } },
+            dictate_stream: {
+              key: { org: 'Busytools', project: 'forge', label: 'lead' },
+              options: { styling: 'semi_formal', structure: 'prose', context: 'general' },
+            },
           },
         },
       ]);
@@ -916,15 +980,88 @@ describe('the key', () => {
     }
   });
 
-  it('takes the binding off the record rather than assuming one', () => {
+  /**
+   * A gesture that lands while the microphone is still opening must END the
+   * take it belongs to.
+   *
+   * The permission prompt is the everyday case for a first take in an
+   * origin, and it is seconds long: a release dropped during it records past
+   * the reader's hand until the next press stops it, which is the one gesture
+   * this path had no cover for.
+   */
+  it('holds a release that lands while the microphone is opening', async () => {
+    mic.held.gated = true;
+    mic.held.stops = 0;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'hold');
+      flushSync();
+
+      key('ControlRight', 'keydown'); // the open begins and waits
+      await Promise.resolve();
+      key('ControlRight', 'keyup'); // the reader lets go during the prompt
+      mic.held.release?.(); // the permission lands
+      await opened();
+
+      expect(mic.held.stops, 'the take must let go of the microphone at once').toBe(1);
+      expect(
+        mic.held.onFrame,
+        'and unhook the frames: audio posted after the release must go nowhere',
+      ).toBeNull();
+      expect(harness.sent.at(-1)?.command, 'the take is submitted, not left open').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
+  /**
+   * Escape inside the open window is the TAKE's, not the page's: a reader
+   * cannot see the difference between a take that is opening and one that is
+   * live, so the key has to consume there too - and the take it cancels must
+   * never record a sample.
+   */
+  it('consumes Escape inside the open window', async () => {
+    mic.held.gated = true;
+    mic.held.stops = 0;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'hold');
+      flushSync();
+
+      key('ControlRight', 'keydown'); // the open begins and waits
+      await Promise.resolve();
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      mic.held.release?.(); // the permission lands
+      await opened();
+
+      expect(harness.sent.at(-1)?.command, 'the take is cancelled, not left open').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+      });
+      expect(mic.held.stops, 'and the microphone goes with it').toBe(1);
+      expect(mic.held.onFrame, 'nothing records for a take the reader cancelled').toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
+  it('takes the binding off the record rather than assuming one', async () => {
     const harness = open({ dictation: true });
     harness.page.record = bound('left_cmd', 'auto');
     flushSync();
 
     key('ControlRight', 'keydown');
+    await opened();
     expect(harness.sent, 'the key the config did not name is not the trigger').toEqual([]);
 
     key('ControlLeft', 'keydown');
+    await opened();
     expect(harness.sent, 'the configured key is').toHaveLength(1);
   });
 
@@ -958,12 +1095,13 @@ describe('the key', () => {
     ]);
   });
 
-  it('leaves a chord alone: the take its press began is abandoned, not transcribed', () => {
+  it('leaves a chord alone: the take its press began is abandoned, not transcribed', async () => {
     const harness = open({ dictation: true });
     harness.page.record = bound('right_cmd', 'auto');
     flushSync();
 
     key('ControlRight', 'keydown');
+    await opened();
     // Another key while the modifier is down is a chord, not a dictation.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', ctrlKey: true }));
     flushSync();
@@ -1017,7 +1155,7 @@ describe('the key', () => {
    * and not a shortcut - and the client marking one would DISCARD the take its
    * press began, losing the reader's words to a key they brushed.
    */
-  it('leaves a stray modifier alone rather than chording the take', () => {
+  it('leaves a stray modifier alone rather than chording the take', async () => {
     vi.useFakeTimers();
     try {
       const harness = open({ dictation: true });
@@ -1025,6 +1163,7 @@ describe('the key', () => {
       flushSync();
 
       key('ControlRight', 'keydown');
+      await opened();
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', code: 'ShiftLeft' }));
       flushSync();
       vi.advanceTimersByTime(500);
@@ -3237,6 +3376,33 @@ describe('two clients on one seat', () => {
  * axes and the hint ARE; this pins what the panel DOES with them.
  */
 describe('the dictation panel', () => {
+  /**
+   * The axes and the input are the CLIENT's since capture moved here, so these
+   * cases drive them through the storage a reload would read and through the
+   * browser's own input list - never through the record, which carries the
+   * terminal's set and nothing this page obeys.
+   */
+  const SEAT = subjectKey({ session: SLOT });
+
+  /** What a previous session left for this seat, which the panel reads back. */
+  function remember(axes: DictateAxes, device: string | null = null): void {
+    rememberAxes(SEAT, axes);
+    rememberDevice(SEAT, device);
+  }
+
+  afterEach(() => {
+    // jsdom's storage outlives a test, and a stored axis would move the next
+    // one's chips.
+    rememberAxes(SEAT, null);
+    rememberDevice(SEAT, null);
+  });
+
+  /** Let a walk of the inputs settle, which is a promise like the open. */
+  async function settled(): Promise<void> {
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    flushSync();
+  }
+
   /** The panel, opened by the mic, which is the only way in. */
   function opened(over: Partial<ComposerProps> = {}, on?: Wire) {
     const harness = open({ dictation: true, ...over }, on);
@@ -3270,67 +3436,65 @@ describe('the dictation panel', () => {
     });
   }
 
-  it('draws the in-force value on every axis, from the record rather than a default', () => {
-    opened({
-      record: record({
-        dictate_overrides: { styling: 'casual', structure: 'lists', context: null },
-      }),
-    });
+  it('draws the value in force from what this client holds', () => {
+    opened();
+    expect(
+      chips()
+        .filter((chip) => chip.on)
+        .map((chip) => chip.label),
+      'with nothing stored the crate defaults stand, which is what the panel draws as unset',
+    ).toEqual(['semi-formal', 'prose', 'plain text']);
 
-    const on = chips().filter((chip) => chip.on);
-    expect(on.map((chip) => `${chip.label}`)).toEqual([
-      'casual',
-      'may bullet a list',
-      'plain text',
-    ]);
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    remember({ ...DEFAULT_AXES, styling: 'casual', structure: 'lists' });
+    opened();
+    expect(
+      chips()
+        .filter((chip) => chip.on)
+        .map((chip) => chip.label),
+      'and a seat this client set is what it comes back to',
+    ).toEqual(['casual', 'may bullet a list', 'plain text']);
   });
 
   /**
-   * **The join the pieces were each tested without.** The cases above hand the
-   * composer a record built by hand and the session's cases stop at the record,
-   * so a parse that read the axes from a path the server never writes left both
-   * halves green while no panel could ever draw a session's own set.
+   * The greeting is where the defaults come from: `[dictate]`'s keys reach the
+   * client beside mark, theme and font, and they are what the panel draws as
+   * the unset state and what the reset row returns to.
    */
-  it('draws the overrides a session record carries off the wire', () => {
-    opened({
-      record: sessionFrom({
-        ...sessionFixture,
-        // The fixture arrives parked on a prompt, which draws the dock rather
-        // than the box this panel hangs off.
-        pending_ask: null,
-        state: {
-          ...sessionFixture.state,
-          dictate_overrides: { styling: 'formal', structure: 'lists', context: null },
-        },
-      }),
-    });
+  it('draws the config defaults the greeting carried', () => {
+    opened({}, wire({ ...DEFAULT_SETTINGS, dictate: { ...DEFAULT_AXES, styling: 'formal' } }));
 
-    const on = chips().filter((chip) => chip.on);
     expect(
-      on.map((chip) => chip.label),
-      'the record reported a set the panel did not draw',
-    ).toEqual(['formal', 'may bullet a list', 'plain text']);
+      chips()
+        .filter((chip) => chip.on)
+        .map((chip) => chip.label),
+    ).toEqual(['formal', 'prose', 'plain text']);
+    expect(
+      [...document.querySelectorAll('.pop .lbl .src')].filter(
+        (held) => held.textContent?.includes('this session') === true,
+      ),
+      'a value the config set is not a value this session moved',
+    ).toHaveLength(0);
   });
 
-  it('marks an axis the session set, and only that one', () => {
-    opened({
-      record: record({
-        dictate_overrides: { styling: 'formal', structure: null, context: null },
-      }),
-    });
+  it('marks an axis this client moved off the config value, and only that one', () => {
+    remember({ ...DEFAULT_AXES, styling: 'formal' });
+    opened();
 
-    // The mode and the device carry a source tag of their own - they come from
-    // the config rather than from this session - so the tag is read by its
-    // words rather than by the class alone.
+    // The mode and the input carry a source tag of their own - they come from
+    // elsewhere than the axes - so the tag is read by its words rather than by
+    // the class alone.
     const marked = [...document.querySelectorAll('.pop .lbl .src')]
       .filter((held) => held.textContent?.includes('this session') === true)
       .map((held) => words(held.parentElement));
-    expect(marked, 'the source tag names the axes this session moved').toEqual([
+    expect(marked, 'the source tag names the axis this client moved').toEqual([
       'VOICE · this session',
     ]);
   });
 
-  it('asks the core for one axis when a chip is clicked', () => {
+  it('sets one axis when a chip is clicked, and remembers it here', () => {
     const harness = opened();
 
     const chip = [...document.querySelectorAll('.pop .chip')].find(
@@ -3340,16 +3504,16 @@ describe('the dictation panel', () => {
     chip.click();
     flushSync();
 
-    expect(harness.sent, 'one chip, one axis, in the core own vocabulary').toEqual([
-      {
-        command: {
-          set_dictate_override: {
-            key: { org: 'Busytools', project: 'forge', label: 'lead' },
-            update: { styling: 'casual' },
-          },
-        },
-      },
-    ]);
+    expect(
+      chips()
+        .filter((held) => held.on)
+        .map((held) => held.label),
+      'the chip is in force at once',
+    ).toContain('casual');
+    expect(axesFor(SEAT, DEFAULT_AXES).styling, 'and stored, so a reload comes back to it').toBe(
+      'casual',
+    );
+    expect(harness.sent, "an axis is this client's: nothing crosses the socket for it").toEqual([]);
   });
 
   it('states the mode rather than offering it, because nothing can set it', () => {
@@ -3373,33 +3537,22 @@ describe('the dictation panel', () => {
     expect(mode.textContent, 'and where it comes from').toContain('forge.toml');
   });
 
-  it('asks for the devices once, and picks one by its id', () => {
-    const shared = wire();
-    const harness = opened({ device: { device: 'mic-2' } }, shared);
-    expect(document.querySelector('.pop .dev')?.textContent, 'the pick the home carries').toContain(
-      'mic-2',
+  it('asks this machine for its inputs once, and picks one by its id', async () => {
+    const walk = vi.mocked(inputs);
+    walk.mockResolvedValueOnce([
+      { id: 'mic-2', label: 'Shure SM7B' },
+      { id: 'mic-9', label: 'MacBook Pro Microphone' },
+    ]);
+    const harness = opened();
+    expect(document.querySelector('.pop .dev')?.textContent, 'nothing is picked yet').toContain(
+      'System default',
     );
 
     const door = document.querySelector('.pop .dev');
     if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
     door.click();
-    flushSync();
-    expect(shared.asked, 'one ask for one walk').toBe(1);
-
-    harness.say({
-      kind: 'devices',
-      devices: [
-        { id: 'mic-2', name: 'Shure SM7B', is_default: false },
-        { id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true },
-      ],
-      configured: 'mic-2',
-    });
-    flushSync();
-
-    expect(
-      document.querySelector('.pop .dev')?.textContent,
-      'the row names the device the walk found',
-    ).toContain('Shure SM7B');
+    await settled();
+    expect(walk, "one walk, which is the browser's own list").toHaveBeenCalledTimes(1);
 
     const row = [...document.querySelectorAll('.pop .row')].find((held) =>
       held.textContent?.includes('MacBook Pro Microphone'),
@@ -3408,30 +3561,41 @@ describe('the dictation panel', () => {
     row.click();
     flushSync();
 
-    expect(harness.sent.at(-1)?.command, 'a pick names the id, which is the identity').toEqual({
-      set_dictate_device: {
-        key: { org: 'Busytools', project: 'forge', label: 'lead' },
-        pick: { device: 'mic-9' },
-      },
-    });
+    expect(
+      document.querySelector('.pop .dev')?.textContent,
+      'the row names the input this seat records from',
+    ).toContain('MacBook Pro Microphone');
+    expect(deviceFor(SEAT), 'and the pick is remembered by its id, which is the identity').toBe(
+      'mic-9',
+    );
+    expect(harness.sent, "the input is this machine's: nothing crosses the socket for it").toEqual(
+      [],
+    );
   });
 
-  it('resets every axis at once', () => {
+  it('resets every axis and the input back to what the config set', () => {
+    remember({ ...DEFAULT_AXES, styling: 'formal', context: 'email' }, 'mic-9');
     const harness = opened();
+    expect(
+      chips()
+        .filter((chip) => chip.on)
+        .map((chip) => chip.label),
+      'the panel opens on what this client holds',
+    ).toEqual(['formal', 'prose', 'email layout']);
+
     const reset = document.querySelector('.pop .rst');
     if (!(reset instanceof HTMLElement)) throw new Error('the panel drew no reset');
     reset.click();
     flushSync();
 
-    expect(harness.sent).toEqual([
-      {
-        command: {
-          reset_dictate_overrides: {
-            key: { org: 'Busytools', project: 'forge', label: 'lead' },
-          },
-        },
-      },
-    ]);
+    expect(
+      chips()
+        .filter((chip) => chip.on)
+        .map((chip) => chip.label),
+      'the reset returns to the config defaults',
+    ).toEqual(['semi-formal', 'prose', 'plain text']);
+    expect(deviceFor(SEAT), 'and the input pick goes with them').toBeNull();
+    expect(harness.sent, 'nothing crosses the socket for a reset either').toEqual([]);
   });
 
   it('advertises the bound key, and nothing when the binding is off', () => {
@@ -3473,21 +3637,18 @@ describe('the dictation panel', () => {
    * failed walk must not draw the same. This is the composer's own pattern for
    * a refused dispatch, one file over.
    */
-  it('draws a failed walk in the list region rather than as an empty list', () => {
-    const shared = wire();
-    const harness = opened({}, shared);
+  it('draws a failed walk in the list region rather than as an empty list', async () => {
+    vi.mocked(inputs).mockRejectedValueOnce(new Error('nope'));
+    opened();
 
     const door = document.querySelector('.pop .dev');
     if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
     door.click();
-    flushSync();
-
-    harness.say({ kind: 'error', what: 'devices', why: 'no permission to the microphone' });
-    flushSync();
+    await settled();
 
     const region = document.querySelector('.pop .list');
     expect(region?.textContent, 'the refusal is drawn where the list would be').toContain(
-      'no permission to the microphone',
+      'the inputs could not be listed',
     );
     expect(
       region?.textContent,
@@ -3495,75 +3656,47 @@ describe('the dictation panel', () => {
     ).not.toContain('No input devices found');
   });
 
-  it('asks once however many times the row is clicked, and closes on the next', () => {
-    const shared = wire();
-    opened({}, shared);
+  it('walks once however many times the row is clicked, and closes on the next', async () => {
+    const walk = vi.mocked(inputs);
+    walk.mockResolvedValue([{ id: 'mic-9', label: 'MacBook Pro Microphone' }]);
+    opened();
     const door = document.querySelector('.pop .dev');
     if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
 
-    // Three clicks before any answer: each ask opens the microphone stack, so
-    // only the first may leave the panel.
-    door.click();
-    flushSync();
+    // Three clicks before any answer: the walk asks the browser for its
+    // devices, so only the first may leave the panel.
     door.click();
     door.click();
-    flushSync();
-    expect(shared.asked, 'the walk is the expensive part, so it is asked for once').toBe(1);
-
-    shared.say({
-      kind: 'devices',
-      devices: [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }],
-      configured: null,
-    });
-    flushSync();
+    door.click();
+    await settled();
+    expect(walk, 'the walk is the expensive part, so it is asked for once').toHaveBeenCalledTimes(
+      1,
+    );
 
     const again = document.querySelector('.pop .dev');
     if (!(again instanceof HTMLElement)) throw new Error('the row went with the list');
     again.click();
     flushSync();
     expect(document.querySelector('.pop .list'), 'a click collapses it again').toBeNull();
-    expect(shared.asked, 'and collapsing asks for nothing').toBe(1);
+
+    again.click();
+    await settled();
+    expect(walk, 'and reopening asks for nothing a second time').toHaveBeenCalledTimes(1);
   });
 
-  it('marks an absent input, and words a pin differently from a pick', () => {
-    const devices = [{ id: 'mic-9', name: 'MacBook Pro Microphone', is_default: true }];
+  it('marks an input that is not there any more', async () => {
+    remember(DEFAULT_AXES, 'walked-off-2');
+    vi.mocked(inputs).mockResolvedValueOnce([{ id: 'mic-9', label: 'MacBook Pro Microphone' }]);
+    opened();
 
-    const pinned = wire();
-    opened({}, pinned);
     const door = document.querySelector('.pop .dev');
     if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
     door.click();
-    flushSync();
-    pinned.say({ kind: 'devices', devices, configured: 'unplugged-1' });
-    flushSync();
+    await settled();
 
     const row = document.querySelector('.pop .dev');
-    expect(row?.textContent, 'the absent pin says where it came from').toContain(
-      'not present · pinned in forge.toml',
-    );
+    expect(row?.textContent, 'the absent input is named as absent').toContain('not present');
     expect(row?.classList.contains('missing'), 'and it is marked, not only worded').toBe(true);
-
-    // A pick that is gone is the reader's own, and the terminal words it
-    // without the pin's words: the two absences are not the same absence.
-    void unmount(app as Record<string, unknown>);
-    app = null;
-    document.body.innerHTML = '';
-    const picked = wire();
-    opened({ device: { device: 'walked-off-2' } }, picked);
-    const second = document.querySelector('.pop .dev');
-    if (!(second instanceof HTMLElement)) throw new Error('the panel drew no device row');
-    second.click();
-    flushSync();
-    picked.say({ kind: 'devices', devices, configured: 'mic-9' });
-    flushSync();
-
-    const pickedRow = document.querySelector('.pop .dev');
-    expect(pickedRow?.textContent, 'the absent pick is named without the pin words').toContain(
-      'not present',
-    );
-    expect(pickedRow?.textContent, 'and does not claim the config set it').not.toContain(
-      'pinned in forge.toml',
-    );
   });
 
   /**

@@ -15,7 +15,11 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    // The microphone worklet is plain JavaScript on purpose - the browser
+    // fetches it as it stands, with no bundler in front of it - and the
+    // project service has to see it for the linter to.
+    "allowJs": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "vite.config.ts"]
 }

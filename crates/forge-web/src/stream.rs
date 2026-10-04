@@ -313,8 +313,10 @@ fn message_id(msg: &Message) -> Option<&str> {
         | Message::PermissionDenied { uuid, .. }
         | Message::CompactBoundary { uuid, .. }
         | Message::RateLimitEvent { uuid, .. }
-        | Message::Result { uuid: Some(uuid), .. } => Some(uuid),
+        | Message::Result { uuid: Some(uuid), .. }
+        | Message::ToolProgress { uuid: Some(uuid), .. } => Some(uuid),
         Message::Result { uuid: None, .. }
+        | Message::ToolProgress { uuid: None, .. }
         | Message::System { .. }
         | Message::StreamEvent { .. }
         | Message::Error { .. }

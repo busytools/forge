@@ -329,6 +329,179 @@ async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
     );
 }
 
+/// A client-captured take over the socket: the start names the seat, and
+/// the binary frames that follow on that same ordered connection feed the
+/// take it registered - which is the whole reason a frame carries no seat
+/// of its own.
+///
+/// The meter is read back through a snapshot rather than off the update
+/// stream: a level with no signal yet carries a non-finite dB, which serde
+/// writes as `null` and cannot read back into `SessionUpdate` - fine for
+/// the client, which narrows the value itself, and a wall for a Rust
+/// reader of the raw update.
+#[tokio::test]
+async fn a_clients_frames_feed_the_take_it_started() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut socket).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut socket, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    // Half-scale audio, at the wire's own shape.
+    let mut frame = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    socket.send(Message::Binary(frame.into())).await.expect("the frame goes");
+
+    // The meter's window list holds the pushed frame's own peak as a
+    // fraction of the take's range, which only a routed frame produces: a
+    // connection that had forgotten the take it started drops the frame
+    // silently, and every window stays at the floor. Read ANYWHERE in the
+    // list rather than at its end, because the meter keeps appending the
+    // silent windows that follow.
+    let floor = f64::from(forge_dictate::Config::default().silence_floor);
+    let want = (-6.02 - floor) / (0.0 - floor);
+    let mut meter = connect(&url).await;
+    let read = snapshot_until(&mut meter, Subject::Session(lead_seat()), |data| {
+        let take = &data["composer"]["take"];
+        if take["phase"] != "recording" {
+            return false;
+        }
+        let Some(levels) = take["levels"].as_array() else {
+            return false;
+        };
+        levels.iter().filter_map(serde_json::Value::as_f64).any(|level| (level - want).abs() < 0.05)
+    })
+    .await;
+    assert!(
+        read,
+        "the take's meter must hold the pushed frame's own peak (about {want:.2} of its range), \
+         or the frame never reached the take"
+    );
+}
+
+/// A client that drops mid-take leaves nothing behind: what streamed in is
+/// submitted, and the seat is free, so the same client reconnecting and
+/// starting again lands rather than being refused by the take it left.
+///
+/// This is the shape the disconnect path exists for, and it was the shape
+/// that broke: with no close handler the orphan held the seat and answered
+/// the next start with "session ... is already dictating".
+#[tokio::test]
+async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut first).await;
+    send(
+        &mut first,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut first, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    let mut frame = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    first.send(Message::Binary(frame.into())).await.expect("the frame goes");
+
+    // The client vanishes mid-take.
+    drop(first);
+
+    // The server notices, submits what arrived, and frees the seat: the
+    // take leaves the seat's own record.
+    let mut watcher = connect(&url).await;
+    let freed = snapshot_until(&mut watcher, Subject::Session(lead_seat()), |data| {
+        data["composer"]["take"].is_null()
+    })
+    .await;
+    assert!(freed, "the dropped take must be submitted and the seat freed");
+
+    // And the next start lands, which is what the refusal broke.
+    send(
+        &mut watcher,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the next take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+}
+
+/// The axes `forge.toml` set reach a client in the greeting. They are what a
+/// capturing client starts on and resets to, so a default standing in for the
+/// config's value would be invisible everywhere else - and the fixture's
+/// config sets a value that is not the crate's default.
+#[tokio::test]
+async fn the_greeting_carries_the_dictate_axes_the_config_set() {
+    let (url, fleet) = a_server().await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text").to_owned();
+    let ServerMessage::Greeting { settings, .. } =
+        serde_json::from_str(&text).expect("the greeting decodes")
+    else {
+        panic!("the first thing the server says is its greeting, not {text}")
+    };
+
+    assert_eq!(
+        settings.dictate.styling,
+        forge_dictate::normalize::Styling::Formal,
+        "the fixture's config sets styling = formal, and the greeting must carry it"
+    );
+    assert_eq!(
+        settings.dictate,
+        fleet.surface().dictate_axes(),
+        "the greeting's axes are the workspace's own, not a default standing in for them"
+    );
+}
+
 /// One command the core handed a seat's stub, or `None` if it said nothing
 /// inside `ms`.
 ///
@@ -1866,6 +2039,7 @@ fn a_token_append(running: u64, delta: i64) -> SessionUpdate {
             estimated_tokens_delta: delta,
             uuid: format!("tokens-{running}"),
             session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
         },
     }
 }
@@ -2106,7 +2280,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
     let forge_primitives::Message::User { message, .. } = msg else {
         panic!("a delivery draws as the user turn the model's prompt was")
     };
-    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
         panic!("the turn carries the prose the model received")
     };
     assert!(
@@ -2165,7 +2339,7 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
         return None;
     };
     Some(text.clone())

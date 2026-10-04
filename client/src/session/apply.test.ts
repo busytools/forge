@@ -72,6 +72,93 @@ function prompt(text: string, uuid = 'u1'): Record<string, unknown> {
 }
 
 describe('applyUpdate', () => {
+  describe('a parked prompt', () => {
+    /** A round of a question batch: one tool call id, an advancing index. */
+    const asked = (index: number) =>
+      ({
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: {
+            tool_call: { tool_call_id: 'toolu_q' },
+            prompt: { questions: [] },
+            question_index: index,
+            total_questions: 2,
+          },
+        },
+      }) as const;
+
+    it('keeps an ask a resolution does not name by its round', () => {
+      // A batch reuses one tool call id and advances the question index, and
+      // the next round's request can land BEFORE the previous round's
+      // resolution - so a clear keyed on the id alone dropped the ask that
+      // had just parked, and every round after the first lost its opening
+      // question (Ved's live find; #1717). The frame names the round it ends.
+      let held = empty();
+      held = applyUpdate(held, asked(1));
+      expect(held.pending_ask, "the round's ask parks").not.toBeNull();
+
+      held = applyUpdate(held, {
+        pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q', question_index: 0 },
+      });
+      expect(
+        held.pending_ask,
+        'a resolution for an earlier round leaves the parked ask standing',
+      ).not.toBeNull();
+
+      held = applyUpdate(held, {
+        pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q', question_index: 1 },
+      });
+      expect(held.pending_ask, 'and its own round settles it').toBeNull();
+    });
+
+    it.fails('keeps a second parallel ask, which the single slot cannot', () => {
+      // **The real loss, measured by the review's fresh-read axis (forge's
+      // own grilling session, 2026-10-04)**: two AskUserQuestion calls in
+      // ONE assistant message run in PARALLEL with different tool ids. The
+      // record's single slot drops A the moment B parks, resolution(A)
+      // then id-mismatches and is ignored, and A's next round replaces B
+      // before B ever drew. The fix is a queue of asks per seat - its own
+      // piece - and this stays `it.fails` until that PR flips it to `it`.
+      const round = (id: string, index: number) =>
+        ({
+          question_request: {
+            key: SLOT,
+            tool_id: id,
+            request: {
+              tool_call: { tool_call_id: id },
+              prompt: { questions: [] },
+              question_index: index,
+              total_questions: 2,
+            },
+          },
+        }) as const;
+
+      let held = empty();
+      held = applyUpdate(held, round('toolu_a', 0));
+      held = applyUpdate(held, round('toolu_b', 0));
+      held = applyUpdate(held, {
+        pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_a', question_index: 0 },
+      });
+      held = applyUpdate(held, round('toolu_a', 1));
+
+      expect(JSON.stringify(held.pending_ask), "B's ask survives A's next round").toContain(
+        'toolu_b',
+      );
+    });
+
+    it('clears by the tool id alone for a frame that names no round', () => {
+      // An older core sends no round - the field is absent, not null - and
+      // the id is all it can mean there.
+      let held = empty();
+      held = applyUpdate(held, asked(2));
+      held = applyUpdate(held, {
+        pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q' },
+      });
+      expect(held.pending_ask, 'the id still settles it against an older core').toBeNull();
+    });
+  });
+
   describe('the conversation', () => {
     it('appends a chat_appended frame to the turn it belongs to', () => {
       const held = empty();
@@ -688,52 +775,20 @@ describe('applyUpdate', () => {
    * set on an update of its own after every set and reset - so it is folded,
    * the way the terminal's own arm folds it, rather than left to a read.
    */
-  describe('the dictation overrides', () => {
-    it('takes the whole set a dictate_overrides carries', () => {
-      const next = applyUpdate(empty(), {
+  describe('the dictate override echo', () => {
+    it("leaves the record alone: the axes are this client's own now", () => {
+      // The core still echoes `dictate_overrides` for the terminal's own
+      // `/dictate` overlay, and this client holds its axes itself - so the
+      // echo is an update with nothing here to write it to, and the record
+      // stands rather than gaining a field nothing reads.
+      const held = empty();
+      const next = applyUpdate(held, {
         dictate_overrides: {
           key: SLOT,
           overrides: { styling: 'formal', structure: 'lists', context: null },
         },
       });
-
-      expect(next.dictate_overrides, 'the set the update carried never reached the record').toEqual(
-        { styling: 'formal', structure: 'lists', context: null },
-      );
-    });
-
-    it('leaves a held set standing for a payload that carries none', () => {
-      const held = applyUpdate(empty(), {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: 'formal', structure: null, context: null },
-        },
-      });
-
-      const next = applyUpdate(held, { dictate_overrides: { key: SLOT } });
-
-      expect(next, 'a payload naming no set wrote the crate defaults over the held one').toBe(held);
-    });
-
-    it('clears the axes for the reset echo, which carries the set as nulls', () => {
-      const held = applyUpdate(empty(), {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: 'formal', structure: 'lists', context: 'email' },
-        },
-      });
-
-      const next = applyUpdate(held, {
-        dictate_overrides: {
-          key: SLOT,
-          overrides: { styling: null, structure: null, context: null },
-        },
-      });
-
-      expect(
-        next.dictate_overrides,
-        'the reset echo did not clear the axes the session had set',
-      ).toEqual({ styling: null, structure: null, context: null });
+      expect(next, "the override echo must not touch this side's record").toBe(held);
     });
   });
 
