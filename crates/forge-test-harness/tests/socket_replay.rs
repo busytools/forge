@@ -608,6 +608,11 @@ fn frames_record() -> Value {
 fn dictate_frame_record() -> Value {
     use forge_server::transport::frame::{self, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 
+    // The fixture: one of each interesting sample, little-endian i16 on the
+    // wire. A big-endian read of these bytes, or a /32767 scale, moves the
+    // decoded samples and fails the assertion below.
+    const FIXTURE: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
+
     // Every codec, one list expanded twice: the `match` has no wildcard
     // arm, so a codec added or removed is a compile error here before it is
     // a failing record.
@@ -621,10 +626,6 @@ fn dictate_frame_record() -> Value {
         })
         .collect();
 
-    // The fixture: one of each interesting sample, little-endian i16 on the
-    // wire. A big-endian read of these bytes, or a /32767 scale, moves the
-    // decoded samples and fails the assertion below.
-    const FIXTURE: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
     let mut bytes = vec![frame::Codec::PcmI16.tag()];
     for sample in FIXTURE {
         bytes.extend_from_slice(&sample.to_le_bytes());
@@ -637,14 +638,17 @@ fn dictate_frame_record() -> Value {
         "the recorded fixture's bytes must decode to the samples they carry"
     );
 
+    let hex = bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
+
     json!({
         "header_bytes": HEADER_BYTES,
         "max_payload_bytes": MAX_PAYLOAD_BYTES,
         "codecs": codecs,
-        "fixture": {
-            "hex": bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "samples": expected,
-        },
+        "fixture": { "hex": hex, "samples": expected },
     })
 }
 
