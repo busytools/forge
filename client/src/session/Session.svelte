@@ -11,6 +11,7 @@
   import CopyButton from './CopyButton.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
+  import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import SessionId from './SessionId.svelte';
   import Queue from '../chat/Queue.svelte';
   import { watchSession, type SessionRead } from './live';
@@ -172,6 +173,36 @@
   const leftShown = $derived(leftChosen ?? !narrow);
   const rightShown = $derived(rightChosen ?? !inspectorNarrow);
 
+  /**
+   * A covering rail opens onto history, so Back closes what it opened; a rail
+   * shown as a column takes no entry. The push and the pop's meaning are
+   * `rail-history.ts`'s, so a click is not what they rest on.
+   */
+  function openRail(side: RailSide) {
+    if (side === 'left' ? narrow : inspectorNarrow) {
+      history.pushState(railEntry(history.state, side), '', location.href);
+    }
+    if (side === 'left') leftChosen = true;
+    else rightChosen = true;
+  }
+
+  function closeRail(side: RailSide) {
+    if (railOnTop(history.state) === side) history.back();
+    else if (side === 'left') leftChosen = false;
+    else rightChosen = false;
+  }
+
+  $effect(() => {
+    const restore = () => {
+      const chosen = chosenAfterPop(history.state, narrow);
+      if (chosen === null) return;
+      leftChosen = chosen.left;
+      rightChosen = chosen.right;
+    };
+    addEventListener('popstate', restore);
+    return () => removeEventListener('popstate', restore);
+  });
+
   // One clock for the page: every age and every countdown reads against the
   // same now, so two rows a second apart cannot draw the same age differently.
   // Age is a function of time rather than of data, so a re-read needs an
@@ -201,7 +232,7 @@
   class:right-shown={rightShown}
   class:right-hidden={!rightShown}
 >
-  <Rail home={wire} current={slot} {now} {connection} onclose={() => (leftChosen = false)} />
+  <Rail home={wire} current={slot} {now} {connection} onclose={() => closeRail('left')} />
 
   <main class="chat">
     <div class="sess">
@@ -222,7 +253,7 @@
         title="projects"
         aria-label="projects"
         aria-expanded={leftShown}
-        onclick={() => (leftChosen = !leftShown)}
+        onclick={() => (leftShown ? closeRail('left') : openRail('left'))}
       >
         <svg
           viewBox="0 0 24 24"
@@ -238,7 +269,7 @@
         title="inspector"
         aria-label="inspector"
         aria-expanded={rightShown}
-        onclick={() => (rightChosen = !rightShown)}
+        onclick={() => (rightShown ? closeRail('right') : openRail('right'))}
       >
         <svg
           viewBox="0 0 24 24"
@@ -349,7 +380,7 @@
     {/if}
   </main>
 
-  <Inspector {wire} {record} {slot} {now} onclose={() => (rightChosen = false)} />
+  <Inspector {wire} {record} {slot} {now} onclose={() => closeRail('right')} />
 
   {#if composer !== null && record !== null}
     <div class="composer">
