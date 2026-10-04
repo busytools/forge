@@ -417,8 +417,9 @@ async fn handle_client(
                     ServerMessage::Error {
                         what: "more".to_owned(),
                         why: format!(
-                            "the conversation for {conversation:?} is not held yet, so this page \
-                             cannot be answered; asking again may find it"
+                            "the conversation for {} is not held yet, so this page cannot be \
+                             answered; asking again may find it",
+                            conversation.display()
                         ),
                         seat: Some(conversation.clone()),
                     },
@@ -450,8 +451,9 @@ async fn handle_client(
                         ServerMessage::Error {
                             what: "more".to_owned(),
                             why: format!(
-                                "the fold over {seat:?} did not finish, so this page cannot be \
-                                 answered; asking again may find it"
+                                "the fold over {} did not finish, so this page cannot be \
+                                 answered; asking again may find it",
+                                seat.display()
                             ),
                             seat: Some(seat.clone()),
                         },
