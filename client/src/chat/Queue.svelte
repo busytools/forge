@@ -223,13 +223,14 @@
   .qlist {
     outline: none;
   }
-  /* **The pile separates itself from the turn above.** The composer's own
+  /* **The pile carries the block gap on both sides.** The composer's own
      margin pulls it up under the conversation (`margin-top: calc(-1 *
      var(--ins))`, written for the box alone); with the pile on top the card
-     met the last row flush (#1705), so the pile carries the block gap
-     instead. */
+     met the last row flush (#1705), so the pile carries the gap above it -
+     and the foot's, which the mock puts above its box (`.mbox margin-top:
+     8px`) and the app left flush. */
   .pile {
-    margin-top: 8px;
+    margin: 8px 0;
   }
   .ended {
     padding: 2px 0 0 11px;
@@ -237,10 +238,12 @@
     font-size: var(--fs-label);
     color: var(--dim);
   }
+  /* The header's pieces sit together: a right-pinned hint is a step in the
+     mock's tile and a canyon in the real column (#1705). */
   .qcount {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 9px;
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
@@ -267,13 +270,6 @@
   .qcount .del:focus-visible {
     color: var(--bad);
     border-color: var(--bad);
-  }
-  /* The header's pieces sit together rather than pinned to the column's ends:
-     the mock's tile is 430px, where a right-pinned hint is a step; the real
-     column is three times that, where the same rule is a canyon (#1705, and
-     the mock is the reference the divergence is named against). */
-  .qcount .qhint {
-    margin-left: 0;
   }
   .qstack {
     position: relative;
