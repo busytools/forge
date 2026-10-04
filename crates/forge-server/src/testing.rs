@@ -563,9 +563,11 @@ fn config(config_dir: &Path, orgs: &[(&str, &[&str])]) -> String {
             .to_owned(),
     );
     // Dictation on, so the composer draws the control that starts a take:
-    // an install with it off has no way in at all.
+    // an install with it off has no way in at all. The styling is NOT the
+    // crate's default, so a greeting that carried the default instead of the
+    // config's value fails the test that reads it back.
     sections.push(format!(
-        "[dictate]\nenabled = true\nmodels_dir = \"{}\"\n",
+        "[dictate]\nenabled = true\nmodels_dir = \"{}\"\nstyling = \"formal\"\n",
         config_dir.join("models").display()
     ));
     sections.concat()

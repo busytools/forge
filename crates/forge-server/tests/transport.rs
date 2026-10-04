@@ -402,6 +402,107 @@ async fn a_clients_frames_feed_the_take_it_started() {
     );
 }
 
+/// A client that drops mid-take leaves nothing behind: what streamed in is
+/// submitted, and the seat is free, so the same client reconnecting and
+/// starting again lands rather than being refused by the take it left.
+///
+/// This is the shape the disconnect path exists for, and it was the shape
+/// that broke: with no close handler the orphan held the seat and answered
+/// the next start with "session ... is already dictating".
+#[tokio::test]
+async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut first).await;
+    send(
+        &mut first,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut first, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    let mut frame = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    first.send(Message::Binary(frame.into())).await.expect("the frame goes");
+
+    // The client vanishes mid-take.
+    drop(first);
+
+    // The server notices, submits what arrived, and frees the seat: the
+    // take leaves the seat's own record.
+    let mut watcher = connect(&url).await;
+    let freed = snapshot_until(&mut watcher, Subject::Session(lead_seat()), |data| {
+        data["composer"]["take"].is_null()
+    })
+    .await;
+    assert!(freed, "the dropped take must be submitted and the seat freed");
+
+    // And the next start lands, which is what the refusal broke.
+    send(
+        &mut watcher,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the next take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+}
+
+/// The axes `forge.toml` set reach a client in the greeting. They are what a
+/// capturing client starts on and resets to, so a default standing in for the
+/// config's value would be invisible everywhere else - and the fixture's
+/// config sets a value that is not the crate's default.
+#[tokio::test]
+async fn the_greeting_carries_the_dictate_axes_the_config_set() {
+    let (url, fleet) = a_server().await;
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text").to_owned();
+    let ServerMessage::Greeting { settings, .. } =
+        serde_json::from_str(&text).expect("the greeting decodes")
+    else {
+        panic!("the first thing the server says is its greeting, not {text}")
+    };
+
+    assert_eq!(
+        settings.dictate.styling,
+        forge_dictate::normalize::Styling::Formal,
+        "the fixture's config sets styling = formal, and the greeting must carry it"
+    );
+    assert_eq!(
+        settings.dictate,
+        fleet.surface().dictate_axes(),
+        "the greeting's axes are the workspace's own, not a default standing in for them"
+    );
+}
+
 /// One command the core handed a seat's stub, or `None` if it said nothing
 /// inside `ms`.
 ///

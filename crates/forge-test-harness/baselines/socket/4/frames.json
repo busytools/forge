@@ -209,6 +209,27 @@
       ]
     }
   },
+  "command_sampled": {
+    "DictateStream": {
+      "": [
+        "dictate_stream"
+      ],
+      "/dictate_stream": [
+        "key",
+        "options"
+      ],
+      "/dictate_stream/key": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/dictate_stream/options": [
+        "context",
+        "structure",
+        "styling"
+      ]
+    }
+  },
   "dictate_frame": {
     "header_bytes": 1,
     "max_payload_bytes": 16384,

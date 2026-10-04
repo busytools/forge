@@ -2345,6 +2345,29 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
+    /// The connection that was streaming a take for `key` has gone: submit
+    /// what arrived and free the seat.
+    ///
+    /// Only a take fed by FRAMES is closed - a device take's audio comes
+    /// from this machine and its recording task outlives any one client.
+    /// The seat is free the moment this returns, so a client that
+    /// reconnects and starts again is not refused by the take it left
+    /// behind. Answers whether there was one to close.
+    pub fn dictate_close(&self, key: &SessionSlot) -> bool {
+        let mut runtime = self.dictate_runtime.lock();
+        if !runtime.recordings.get(key).is_some_and(|live| live.sink.is_some()) {
+            return false;
+        }
+        let Some(live) = runtime.recordings.remove(key) else {
+            return false;
+        };
+        // A channel nobody is reading yet still takes the value: the
+        // runner selects on it the moment its first await lands.
+        let _ = live.stop.try_send(true);
+        runtime.finishing.push(crate::dictate::FinishingTake { key: key.clone(), stop: live.stop });
+        true
+    }
+
     /// The dictate axes in force: `forge.toml` over the crate's own
     /// defaults. What a capturing client starts on and resets to.
     pub fn dictate_axes(&self) -> crate::dictate::DictateAxes {

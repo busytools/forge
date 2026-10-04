@@ -126,6 +126,17 @@ impl Recording {
         self.stop.store(true, Ordering::Relaxed);
     }
 
+    /// The take's cap was reached by WALL CLOCK rather than by samples.
+    ///
+    /// A device take's recorder notices the cap by counting its own loop, and
+    /// the sample cap fires only while audio is arriving. A take fed by
+    /// frames has neither: a stream that stops mid-take would hold the seat
+    /// until teardown, so its host counts the clock and flags it here.
+    pub(crate) fn cap_reached(&self) {
+        self.truncated.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
     /// Whether the recording has been asked to stop - the cap reached
     /// itself, or the host ended the take. What a feeder polls before
     /// appending: the microphone stand-ins in `test_support`, and a

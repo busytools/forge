@@ -125,6 +125,21 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     let outcome =
         run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate).await;
 
+    // The take this connection was streaming ends with it: what already
+    // arrived is submitted, and the seat is free for the next take. A
+    // DEVICE take is not touched - its audio is this machine's, and its
+    // recording task outlives any one client.
+    if let Some(seat) = dictate.as_ref()
+        && state.surface.dictate_close(seat)
+    {
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "dictate_take_closed",
+            slot = %seat.display(),
+            "the connection that was streaming a take went away; the take was submitted",
+        );
+    }
+
     // Every way out of the loop runs this, a failed read included: a client
     // that goes away without unsubscribing is still a client that has gone,
     // and the seats it was showing are let go with it. Leaving them attached

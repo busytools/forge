@@ -785,6 +785,13 @@ impl CaptureMeter {
     pub fn was_truncated(&self) -> bool {
         self.recording.was_truncated()
     }
+
+    /// Stop the take at its cap, flagging it truncated. For a take fed by
+    /// frames, whose host counts the clock: nothing else notices the cap
+    /// when the audio stops arriving.
+    pub fn cap_reached(&self) {
+        self.recording.cap_reached();
+    }
 }
 
 impl std::fmt::Debug for CaptureMeter {
@@ -923,6 +930,13 @@ impl Capture {
     /// reporting the failure only when the caller lets go.
     pub fn open_error(&self) -> Option<&Error> {
         self.failed_to_open.as_ref()
+    }
+
+    /// The cap this take is bounded by. A host feeding the take itself has
+    /// to enforce it: the recorder's own loop is what notices it for a
+    /// device, and a take fed by frames has no loop at all.
+    pub fn max_capture(&self) -> Duration {
+        self.max_capture
     }
 
     /// Whether the capture reached [`Config::max_capture`] and stopped

@@ -594,8 +594,32 @@ fn frames_record() -> Value {
         "command": named(COMMAND_VARIANTS),
         "client_message": named(CLIENT_MESSAGE_VARIANTS),
         "payload_sampled": payload_sampled,
+        "command_sampled": command_sampled(&seat),
         "dictate_frame": dictate_frame_record(),
     })
+}
+
+/// The commands a client writes by hand, and the fields it writes them with.
+///
+/// A `Command` rides INSIDE a `client_message`, so the census above pins only
+/// its name - a field renamed on the server would leave a client's own literal
+/// writing a key nothing reads, with every suite green on both sides.
+fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Value>> {
+    let mut sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
+    let mut shape = Shape::default();
+    shape.record(
+        &serde_json::to_value(Command::DictateStream {
+            key: seat.clone(),
+            options: forge_workspace::DictateAxes::default(),
+        })
+        .expect("a command encodes"),
+        "",
+    );
+    sampled.insert(
+        "DictateStream".to_owned(),
+        shape.paths.iter().map(|(path, keys)| (path.clone(), json!(keys.iter().collect::<Vec<_>>()))).collect(),
+    );
+    sampled
 }
 
 /// The dictate frame's byte-level contract, asserted and then recorded.
