@@ -13,6 +13,12 @@ use serde_json::Value;
 use crate::content::ContentBlock;
 use crate::runtime::TerminalReason;
 
+/// Wire fields forge does not model, kept verbatim so a decode is lossless:
+/// what the CLI sent crosses to whoever draws the raw frame even when
+/// nothing here reads it. Reachable through `Message`'s variants and the
+/// values they nest.
+pub type Extras = serde_json::Map<String, Value>;
+
 /// Whether a `parent_tool_use_id` names the dispatch a frame ran under. Set
 /// and non-empty: the wire spells "no dispatch" as null, and every fold that
 /// reads the field guards on the same thing.
@@ -46,6 +52,9 @@ pub enum Message {
         /// When the CLI wrote this frame, RFC 3339. The only record of when
         /// a turn ran that a transcript holds: no result frame reaches one.
         timestamp: Option<String>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// A user turn - user prompts or tool-result envelopes.
@@ -76,6 +85,9 @@ pub enum Message {
         /// `turnCompanion`. A view that reads it draws the harness speaking
         /// rather than the reader.
         synthetic: bool,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
@@ -105,6 +117,9 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Sub-agent type selector (e.g. `"general-purpose"`).
         task_type: Option<String>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Incremental lifecycle update for any long-running tool task
@@ -126,6 +141,9 @@ pub enum Message {
         uuid: String,
         /// Session id the task runs in.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Periodic progress update while a sub-agent `Task` is in flight.
@@ -152,6 +170,9 @@ pub enum Message {
         /// snapshot (not a delta), so the renderer can rebuild the
         /// per-phase tree from a single most-recent event.
         workflow_progress: Vec<WorkflowProgressEvent>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Terminal notification when a sub-agent `Task` completes,
@@ -182,6 +203,38 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Total usage accumulated over the lifetime of the task, if reported.
         usage: Option<TaskUsage>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
+    },
+
+    /// The CLI's heartbeat for a long-running tool call, emitted every
+    /// 30 seconds while the call is in flight. Top-level `tool_progress`.
+    ///
+    /// `tool_use_id` appends `-heartbeat-<n>` to the running call's own
+    /// id, and `parent_tool_use_id` names that call. An informational
+    /// frame the SDK used to drop at the reader; it crosses like any
+    /// other so whoever draws the raw stream can surface liveness on the
+    /// call it belongs to.
+    ToolProgress {
+        /// The running call's id with the CLI's `-heartbeat-<n>` suffix.
+        tool_use_id: String,
+        /// Name of the tool in flight (e.g. `"Bash"`).
+        tool_name: String,
+        /// Seconds since the tool call started.
+        elapsed_time_seconds: f64,
+        /// True on the 30-second cadence heartbeats.
+        heartbeat: bool,
+        /// The tool call this heartbeat belongs to, when it is one the
+        /// CLI parent-stamped (a sub-agent's own call).
+        parent_tool_use_id: Option<String>,
+        /// Session id, when the frame carries one.
+        session_id: Option<String>,
+        /// The frame's own id, when the CLI attaches one.
+        uuid: Option<String>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// CLI-side estimated thinking-token count, fires repeatedly
@@ -207,6 +260,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Assistant-turn wall-clock + message-count summary emitted at
@@ -226,6 +282,9 @@ pub enum Message {
         session_id: String,
         /// Unique identifier for this turn_duration event.
         uuid: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Stop-hook execution summary surfaced at end-of-turn. Subtype
@@ -264,6 +323,9 @@ pub enum Message {
         session_id: String,
         /// Unique identifier for this stop_hook_summary event.
         uuid: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Full background-task set after it changed. Subtype
@@ -277,6 +339,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Available slash-command set after it changed. Subtype
@@ -288,6 +353,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// A hook began executing. Subtype `"hook_started"` (2.1.204).
@@ -302,6 +370,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// A hook finished executing. Subtype `"hook_response"` (2.1.204).
@@ -326,6 +397,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// A long-running hook emitted interim output. Subtype
@@ -347,6 +421,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// The CLI surfaced a notification to the SDK host. Subtype
@@ -362,6 +439,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// The CLI refused a tool call on permission grounds. Subtype
@@ -381,6 +461,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// A compaction finished and the transcript was replaced. Subtype
@@ -402,6 +485,13 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the `compact_metadata` object forge does not model
+        /// (`duration_ms`, `preserved_segment` and friends), kept verbatim
+        /// under their own object on the way back out.
+        metadata_extras: Extras,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Rate-limit state transition. The CLI emits this when the current
@@ -415,6 +505,9 @@ pub enum Message {
         uuid: String,
         /// Session id the event applies to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// The CLI's own lifecycle for one prompt, keyed by the uuid forge
@@ -438,6 +531,9 @@ pub enum Message {
         uuid: String,
         /// Session id the prompt belongs to.
         session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// End-of-turn or end-of-session summary with cost and usage.
@@ -490,6 +586,9 @@ pub enum Message {
         /// this on `result` frames; surfaced here so consumers don't
         /// have to re-parse the wire JSON to read it.
         terminal_reason: Option<TerminalReason>,
+        /// Fields of the frame forge does not model (`subagent_stats` for
+        /// one), kept verbatim so a decode is lossless.
+        extras: Extras,
     },
 
     /// Streaming partial-message event emitted when
@@ -508,6 +607,9 @@ pub enum Message {
         event: Value,
         /// Parent `tool_use` id when the emitting turn is a sub-agent.
         parent_tool_use_id: Option<String>,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Fatal transport error injected into the message stream when the
@@ -520,6 +622,9 @@ pub enum Message {
     Error {
         /// The failure message as the CLI stringified it.
         error: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
     },
 
     /// Forward-compat fallback: a frame whose top-level `type` value
@@ -580,7 +685,9 @@ impl Message {
             | Message::Result { session_id, .. }
             | Message::CommandLifecycle { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
-            Message::System { session_id, .. } => session_id.as_deref(),
+            Message::System { session_id, .. } | Message::ToolProgress { session_id, .. } => {
+                session_id.as_deref()
+            }
             Message::RateLimitEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {
                 None
             }
@@ -599,8 +706,10 @@ impl Message {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text }],
+                content: vec![ContentBlock::Text { text, extras: Extras::new() }],
+                extras: Extras::new(),
             },
+            extras: Extras::new(),
             session_id: String::new(),
             parent_tool_use_id: None,
             uuid: Some(uuid),
@@ -632,6 +741,10 @@ pub struct AssistantEnvelope {
     /// don't carry a usage block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Fields of the envelope forge does not model (`provider`, a
+    /// `container`, context management diagnostics), kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 /// Classification of a failure the CLI attributes to an assistant turn.
@@ -666,6 +779,9 @@ pub struct UserEnvelope {
     /// list form.
     #[serde(deserialize_with = "deserialize_user_content")]
     pub content: Vec<ContentBlock>,
+    /// Fields of the envelope forge does not model, kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 fn deserialize_user_content<'de, D>(de: D) -> Result<Vec<ContentBlock>, D::Error>
@@ -675,7 +791,7 @@ where
     use serde::de::Error as _;
     let value = Value::deserialize(de)?;
     match value {
-        Value::String(s) => Ok(vec![ContentBlock::Text { text: s }]),
+        Value::String(s) => Ok(vec![ContentBlock::Text { text: s, extras: Extras::new() }]),
         Value::Array(_) => serde_json::from_value(value).map_err(D::Error::custom),
         other => {
             Err(D::Error::custom(format!("user message content must be str or list, got: {other}")))
@@ -771,7 +887,7 @@ pub struct RateLimitInfo {
 }
 
 /// Token-usage accounting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens this turn.
     #[serde(default, deserialize_with = "null_as_zero")]
@@ -785,6 +901,10 @@ pub struct Usage {
     /// Tokens read from the prompt cache this turn.
     #[serde(default, deserialize_with = "null_as_zero")]
     pub cache_read_input_tokens: u64,
+    /// Fields of the usage block forge does not count (`service_tier`,
+    /// `inference_geo`, the thinking-token detail), kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 /// Read a counter that may arrive as an explicit `null`.
@@ -813,12 +933,15 @@ pub struct StopHookInfo {
     /// `durationMs`; absent on 2.1.263's plugin-injected entries.
     #[serde(rename = "durationMs", default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Fields of the entry forge does not model, kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 /// Usage counters reported inside task-progress and task-notification frames.
 ///
 /// `TaskUsage`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskUsage {
     /// Tokens consumed across all model calls in this task so far.
     pub total_tokens: u64,
@@ -826,6 +949,9 @@ pub struct TaskUsage {
     pub tool_uses: u64,
     /// Wall-clock time the task has spent running, in milliseconds.
     pub duration_ms: u64,
+    /// Fields of the usage block forge does not count, kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 /// Terminal status of a sub-agent `Task` reported via
@@ -860,6 +986,9 @@ pub struct TaskUpdatePatch {
     /// if applicable (terminal transitions usually set this).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_time: Option<u64>,
+    /// Fields of the patch forge does not model, kept verbatim.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extras: Extras,
 }
 
 /// Workflow's per-event snapshot of the workflow's
@@ -986,6 +1115,8 @@ enum MessageRepr {
         uuid: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timestamp: Option<String>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     User {
         message: UserEnvelope,
@@ -1003,18 +1134,24 @@ enum MessageRepr {
         // written against.
         #[serde(default, rename = "isSynthetic", skip_serializing_if = "std::ops::Not::not")]
         synthetic: bool,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     System(SystemRepr),
     RateLimitEvent {
         rate_limit_info: RateLimitInfo,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     CommandLifecycle {
         command_uuid: String,
         state: String,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     Result {
         subtype: String,
@@ -1043,6 +1180,8 @@ enum MessageRepr {
         uuid: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminal_reason: Option<TerminalReason>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     StreamEvent {
         uuid: String,
@@ -1050,12 +1189,39 @@ enum MessageRepr {
         event: Value,
         #[serde(default)]
         parent_tool_use_id: Option<String>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
+    },
+    /// The CLI's heartbeat for a running tool call. A top-level type of
+    /// its own, not a `system` subtype.
+    ToolProgress {
+        tool_use_id: String,
+        tool_name: String,
+        elapsed_time_seconds: f64,
+        #[serde(default)]
+        heartbeat: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uuid: Option<String>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     Error {
         error: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
 }
 
+/// A transient decode shim: serde tries the typed shape, then the generic
+/// one, and the value is moved once into a [`Message`]. Never stored or
+/// cloned, so the byte gap between its arms - what `large_enum_variant`
+/// measures - is paid nowhere, and boxing the typed arm instead would add
+/// an allocation per lifecycle frame.
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum SystemRepr {
@@ -1075,6 +1241,8 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task_type: Option<String>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     TaskUpdated {
         task_id: String,
@@ -1082,6 +1250,8 @@ enum TypedSystemRepr {
         patch: TaskUpdatePatch,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     TaskProgress {
         task_id: String,
@@ -1100,6 +1270,8 @@ enum TypedSystemRepr {
         /// + agent currently known to the workflow.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         workflow_progress: Vec<WorkflowProgressEvent>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     TaskNotification {
         task_id: String,
@@ -1112,12 +1284,16 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TaskUsage>,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     ThinkingTokens {
         estimated_tokens: u64,
         estimated_tokens_delta: i64,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     TurnDuration {
         #[serde(rename = "durationMs")]
@@ -1128,6 +1304,8 @@ enum TypedSystemRepr {
         parent_tool_use_id: Option<String>,
         session_id: String,
         uuid: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     StopHookSummary {
         #[serde(rename = "hookCount")]
@@ -1149,16 +1327,22 @@ enum TypedSystemRepr {
         parent_tool_use_id: Option<String>,
         session_id: String,
         uuid: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     BackgroundTasksChanged {
         tasks: Vec<Value>,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     CommandsChanged {
         commands: Vec<Value>,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     HookStarted {
         hook_id: String,
@@ -1166,6 +1350,8 @@ enum TypedSystemRepr {
         hook_event: String,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     HookResponse {
         hook_id: String,
@@ -1178,6 +1364,8 @@ enum TypedSystemRepr {
         stderr: String,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     HookProgress {
         hook_id: String,
@@ -1188,6 +1376,8 @@ enum TypedSystemRepr {
         output: String,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     Notification {
         key: Option<String>,
@@ -1195,6 +1385,8 @@ enum TypedSystemRepr {
         priority: Option<String>,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     PermissionDenied {
         tool_name: String,
@@ -1204,23 +1396,28 @@ enum TypedSystemRepr {
         message: String,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
     CompactBoundary {
         compact_metadata: CompactMetadataRepr,
         uuid: String,
         session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
     },
 }
 
-/// The subset of `compact_boundary`'s `compact_metadata` forge reads.
-/// Unlisted siblings (`duration_ms`, `preserved_segment` and friends) are
-/// dropped on decode rather than carried, so a change to one of them
-/// cannot fail the typed match.
+/// The subset of `compact_boundary`'s `compact_metadata` forge reads,
+/// plus every sibling field it does not: the counts and the preserved
+/// segment cross verbatim so a lossless read reaches whoever draws them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CompactMetadataRepr {
     trigger: String,
     pre_tokens: u64,
     post_tokens: u64,
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    extras: Extras,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1242,6 +1439,7 @@ impl From<MessageRepr> for Message {
                 error,
                 uuid,
                 timestamp,
+                extras,
             } => Message::Assistant {
                 message,
                 session_id,
@@ -1249,6 +1447,7 @@ impl From<MessageRepr> for Message {
                 error,
                 uuid,
                 timestamp,
+                extras,
             },
             MessageRepr::User {
                 message,
@@ -1258,6 +1457,7 @@ impl From<MessageRepr> for Message {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                extras,
             } => Message::User {
                 message,
                 session_id,
@@ -1266,6 +1466,7 @@ impl From<MessageRepr> for Message {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -1274,6 +1475,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 task_type,
+                extras,
             })) => Message::TaskStarted {
                 task_id,
                 description,
@@ -1281,13 +1483,15 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 task_type,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskUpdated {
                 task_id,
                 patch,
                 uuid,
                 session_id,
-            })) => Message::TaskUpdated { task_id, patch, uuid, session_id },
+                extras,
+            })) => Message::TaskUpdated { task_id, patch, uuid, session_id, extras },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
                 task_id,
                 description,
@@ -1297,6 +1501,7 @@ impl From<MessageRepr> for Message {
                 tool_use_id,
                 last_tool_name,
                 workflow_progress,
+                extras,
             })) => Message::TaskProgress {
                 task_id,
                 description,
@@ -1306,6 +1511,7 @@ impl From<MessageRepr> for Message {
                 tool_use_id,
                 last_tool_name,
                 workflow_progress,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
                 task_id,
@@ -1316,6 +1522,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 usage,
+                extras,
             })) => Message::TaskNotification {
                 task_id,
                 status,
@@ -1325,17 +1532,20 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 usage,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
                 estimated_tokens,
                 estimated_tokens_delta,
                 uuid,
                 session_id,
+                extras,
             })) => Message::ThinkingTokens {
                 estimated_tokens,
                 estimated_tokens_delta,
                 uuid,
                 session_id,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
                 ms,
@@ -1343,9 +1553,15 @@ impl From<MessageRepr> for Message {
                 parent_tool_use_id,
                 session_id,
                 uuid,
-            })) => {
-                Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid }
-            }
+                extras,
+            })) => Message::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1358,6 +1574,7 @@ impl From<MessageRepr> for Message {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+                extras,
             })) => Message::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1370,24 +1587,30 @@ impl From<MessageRepr> for Message {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::BackgroundTasksChanged {
                 tasks,
                 uuid,
                 session_id,
-            })) => Message::BackgroundTasksChanged { tasks, uuid, session_id },
+                extras,
+            })) => Message::BackgroundTasksChanged { tasks, uuid, session_id, extras },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CommandsChanged {
                 commands,
                 uuid,
                 session_id,
-            })) => Message::CommandsChanged { commands, uuid, session_id },
+                extras,
+            })) => Message::CommandsChanged { commands, uuid, session_id, extras },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookStarted {
                 hook_id,
                 hook_name,
                 hook_event,
                 uuid,
                 session_id,
-            })) => Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id },
+                extras,
+            })) => {
+                Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id, extras }
+            }
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookResponse {
                 hook_id,
                 hook_name,
@@ -1399,6 +1622,7 @@ impl From<MessageRepr> for Message {
                 stderr,
                 uuid,
                 session_id,
+                extras,
             })) => Message::HookResponse {
                 hook_id,
                 hook_name,
@@ -1410,6 +1634,7 @@ impl From<MessageRepr> for Message {
                 stderr,
                 uuid,
                 session_id,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
                 hook_id,
@@ -1420,6 +1645,7 @@ impl From<MessageRepr> for Message {
                 output,
                 uuid,
                 session_id,
+                extras,
             })) => Message::HookProgress {
                 hook_id,
                 hook_name,
@@ -1429,6 +1655,7 @@ impl From<MessageRepr> for Message {
                 output,
                 uuid,
                 session_id,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::Notification {
                 key,
@@ -1436,7 +1663,8 @@ impl From<MessageRepr> for Message {
                 priority,
                 uuid,
                 session_id,
-            })) => Message::Notification { key, text, priority, uuid, session_id },
+                extras,
+            })) => Message::Notification { key, text, priority, uuid, session_id, extras },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::PermissionDenied {
                 tool_name,
                 tool_use_id,
@@ -1445,6 +1673,7 @@ impl From<MessageRepr> for Message {
                 message,
                 uuid,
                 session_id,
+                extras,
             })) => Message::PermissionDenied {
                 tool_name,
                 tool_use_id,
@@ -1453,12 +1682,23 @@ impl From<MessageRepr> for Message {
                 message,
                 uuid,
                 session_id,
+                extras,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
-                compact_metadata: CompactMetadataRepr { trigger, pre_tokens, post_tokens },
+                compact_metadata:
+                    CompactMetadataRepr { trigger, pre_tokens, post_tokens, extras: metadata_extras },
                 uuid,
                 session_id,
-            })) => Message::CompactBoundary { trigger, pre_tokens, post_tokens, uuid, session_id },
+                extras,
+            })) => Message::CompactBoundary {
+                trigger,
+                pre_tokens,
+                post_tokens,
+                uuid,
+                session_id,
+                metadata_extras,
+                extras,
+            },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
                 session_id,
@@ -1482,11 +1722,11 @@ impl From<MessageRepr> for Message {
                 }
                 Message::System { subtype, session_id, data: full_data }
             }
-            MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id } => {
-                Message::RateLimitEvent { rate_limit_info, uuid, session_id }
+            MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id, extras } => {
+                Message::RateLimitEvent { rate_limit_info, uuid, session_id, extras }
             }
-            MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id } => {
-                Message::CommandLifecycle { command_uuid, state, uuid, session_id }
+            MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id, extras } => {
+                Message::CommandLifecycle { command_uuid, state, uuid, session_id, extras }
             }
             MessageRepr::Result {
                 subtype,
@@ -1505,6 +1745,7 @@ impl From<MessageRepr> for Message {
                 errors,
                 uuid,
                 terminal_reason,
+                extras,
             } => Message::Result {
                 subtype,
                 session_id,
@@ -1522,11 +1763,31 @@ impl From<MessageRepr> for Message {
                 errors,
                 uuid,
                 terminal_reason,
+                extras,
             },
-            MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
-                Message::StreamEvent { uuid, session_id, event, parent_tool_use_id }
+            MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id, extras } => {
+                Message::StreamEvent { uuid, session_id, event, parent_tool_use_id, extras }
             }
-            MessageRepr::Error { error } => Message::Error { error },
+            MessageRepr::ToolProgress {
+                tool_use_id,
+                tool_name,
+                elapsed_time_seconds,
+                heartbeat,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            } => Message::ToolProgress {
+                tool_use_id,
+                tool_name,
+                elapsed_time_seconds,
+                heartbeat,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            },
+            MessageRepr::Error { error, extras } => Message::Error { error, extras },
         }
     }
 }
@@ -1541,6 +1802,7 @@ impl From<Message> for MessageRepr {
                 error,
                 uuid,
                 timestamp,
+                extras,
             } => MessageRepr::Assistant {
                 message,
                 session_id,
@@ -1548,6 +1810,7 @@ impl From<Message> for MessageRepr {
                 error,
                 uuid,
                 timestamp,
+                extras,
             },
             Message::User {
                 message,
@@ -1557,6 +1820,7 @@ impl From<Message> for MessageRepr {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                extras,
             } => MessageRepr::User {
                 message,
                 session_id,
@@ -1565,6 +1829,7 @@ impl From<Message> for MessageRepr {
                 tool_use_result,
                 timestamp,
                 synthetic,
+                extras,
             },
             Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
@@ -1591,6 +1856,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 task_type,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
                 description,
@@ -1598,13 +1864,15 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 task_type,
+                extras,
             })),
-            Message::TaskUpdated { task_id, patch, uuid, session_id } => {
+            Message::TaskUpdated { task_id, patch, uuid, session_id, extras } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskUpdated {
                     task_id,
                     patch,
                     uuid,
                     session_id,
+                    extras,
                 }))
             }
             Message::TaskProgress {
@@ -1616,6 +1884,7 @@ impl From<Message> for MessageRepr {
                 tool_use_id,
                 last_tool_name,
                 workflow_progress,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
                 task_id,
                 description,
@@ -1625,6 +1894,7 @@ impl From<Message> for MessageRepr {
                 tool_use_id,
                 last_tool_name,
                 workflow_progress,
+                extras,
             })),
             Message::TaskNotification {
                 task_id,
@@ -1635,6 +1905,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 usage,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
                 task_id,
                 status,
@@ -1644,27 +1915,36 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 usage,
+                extras,
             })),
             Message::ThinkingTokens {
                 estimated_tokens,
                 estimated_tokens_delta,
                 uuid,
                 session_id,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
                 estimated_tokens,
                 estimated_tokens_delta,
                 uuid,
                 session_id,
+                extras,
             })),
-            Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } => {
-                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
-                    ms,
-                    message_count,
-                    parent_tool_use_id,
-                    session_id,
-                    uuid,
-                }))
-            }
+            Message::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            })),
             Message::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1677,6 +1957,7 @@ impl From<Message> for MessageRepr {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1689,28 +1970,32 @@ impl From<Message> for MessageRepr {
                 parent_tool_use_id,
                 session_id,
                 uuid,
+                extras,
             })),
-            Message::BackgroundTasksChanged { tasks, uuid, session_id } => {
+            Message::BackgroundTasksChanged { tasks, uuid, session_id, extras } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::BackgroundTasksChanged {
                     tasks,
                     uuid,
                     session_id,
+                    extras,
                 }))
             }
-            Message::CommandsChanged { commands, uuid, session_id } => {
+            Message::CommandsChanged { commands, uuid, session_id, extras } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CommandsChanged {
                     commands,
                     uuid,
                     session_id,
+                    extras,
                 }))
             }
-            Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id } => {
+            Message::HookStarted { hook_id, hook_name, hook_event, uuid, session_id, extras } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookStarted {
                     hook_id,
                     hook_name,
                     hook_event,
                     uuid,
                     session_id,
+                    extras,
                 }))
             }
             Message::HookResponse {
@@ -1724,6 +2009,7 @@ impl From<Message> for MessageRepr {
                 stderr,
                 uuid,
                 session_id,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookResponse {
                 hook_id,
                 hook_name,
@@ -1735,6 +2021,7 @@ impl From<Message> for MessageRepr {
                 stderr,
                 uuid,
                 session_id,
+                extras,
             })),
             Message::HookProgress {
                 hook_id,
@@ -1745,6 +2032,7 @@ impl From<Message> for MessageRepr {
                 output,
                 uuid,
                 session_id,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::HookProgress {
                 hook_id,
                 hook_name,
@@ -1754,14 +2042,16 @@ impl From<Message> for MessageRepr {
                 output,
                 uuid,
                 session_id,
+                extras,
             })),
-            Message::Notification { key, text, priority, uuid, session_id } => {
+            Message::Notification { key, text, priority, uuid, session_id, extras } => {
                 MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::Notification {
                     key,
                     text,
                     priority,
                     uuid,
                     session_id,
+                    extras,
                 }))
             }
             Message::PermissionDenied {
@@ -1772,6 +2062,7 @@ impl From<Message> for MessageRepr {
                 message,
                 uuid,
                 session_id,
+                extras,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::PermissionDenied {
                 tool_name,
                 tool_use_id,
@@ -1780,19 +2071,32 @@ impl From<Message> for MessageRepr {
                 message,
                 uuid,
                 session_id,
+                extras,
             })),
-            Message::CompactBoundary { trigger, pre_tokens, post_tokens, uuid, session_id } => {
-                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
-                    compact_metadata: CompactMetadataRepr { trigger, pre_tokens, post_tokens },
-                    uuid,
-                    session_id,
-                }))
+            Message::CompactBoundary {
+                trigger,
+                pre_tokens,
+                post_tokens,
+                uuid,
+                session_id,
+                metadata_extras,
+                extras,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CompactBoundary {
+                compact_metadata: CompactMetadataRepr {
+                    trigger,
+                    pre_tokens,
+                    post_tokens,
+                    extras: metadata_extras,
+                },
+                uuid,
+                session_id,
+                extras,
+            })),
+            Message::RateLimitEvent { rate_limit_info, uuid, session_id, extras } => {
+                MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id, extras }
             }
-            Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
-                MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
-            }
-            Message::CommandLifecycle { command_uuid, state, uuid, session_id } => {
-                MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id }
+            Message::CommandLifecycle { command_uuid, state, uuid, session_id, extras } => {
+                MessageRepr::CommandLifecycle { command_uuid, state, uuid, session_id, extras }
             }
             Message::Result {
                 subtype,
@@ -1811,6 +2115,7 @@ impl From<Message> for MessageRepr {
                 errors,
                 uuid,
                 terminal_reason,
+                extras,
             } => MessageRepr::Result {
                 subtype,
                 session_id,
@@ -1828,11 +2133,31 @@ impl From<Message> for MessageRepr {
                 errors,
                 uuid,
                 terminal_reason,
+                extras,
             },
-            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
-                MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id }
+            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id, extras } => {
+                MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id, extras }
             }
-            Message::Error { error } => MessageRepr::Error { error },
+            Message::ToolProgress {
+                tool_use_id,
+                tool_name,
+                elapsed_time_seconds,
+                heartbeat,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            } => MessageRepr::ToolProgress {
+                tool_use_id,
+                tool_name,
+                elapsed_time_seconds,
+                heartbeat,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+                extras,
+            },
+            Message::Error { error, extras } => MessageRepr::Error { error, extras },
             // Defensive sentinel - `Serialize` for `Message` special-cases
             // `Unknown` to emit `raw` verbatim, so this branch is dead code
             // at runtime. Kept to keep the `From` impl total without
@@ -1842,6 +2167,7 @@ impl From<Message> for MessageRepr {
                     "Message::Unknown {{ type_str: {type_str:?} }} \
                      cannot be encoded via MessageRepr"
                 ),
+                extras: Extras::new(),
             },
         }
     }
@@ -2281,8 +2607,13 @@ mod tests_message_extras {
             "session_id": "sess-tt",
         });
         let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
-        let Message::ThinkingTokens { estimated_tokens, estimated_tokens_delta, uuid, session_id } =
-            msg
+        let Message::ThinkingTokens {
+            estimated_tokens,
+            estimated_tokens_delta,
+            uuid,
+            session_id,
+            ..
+        } = msg
         else {
             panic!("expected ThinkingTokens, got {msg:?}");
         };
@@ -2296,6 +2627,7 @@ mod tests_message_extras {
             estimated_tokens_delta: 56,
             uuid: "tt-uuid".to_owned(),
             session_id: "sess-tt".to_owned(),
+            extras: Extras::new(),
         })
         .expect("encode");
         assert_eq!(encoded, raw);
@@ -2316,7 +2648,9 @@ mod tests_message_extras {
             "uuid": "td-uuid",
         });
         let msg: Message = serde_json::from_value(raw).expect("decode");
-        let Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } = msg
+        let Message::TurnDuration {
+            ms, message_count, parent_tool_use_id, session_id, uuid, ..
+        } = msg
         else {
             panic!("expected TurnDuration, got {msg:?}");
         };
@@ -2335,6 +2669,7 @@ mod tests_message_extras {
             parent_tool_use_id: None,
             session_id: "sess-rt".to_owned(),
             uuid: "rt-uuid".to_owned(),
+            extras: Extras::new(),
         };
         let encoded = serde_json::to_value(&msg).expect("encode");
         // durationMs / messageCount preserved.
@@ -2349,8 +2684,9 @@ mod tests_message_extras {
 
     /// Frame is verbatim from the `compact` capture, extras included:
     /// the unmodelled `compact_metadata` siblings and
-    /// `logical_parent_uuid` must drop out rather than block the typed
-    /// match.
+    /// `logical_parent_uuid` must not block the typed match, and must
+    /// cross verbatim - a decode that keeps only what this build reads
+    /// is a decode that drops CLI data.
     #[test]
     fn compact_boundary_decodes_the_three_fields_forge_reads() {
         let raw = json!({
@@ -2369,8 +2705,16 @@ mod tests_message_extras {
             },
             "logical_parent_uuid": "lp-uuid",
         });
-        let msg: Message = serde_json::from_value(raw).expect("decode");
-        let Message::CompactBoundary { trigger, pre_tokens, post_tokens, uuid, session_id } = msg
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::CompactBoundary {
+            trigger,
+            pre_tokens,
+            post_tokens,
+            uuid,
+            session_id,
+            metadata_extras,
+            extras,
+        } = msg
         else {
             panic!("compact_boundary must decode typed, not into System; got {msg:?}");
         };
@@ -2379,13 +2723,28 @@ mod tests_message_extras {
         assert_eq!(post_tokens, 9149, "post_tokens is what the row says was carried after the cut");
         assert_eq!(uuid, "cb-uuid");
         assert_eq!(session_id, "sess-cb");
+        assert_eq!(
+            metadata_extras.get("duration_ms"),
+            Some(&json!(48928)),
+            "a metadata sibling crosses too; it is a fact about the cut, not noise",
+        );
+        assert_eq!(
+            extras.get("logical_parent_uuid"),
+            Some(&json!("lp-uuid")),
+            "and a frame-level sibling crosses beside it",
+        );
 
+        // The extras come back out where they came in: siblings of the
+        // metadata object stay nested under it, the frame's own stay at
+        // the top level.
         let encoded = serde_json::to_value(&Message::CompactBoundary {
             trigger: "manual".to_owned(),
             pre_tokens: 68031,
             post_tokens: 9149,
             uuid: "cb-uuid".to_owned(),
             session_id: "sess-cb".to_owned(),
+            metadata_extras,
+            extras,
         })
         .expect("encode");
         assert_eq!(
@@ -2395,9 +2754,18 @@ mod tests_message_extras {
                 "subtype": "compact_boundary",
                 "session_id": "sess-cb",
                 "uuid": "cb-uuid",
-                "compact_metadata": {"trigger": "manual", "pre_tokens": 68031, "post_tokens": 9149},
+                "compact_metadata": {
+                    "trigger": "manual",
+                    "pre_tokens": 68031,
+                    "post_tokens": 9149,
+                    "cumulative_dropped_tokens": 58882,
+                    "duration_ms": 48928,
+                    "preserved_segment": {"head_uuid": "h", "anchor_uuid": "a", "tail_uuid": "t"},
+                    "preserved_messages": {"anchor_uuid": "a", "uuids": ["h"], "all_uuids": ["h", "t"]},
+                },
+                "logical_parent_uuid": "lp-uuid",
             }),
-            "encode must re-nest all three fields under compact_metadata",
+            "encode re-nests the metadata siblings and keeps the frame's own at the top",
         );
     }
 
@@ -2432,6 +2800,7 @@ mod tests_message_extras {
             ],
             uuid: "bg-uuid".to_owned(),
             session_id: "sess-bg".to_owned(),
+            extras: Extras::new(),
         };
         let encoded = serde_json::to_value(&msg).expect("encode");
         assert_eq!(encoded["type"], "system");
@@ -2446,6 +2815,7 @@ mod tests_message_extras {
             commands: vec![json!({"name": "audit", "description": "sweep"})],
             uuid: "cmd-uuid".to_owned(),
             session_id: "sess-cmd".to_owned(),
+            extras: Extras::new(),
         };
         let encoded = serde_json::to_value(&msg).expect("encode");
         assert_eq!(encoded["type"], "system");
@@ -2458,6 +2828,7 @@ mod tests_message_extras {
     fn hook_started_encode_round_trips() {
         let msg = Message::HookStarted {
             hook_id: "h1".to_owned(),
+            extras: Extras::new(),
             hook_name: "SessionStart:startup".to_owned(),
             hook_event: "SessionStart".to_owned(),
             uuid: "hs-uuid".to_owned(),
@@ -2483,6 +2854,7 @@ mod tests_message_extras {
             stderr: String::new(),
             uuid: "hr-uuid".to_owned(),
             session_id: "sess-hr".to_owned(),
+            extras: Extras::new(),
         };
         let encoded = serde_json::to_value(&msg).expect("encode");
         assert_eq!(encoded["type"], "system");
@@ -2978,5 +3350,315 @@ mod tests_message_extras {
         };
         assert_eq!(subtype, "status");
         assert_eq!(data["permissionMode"], "plan");
+    }
+
+    /// The CLI's `task_started` carries four fields forge models nothing
+    /// of: the sub-agent's TYPE, whether the CLI backgrounded it, the
+    /// dispatch depth, and the prompt. A client folding the raw frame
+    /// needs all four, and the socket carries only what the decode kept.
+    /// Line verbatim from the live parallel-dispatch capture. No modelled
+    /// field here is optional-with-a-null, so the whole frame pins as
+    /// parse-equality rather than key by key.
+    #[test]
+    fn a_task_started_frame_keeps_the_fields_no_view_reads_yet() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "aef3c170a790e8ca7",
+            "tool_use_id": "call_b7855529e53e4747bd1f5747",
+            "description": "alpha-work",
+            "subagent_type": "general-purpose",
+            "is_backgrounded": false,
+            "spawn_depth": 1,
+            "task_type": "local_agent",
+            "prompt": "First write one short sentence of setup text.",
+            "uuid": "af3bfd20-5ae3-48f5-b092-be3fb3017e79",
+            "session_id": "ee9485a0-93c8-46c7-940d-3acaa74c60cf",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::TaskStarted { task_id, tool_use_id, .. } = &msg else {
+            panic!("expected TaskStarted, got {msg:?}");
+        };
+        assert_eq!(task_id, "aef3c170a790e8ca7", "the modelled fields still decode");
+        assert_eq!(
+            tool_use_id.as_deref(),
+            Some("call_b7855529e53e4747bd1f5747"),
+            "and the dispatch link stays the link",
+        );
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded, raw,
+            "every field the CLI sent must survive decode and re-serialization",
+        );
+    }
+
+    /// Every frame a sub-agent produces is stamped with the agent type and
+    /// the dispatch's description, and the frame carries the CLI's request
+    /// id. None is modelled. The nested envelope and usage carry keys forge
+    /// does not read either, and the tool_use block carries `caller` -
+    /// all verbatim from the live capture.
+    #[test]
+    fn a_subagent_inner_assistant_frame_keeps_its_type_description_and_nested_extra() {
+        let raw = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_011CfLJAJ6Ks5wkwmWpki9J9",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "provider": "firstParty",
+                "container": null,
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_01PRrDjCCJb6F7rS3TQXzWch",
+                    "name": "Bash",
+                    "input": {"command": "echo forge-subagent-ok"},
+                    "caller": {"type": "direct"},
+                }],
+                "stop_reason": "tool_use",
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 31,
+                    "service_tier": "standard",
+                    "inference_geo": "not_available",
+                },
+            },
+            "parent_tool_use_id": "toolu_017brkbqcpsQAmHTWV6unGpQ",
+            "session_id": "b84b585a-da00-4eb8-827d-935aacfef568",
+            "uuid": "0e72be3a-647d-4e4b-bf27-6a91a6db5ee6",
+            "timestamp": "2026-09-23T11:31:44.125Z",
+            "request_id": "req_011CfL5GYC4ALgjAdC1ekWhH",
+            "subagent_type": "general-purpose",
+            "task_description": "Run echo command",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::Assistant { parent_tool_use_id, .. } = &msg else {
+            panic!("expected Assistant, got {msg:?}");
+        };
+        assert_eq!(
+            parent_tool_use_id.as_deref(),
+            Some("toolu_017brkbqcpsQAmHTWV6unGpQ"),
+            "the parent link is modelled and stays",
+        );
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["subagent_type"], "general-purpose", "the agent type survives");
+        assert_eq!(encoded["task_description"], "Run echo command", "the dispatch's name survives");
+        assert_eq!(
+            encoded["request_id"], "req_011CfL5GYC4ALgjAdC1ekWhH",
+            "the request id survives"
+        );
+        assert_eq!(
+            encoded["message"]["provider"], "firstParty",
+            "an unmodelled envelope key survives"
+        );
+        assert_eq!(encoded["message"]["container"], Value::Null, "including an explicit null");
+        assert_eq!(
+            encoded["message"]["usage"]["service_tier"], "standard",
+            "and the usage detail survives beside the counters forge counts",
+        );
+        assert_eq!(
+            encoded["message"]["content"][0]["caller"]["type"], "direct",
+            "and an unmodelled key inside the content block's own object survives",
+        );
+    }
+
+    /// The sub-agent's own user frames carry the same two stamps. The
+    /// tool_result block inside is what the parent dispatch body answers
+    /// with, and its content is already an opaque value.
+    #[test]
+    fn a_subagent_inner_user_frame_keeps_its_type_and_description() {
+        let raw = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "tool_use_id": "toolu_01PRrDjCCJb6F7rS3TQXzWch",
+                    "type": "tool_result",
+                    "content": "forge-subagent-ok",
+                    "is_error": false,
+                }],
+            },
+            "parent_tool_use_id": "toolu_017brkbqcpsQAmHTWV6unGpQ",
+            "session_id": "b84b585a-da00-4eb8-827d-935aacfef568",
+            "uuid": "83f5bfa9-1510-4bbe-a0db-d3a0ceb54f12",
+            "timestamp": "2026-09-23T11:31:46.071Z",
+            "subagent_type": "general-purpose",
+            "task_description": "Run echo command",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::User { parent_tool_use_id, .. } = &msg else {
+            panic!("expected User, got {msg:?}");
+        };
+        assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_017brkbqcpsQAmHTWV6unGpQ"));
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["subagent_type"], "general-purpose", "the agent type survives");
+        assert_eq!(encoded["task_description"], "Run echo command", "the dispatch's name survives");
+        assert_eq!(
+            encoded["message"]["content"][0]["content"], "forge-subagent-ok",
+            "and the inner result stays whole",
+        );
+    }
+
+    /// A turn's `result` carries the CLI's own roll-up of the sub-agent
+    /// work it ran, and latency fields forge does not model. Neither has a
+    /// reader today; both must cross so a client can fold them.
+    #[test]
+    fn a_result_frame_keeps_the_subagent_rollup_and_latency_fields() {
+        let raw = json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "num_turns": 3,
+            "duration_ms": 12000,
+            "duration_api_ms": 9000,
+            "result": "done",
+            "session_id": "ee9485a0-93c8-46c7-940d-3acaa74c60cf",
+            "subagent_stats": {
+                "spawned": 2,
+                "requested": {"background": 1, "foreground": 1, "unset": 0},
+                "started_in_background": 1,
+                "max_depth": 1,
+                "spawned_by_subagents": 0,
+                "completed": 2,
+                "failed": 0,
+                "killed": {"parent": 0, "user": 0, "system": 0},
+                "refused": {"depth_limit": 0, "concurrency_limit": 0, "budget": 0},
+                "by_type": {"general-purpose": 2},
+            },
+            "ttft_ms": 1200,
+            "queued_turn_count": 0,
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::Result { num_turns, .. } = &msg else {
+            panic!("expected Result, got {msg:?}");
+        };
+        assert_eq!(*num_turns, 3, "the modelled fields still decode");
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["subagent_stats"]["spawned"], 2, "the roll-up survives");
+        assert_eq!(
+            encoded["subagent_stats"]["by_type"]["general-purpose"], 2,
+            "including the per-type tally",
+        );
+        assert_eq!(encoded["ttft_ms"], 1200, "and the latency field survives");
+    }
+
+    /// One frame per remaining category, each built with a key this build
+    /// does not model, so every repr the decode touches has at least one
+    /// round-trip pinning that its extras cross.
+    #[test]
+    fn every_frame_category_keeps_an_unmodelled_key() {
+        let cases = [
+            (
+                json!({
+                    "type": "rate_limit_event",
+                    "rate_limit_info": {"status": "allowed", "utilization": 0.25},
+                    "uuid": "rl-1",
+                    "session_id": "s",
+                    "window_started_at": 1_790_000_000,
+                }),
+                "window_started_at",
+            ),
+            (
+                json!({
+                    "type": "command_lifecycle",
+                    "command_uuid": "c-1",
+                    "state": "queued",
+                    "uuid": "cl-1",
+                    "session_id": "s",
+                    "queue_position": 2,
+                }),
+                "queue_position",
+            ),
+            (
+                json!({
+                    "type": "stream_event",
+                    "uuid": "se-1",
+                    "session_id": "s",
+                    "event": {"type": "message_start"},
+                    "parent_tool_use_id": "toolu_dispatch",
+                    "ttl_ms": 30_000,
+                }),
+                "ttl_ms",
+            ),
+            (json!({"type": "error", "error": "pipe broken", "recoverable": false}), "recoverable"),
+        ];
+        for (raw, extra) in cases {
+            let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+            let encoded = serde_json::to_value(&msg).expect("encode");
+            assert_eq!(
+                encoded.get(extra),
+                raw.get(extra),
+                "{extra} must survive decode and re-serialization for {}",
+                raw["type"],
+            );
+        }
+    }
+
+    /// The nested values a view folds numbers out of keep their own
+    /// unmodelled keys too: a task's usage block and a task patch are
+    /// re-serialized under the same object they arrived in.
+    #[test]
+    fn a_task_usage_and_patch_keep_their_unmodelled_keys() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t-1",
+            "description": "d",
+            "usage": {"total_tokens": 1, "tool_uses": 2, "duration_ms": 3, "paused_ms": 4},
+            "uuid": "u-1",
+            "session_id": "s",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded["usage"]["paused_ms"], 4,
+            "an unmodelled usage counter crosses under its own object",
+        );
+
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t-1",
+            "patch": {"status": "completed", "end_time": 1, "paused_ms": 4},
+            "uuid": "u-2",
+            "session_id": "s",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded["patch"]["paused_ms"], 4,
+            "and an unmodelled patch key crosses the same way",
+        );
+    }
+
+    /// `task_progress` re-fires per tool the sub-agent calls, stamped with
+    /// the same agent type. The usage counters and last tool name are
+    /// modelled; the type is not.
+    #[test]
+    fn a_task_progress_frame_keeps_the_subagent_type() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "aef3c170a790e8ca7",
+            "tool_use_id": "call_b7855529e53e4747bd1f5747",
+            "description": "Running Echo alpha-one",
+            "subagent_type": "general-purpose",
+            "usage": {"total_tokens": 10314, "tool_uses": 1, "duration_ms": 1669},
+            "last_tool_name": "Bash",
+            "uuid": "c8128321-b588-45d3-9b69-23cb638345ce",
+            "session_id": "ee9485a0-93c8-46c7-940d-3acaa74c60cf",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { usage, last_tool_name, .. } = &msg else {
+            panic!("expected TaskProgress, got {msg:?}");
+        };
+        assert_eq!(usage.tool_uses, 1, "the modelled usage still decodes");
+        assert_eq!(last_tool_name.as_deref(), Some("Bash"));
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["subagent_type"], "general-purpose", "the agent type survives");
     }
 }
