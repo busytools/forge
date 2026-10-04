@@ -1305,6 +1305,11 @@ export class Chat {
    * A held prompt the read no longer lists: it settled while this page was
    * not listening, so its row draws - bare, because nothing here observed
    * whether a turn took it - and a later page pairs with it by id.
+   *
+   * **Only a pulled copy draws.** A uuid that only ever ARMED - the snapshot
+   * listed it, and no page or frame has carried it yet - releases to nothing,
+   * which is right for a cancelled prompt and self-healing for one that
+   * completed: the page's own copy reaches the conversation on the next read.
    */
   private release(uuid: string): void {
     const held = this.drained.get(uuid);

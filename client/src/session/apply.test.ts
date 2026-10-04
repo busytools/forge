@@ -839,16 +839,28 @@ describe('applyUpdate', () => {
     });
 
     it("clears a dead CLI's rows, where no per-row frame ever will", () => {
-      // The queue died with the process and the core clears its own pile on
-      // the same event; without the client doing the same the cards stand
-      // until something reads the seat again, which for a dead worker is the
-      // next spawn - and a row that vanishes with no word reads as delivered.
-      const held = applyUpdate(empty(), { prompt_queued: queued });
+      // The refuting sequence, on the seat kind it strands: a NON-LEAD seat,
+      // a queue the read carried, and the death event - the lead seats
+      // self-heal through the auto-respawn's REPLACES, workers do not, and
+      // the handler is label-blind. The queue died with the process and the
+      // core clears its own pile on the same event; without the client doing
+      // the same the cards stand until something reads the seat again, which
+      // for a dead worker is its next spawn - and a row that vanishes with
+      // no word reads as one that was delivered.
+      const worker = sessionFrom({
+        slot: { org: 'Busytools', project: 'forge', label: 'w1' },
+        state: { scan_cwd: '/tmp' },
+      });
+      const held = applyUpdate(worker, { prompt_queued: queued });
       const next = applyUpdate(held, {
-        connection_failed: { key: SLOT, message: 'the process exited', fatal: false },
+        connection_failed: {
+          key: { org: 'Busytools', project: 'forge', label: 'w1' },
+          message: 'the process exited',
+          fatal: false,
+        },
       });
 
-      expect(next.queue, 'the rows go with the process').toEqual([]);
+      expect(next.queue, 'the rows go with the process, on the death event').toEqual([]);
       expect(next.queue_ended, 'one dim line where the cards were').toEqual({
         text: 'nightly sweep',
         state: 'discarded',
@@ -953,9 +965,10 @@ const EVERY_VARIANT = [
  *
  * **The server ships ahead of the client**, so a frame from a newer core
  * arrives here before anything reads it: an update naming a variant this
- * build does not know has to be a no-op - the pane keeps what its own poll
- * read - rather than a crash or a field defaulted back. `HANDLERS`'s miss is
- * what makes that true, and this pins the arm rather than assuming it.
+ * build does not know has to be a no-op - the pane keeps what the last read
+ * answered and its own frames have carried since - rather than a crash or a
+ * field defaulted back. `HANDLERS`'s miss is what makes that true, and this
+ * pins the arm rather than assuming it.
  */
 it('leaves the record alone for a variant it does not know', () => {
   const held = empty();

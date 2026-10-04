@@ -118,7 +118,7 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
       listeners.add(fn);
       // **The subscription's own answer**, which the socket sends once the
       // subscribe is taken. Without it the seat's whole-record ask is never
-      // spent and every poll tick returns before it asks, so nothing in this
+      // spent and every later ask returns before it asks, so nothing in this
       // file can see a read.
       emit({ kind: 'snapshot', subject: SUBJECT, data: held });
       return () => listeners.delete(fn);
@@ -394,10 +394,10 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **The process walk reaches the section as a pushed row.** The walk was one
-   * of the slices a poll's answer carried; now the seat's own hold sends it, so
-   * the section appearing on a frame - without the page asking anything - is
-   * the slice's user-visible claim.
+   * **The process walk reaches the section as a pushed row.** The walk used to
+   * reach it on the read's answer; now the seat's own hold sends it, so the
+   * section appearing on a frame - without the page asking anything - is the
+   * slice's user-visible claim.
    */
   it('draws a section from a pushed walk', () => {
     const fields: Record<string, unknown> = {

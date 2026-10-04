@@ -1783,6 +1783,58 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(echoes.of(seatKey), 'the id is the whole test, held row or not').toBeUndefined();
   });
 
+  it('draws the frame the last pull named, which is what the hold keeps', () => {
+    // The two pulls do not order themselves - a page can land before the
+    // frame or after it - and whichever names the uuid LAST holds the copy
+    // that draws at the drain. The words are the same either way; only the
+    // frame differs, so the choice is pinned rather than left to drift back
+    // behind a keep-first guard nothing measures.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'either words' },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          {
+            key: 't2',
+            messages: [
+              {
+                type: 'user',
+                uuid: 'p1',
+                message: { role: 'user', content: [{ type: 'text', text: 'either words' }] },
+                forge_marker: 'page',
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'p1',
+          message: { role: 'user', content: [{ type: 'text', text: 'either words' }] },
+          forge_marker: 'live',
+        },
+      },
+    });
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat), 'the last pull holds the frame that draws').toContain(
+      '"forge_marker":"live"',
+    );
+    expect(words(chat).split('either words').length - 1, 'and it draws once').toBe(1);
+  });
+
   it('writes the wait the row spent in the pile, in the pile vocabulary', () => {
     vi.useFakeTimers();
     const server = fakeConnection();
