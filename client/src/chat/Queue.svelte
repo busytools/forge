@@ -276,10 +276,12 @@
     font-size: var(--fs-label);
     color: var(--dim);
   }
+  /* The header's pieces sit together: a right-pinned hint is a step in the
+     mock's tile and a canyon in the real column (#1705). */
   .qcount {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 9px;
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
@@ -292,13 +294,6 @@
   /* No cancel control in the head (Ved, 2026-10-04): its appearing and
      vanishing moved everything beside it with every step of the walk, and the
      hint below already says which key does it. */
-  /* The header's pieces sit together rather than pinned to the column's ends:
-     the mock's tile is 430px, where a right-pinned hint is a step; the real
-     column is three times that, where the same rule is a canyon (#1705, and
-     the mock is the reference the divergence is named against). */
-  .qcount .qhint {
-    margin-left: 0;
-  }
   .qstack {
     position: relative;
   }
