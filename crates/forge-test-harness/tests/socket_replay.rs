@@ -406,7 +406,7 @@ fn sample_message() -> Message {
             let log = load_baseline_from(&dir, &name);
             for (at, line) in log.inbound().iter().enumerate() {
                 if let DecodedLine::Message(message) = decode_dispatch(line, (at + 1) as u64) {
-                    return message;
+                    return *message;
                 }
             }
         }

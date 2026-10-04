@@ -8670,7 +8670,7 @@ provider = "anthropic"
         assert!(
             matches!(
                 message.content.first(),
-                Some(forge_primitives::ContentBlock::Text { text }) if text == "get on with it"
+                Some(forge_primitives::ContentBlock::Text { text, .. }) if text == "get on with it"
             ),
             "the frame carries the prose the model received: {message:?}",
         );
@@ -15899,7 +15899,7 @@ mod kick_dispatcher_tests {
         assert!(
             matches!(
                 message.content.first(),
-                Some(forge_primitives::ContentBlock::Text { text }) if text == "get on with it"
+                Some(forge_primitives::ContentBlock::Text { text, .. }) if text == "get on with it"
             ),
             "the frame carries the kick's prose: {message:?}",
         );

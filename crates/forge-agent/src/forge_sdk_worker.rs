@@ -2321,16 +2321,19 @@ mod tests {
         );
     }
 
-    /// **The property this change turns on**: a boundary the CLI sends live and
-    /// the same boundary read back from a transcript reach a client as one
-    /// frame, carrying the same three facts.
+    /// **The property this change turns on**: a boundary read back from a
+    /// transcript reaches a client in the wire's own shape, carrying every
+    /// fact the transcript row holds - and the live frame carries the extra
+    /// facts the transcript does not persist on top of those.
     ///
     /// The two paths share no code - the live one decodes the wire's nested
     /// `compact_metadata`, the resumed one normalises the transcript's flat
     /// `compactMetadata` into it - so a fact either path drops is a row that
-    /// draws differently depending on how the reader arrived.
+    /// draws differently depending on how the reader arrived, and the two
+    /// frames diverging by MORE than the transcript's own omissions is the
+    /// read-side normaliser losing a fact.
     #[test]
-    fn a_live_boundary_and_a_resumed_one_reach_the_client_as_the_same_frame() {
+    fn a_boundary_read_back_from_disk_reaches_the_client_as_the_wire_shape() {
         // A uuid, because the scan refuses a session id that is not one.
         let session_id = "550e8400-e29b-41d4-a716-446655440000";
         let live: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -2417,13 +2420,40 @@ mod tests {
 
         let live_frame = serde_json::to_value(&live).expect("the live frame encodes");
         let disk_frame = serde_json::to_value(from_disk).expect("the disk frame encodes");
+        // Every fact the transcript row carries reaches the client in the
+        // wire's own shape.
         assert_eq!(
-            disk_frame, live_frame,
-            "a boundary read back from disk must reach the client as the live one does",
+            disk_frame,
+            serde_json::json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "session_id": session_id,
+                "uuid": "cb-uuid",
+                "compact_metadata": {
+                    "trigger": "manual",
+                    "pre_tokens": 68_031,
+                    "post_tokens": 9_149,
+                },
+            }),
+            "a boundary read back from disk reaches the client as the wire shape",
+        );
+        // The live frame carries MORE: the wire's extra facts cross whole,
+        // and a transcript persists a flat camelCase row the scan's
+        // normalizer maps only the three fields above out of. So the two
+        // frames agree on what the transcript holds and diverge by exactly
+        // what it does not - the read-side mapping, not the wire, is what
+        // loses those siblings.
+        assert_eq!(
+            live_frame["compact_metadata"]["cumulative_dropped_tokens"], 58_882,
+            "the live frame keeps the metadata siblings the wire sent",
+        );
+        assert_eq!(
+            live_frame["logical_parent_uuid"], "lp-uuid",
+            "and the frame-level ones with them",
         );
         assert_eq!(
             live_frame["compact_metadata"]["post_tokens"], 9_149,
-            "with the count carried after the cut, which is the fact both paths dropped",
+            "with the count carried after the cut",
         );
 
         let lost = resumed

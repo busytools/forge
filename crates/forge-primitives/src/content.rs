@@ -11,6 +11,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::messages::Extras;
+
 /// A single block inside an assistant turn's `content` array or a user
 /// message's tool-result envelope.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +21,8 @@ pub enum ContentBlock {
     Text {
         /// The text payload.
         text: String,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Extended-thinking reasoning block. Present when the model was run in
@@ -28,6 +32,8 @@ pub enum ContentBlock {
         thinking: String,
         /// Anthropic's signature for the thinking block.
         signature: String,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// The model wants to invoke a tool.
@@ -38,6 +44,9 @@ pub enum ContentBlock {
         name: String,
         /// JSON input the model generated for this tool.
         input: Value,
+        /// Fields of the block's own object that forge does not model
+        /// (`caller`, for one).
+        extras: Extras,
     },
 
     /// A tool's output, sent back to the model in a user turn.
@@ -48,6 +57,8 @@ pub enum ContentBlock {
         content: Value,
         /// Whether the tool reported failure.
         is_error: bool,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Server-side tool invocation the API executed on the model's behalf
@@ -69,6 +80,8 @@ pub enum ContentBlock {
         name: String,
         /// JSON input the model generated for this call.
         input: Value,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Result block for a server-side tool call (wire type
@@ -82,6 +95,8 @@ pub enum ContentBlock {
         /// Raw server-tool result payload. Schema depends on the server
         /// tool - inspect `content["type"]` for the concrete shape.
         content: Value,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Document attachment (PDF, etc.) inlined into a user turn. The
@@ -100,6 +115,8 @@ pub enum ContentBlock {
         /// Source of the document - JSON object whose `type` field
         /// discriminates between `base64`, `url`, `text`, `content`.
         source: Value,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Image attachment (JPEG / PNG / GIF / WEBP) inlined into a user
@@ -110,6 +127,8 @@ pub enum ContentBlock {
         /// Source of the image - JSON object whose `type` field
         /// discriminates between `base64`, `url`, etc.
         source: Value,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// User input that was typed while a previous turn was in flight
@@ -142,6 +161,8 @@ pub enum ContentBlock {
         /// Useful for de-duplication / threading; not load-bearing
         /// for rendering.
         source_uuid: Option<String>,
+        /// Fields of the block's own object that forge does not model.
+        extras: Extras,
     },
 
     /// Forward-compat fallback for content block types forge-sdk
@@ -165,60 +186,67 @@ pub enum ContentBlock {
 impl Serialize for ContentBlock {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let v = match self {
-            ContentBlock::Text { text } => {
-                serde_json::json!({"type": "text", "text": text})
+            ContentBlock::Text { text, extras } => {
+                with_extras(serde_json::json!({"type": "text", "text": text}), extras)
             }
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking { thinking, signature, extras } => with_extras(
                 serde_json::json!({
                     "type": "thinking",
                     "thinking": thinking,
                     "signature": signature,
-                })
-            }
-            ContentBlock::ToolUse { id, name, input } => {
+                }),
+                extras,
+            ),
+            ContentBlock::ToolUse { id, name, input, extras } => with_extras(
                 serde_json::json!({
                     "type": "tool_use",
                     "id": id,
                     "name": name,
                     "input": input,
-                })
-            }
-            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                }),
+                extras,
+            ),
+            ContentBlock::ToolResult { tool_use_id, content, is_error, extras } => with_extras(
                 serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content,
                     "is_error": is_error,
-                })
-            }
-            ContentBlock::ServerToolUse { id, name, input } => {
+                }),
+                extras,
+            ),
+            ContentBlock::ServerToolUse { id, name, input, extras } => with_extras(
                 serde_json::json!({
                     "type": "server_tool_use",
                     "id": id,
                     "name": name,
                     "input": input,
-                })
-            }
-            ContentBlock::ServerToolResult { tool_use_id, content } => {
+                }),
+                extras,
+            ),
+            ContentBlock::ServerToolResult { tool_use_id, content, extras } => with_extras(
                 serde_json::json!({
                     "type": "advisor_tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content,
-                })
-            }
-            ContentBlock::Document { source } => {
+                }),
+                extras,
+            ),
+            ContentBlock::Document { source, extras } => with_extras(
                 serde_json::json!({
                     "type": "document",
                     "source": source,
-                })
-            }
-            ContentBlock::Image { source } => {
+                }),
+                extras,
+            ),
+            ContentBlock::Image { source, extras } => with_extras(
                 serde_json::json!({
                     "type": "image",
                     "source": source,
-                })
-            }
-            ContentBlock::QueuedCommand { prompt, command_mode, source_uuid } => {
+                }),
+                extras,
+            ),
+            ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, extras } => {
                 let mut obj = serde_json::Map::new();
                 obj.insert("type".into(), Value::String("queued_command".into()));
                 obj.insert("prompt".into(), prompt.clone());
@@ -228,12 +256,38 @@ impl Serialize for ContentBlock {
                 if let Some(uuid) = source_uuid {
                     obj.insert("source_uuid".into(), Value::String(uuid.clone()));
                 }
+                for (key, value) in extras {
+                    obj.entry(key.clone()).or_insert_with(|| value.clone());
+                }
                 Value::Object(obj)
             }
             ContentBlock::Unknown { raw, .. } => raw.clone(),
         };
         v.serialize(serializer)
     }
+}
+
+/// Merge a block's unmodelled fields into its serialized object. A key the
+/// typed arm wrote wins, so an extra can never shadow a modelled field.
+fn with_extras(mut value: Value, extras: &Extras) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        for (key, field) in extras {
+            obj.entry(key.clone()).or_insert_with(|| field.clone());
+        }
+    }
+    value
+}
+
+/// The block's own object minus the keys its typed arm read, kept verbatim
+/// so a decode is lossless.
+fn extras_of(raw: &Value, known: &[&str]) -> Extras {
+    let Some(obj) = raw.as_object() else {
+        return Extras::new();
+    };
+    obj.iter()
+        .filter(|(key, _)| !known.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 impl<'de> Deserialize<'de> for ContentBlock {
@@ -247,6 +301,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
         match ty.as_str() {
             "text" => Ok(ContentBlock::Text {
                 text: raw.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+                extras: extras_of(&raw, &["type", "text"]),
             }),
             "thinking" => Ok(ContentBlock::Thinking {
                 thinking: raw
@@ -259,11 +314,13 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                extras: extras_of(&raw, &["type", "thinking", "signature"]),
             }),
             "tool_use" => Ok(ContentBlock::ToolUse {
                 id: raw.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
                 name: raw.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
                 input: raw.get("input").cloned().unwrap_or(Value::Null),
+                extras: extras_of(&raw, &["type", "id", "name", "input"]),
             }),
             "tool_result" => Ok(ContentBlock::ToolResult {
                 tool_use_id: raw
@@ -273,11 +330,13 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .to_string(),
                 content: raw.get("content").cloned().unwrap_or(Value::Null),
                 is_error: raw.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                extras: extras_of(&raw, &["type", "tool_use_id", "content", "is_error"]),
             }),
             "server_tool_use" => Ok(ContentBlock::ServerToolUse {
                 id: raw.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
                 name: raw.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
                 input: raw.get("input").cloned().unwrap_or(Value::Null),
+                extras: extras_of(&raw, &["type", "id", "name", "input"]),
             }),
             "advisor_tool_result" => Ok(ContentBlock::ServerToolResult {
                 tool_use_id: raw
@@ -286,6 +345,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .unwrap_or_default()
                     .to_string(),
                 content: raw.get("content").cloned().unwrap_or(Value::Null),
+                extras: extras_of(&raw, &["type", "tool_use_id", "content"]),
             }),
             "document" | "image" => {
                 let source = raw.get("source").cloned().unwrap_or(Value::Null);
@@ -301,15 +361,16 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     );
                 }
                 Ok(if ty == "document" {
-                    ContentBlock::Document { source }
+                    ContentBlock::Document { source, extras: extras_of(&raw, &["type", "source"]) }
                 } else {
-                    ContentBlock::Image { source }
+                    ContentBlock::Image { source, extras: extras_of(&raw, &["type", "source"]) }
                 })
             }
             "queued_command" => Ok(ContentBlock::QueuedCommand {
                 prompt: raw.get("prompt").cloned().unwrap_or(Value::Null),
                 command_mode: raw.get("commandMode").and_then(Value::as_str).map(str::to_string),
                 source_uuid: raw.get("source_uuid").and_then(Value::as_str).map(str::to_string),
+                extras: extras_of(&raw, &["type", "prompt", "commandMode", "source_uuid"]),
             }),
             other => Ok(ContentBlock::Unknown { type_str: other.to_string(), raw }),
         }
@@ -342,6 +403,45 @@ mod tests_content_roundtrip {
         matches!(block, ContentBlock::Thinking { .. }).then_some(()).expect("thinking variant");
         let re = serde_json::to_value(&block).expect("serialize");
         assert_eq!(raw, re);
+    }
+
+    /// A block's own object carries keys this build does not model
+    /// (`caller` on a tool_use, for one), and they cross: the block is
+    /// hand-(de)serialized, so this is the level a flatten most plausibly
+    /// leaks at.
+    #[test]
+    fn a_block_keeps_unmodelled_keys_in_its_own_object() {
+        let raw = json!({
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "Agent",
+            "input": {"prompt": "do it"},
+            "caller": {"type": "direct"},
+        });
+        let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
+        let re = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(re, raw, "the caller crosses whole");
+
+        let raw = json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "ok",
+            "is_error": false,
+            "elapsed_ms": 12,
+        });
+        let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
+        let re = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(re, raw, "and an unmodelled result key does too");
+
+        // The control: a known key read by the typed arm is never
+        // duplicated from the extras.
+        let block: ContentBlock = serde_json::from_value(json!({
+            "type": "text",
+            "text": "hi",
+        }))
+        .expect("parse");
+        let re = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(re, json!({"type": "text", "text": "hi"}));
     }
 
     #[test]

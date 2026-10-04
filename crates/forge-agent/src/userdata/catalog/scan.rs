@@ -1424,6 +1424,8 @@ mod tests {
                 post_tokens: 31_253,
                 uuid: "cb1".to_owned(),
                 session_id: "s1".to_owned(),
+                metadata_extras: forge_primitives::messages::Extras::new(),
+                extras: forge_primitives::messages::Extras::new(),
             },
             "and decodes typed, which is what the fold reads",
         );

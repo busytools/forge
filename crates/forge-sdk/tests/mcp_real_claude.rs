@@ -83,7 +83,7 @@ async fn real_claude_calls_in_process_tool() {
                                 saw_tool_use = true;
                             }
                         }
-                        forge_primitives::ContentBlock::Text { text } => {
+                        forge_primitives::ContentBlock::Text { text, .. } => {
                             if text.contains("Hello, world!") {
                                 saw_greeting = true;
                             }

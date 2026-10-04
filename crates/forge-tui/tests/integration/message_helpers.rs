@@ -20,12 +20,14 @@ pub fn assistant_message(
             stop_reason: None,
             stop_sequence: None,
             usage: None,
+            extras: serde_json::Map::new(),
         },
         session_id: "test-session".to_owned(),
         parent_tool_use_id: None,
         error: None,
         uuid: None,
         timestamp: None,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -46,12 +48,14 @@ pub fn assistant_message_with_parent(
             stop_reason: None,
             stop_sequence: None,
             usage: None,
+            extras: serde_json::Map::new(),
         },
         session_id: "test-session".to_owned(),
         parent_tool_use_id: Some(parent_tool_use_id.to_owned()),
         error: None,
         uuid: None,
         timestamp: None,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -59,13 +63,18 @@ pub fn assistant_message_with_parent(
 /// content blocks (typically tool_result blocks).
 pub fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
     forge_primitives::Message::User {
-        message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
+        message: forge_primitives::UserEnvelope {
+            role: "user".to_owned(),
+            content,
+            extras: serde_json::Map::new(),
+        },
         session_id: "test-session".to_owned(),
         parent_tool_use_id: None,
         uuid: None,
         tool_use_result: None,
         timestamp: None,
         synthetic: false,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -92,6 +101,7 @@ pub fn result_success_message() -> forge_primitives::Message {
         errors: None,
         uuid: None,
         terminal_reason: None,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -123,12 +133,17 @@ pub fn tool_use_block(
     name: &str,
     input: serde_json::Value,
 ) -> forge_primitives::ContentBlock {
-    forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
+    forge_primitives::ContentBlock::ToolUse {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        input,
+        extras: serde_json::Map::new(),
+    }
 }
 
 /// Convenience: build a wire `text` content block.
 pub fn text_block(text: &str) -> forge_primitives::ContentBlock {
-    forge_primitives::ContentBlock::Text { text: text.to_owned() }
+    forge_primitives::ContentBlock::Text { text: text.to_owned(), extras: serde_json::Map::new() }
 }
 
 /// Convenience: build a wire `tool_result` content block (success).
@@ -140,6 +155,7 @@ pub fn tool_result_block(
         tool_use_id: tool_use_id.to_owned(),
         content,
         is_error: false,
+        extras: serde_json::Map::new(),
     }
 }
 
@@ -153,5 +169,6 @@ pub fn tool_result_error_block(
         tool_use_id: tool_use_id.to_owned(),
         content,
         is_error: true,
+        extras: serde_json::Map::new(),
     }
 }

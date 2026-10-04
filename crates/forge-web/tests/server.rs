@@ -2330,10 +2330,12 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
                 forge_primitives::messages::StopHookInfo {
                     command: "just fmt".to_owned(),
                     duration_ms: Some(1400),
+                    extras: serde_json::Map::new(),
                 },
                 forge_primitives::messages::StopHookInfo {
                     command: "just check".to_owned(),
                     duration_ms: Some(62000),
+                    extras: serde_json::Map::new(),
                 },
             ],
             hook_errors: Vec::new(),
@@ -2345,6 +2347,7 @@ async fn a_turns_hooks_are_drawn_as_the_chip() {
             parent_tool_use_id: None,
             session_id: "s".to_owned(),
             uuid: "hooks-1".to_owned(),
+            extras: serde_json::Map::new(),
         },
     });
     let region = next_session_event(stream).await.expect("the frame redraws the region");

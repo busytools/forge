@@ -51,12 +51,13 @@ fn dispatch_detects_command_lifecycle() {
 
     let line = r#"{"type":"command_lifecycle","command_uuid":"p1","state":"queued","uuid":"e1","session_id":"s1"}"#;
     match decode_dispatch(line, 1) {
-        DecodedLine::Message(forge_primitives::Message::CommandLifecycle {
-            command_uuid,
-            state,
-            session_id,
-            ..
-        }) => {
+        DecodedLine::Message(msg) => {
+            let forge_primitives::Message::CommandLifecycle {
+                command_uuid, state, session_id, ..
+            } = *msg
+            else {
+                panic!("expected CommandLifecycle, got {msg:?}");
+            };
             assert_eq!(command_uuid, "p1");
             assert_eq!(state, "queued");
             assert_eq!(session_id, "s1");
@@ -168,43 +169,61 @@ fn dispatch_routes_well_formed_control_response_to_control_response() {
 /// The CLI's 30-second heartbeat during a long-running tool call.
 /// Fixture is a raw specimen from the live log (2026-09-01 07:53:09),
 /// not a constructed value - the point is that this exact wire shape
-/// decodes.
+/// decodes as a message the stream carries.
 #[test]
 fn dispatch_models_the_tool_progress_heartbeat() {
+    use forge_primitives::Message;
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 
     let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0","tool_name":"Bash","parent_tool_use_id":"toolu_01QhFqNDEgKeskhhiYpzeHnL","elapsed_time_seconds":30,"heartbeat":true,"session_id":"428903f7-79b3-46ed-aafc-86b0b02ad8b6","uuid":"35fb7d4d-831f-4ae3-9bf0-1740057edeeb"}"#;
     let decoded = decode_dispatch(line, 40);
     match decoded {
-        DecodedLine::ToolProgress(progress) => {
-            assert_eq!(progress.tool_use_id, "toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0");
-            assert_eq!(progress.tool_name, "Bash");
-            assert!((progress.elapsed_time_seconds - 30.0).abs() < f64::EPSILON);
-            assert!(progress.heartbeat, "the specimen is a heartbeat");
-            assert_eq!(
-                progress.parent_tool_use_id.as_deref(),
-                Some("toolu_01QhFqNDEgKeskhhiYpzeHnL")
-            );
+        DecodedLine::Message(msg) => {
+            let Message::ToolProgress {
+                tool_use_id,
+                tool_name,
+                elapsed_time_seconds,
+                heartbeat,
+                parent_tool_use_id,
+                ..
+            } = *msg
+            else {
+                panic!("expected a ToolProgress message, got: {msg:?}");
+            };
+            assert_eq!(tool_use_id, "toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0");
+            assert_eq!(tool_name, "Bash");
+            assert!((elapsed_time_seconds - 30.0).abs() < f64::EPSILON);
+            assert!(heartbeat, "the specimen is a heartbeat");
+            assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_01QhFqNDEgKeskhhiYpzeHnL"));
         }
-        other => panic!("expected ToolProgress, got: {other:?}"),
+        other => panic!("expected a ToolProgress message, got: {other:?}"),
     }
 }
 
-/// A heartbeat for a top-level tool call has no parent tool use. The
-/// specimen above is subagent-side; this is the absent-key case the
-/// top-level shape would carry.
+/// A heartbeat for a top-level tool call has no parent tool use, and
+/// the frame may carry neither session id nor uuid. The specimen above
+/// is subagent-side; this is the absent-key case the top-level shape
+/// would carry.
 #[test]
 fn tool_progress_without_a_parent_tool_still_decodes() {
+    use forge_primitives::Message;
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 
     let line = r#"{"type":"tool_progress","tool_use_id":"toolu_01ABC-heartbeat-3","tool_name":"Bash","elapsed_time_seconds":60}"#;
     let decoded = decode_dispatch(line, 41);
     match decoded {
-        DecodedLine::ToolProgress(progress) => {
-            assert_eq!(progress.parent_tool_use_id, None);
-            assert!(!progress.heartbeat, "absent flag defaults to false");
+        DecodedLine::Message(msg) => {
+            let Message::ToolProgress { parent_tool_use_id, heartbeat, session_id, uuid, .. } =
+                *msg
+            else {
+                panic!("expected a ToolProgress message, got: {msg:?}");
+            };
+            assert_eq!(parent_tool_use_id, None);
+            assert_eq!(session_id, None, "an absent session id stays absent");
+            assert_eq!(uuid, None);
+            assert!(!heartbeat, "absent flag defaults to false");
         }
-        other => panic!("expected ToolProgress, got: {other:?}"),
+        other => panic!("expected a ToolProgress message, got: {other:?}"),
     }
 }
 

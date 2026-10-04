@@ -58,6 +58,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
         forge_primitives::Message::System { .. } => "System",
         forge_primitives::Message::CommandLifecycle { .. } => "CommandLifecycle",
         forge_primitives::Message::Result { .. } => "Result",
+        forge_primitives::Message::ToolProgress { .. } => "ToolProgress",
         forge_primitives::Message::TaskStarted { .. } => "TaskStarted",
         forge_primitives::Message::TaskUpdated { .. } => "TaskUpdated",
         forge_primitives::Message::TaskProgress { .. } => "TaskProgress",
@@ -1320,7 +1321,7 @@ fn prompt_frame_text(msg: &forge_primitives::Message) -> Option<String> {
     let forge_primitives::Message::User { message, .. } = msg else {
         return None;
     };
-    let Some(forge_primitives::ContentBlock::Text { text }) = message.content.first() else {
+    let Some(forge_primitives::ContentBlock::Text { text, .. }) = message.content.first() else {
         return None;
     };
     Some(text.clone())
@@ -1863,6 +1864,7 @@ mod tests {
             errors: None,
             uuid: None,
             terminal_reason: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4542,7 +4544,9 @@ mod focus_seam_tests {
                 role: "user".to_owned(),
                 content: vec![forge_primitives::ContentBlock::Text {
                     text: "background turn".to_owned(),
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: session_id.to_owned(),
             parent_tool_use_id: None,
@@ -4550,6 +4554,7 @@ mod focus_seam_tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4561,16 +4566,19 @@ mod focus_seam_tests {
                 model: "claude-opus-5".to_owned(),
                 content: vec![forge_primitives::ContentBlock::Text {
                     text: "background answer".to_owned(),
+                    extras: serde_json::Map::new(),
                 }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: session_id.to_owned(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
