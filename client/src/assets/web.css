@@ -1009,11 +1009,9 @@ details.leaf > summary .org { font-size: var(--fs-label); color: var(--dim);
 /* The row's verdict, when it has one: a turn that did not finish leads with the
    failure mark, and the row's own colour is not a verdict. */
 .turninfo > summary .st.err { color: var(--bad); }
-/* A compaction in flight, and the chip a turn's hooks collapse to. */
-.compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
-  font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
-/* The compaction point: the SETTLED form of the line above. A hint you open
-   rather than a block that is already open. */
+/* The compaction point: the settled form of a compaction. A hint you open
+   rather than a block that is already open. The in-flight form lives in the
+   composer's blocker alone - the chat draws no second line for it. */
 details.cpoint { margin: 12px 0; font-family: var(--mono); font-size: var(--fs-base); }
 details.cpoint > summary { list-style: none; display: flex; align-items: center; gap: 10px;
   cursor: pointer; }

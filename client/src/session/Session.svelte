@@ -188,7 +188,6 @@
   const conversationProps = $derived<ConversationProps>({
     waking: seat.waking,
     reason: seat.reason,
-    compacting: record?.composer.compacting ?? false,
     slot,
     connection,
   });

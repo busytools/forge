@@ -639,11 +639,9 @@
     border: 1px solid rgba(201,161,59,.35); border-radius: 999px; padding: 1px 7px; margin-left: 10px; }
   .conv .notice .sub2 { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px; }
 
-  .compacting { display: flex; align-items: center; gap: 9px; color: var(--accent);
-    font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
-
-  /* The compaction point: the SETTLED form of the line above. A hint you open
-     rather than a block that is already open. */
+  /* The compaction point: the settled form of a compaction. A hint you open
+     rather than a block that is already open. The in-flight form lives in the
+     composer's blocker alone - the chat draws no second line for it. */
   details.cpoint { margin: 12px 0; font-family: var(--mono); font-size: var(--fs-base); }
   details.cpoint > summary { list-style: none; display: flex; align-items: center; gap: 10px; cursor: pointer; }
   details.cpoint > summary::-webkit-details-marker { display: none; }
@@ -1733,8 +1731,6 @@ docs: Render the message body into rows.</div>
         <div class="notice warn"><span class="chip">attempt 2 / 4</span><span class="sev">Warning</span>API retry after server_error HTTP 529<span class="sub2">retrying in 1.5s</span></div>
         <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
 
-        <div class="compacting"><span class="ring"></span>Compacting context...</div>
-
         <details class="hooks">
           <summary><span>hook summary &#183; 3 actions</span>
             <svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -2079,14 +2075,10 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="beat" data-beat="5">
-          <div class="compacting"><span class="ring"></span>Compacting context...</div>
-        </div>
-
-        <div class="beat" data-beat="6">
           <div class="prose"><p><span class="streaming" id="lv-t2"></span><span class="caret" id="lv-c2"></span></p></div>
         </div>
 
-        <div class="beat" data-beat="7">
+        <div class="beat" data-beat="6">
           <details class="hooks">
             <summary><span>hook summary &#183; 2 actions</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -2549,9 +2541,8 @@ branch main, nothing to commit</div>
     at(2700, () => { $('lv-a-st').innerHTML = OK; reveal(3); });
     at(3900, () => { $('lv-b-st').innerHTML = OK; reveal(4); });
     at(5300, () => { $('lv-c-st').innerHTML = OK; });
-    at(5600, () => { reveal(5); });
-    at(6900, () => { reveal(6); stream($('lv-t2'), $('lv-c2'), T2, 1100); });
-    at(8000, () => { reveal(7); });
+    at(6900, () => { reveal(5); stream($('lv-t2'), $('lv-c2'), T2, 1100); });
+    at(8000, () => { reveal(6); });
     at(9200, () => {
       if (clock) { clearInterval(clock); clock = null; }
       $('lv-mark').innerHTML = OK;
@@ -2566,7 +2557,7 @@ branch main, nothing to commit</div>
          turn. This is that beat: the row still above the box, finished. */
       $('lv-cost').style.display = '';
       $('lv-cost-sep').style.display = '';
-      reveal(7);
+      reveal(6);
     });
   }
 

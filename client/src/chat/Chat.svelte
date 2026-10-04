@@ -10,7 +10,6 @@
   import { mintPromptId } from '../wire/ids';
   import type { SessionSlot } from '../wire/types';
   import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
-  import Compacting from './Compacting.svelte';
   import { latestCompaction } from './compaction-jump';
   import {
     Chat,
@@ -45,7 +44,6 @@
     connection,
     waking = false,
     reason = null,
-    compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -53,8 +51,6 @@
     waking?: boolean;
     /** Why, when it does. */
     reason?: string | null;
-    /** A compaction in flight, which the newest turn draws a line for. */
-    compacting?: boolean;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -509,9 +505,7 @@
    * the key so two seats with the same number of turns cannot collide, belt
    * and braces beside the publish that does the work (#1673).
    */
-  const follows = $derived(
-    held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,
-  );
+  const follows = $derived(held.turns.length === 0 ? null : `${seat}:${held.turns.length}`);
 
   /**
    * The newest turn's own report row - the unit, and the figures in it -
@@ -818,9 +812,6 @@
          the empty copy here would say the seat has no history when the truth
          is that nothing has answered yet. -->
     <p class="hold">Reading the conversation...</p>
-    {#if compacting}
-      <Compacting />
-    {/if}
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
@@ -834,9 +825,6 @@
         Nothing said yet
         <span class="sub">this seat has no history: what is said here starts it</span>
       </div>
-    {/if}
-    {#if compacting}
-      <Compacting />
     {/if}
   </div>
 {:else}
@@ -861,12 +849,7 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn
-          {turn}
-          {slot}
-          compacting={compacting && turn.key === newest}
-          carried={turn.key === newest ? (pinned?.key ?? null) : null}
-        />
+        <Turn {turn} {slot} carried={turn.key === newest ? (pinned?.key ?? null) : null} />
         <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or
              joins, so nothing moves when the send is taken. -->

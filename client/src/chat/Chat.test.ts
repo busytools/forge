@@ -259,48 +259,6 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the reader own words drew above it').toContain('go');
   });
 
-  it('draws the compaction line once, under the newest turn only', () => {
-    // The prop is the conversation's, and the line is the newest turn's: a
-    // column that handed it to every turn would draw a line per row, which is
-    // one line per turn in the reader's history.
-    const said = (text: string): unknown => ({
-      type: 'assistant',
-      message: {
-        id: `m-${text}`,
-        role: 'assistant',
-        model: 'claude-opus-5',
-        content: [{ type: 'text', text }],
-      },
-    });
-
-    const server = stub();
-    draw({ compacting: true }, server);
-    server.answer([
-      { key: 't1', messages: [said('the first answer')] },
-      { key: 't2', messages: [said('the second answer')] },
-    ]);
-    flushSync();
-
-    const lines = (document.body.textContent ?? '').match(/Compacting context/g) ?? [];
-    expect(lines, 'one line for the conversation, not one per turn').toHaveLength(1);
-  });
-
-  it('draws the compaction line on a column that has no turn to hang it on', () => {
-    // Every state the column can be in has a rendering, and this is the one
-    // state where the line has no turn to belong to: a compaction running
-    // before the first page lands, or on a seat that has said nothing yet.
-    const loading = stub();
-    draw({ compacting: true }, loading);
-    expect(drawn(), 'the line draws while the first page is still coming').toContain(
-      'Compacting context',
-    );
-
-    const empty = stub();
-    draw({ compacting: true }, empty);
-    empty.answer([]);
-    expect(drawn(), 'and on a seat with no history').toContain('Compacting context');
-  });
-
   it('draws the seat that has no session behind it as its own state', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);

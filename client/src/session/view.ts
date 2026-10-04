@@ -191,8 +191,6 @@ export interface ConversationProps {
   waking: boolean;
   /** Why it is not running, when the roster says. */
   reason: string | null;
-  /** A compaction in flight, which the conversation draws a line for. */
-  compacting: boolean;
   slot: SessionSlot;
   connection: Connection;
 }
