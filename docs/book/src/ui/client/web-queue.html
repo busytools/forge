@@ -66,7 +66,7 @@
   .qcard .m .sep { opacity: .5; }
   .qcard .m .src.you{color:var(--text)} .qcard .m .src.cron{color:var(--warn)}
   .qcard .m .src.gotify{color:var(--teal)} .qcard .m .src.slack{color:var(--ok)}
-  .qcard .m .src.peer{color:var(--blue)}
+  .qcard .m .src.peer{color:var(--blue)} .qcard .m .src.forge{color:var(--violet)}
   .qcard .m .nx { color: var(--accent); }
   .qcard .m .pos { margin-left: auto; }
   .qcard .m .del { display: none; font-family: var(--mono); font-size: var(--fs-label);
@@ -115,7 +115,7 @@
   <span class="mono">The wire</span> are the measured ones.</p>
   <div class="legend">
     <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span></span>
-    <span>one 6px arc per queued prompt; no cap</span>
+    <span>one 16px arc per queued prompt; no cap</span>
     <span>words only on the face; arcs are clean</span>
   </div>
 
@@ -229,9 +229,9 @@ const tiles = {
     { cap: 'One queued', items: many(1) },
     { cap: 'Three queued', items: many(3) },
     { cap: 'Twelve queued', items: many(12),
-      note: 'face + eleven 6px arcs: about a third of the foot' },
+      note: 'face + eleven 16px arcs: every queued prompt keeps a strip of its own' },
     { cap: 'Forty queued', items: many(40),
-      note: 'no cap: forty arcs is ~4x twelve. To settle: keep, or compress past some depth' },
+      note: 'no cap: forty arcs run taller than the column, and the chat above shrinks by all of it. To settle: keep, or compress past some depth' },
     { cap: 'A very long prompt', items: [{src:'you', text:'fix the flaky retry test before the gate, then re-run the whole suite, then open the PR against main and watch CI to green'}],
       note: 'the words truncate at the card width; the full text is in the chat once delivered' },
   ],

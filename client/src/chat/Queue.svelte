@@ -1,9 +1,11 @@
 <script lang="ts">
-  import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { QueueEnding, QueuedPromptRow } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
+  import { renderInlineProse } from './prose';
   import { endingLine, faceAt, walk } from './queue';
+  import { firstLine, joinedLine } from './text';
+  import { inbound } from './units';
 
   /**
    * The prompts waiting in the CLI's queue, drawn as a stack above the box.
@@ -15,11 +17,14 @@
    * prompt the CLI already took cannot be drawn as dropped.
    *
    * **One mechanism makes the depth.** Every row is absolutely positioned at
-   * the pile's foot and lifted by six pixels per step, so the rows behind the
-   * face show as edges rather than as a list: the height the pile occupies is
-   * the face plus those steps, and the chat column above shrinks by exactly
-   * that much. The face is whichever row the walk is on - the newest when the
-   * walk is in the box - and only the face draws its words.
+   * the pile's foot and lifted by one step per queued prompt, so the rows
+   * behind the face show as edges rather than as a list: the height the pile
+   * occupies is the face plus those steps, and the chat column above shrinks
+   * by exactly that much. The face is whichever row the walk is on - the
+   * newest when the walk is in the box - and only the face draws its words.
+   * **The step is wide on purpose** (Ved, 2026-10-04): at six pixels the
+   * edges read as one smudge, so every queued prompt shows a strip of its own
+   * card.
    */
   let {
     rows,
@@ -37,7 +42,7 @@
   const line = $derived(endingLine(ended));
 
   /** The step between one arc and the next. */
-  const STEP = 6;
+  const STEP = 16;
 
   /**
    * One row's drawn height, which the container's own height is built from.
@@ -75,6 +80,37 @@
 
   /** Where the face sits: the cursor's row, or the newest when the walk is in the box. */
   const face = $derived(faceAt(active, rows));
+
+  /**
+   * The words the card draws, as one rendered line.
+   *
+   * **A peer envelope draws its body alone** (Ved, 2026-10-04): the raw
+   * `[Message id=...]` head is plumbing, and who sent it is already the meta
+   * row's own word - a different lead shows its project, a worker its
+   * `project/label` - so the text says nothing the row below it does not. Any
+   * other prompt is the reader's own and renders the same way.
+   */
+  function cardWords(text: string): string {
+    const envelope = inbound(text, null);
+    if (envelope?.kind === 'peer') {
+      return renderInlineProse(joinedLine(firstLine(envelope.card.body)));
+    }
+    return renderInlineProse(joinedLine(text));
+  }
+
+  /**
+   * The meta's source chip: the sender for a peer envelope, the kind otherwise.
+   *
+   * **A peer envelope already names its sender** (`project` for a lead,
+   * `project/label` for a worker), and that is what tells a reader what the
+   * message IS - so the chip carries it, coloured as peer traffic. Every
+   * other prompt has no other sender to name, and its kind is its own word.
+   */
+  function cardSource(row: QueuedPromptRow): { label: string; kind: string } {
+    const envelope = inbound(row.text, null);
+    if (envelope?.kind === 'peer') return { label: envelope.card.peer, kind: 'peer' };
+    return { label: row.source, kind: row.source };
+  }
 
   /**
    * The walk, as the terminal taught it: up enters at the newest and goes
@@ -161,13 +197,10 @@
          backspace - sits beside it rather than inside an option. -->
     <div class="qcount">
       <span>queued <b>{rows.length}</b></span>
-      {#if active !== null}
-        {@const held = rows.find((row) => row.uuid === active)}
-        <button class="del" type="button" onclick={() => cancel(active ?? '')}>
-          <Icon name="x" class="ic" /> cancel {held?.source ?? ''}
-        </button>
-      {/if}
-      <span class="qhint"><b>↑↓</b> walk &middot; <b>⌫</b> cancel</span>
+      <span class="qhint"
+        ><b>↑↓</b> walk{#if active !== null}
+          &middot; <b>⌫</b> cancel{/if}</span
+      >
     </div>
     <div
       class="qlist"
@@ -184,6 +217,7 @@
       <div class="qstack" style="height: {FACE_HEIGHT + face * STEP}px">
         {#each rows as row, at (row.uuid)}
           {@const depth = face - at}
+          {@const src = cardSource(row)}
           {#if depth >= 0}
             <div
               class="qcard"
@@ -195,9 +229,12 @@
               aria-selected={active === row.uuid}
               style="transform: translateY({-depth * STEP}px)"
             >
-              <span class="w">{row.text}</span>
+              <!-- The card's rendered line, which the module produced from
+                   escaped input: the same renderer a row's preview uses. -->
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <span class="w">{@html cardWords(row.text)}</span>
               <span class="m">
-                <span class="src {row.source}">{row.source}</span>
+                <span class="src {src.kind}">{src.label}</span>
                 {#if at === 0}<span class="nx">next</span>{/if}
                 {#if active === row.uuid}<span class="pos">#{at + 1} / {rows.length}</span>{/if}
               </span>
@@ -223,13 +260,15 @@
   .qlist {
     outline: none;
   }
-  /* **The pile separates itself from the turn above.** The composer's own
-     margin pulls it up under the conversation (`margin-top: calc(-1 *
-     var(--ins))`, written for the box alone); with the pile on top the card
-     met the last row flush (#1705), so the pile carries the block gap
-     instead. */
+  /* **The pile separates itself from the turn above, and its box below.**
+     The composer's own margin pulls it up under the conversation
+     (`margin-top: calc(-1 * var(--ins))`, written for the box alone); with
+     the pile on top the card met the last row flush (#1705), so the pile
+     carries the block gap instead - and the mock gives the box its own
+     `margin-top: 8px`, which is the seam the last card was missing below. */
   .pile {
     margin-top: 8px;
+    margin-bottom: 8px;
   }
   .ended {
     padding: 2px 0 0 11px;
@@ -250,24 +289,9 @@
     color: var(--muted);
     font-weight: 400;
   }
-  .qcount .del {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 0 7px;
-    cursor: pointer;
-  }
-  .qcount .del:hover,
-  .qcount .del:focus-visible {
-    color: var(--bad);
-    border-color: var(--bad);
-  }
+  /* No cancel control in the head (Ved, 2026-10-04): its appearing and
+     vanishing moved everything beside it with every step of the walk, and the
+     hint below already says which key does it. */
   /* The header's pieces sit together rather than pinned to the column's ends:
      the mock's tile is 430px, where a right-pinned hint is a step; the real
      column is three times that, where the same rule is a canyon (#1705, and
@@ -333,6 +357,10 @@
   }
   .m .src.peer {
     color: var(--blue);
+  }
+  /* Forge's own deliveries, which are neither the reader's nor a connector's. */
+  .m .src.forge {
+    color: var(--violet);
   }
   .m .nx {
     color: var(--accent);

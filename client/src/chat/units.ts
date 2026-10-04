@@ -823,7 +823,7 @@ function isSlackId(value: string): boolean {
  * the recorded kinds that carry a trailer: a question ends `- reply with ...`
  * and a reply ends `to your earlier ask`, both inside the brackets.
  */
-function inbound(text: string, self: Self | null): Envelope | null {
+export function inbound(text: string, self: Self | null): Envelope | null {
   if (!text.startsWith('[')) return null;
   const close = text.indexOf(']');
   if (close === -1) return null;
