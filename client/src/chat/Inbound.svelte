@@ -35,11 +35,28 @@
     // A preview shows its inline marks, the way the hook row's own line does.
     return renderInlineProse(joinedLine(line));
   });
+
+  /**
+   * The title as the row draws it, with a cron fire's own line rendered.
+   *
+   * **A cron fire's title IS its body's first line**, so it carries the
+   * delivery's markdown - drawn raw it showed the marks as themselves (#1708).
+   * The other kinds' titles are names (a channel, an app) where a markdown
+   * pass would rewrite what the name literally is, so it stays text.
+   */
+  const title = $derived(row.kind === 'cron' ? renderInlineProse(joinedLine(row.title)) : null);
 </script>
 
 <details class="leaf inboundrow">
   <summary>
-    <span class="tn">{row.title}</span>
+    {#if title !== null}
+      <!-- A cron fire's title, rendered from escaped input: the same renderer
+           the body and the tail line use. -->
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+      <span class="tn">{@html title}</span>
+    {:else}
+      <span class="tn">{row.title}</span>
+    {/if}
     {#if tail !== null}
       <!-- The row's rendered line, which the module produced from escaped
            input: the same renderer the body and a thought's line use. -->

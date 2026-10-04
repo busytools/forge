@@ -756,6 +756,12 @@ export type InboundKind = 'cron' | 'slack' | 'gotify';
 export interface InboundLeaf {
   /** The frame and block it arrived in, which is what the row is keyed by. */
   key: string;
+  /**
+   * The delivery's own kind, which the row reads for one thing: a cron fire's
+   * title is its prompt's first line, so it renders as prose where the other
+   * kinds' titles are names.
+   */
+  kind: InboundKind;
   /** The row's title: the schedule, the channel, or the app. */
   title: string;
   /** The whole of what arrived, which the row opens onto. */
@@ -1812,6 +1818,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         // same word, which a keyed list refuses at mount.
         const row = {
           key: item.key,
+          kind: item.kind,
           title: item.title,
           body: item.body,
           elevated: item.elevated,
