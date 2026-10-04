@@ -321,7 +321,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // drops it here too. Idempotent on purpose: this view has usually
         // popped it already, and it is another view's answer that makes
         // the case matter.
-        SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+        SessionUpdate::PendingInteractionResolved { key, tool_id, .. } => {
             if let Some(session) = app.session_mut(&key) {
                 session.prompt_queue.retain(|prompt| prompt.tool_id != *tool_id);
             }
@@ -4761,6 +4761,7 @@ mod focus_seam_tests {
             forge_workspace::SessionUpdate::PendingInteractionResolved {
                 key: key.clone(),
                 tool_id: "tc-1".to_owned(),
+                question_index: None,
             },
         );
 

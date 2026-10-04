@@ -333,17 +333,28 @@ impl SessionTask {
                     // Each one is announced: a view drawing a dock from the
                     // request it folded would otherwise keep offering a
                     // prompt the core has let go.
-                    let dropped: Vec<String> = self
+                    let dropped: Vec<(String, Option<u64>)> = self
                         .domain
                         .lock()
                         .pending_interactions
                         .drain()
-                        .map(|(tool_id, _)| tool_id)
+                        .map(|(tool_id, slot)| {
+                            // A question names the round it was parked as, so
+                            // the views dropping it drop the same one.
+                            let question_index = match slot {
+                                PendingInteractionSlot::Question { request, .. } => {
+                                    Some(request.question_index)
+                                }
+                                PendingInteractionSlot::Permission { .. } => None,
+                            };
+                            (tool_id, question_index)
+                        })
                         .collect();
-                    for tool_id in dropped {
+                    for (tool_id, question_index) in dropped {
                         self.emit(SessionUpdate::PendingInteractionResolved {
                             key: self.key.clone(),
                             tool_id,
+                            question_index,
                         });
                     }
                     // Everything parked for the replaced identity has no
@@ -555,6 +566,7 @@ impl SessionTask {
                         self.emit(SessionUpdate::PendingInteractionResolved {
                             key: self.key.clone(),
                             tool_id: tool_call_id.clone(),
+                            question_index: None,
                         });
                     }
                     tracing::warn!(
@@ -599,7 +611,7 @@ impl SessionTask {
                     // unblocks rather than hanging the turn.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Question { tx, .. } = pending
+                        && let PendingInteractionSlot::Question { tx, request, .. } = pending
                     {
                         let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
                         // An observer that folded the request keeps drawing
@@ -607,6 +619,7 @@ impl SessionTask {
                         self.emit(SessionUpdate::PendingInteractionResolved {
                             key: self.key.clone(),
                             tool_id: tool_call_id.clone(),
+                            question_index: Some(request.question_index),
                         });
                     }
                     tracing::warn!(
@@ -891,6 +904,7 @@ impl SessionTask {
                     self.emit(SessionUpdate::PendingInteractionResolved {
                         key: self.key.clone(),
                         tool_id,
+                        question_index: None,
                     });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
@@ -917,7 +931,7 @@ impl SessionTask {
                     Some(PendingInteractionSlot::Question { .. }),
                 );
                 if kind_matches
-                    && let Some(PendingInteractionSlot::Question { tx, .. }) =
+                    && let Some(PendingInteractionSlot::Question { tx, request, .. }) =
                         guard.pending_interactions.remove(&tool_id)
                 {
                     drop(guard);
@@ -932,6 +946,7 @@ impl SessionTask {
                     self.emit(SessionUpdate::PendingInteractionResolved {
                         key: self.key.clone(),
                         tool_id,
+                        question_index: Some(request.question_index),
                     });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
@@ -3546,6 +3561,56 @@ mod tests {
         assert!(agent_rx.try_recv().is_err(), "nothing forwards to the agent on a kind mismatch");
     }
 
+    /// The round rides the resolution: a batch reuses one tool id and
+    /// advances the question index, and a view's clear needs the pair to
+    /// dequeue a batch's rounds one at a time (the loss itself is the
+    /// record's single ask slot - #1717's queue, its own piece).
+    ///
+    /// **This pins the ANSWER path** - one of the sites that emits the
+    /// frame; the identity drain and the orphan arms carry the same field,
+    /// and the compiler holds every site to naming it.
+    #[tokio::test]
+    async fn an_answered_questions_resolution_names_its_round() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (handle, _agent_rx) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let key = SessionSlot::from_str_for_test("ask-round");
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let mut observer = update_tx.subscribe(SubscriberRole::Answering);
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::clone(&handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(DomainSession::new(
+                key.clone(),
+                Some(Arc::clone(&handle)),
+            ))),
+            update_tx,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        let mut request = question_request_fixture("tu-round");
+        request.question_index = 3;
+        task.translate_event(AgentEvent::QuestionRequest { session_id: key.display(), request });
+
+        task.execute_command(Command::RespondQuestion {
+            key: key.clone(),
+            tool_id: "tu-round".to_owned(),
+            outcome: forge_primitives::QuestionOutcome::Cancelled,
+        });
+
+        let mut resolved = None;
+        while let Ok(update) = observer.try_recv() {
+            if let SessionUpdate::PendingInteractionResolved { question_index, .. } = update {
+                resolved = Some(question_index);
+            }
+        }
+        assert_eq!(resolved, Some(Some(3)), "the resolution names the round it ends");
+    }
+
     fn permission_request_fixture(tool_id: &str) -> forge_primitives::PermissionRequest {
         forge_primitives::PermissionRequest {
             tool_call: forge_primitives::ToolCall {
@@ -4427,7 +4492,7 @@ provider = "anthropic"
         // click on it reaches nothing.
         let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
             .filter_map(|update| match update {
-                SessionUpdate::PendingInteractionResolved { key, tool_id } => {
+                SessionUpdate::PendingInteractionResolved { key, tool_id, .. } => {
                     assert_eq!(key, SessionSlot::from_str_for_test("old-uuid"));
                     Some(tool_id)
                 }
