@@ -539,13 +539,24 @@
     "web_search_requests"
   ],
   "/workflow_progress[]": [
+    "agentId",
+    "attempt",
+    "durationMs",
     "index",
     "label",
+    "lastProgressAt",
+    "model",
     "phaseIndex",
     "phaseTitle",
+    "promptFramed",
+    "promptPreview",
+    "queuedAt",
     "resultPreview",
+    "startedAt",
     "state",
     "title",
+    "tokens",
+    "toolCalls",
     "type"
   ]
 }

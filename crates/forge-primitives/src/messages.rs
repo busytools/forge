@@ -1012,20 +1012,28 @@ pub struct TaskUpdatePatch {
 /// Both share the same wire envelope discriminated by `type`. The
 /// type stays open via `#[serde(other)]` on the trailing variant
 /// so future CLI additions decode cleanly without a primitives
-/// bump.
+/// bump - and an unrecognised TYPE is the one loss stated here: the
+/// `Other` variant is a unit, so that event's payload does not
+/// cross.
+///
+/// Every modelled field a view does not read stays in `extras`, so
+/// `queuedAt`, `startedAt`, `lastProgressAt`, `attempt`, `tokens`,
+/// `toolCalls`, `durationMs`, `model`, `agentId` and `promptPreview`
+/// all cross with the entry they arrived in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkflowProgressEvent {
     /// Phase-level marker - emitted when the workflow's `phase()`
     /// call fires.
-    WorkflowPhase { index: u32, title: String },
+    WorkflowPhase {
+        index: u32,
+        title: String,
+        #[serde(flatten)]
+        extras: Extras,
+    },
     /// Agent-level event - emitted on each state transition for an
-    /// agent call inside a phase. Only the fields the renderer
-    /// actually surfaces are decoded; the wire also carries
-    /// `queuedAt`, `startedAt`, `lastProgressAt`, `attempt`,
-    /// `tokens`, `toolCalls`, `durationMs`, `model`, `agentId`,
-    /// `promptPreview` etc. which are skipped here to keep the
-    /// rendered surface focused.
+    /// agent call inside a phase. The modelled fields are the ones a
+    /// view reads; everything else the CLI sends crosses in `extras`.
     WorkflowAgent {
         index: u32,
         label: String,
@@ -1054,6 +1062,8 @@ pub enum WorkflowProgressEvent {
         /// `resultPreview` field.
         #[serde(rename = "resultPreview", default, skip_serializing_if = "Option::is_none")]
         result_preview: Option<String>,
+        #[serde(flatten)]
+        extras: Extras,
     },
     /// Unrecognised workflow event - preserved across decode to
     /// avoid serde refusing the surrounding `task_progress`. Not
@@ -3050,7 +3060,8 @@ mod tests_message_extras {
         assert_eq!(task_id, "woc6i1sab");
         assert_eq!(tool_use_id.as_deref(), Some("toolu_01XapnWmqm6an1tJYxJn72xs"));
         assert_eq!(workflow_progress.len(), 2);
-        let WorkflowProgressEvent::WorkflowPhase { index, title } = &workflow_progress[0] else {
+        let WorkflowProgressEvent::WorkflowPhase { index, title, .. } = &workflow_progress[0]
+        else {
             panic!("first event must be WorkflowPhase, got {:?}", workflow_progress[0]);
         };
         assert_eq!(*index, 1);
@@ -3062,6 +3073,7 @@ mod tests_message_extras {
             last_tool_name,
             last_tool_summary,
             result_preview,
+            extras,
             ..
         } = &workflow_progress[1]
         else {
@@ -3073,6 +3085,45 @@ mod tests_message_extras {
         assert_eq!(last_tool_name.as_deref(), Some("StructuredOutput"));
         assert_eq!(last_tool_summary.as_deref(), Some("pong"));
         assert_eq!(result_preview.as_deref(), Some("{\"answer\":\"pong\",\"confidence\":1}"));
+        assert_eq!(
+            extras.get("agentId"),
+            Some(&json!("abf")),
+            "the entry's unmodelled facts (agentId, model, timings, tokens) stay on the entry",
+        );
+        assert_eq!(extras.get("tokens"), Some(&json!(54_707)));
+        assert_eq!(extras.get("model"), Some(&json!("claude-opus-4-7")));
+
+        // And they come back out on the entry they arrived in, not at the
+        // frame's own level.
+        let encoded = serde_json::to_value(&Message::TaskProgress {
+            task_id: "woc6i1sab".to_owned(),
+            description: String::new(),
+            usage: TaskUsage {
+                total_tokens: 0,
+                tool_uses: 0,
+                duration_ms: 0,
+                extras: Extras::new(),
+            },
+            uuid: "u".to_owned(),
+            session_id: "s".to_owned(),
+            tool_use_id: None,
+            last_tool_name: None,
+            workflow_progress: vec![WorkflowProgressEvent::WorkflowAgent {
+                index: 2,
+                label: "pong".to_owned(),
+                phase_index: Some(1),
+                phase_title: None,
+                state: "done".to_owned(),
+                last_tool_name: None,
+                last_tool_summary: None,
+                result_preview: None,
+                extras: extras.clone(),
+            }],
+            extras: Extras::new(),
+        })
+        .expect("encode");
+        assert_eq!(encoded["workflow_progress"][0]["agentId"], "abf");
+        assert_eq!(encoded.get("agentId"), None, "an entry's extras never leak up to the frame");
     }
 
     #[test]
