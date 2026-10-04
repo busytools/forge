@@ -1118,6 +1118,52 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
     assert!(why.contains("Nowhere"), "the error names the seat: {why}");
 }
 
+/// A subscribe for a seat forge holds no session for is answered with an
+/// error, and the sentence names the seat in the slot's own words rather than
+/// the `SessionSlot { .. }` Debug dump a reader used to be handed.
+#[tokio::test]
+async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
+            answering: true,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "subscribe", "the refusal comes from the subscribe arm: {why}");
+    assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// Paging a seat forge holds no session for is refused in the same words: the
+/// seat's own, not its Debug form.
+#[tokio::test]
+async fn a_more_for_a_seat_that_is_not_there_names_it_in_words() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::More {
+            conversation: SessionSlot::for_label("Nowhere", "nothing", Some("lead")),
+            before: None,
+            turns: 5,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "more", "the refusal comes from the paging arm: {why}");
+    assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
 /// The transcript rows one turn leaves: what the user wrote, what the
 /// assistant said, and the result that closes it.
 fn a_turns_rows(turn: usize) -> String {

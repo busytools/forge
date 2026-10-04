@@ -384,7 +384,7 @@ async fn handle_client(
                     socket,
                     ServerMessage::Error {
                         what: "more".to_owned(),
-                        why: format!("forge holds no session for {conversation:?}"),
+                        why: format!("forge holds no session for {}", conversation.display()),
                         // **Named, so a client holding several seats' asks
                         // drains only its own**: the connection is shared and an
                         // error carries no other seat.

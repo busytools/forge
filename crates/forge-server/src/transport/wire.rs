@@ -832,7 +832,7 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
         Subject::Session(slot) => {
             let roster = surface.roster();
             let Some(cwd) = roster.cwd_for(slot) else {
-                anyhow::bail!("forge holds no session for {slot:?}");
+                anyhow::bail!("forge holds no session for {}", slot.display());
             };
             // The seat's walk is not taken here: the connection holds the seat
             // before this encode, and the hold walks - so the snapshot below
