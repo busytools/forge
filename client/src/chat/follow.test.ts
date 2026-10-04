@@ -364,6 +364,47 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the end they came back to is followed again').toEqual([PIN]);
   });
 
+  it('does not arm the token for a write that moved nobody, so the clamp is read', async () => {
+    // **The exact shape #1710's re-read measured.** A write that lands where
+    // the element already is fires no event of its own - and a token armed
+    // for it sits there to be eaten by the clamp event the browser fires a
+    // moment later. The height bookkeeping then keeps the pre-clamp height,
+    // the reader's next scroll reads as a clamp, and the frame after yanks
+    // them back to the foot.
+    const server = stub();
+    await draw(server);
+    await settle();
+    // The grow, with the reader riding it to the new foot, so the bookkeeping
+    // holds the taller height - which is what makes the stale read visible.
+    setElement(TOTAL + 400, VIEWPORT);
+    resized();
+    await settle();
+    readerAt(FOOT + 400);
+    await settle();
+    clear();
+
+    // The correction: the browser clamps the reader to the foot the content
+    // has now (no event yet), the observer's land writes the value they
+    // already hold - no move, so nothing of its own comes back - and THEN
+    // the clamp's own event arrives.
+    setElement(TOTAL, VIEWPORT);
+    clamped(FOOT);
+    resized();
+    list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
+    flushSync();
+
+    // The reader leaves the foot: on a correct read of the clamp they are the
+    // one moving, and the follow lets them go.
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the token ate the clamp, and the follow yanked them back').toEqual([]);
+  });
+
   it('leaves a reader parked a few pixels short of the end alone', async () => {
     const server = stub();
     await draw(server);

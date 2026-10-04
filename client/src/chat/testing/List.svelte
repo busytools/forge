@@ -90,9 +90,16 @@
       configurable: true,
       get: () => element.offset,
       set: (asked: number) => {
+        const before = element.offset;
         const landed = Math.max(0, Math.min(asked, elementHeight() - elementViewport()));
         pins.push({ asked, landed });
         element.offset = landed;
+        // **A write that moved comes back as the event a browser fires, a
+        // moment later** - never synchronously, or the column would read the
+        // echo before the token it arms from the write's own read-back.
+        if (landed !== before) {
+          queueMicrotask(() => onscroll?.(landed));
+        }
       },
     });
     return () => undefined;

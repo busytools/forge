@@ -238,6 +238,8 @@
   let shaped = 0;
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
   let pinEcho: number | null = null;
+  /** How many layout passes the observer has already put a parked reader back for. */
+  let restored = 0;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -264,6 +266,8 @@
    */
   function scrollViewport(node: HTMLElement): () => void {
     viewport = node;
+    // A token armed against a previous viewport must not eat this one's first event.
+    pinEcho = null;
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
       if (holdsEverything()) {
@@ -276,7 +280,10 @@
       // compensation is on**, same as the effect's own pass: that path holds
       // the reader by the list's own shift as older turns arrive above them,
       // and two hands on the scroll is one too many.
-      else if (!shift) restoreAnchor();
+      else if (!shift) {
+        restored += 1;
+        restoreAnchor();
+      }
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
@@ -628,15 +635,16 @@
   function land(): number {
     if (viewport === null) return 0;
     const foot = viewport.scrollHeight;
-    // **A write of the value it already holds is not a scroll.** While the
-    // content streams the foot moves and the write lands; between those, a
-    // no-op write buys nothing but a read of the height, so it is skipped -
-    // and the echo token is only set when a write really happened, so a
-    // reader's own later scroll to the same offset is read like any other.
-    if (foot !== viewport.scrollTop) {
-      viewport.scrollTop = foot;
-      pinEcho = viewport.scrollTop;
-    }
+    // **The write is unconditional, and the token comes from the read-back.**
+    // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
+    // lands on is not what it asked for, and only the read-back knows whether
+    // the offset moved - a write of the value the element already holds is
+    // not a scroll and fires no event, so arming the token for it would leave
+    // it armed with no echo coming, to be eaten by the next real event the
+    // browser fires - a clamp the follow then misreads as the reader.
+    const was = viewport.scrollTop;
+    viewport.scrollTop = foot;
+    if (viewport.scrollTop !== was) pinEcho = viewport.scrollTop;
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
@@ -683,7 +691,7 @@
   // transitions that set it are the two below.
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
-    const pinned = land();
+    const foot = land();
     // **And once more after this frame's layout - but only when the layout
     // moved.** The foot a pin asks for is the one that is true at the moment
     // it asks, and a row's own content - code, a disclosure opening, a table
@@ -694,7 +702,7 @@
     // the same height has nothing to correct, and asking anyway is a write
     // and an event per frame.
     const settled = requestAnimationFrame(() => {
-      if (viewport !== null && viewport.scrollHeight !== pinned) land();
+      if (viewport !== null && viewport.scrollHeight !== foot) land();
     });
     return () => cancelAnimationFrame(settled);
   });
@@ -717,12 +725,16 @@
     const park = held;
     const moving = shift;
     if (anchor === null || park.following || !park.loaded || moving) return;
-    // **Not gated on the height like the pin's pass** (issue #1710): the
-    // reads ARE this pass's function - where the anchored row went is a
-    // question only boxes answer, and a row can move for a reason the
-    // column's own height does not see. It runs only for a reader away from
-    // the foot, while the measured loop is the foot's.
-    const settled = requestAnimationFrame(() => restoreAnchor());
+    // **Not gated on the height like the pin's pass, but gated on the
+    // observer** (issue #1710): a size change is the one way the layout
+    // reports itself, and the observer's pass is post-layout - so when it has
+    // already put the parked reader back for this change, this frame's own
+    // pass would only repeat the same read. It stays for the moves the
+    // observer cannot see, where nothing else answers at all.
+    const seen = restored;
+    const settled = requestAnimationFrame(() => {
+      if (restored === seen) restoreAnchor();
+    });
     return () => cancelAnimationFrame(settled);
   });
 
@@ -741,7 +753,15 @@
       // takes the token away - a real scroll to the same offset later is
       // read like any other.
       pinEcho = null;
-      if (offset === written) return;
+      if (offset === written) {
+        // **The echo still carries the reach ask.** No reader moved, so none of
+        // the reader-state machinery below is the echo's to run - but a landing
+        // that puts the foot inside the near-top reach is an event the ask rode
+        // in the base app, and a history shorter than the room would otherwise
+        // never ask for what is above it.
+        if (offset < REACH) loadOlder();
+        return;
+      }
     }
     // **The very end, with no reading threshold.** A reader a few pixels short
     // of it is mid-line, and a tolerance here is a column that moves under them
