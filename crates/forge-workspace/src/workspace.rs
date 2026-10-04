@@ -2355,7 +2355,7 @@ impl Workspace {
     /// behind. Answers whether there was one to close.
     pub fn dictate_close(&self, key: &SessionSlot) -> bool {
         let mut runtime = self.dictate_runtime.lock();
-        if !runtime.recordings.get(key).is_some_and(|live| live.sink.is_some()) {
+        if runtime.recordings.get(key).is_none_or(|live| live.sink.is_none()) {
             return false;
         }
         let Some(live) = runtime.recordings.remove(key) else {
