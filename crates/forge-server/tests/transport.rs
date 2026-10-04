@@ -1051,6 +1051,36 @@ async fn an_answer_to_a_prompt_that_is_gone_is_refused() {
     };
     assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
     assert!(why.contains("nothing-is-waiting"), "and it names the prompt: {why}");
+    assert!(why.contains("TestOrg/proj/lead"), "and the seat in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// A command to a seat whose session task has closed its command channel is
+/// refused naming the seat in its own words - the sentence the composer's
+/// not-sent row draws.
+///
+/// `install_agent`'s stub hands back the channel's receiver; dropping it is
+/// what closes the channel, the way a session that ended leaves it.
+#[tokio::test]
+async fn a_command_to_a_closed_session_task_names_the_seat_in_words() {
+    let (url, fleet) = a_server().await;
+    drop(fleet.install_agent("TestOrg", "proj", "lead"));
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(a_prompt_for("TestOrg", "proj", "lead")),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "dispatch", "the refusal is the core's own: {why}");
+    assert!(why.contains("TestOrg/proj/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
 }
 
 /// A Slack answer the core no longer holds is refused by its own operation's
@@ -1103,19 +1133,107 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
     let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
         panic!("expected an error")
     };
-    // Which refusal, not merely that one arrived: an arm that echoed the whole message back
-    // would carry the seat's name in its `Debug` and satisfy the assertion below while
-    // having dispatched nothing at all.
+    // Which refusal, not merely that one arrived: an arm that echoed the whole message
+    // back would carry the seat's name only in its `Debug` form, which the assertion below
+    // rejects - and the `what` says which arm composed the sentence.
     assert_eq!(
         what, "dispatch",
         "the refusal comes from the core, not from this server declining the message: {why}",
     );
-    // This rests on WHICH refusal the surface returns: `UnknownSession(slot)` renders the
-    // slot through `{:?}` so the seat's name is in the sentence, while `NoActiveSession`
-    // renders as "no active session" and carries no seat at all. If this assertion fails on
-    // the seat's name, the question is which variant came back - not whether the error
-    // reached the client, because the `let else` above already proved that.
-    assert!(why.contains("Nowhere"), "the error names the seat: {why}");
+    // This rests on WHICH refusal the surface returns: `UnknownSession(slot)` names the
+    // seat in its own words, while `NoActiveSession` renders as "no active session" and
+    // carries no seat at all. If these assertions fail on the seat's name, the question is
+    // which variant came back - not whether the error reached the client, because the
+    // `let else` above already proved that.
+    assert!(why.contains("Nowhere/nothing/lead"), "the error names the seat: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// A subscribe for a seat forge holds no session for is answered with an
+/// error, and the sentence names the seat in the slot's own words rather than
+/// the `SessionSlot { .. }` Debug dump a reader used to be handed.
+#[tokio::test]
+async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
+            answering: true,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "subscribe", "the refusal comes from the subscribe arm: {why}");
+    assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// Paging a seat forge holds no session for is refused in the same words: the
+/// seat's own, not its Debug form.
+#[tokio::test]
+async fn a_more_for_a_seat_that_is_not_there_names_it_in_words() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::More {
+            conversation: SessionSlot::for_label("Nowhere", "nothing", Some("lead")),
+            before: None,
+            turns: 5,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "more", "the refusal comes from the paging arm: {why}");
+    assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// A page asked for a seat forge has a directory for but holds nothing for is
+/// refused by the arm that runs once the directory resolves, and its sentence
+/// names the seat in its own words too - the Debug form is what the sweep dug
+/// out here.
+///
+/// The path is the issue's own scenario: a project `forge.toml` declares with
+/// nothing started, so the roster resolves the directory and the refusal that
+/// answers is this arm rather than the no-session one above it.
+#[tokio::test]
+async fn a_more_for_a_seat_nothing_holds_names_it_in_words() {
+    let mut socket = connected().await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("expected an error")
+    };
+    assert_eq!(what, "more", "the refusal comes from the paging arm: {why}");
+    assert!(why.contains("TestOrg/proj/lead"), "the seat is named in its own words: {why}");
+    assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+}
+
+/// Both paging refusals a reader can be shown name the seat in its own words.
+///
+/// The fold-failure arm has no deterministic route through the socket - its
+/// only failure is the fold's own task dying, and the held conversation's
+/// locks are poison-tolerant - so its sentence is pinned at the source beside
+/// the socket-level pin on the reachable one.
+#[test]
+fn the_paging_refusals_name_the_seat_in_words() {
+    let source = include_str!("../src/transport/connection.rs");
+    assert!(
+        source.contains("\"the conversation for {} is not held yet"),
+        "the not-held refusal still formats the seat through Debug",
+    );
+    assert!(
+        source.contains("\"the fold over {} did not finish"),
+        "the fold-failure refusal still formats the seat through Debug",
+    );
 }
 
 /// The transcript rows one turn leaves: what the user wrote, what the

@@ -1774,12 +1774,13 @@ impl std::fmt::Debug for SessionUpdate {
 pub enum DispatchError {
     #[error("no active session")]
     NoActiveSession,
-    #[error("no session task registered for key {0:?}")]
+    #[error("no session task registered for key {}", .0.display())]
     UnknownSession(SessionSlot),
-    #[error("session task for key {0:?} has closed its command channel")]
+    #[error("session task for key {} has closed its command channel", .0.display())]
     SessionClosed(SessionSlot),
     #[error(
-        "no prompt of that kind is waiting on {tool_id} for key {key:?}: it has been answered, or it asked something else"
+        "no prompt of that kind is waiting on {tool_id} for key {}: it has been answered, or it asked something else",
+        .key.display()
     )]
     NoPromptWaiting { key: SessionSlot, tool_id: String },
     /// A Slack answer named a draft the registry does not hold. Its own
