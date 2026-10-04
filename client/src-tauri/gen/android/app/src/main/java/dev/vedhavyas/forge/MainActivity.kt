@@ -11,6 +11,11 @@ class MainActivity : TauriActivity() {
 
   private var webView: WebView? = null
 
+  override fun onCreate(savedInstanceState: Bundle?) {
+    enableEdgeToEdge()
+    super.onCreate(savedInstanceState)
+  }
+
   override fun onWebViewCreate(webView: WebView) {
     this.webView = webView
   }

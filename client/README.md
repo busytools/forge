@@ -24,7 +24,7 @@ npm run typecheck
 dev server, reloading on a frontend edit, with nothing installed and no
 bundle built.
 
-## The desktop shell
+## The shell
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
 its own cargo workspace root, so the repo's cargo gates and CI's cargo jobs
@@ -95,11 +95,10 @@ export JAVA_HOME=/path/to/jdk
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
 Gradle files are project source rather than build output, so its two local
-edits - the manifest's mic permissions and the activity's back-navigation
-override - survive a clean clone. Re-running `tauri android init`
-overwrites them, so re-apply either change after one. The debug APK is one
-command, and it builds the frontend first the same way the desktop build
-does:
+edits - the manifest's mic permissions and the activity's back handling -
+survive a clean clone. Re-running `tauri android init` overwrites them, so
+re-apply either change after one. The debug APK is one command, and it
+builds the frontend first the same way the desktop build does:
 
 ```sh
 npm run tauri -- android build --debug --apk --ci
