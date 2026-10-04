@@ -22,7 +22,7 @@ A fresh worktree has no `client/node_modules`, so the first `just check`
 there stops at the Prettier step with exit 127. `npm --prefix client ci`
 first, and the whole run goes through.
 
-The desktop shell under `client/src-tauri/` is its own workspace root, so
+The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
 punctuation gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-check` builds the shipping configuration and `just

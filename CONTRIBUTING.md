@@ -32,7 +32,7 @@ CI also runs `cargo check --release` and `just check-feature-configs`.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.
 
-The desktop shell under `client/src-tauri/` is its own workspace root, so
+The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
 punctuation gate, which CI runs as a job of its own, and the client's
 Prettier step do. `just client-tauri-check` builds it in the shipping

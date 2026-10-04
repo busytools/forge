@@ -358,7 +358,7 @@ than facts about a session.
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
   DRAWN.
-- **A shipped client.** The desktop client under `client/` speaks this
+- **A shipped client.** The client under `client/` speaks this
   socket, and it is what this page is for. It is a client rather than an
   instrument, and it runs from `just client-dev` rather than from an
   installed bundle, so what is missing is a released one rather than a
@@ -377,4 +377,4 @@ than facts about a session.
 
 The terminal starts the server and binds the socket, so a running forge
 serves one. The web view that used to serve pages on this port is parked,
-and the desktop client under `client/` is what reads the socket now.
+and the client under `client/` is what reads the socket now.

@@ -815,7 +815,7 @@ inspected.
     check` runs the client's steps too - Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
     --noEmit`, then vitest - so one command decides both stacks and its
-    verdict line names the first failing step. **The desktop shell under
+    verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so `just check`'s
     Rust steps and CI's cargo jobs do not reach it; the Unicode
     punctuation gate, which CI runs too, and the client's Prettier step
