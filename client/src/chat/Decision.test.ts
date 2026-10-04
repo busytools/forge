@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
+
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import Decision from './Decision.svelte';
 import type { Decision as Parsed } from './decisions';
+
+/** The book's own specimen of this block, which draws the same vocabulary. */
+const PAGE = readFileSync(
+  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
+  'utf8',
+);
 
 /** One decision, as the fold hands it to the block. */
 const decision = (over: Partial<Parsed>): Parsed => ({
@@ -143,6 +151,27 @@ describe('the block one decision draws', () => {
     expect(drawn({ usage: null }), 'no usage reported, no footer drawn').not.toContain(
       'class="foot"',
     );
+  });
+
+  it("composes the same verdict and rows the book's specimen draws", () => {
+    // The page's specimen and the block are composed from the same strings,
+    // so the page can only say what an input could produce - and nothing
+    // compared the two until this (the 1723 review found the specimen's
+    // verdict reading "between Soon and Urgent" over rows named the full
+    // descriptions, a combination no input can make).
+    const levels = [
+      { name: 'Routine - no deadline pressure', value: 0.08 },
+      { name: 'Soon - worth doing this week', value: 0.31 },
+      { name: 'Urgent - blocks others right now', value: 0.61 },
+    ];
+    const body = drawn({ answer: { kind: 'score', score: 1.79, levels, confidence: null } });
+
+    const verdict = /of 2 - between [^<]*/.exec(body)?.[0] ?? '';
+    expect(verdict, 'the block composes a verdict').not.toBe('');
+    expect(PAGE, 'and the page draws it word for word').toContain(verdict);
+    for (const level of levels) {
+      expect(PAGE, `with the row "${level.name}"`).toContain(level.name);
+    }
   });
 
   it('leaves no separator behind for a result that named no model', () => {
