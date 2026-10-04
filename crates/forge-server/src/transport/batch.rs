@@ -98,7 +98,7 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
         estimated_tokens_delta,
         uuid,
         session_id,
-        ..
+        extras,
     } = msg
     else {
         return false;
@@ -119,12 +119,15 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
     };
 
     let summed = held_delta.saturating_add(*estimated_tokens_delta);
+    // The id, the session and the extras are the surviving frame's own -
+    // the newest is the one the fold keeps, and a fact it carried must
+    // survive the fold rather than being rebuilt away.
     *held_msg = forge_primitives::Message::ThinkingTokens {
         estimated_tokens: *estimated_tokens,
         estimated_tokens_delta: summed,
         uuid: uuid.clone(),
         session_id: session_id.clone(),
-        extras: serde_json::Map::new(),
+        extras: extras.clone(),
     };
     true
 }
