@@ -1305,7 +1305,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   font-family: var(--mono); font-size: var(--fs-data); }
 /* The row's own readings never wrap: the meter is the part that gives way, and
    a clock broken across two lines reads as two figures rather than a time. */
-.dict .t, .dict .db, .dict .lbl, .dict .esc { white-space: nowrap; }
+.dict .t, .dict .db, .dict .lbl, .dict .wire, .dict .esc { white-space: nowrap; }
 .dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dict .dot.tr { background: var(--blue); animation: none; }
@@ -1314,6 +1314,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .dict .db { color: var(--hot); }
 .dict .db.tr { color: var(--dim); }
 .dict .lbl { color: var(--dim); }
+.dict .wire { color: var(--dim); }
 .dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is

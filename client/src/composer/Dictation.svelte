@@ -8,10 +8,17 @@
     take,
     slot,
     connection,
+    wire = null,
   }: {
     take: Take;
     slot: SessionSlot;
     connection: Pick<Connection, 'dispatch'>;
+    /**
+     * The take's wire side, when this page owns the capture: frames produced
+     * and bytes the socket has taken. `null` for a take this page did not
+     * start, since the count is the producer's own fact.
+     */
+    wire?: { frames: number; bytes: number } | null;
   } = $props();
 
   const transcribing = $derived(take.phase === 'transcribing');
@@ -24,6 +31,14 @@
 
   /** The live level, which holds its last reading once the audio has stopped. */
   const level = $derived(`${Math.round(take.peakDb)} dB`);
+
+  /**
+   * The wire line: what the capture has produced and what has left. The
+   * frames shown are the ring's own count, read fresh on each repaint.
+   */
+  const wireLine = $derived.by(() =>
+    wire === null ? null : `${wire.frames} fr \u{b7} ${(wire.bytes / 1024).toFixed(1)} KB`,
+  );
 
   /**
    * What the row says it is doing, in the terminal's own words.
@@ -58,6 +73,9 @@
     </span>
   </span>
   <span class="lbl">{label}</span>
+  {#if wireLine !== null}
+    <span class="wire">{wireLine}</span>
+  {/if}
   <button class="esc" type="button" title="abandon the take" onclick={cancel}>
     <kbd aria-hidden="true">Esc</kbd> cancel
   </button>

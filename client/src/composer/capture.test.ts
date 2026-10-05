@@ -165,6 +165,29 @@ describe('the ring a take holds while the socket is down', () => {
     expect(sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
   });
 
+  /**
+   * The pair the row's wire line draws: frames PRODUCED and bytes the wire
+   * TOOK. A frame held while the socket is down is the difference between
+   * them, which is the whole diagnostic value of the two numbers.
+   */
+  it('counts what it produced and what the wire took', () => {
+    let open = true;
+    const ring = new FrameRing(() => open);
+    ring.push(encodeFrame([0.1]));
+    ring.push(encodeFrame([0.2]));
+    expect(ring.frames, 'both frames were produced').toBe(2);
+    expect(ring.bytes, 'and both went while the socket was up').toBe(6);
+
+    open = false;
+    ring.push(encodeFrame([0.3]));
+    expect(ring.frames, 'the held frame is still produced').toBe(3);
+    expect(ring.bytes, 'but the wire has not taken it').toBe(6);
+
+    open = true;
+    expect(ring.flush(), 'the flush carries it out').toBe(true);
+    expect(ring.bytes, 'and then it counts').toBe(9);
+  });
+
   it('bounds a take at about thirty seconds', () => {
     expect(RING_FRAMES * (FRAME_SAMPLES / SAMPLE_RATE)).toBeGreaterThanOrEqual(30);
   });

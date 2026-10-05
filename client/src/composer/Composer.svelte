@@ -859,7 +859,7 @@
       class:done={ring === 'done'}
     >
       {#if composer.take !== null}
-        <Dictation take={composer.take} {slot} {connection} />
+        <Dictation take={composer.take} {slot} {connection} wire={take?.wire ?? null} />
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}

@@ -56,6 +56,12 @@ export class LocalTake {
   readonly seat: SessionSlot;
   /** The input the take's stream opened, when the browser reported one. */
   readonly resolved: { id: string; label: string } | null;
+  /**
+   * The take's wire side, read live: frames produced and bytes the socket
+   * has taken. One stable object with getters, so a panel can hold it and
+   * read fresh numbers on each repaint its take state already causes.
+   */
+  readonly wire: { readonly frames: number; readonly bytes: number };
 
   private started = false;
   private ended = false;
@@ -76,6 +82,15 @@ export class LocalTake {
     this.seat = wiring.seat;
     this.resolved = mic.resolved ?? null;
     this.ring = new FrameRing((bytes) => connection.frame(bytes));
+    const ring = this.ring;
+    this.wire = {
+      get frames(): number {
+        return ring.frames;
+      },
+      get bytes(): number {
+        return ring.bytes;
+      },
+    };
     mic.onFrame = (bytes) => this.ring.push(bytes);
     this.unlisten = connection.onStatus((status) => this.statusMoved(status));
     // The server's word ends the take: `dictate_ended` is what says the

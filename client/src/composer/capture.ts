@@ -88,6 +88,14 @@ export class FrameChunker {
  */
 export class FrameRing {
   private held: Uint8Array[] = [];
+  /** Frames the take has PRODUCED, since it began. */
+  frames = 0;
+  /**
+   * Bytes the SOCKET has taken, since it began. A frame produced while the
+   * socket is down counts in `frames` and not here, which is the difference
+   * the pair exists to show: what was spoken and what has left.
+   */
+  bytes = 0;
 
   constructor(
     private readonly send: (bytes: Uint8Array) => boolean,
@@ -96,7 +104,8 @@ export class FrameRing {
 
   /** Send if nothing is held and the socket takes it, else hold. */
   push(bytes: Uint8Array): void {
-    if (this.held.length === 0 && this.send(bytes)) return;
+    this.frames += 1;
+    if (this.held.length === 0 && this.sendNow(bytes)) return;
     this.held.push(bytes);
     if (this.held.length > this.limit) this.held.shift();
   }
@@ -108,9 +117,16 @@ export class FrameRing {
   flush(): boolean {
     while (this.held.length > 0) {
       const next = this.held[0];
-      if (next === undefined || !this.send(next)) return false;
+      if (next === undefined || !this.sendNow(next)) return false;
       this.held.shift();
     }
+    return true;
+  }
+
+  /** Send one frame, counting its bytes only when the wire takes it. */
+  private sendNow(bytes: Uint8Array): boolean {
+    if (!this.send(bytes)) return false;
+    this.bytes += bytes.length;
     return true;
   }
 

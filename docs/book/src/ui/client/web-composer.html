@@ -111,6 +111,7 @@
   .dict .db { color: var(--hot); }
   .dict .db.tr { color: var(--dim); }
   .dict .lbl { color: var(--dim); }
+  .dict .wire { color: var(--dim); }
   .dict .esc { margin-left: auto; color: var(--dim); }
   /* The meter is a scrolling history, not bars pulsing in place: each cell
      is one past sample, newest at the right, flowing left. Two copies of
@@ -425,13 +426,15 @@ had it.</p>
             <span class="wave">
             </span>
             <span class="lbl">listening &#183; 2 ready</span>
+            <span class="wire">412 fr &#183; 251.5 KB</span>
             <span class="esc">esc cancel</span></div>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
       is still running: the segments already transcribed, with no total, because a live take
-      cannot know how many it will produce.</p>
+      cannot know how many it will produce. The wire line is the page's own count - the frames
+      it produced and the bytes the socket took - since only the producer can know it.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>
@@ -442,6 +445,7 @@ had it.</p>
             <span class="wave tr">
             </span>
             <span class="lbl">transcribing 2/6</span>
+            <span class="wire">412 fr &#183; 251.5 KB</span>
             <span class="esc">esc cancel</span></div>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
