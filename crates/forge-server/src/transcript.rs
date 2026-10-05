@@ -2100,9 +2100,24 @@ mod tests {
             call("Bash", serde_json::json!({ "command": "ls" }), "toolu_2"),
             text("[Image: original 2782x1034, displayed at 2000x743.]"),
             queued_prompt("queued mid-turn"),
-            boundary,
+            boundary.clone(),
             text(continued),
             text("second prompt"),
+            // The state a turn opens under does not straddle the open: a claim
+            // an earlier turn made, a boundary it took and a call it made are
+            // all gone by the next turn's own first frame. Each shape below is
+            // one a stale flag would swallow - a body the claim no longer
+            // holds, an image note behind no call, a continuation behind no
+            // boundary - so dropping any one of the three resets loses a head.
+            call("Skill", serde_json::json!({ "skill": "pr-review-loop" }), "toolu_3"),
+            text("third prompt"),
+            text("Base directory for this skill: /x/pr-review-loop\n\n# T\n\nDo it."),
+            call("Bash", serde_json::json!({ "command": "ls" }), "toolu_4"),
+            text("fourth prompt"),
+            text("[Image: original 2782x1034, displayed at 2000x743.]"),
+            boundary,
+            text("fifth prompt"),
+            text(continued),
         ];
 
         let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
@@ -2116,8 +2131,9 @@ mod tests {
 
         assert_eq!(
             named,
-            vec![0, 3, 11],
-            "precondition: the scan names the fixture's own prompts and the suppressions hold",
+            vec![0, 3, 11, 13, 14, 16, 17, 19, 20],
+            "precondition: the scan names the fixture's own prompts - each state-reset frame \
+             included - and the suppressions hold",
         );
         assert!(
             named.iter().all(|at| opened.contains(at)),

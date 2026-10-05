@@ -68,7 +68,15 @@ impl TurnScan {
                             if self.calls && is_image_note(text) {
                                 continue;
                             }
-                            if is_task_notice(text) || text.starts_with('[') {
+                            if is_task_notice(text) {
+                                continue;
+                            }
+                            // Every envelope this workspace writes opens with a
+                            // bracket, and the parser that tells one from the
+                            // reader's own words lives above this crate - so a
+                            // bracket-led row is left alone unless it is a
+                            // shape read here.
+                            if text.starts_with('[') && !is_image_note(text) {
                                 continue;
                             }
                             self.skills.clear();
