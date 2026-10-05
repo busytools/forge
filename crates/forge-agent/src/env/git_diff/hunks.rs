@@ -26,6 +26,8 @@
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use super::{GitOutput, run_git};
 
 /// Skip the untracked-file scan entirely when the working tree
@@ -65,7 +67,8 @@ pub struct FileHunks {
 /// codes (`X` - internal error indicator, `B` - broken pairing)
 /// fire a WARN log and skip the entry rather than collapsing to
 /// `Modified`; legitimate user-visible types stay distinct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileStatus {
     Modified,
     Added,
@@ -85,7 +88,7 @@ pub enum FileStatus {
 /// tagged as context, added, or removed - the renderer iterates
 /// them directly to draw the `+ / - / ` markers and per-side line
 /// numbers without re-classifying anything.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hunk {
     pub old_start: u32,
     pub old_count: u32,
@@ -121,7 +124,8 @@ impl FileHunks {
 }
 
 /// Per-line classification inside a hunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffLineKind {
     /// Line appears in both old and new - printed without a marker
     /// (or with a leading space, depending on the renderer).
@@ -135,7 +139,7 @@ pub enum DiffLineKind {
 /// One rendered diff line. Carries its kind, raw text (no leading
 /// marker), and per-side line numbers so the renderer can show a
 /// gutter without recomputing positions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
     pub text: String,
@@ -259,7 +263,7 @@ pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
 /// (~6-10 FDs); firing all N at once on a 100+ file refactor
 /// branch trips `EMFILE`. 16 keeps total well under the FD ceiling
 /// while still giving a 16× speedup over a sequential loop.
-const MAX_INFLIGHT_FETCHES: usize = 16;
+pub(super) const MAX_INFLIGHT_FETCHES: usize = 16;
 
 /// Unified-diff context radius the per-file fetch pins at open: large
 /// enough to cover realistic inter-hunk gaps (so expanding reveals hidden
@@ -466,15 +470,26 @@ async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOut
     }
 }
 
-/// Parse `git diff --name-status` output into a list of `FileHunks`
-/// stubs. Hunks are filled in by a subsequent `merge_hunks` pass.
+/// One `git diff --name-status` line: the classification, the new path,
+/// and the old path a rename or copy names (absent for every other
+/// status). The old path survives here rather than in [`FileHunks`] so
+/// the content read can carry both sides of a rename while the overlay
+/// keeps the one it draws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NameStatusEntry {
+    pub status: FileStatus,
+    pub path: String,
+    pub old_path: Option<String>,
+}
+
+/// Parse `git diff --name-status` output into entries.
 ///
 /// Status codes covered: M (modified), A (added), D (deleted),
 /// R (renamed), C (copied), T (typechange - symlink/submodule),
 /// U (unmerged - mid-merge-conflict). Unknown codes (X, B, or
 /// anything else git might emit in future) fire a WARN log and
 /// drop the entry so an operator can spot the gap.
-fn parse_name_status(raw: &str) -> Vec<FileHunks> {
+pub(super) fn parse_name_status_entries(raw: &str) -> Vec<NameStatusEntry> {
     raw.lines()
         .filter_map(|line| {
             let mut parts = line.split('\t');
@@ -506,7 +521,29 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
                     return None;
                 }
             };
-            Some(FileHunks { path: path.to_owned(), status, hunks: Vec::new(), oversize: false })
+            // Whatever sits between the code and the new path is the
+            // old path, which only a rename or copy names.
+            let old_path = if matches!(leading, 'R' | 'C') {
+                let rest: Vec<&str> = parts.collect();
+                (!rest.is_empty()).then(|| rest.join("\t"))
+            } else {
+                None
+            };
+            Some(NameStatusEntry { status, path: path.to_owned(), old_path })
+        })
+        .collect()
+}
+
+/// Parse `git diff --name-status` output into a list of `FileHunks`
+/// stubs. Hunks are filled in by the per-file fetch pass.
+fn parse_name_status(raw: &str) -> Vec<FileHunks> {
+    parse_name_status_entries(raw)
+        .into_iter()
+        .map(|entry| FileHunks {
+            path: entry.path,
+            status: entry.status,
+            hunks: Vec::new(),
+            oversize: false,
         })
         .collect()
 }
@@ -523,7 +560,7 @@ fn contains_hunk_marker(section: &str) -> bool {
 /// `@@`-delimited; each line in a hunk body starts with one of
 /// `-` (removed), `+` (added), ` ` (context), or `\` (newline
 /// annotation, dropped).
-fn parse_hunks(section: &str) -> Vec<Hunk> {
+pub(super) fn parse_hunks(section: &str) -> Vec<Hunk> {
     let lines: Vec<&str> = section.lines().collect();
     let mut hunk_starts: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {

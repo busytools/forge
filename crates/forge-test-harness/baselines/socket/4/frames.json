@@ -73,6 +73,7 @@
     "SlashCommandsChanged": "slash_commands_changed",
     "Spawning": "spawning",
     "StatusSnapshot": "status_snapshot",
+    "SubagentCardsChanged": "subagent_cards_changed",
     "SubagentsChanged": "subagents_changed",
     "TasksChanged": "tasks_changed",
     "TurnCancelled": "turn_cancelled",

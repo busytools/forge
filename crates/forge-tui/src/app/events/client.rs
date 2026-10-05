@@ -613,6 +613,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::SlashCommandsChanged { .. }
         | SessionUpdate::SubagentsChanged { .. }
         | SessionUpdate::DispatchesChanged { .. }
+        // The joined instance list is the CLIENT's read: the terminal folds
+        // its own `subagents_view` from the frames it holds in-process, so
+        // the pushed list is a no-op here - a known gap in this view, not a
+        // drop at the core.
+        | SessionUpdate::SubagentCardsChanged { .. }
         | SessionUpdate::FileIndexChanged { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation } => {
             app.dictate_take_pending = false;

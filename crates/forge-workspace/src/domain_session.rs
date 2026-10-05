@@ -293,6 +293,14 @@ pub struct DomainSession {
     /// connect reassigns it, and a fresh `/new`, which carries no history,
     /// leaves it false rather than inheriting the occupant before it.
     pub has_dispatches: bool,
+    /// The session's sub-agent instances, folded a frame at a time as they
+    /// arrive. Seeded from the history a connect carries, then driven by
+    /// each frame - the same walk that raises [`Self::has_dispatches`].
+    pub card_tracker: crate::subagent_cards::CardTracker,
+    /// The instance list the last announcement carried, which a push is
+    /// gated on: an announcement is a frame about a change, so the frame
+    /// that moved nothing announces nothing.
+    pub cards_snapshot: Vec<forge_primitives::runtime::SubagentCard>,
     /// The seat's walked file index, and when it was taken. Written by the
     /// seat's own loop while a view is showing it, so the composer's `@`
     /// list reads a value rather than paying for a walk of the tree.
@@ -462,6 +470,8 @@ impl DomainSession {
             process_snapshot: None,
             work_snapshot: None,
             has_dispatches: false,
+            card_tracker: crate::subagent_cards::CardTracker::default(),
+            cards_snapshot: Vec::new(),
             file_index: None,
         }
     }

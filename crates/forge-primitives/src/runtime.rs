@@ -5,7 +5,69 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::messages::RateLimitStatus;
+use crate::messages::{RateLimitStatus, TaskUsage};
+
+/// One sub-agent instance as a view draws its card: a `Task`/`Agent`
+/// dispatch joined with the frames that ran under it.
+///
+/// The join itself is the core's (`forge_workspace::subagent_cards`); this
+/// is the shape it crosses in, so a client draws the instance list rather
+/// than folding one of its own from the raw frames.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubagentCard {
+    /// What the instance is called: the roster's description for it, else
+    /// the dispatch's own.
+    pub name: String,
+    /// The `tool_use` id of the dispatch that opened it, which is what lets
+    /// a view join its cards to the chat row the call itself drew.
+    pub dispatch_id: String,
+    /// The agent type the dispatch named (e.g. `"general-purpose"`), which
+    /// is the head's own word for what ran. `None` for a dispatch that
+    /// named no type.
+    pub agent_type: Option<String>,
+    /// Whether the instance is still working.
+    pub running: bool,
+    /// Whether it ended badly: the row answering its dispatch errored, or
+    /// the roster's own word for the ending was a failure. A view draws its
+    /// cross from this rather than from the absence of `running`.
+    pub failed: bool,
+    /// Whether it runs in the background, outliving the turn that spawned
+    /// it. From `is_backgrounded` on the roster frame, falling back to the
+    /// dispatch's own `run_in_background`.
+    pub backgrounded: bool,
+    /// When it settled, in Unix milliseconds, when a frame stated an
+    /// instant. `None` while it runs and for any ending that named none.
+    pub ended_at_ms: Option<u64>,
+    /// Every call the instance fired, of which [`Self::tail`] holds the
+    /// most recent.
+    pub calls: usize,
+    /// The instance's most recent calls, oldest first.
+    pub tail: Vec<SubagentCall>,
+    /// The usage its last progress or notification frame reported.
+    pub usage: Option<TaskUsage>,
+}
+
+/// One call in a card's tail: the tool, what it named, and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentCall {
+    /// The CLI's own name for the tool (e.g. `"Bash"`).
+    pub name: String,
+    /// What the call names: the command it ran, the file it read.
+    pub title: String,
+    /// How the call ended. `Pending` while its result is out.
+    pub status: SubagentCallStatus,
+}
+
+/// How one of an instance's calls ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentCallStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Killed,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {

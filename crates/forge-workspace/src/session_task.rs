@@ -224,6 +224,12 @@ impl SessionTask {
                     has_dispatches: guard.has_dispatches,
                 });
             }
+            if moved.cards {
+                self.emit(SessionUpdate::SubagentCardsChanged {
+                    key: self.key.clone(),
+                    cards: guard.cards_snapshot.clone(),
+                });
+            }
             if moved.processes {
                 self.emit(SessionUpdate::ProcessesChanged {
                     key: self.key.clone(),
@@ -1583,6 +1589,7 @@ pub(crate) struct Moved {
     pub commands: bool,
     pub agents: bool,
     pub dispatches: bool,
+    pub cards: bool,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1603,6 +1610,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_commands = domain.available_commands.clone();
     let held_agents = domain.available_agents.clone();
     let held_dispatches = domain.has_dispatches;
+    let held_cards = domain.cards_snapshot.clone();
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1843,6 +1851,18 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     {
         domain.has_dispatches = true;
     }
+    // The instance list folds frame by frame, in this same walk: the frames
+    // that open and settle a card are matched here either way, so the join
+    // costs a lookup rather than a second pass over the conversation. The
+    // push is change-gated on the list itself - a frame that moved nothing
+    // announces nothing.
+    if let AgentEvent::SdkMessage { msg, .. } = event {
+        domain.card_tracker.apply(msg);
+        let cards = domain.card_tracker.cards();
+        if cards != domain.cards_snapshot {
+            domain.cards_snapshot = cards;
+        }
+    }
     Moved {
         monitors: domain.monitors != held_monitors,
         background_tasks: domain.background_tasks != held_tasks,
@@ -1855,6 +1875,10 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // being handed anyway.
         dispatches: !held_dispatches
             && domain.has_dispatches
+            && matches!(event, AgentEvent::SdkMessage { .. }),
+        // Live news only, same as the flag above: a connect seeds the list
+        // from the history it carries and the read on that event answers it.
+        cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
     }
 }
@@ -1923,6 +1947,16 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         // this same event already carries it.
         domain.has_dispatches =
             history_updates.as_ref().is_some_and(|history| history.iter().any(is_dispatch));
+        // The instance fold is seeded from the same history, so a resumed
+        // seat answers the card list its history holds. Assigned like the
+        // flag above, and for the same reason.
+        domain.card_tracker = crate::subagent_cards::CardTracker::default();
+        if let Some(history) = history_updates.as_ref() {
+            for message in history {
+                domain.card_tracker.apply(message);
+            }
+        }
+        domain.cards_snapshot = domain.card_tracker.cards();
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
         // opening the session sees the monitor rather than nothing.
@@ -3973,6 +4007,120 @@ provider = "anthropic"
             }
         }
         announced
+    }
+
+    /// The card lists a task announced, in order.
+    fn announced_cards(
+        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> Vec<Vec<forge_primitives::runtime::SubagentCard>> {
+        let mut announced = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            if let SessionUpdate::SubagentCardsChanged { cards, .. } = update {
+                announced.push(cards);
+            }
+        }
+        announced
+    }
+
+    /// **The instance list is pushed as it moves.** The card fold rides the
+    /// same frame walk that raises the dispatch flag, and the push is
+    /// change-gated on the list: the dispatch announces a running card, a
+    /// roster frame that moves nothing announces nothing, and the terminal
+    /// row announces the settled list.
+    #[test]
+    fn a_dispatch_announces_a_card_and_the_roster_settles_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(sdk_message(dispatch_frame(None)));
+        let announced = announced_cards(&mut updates);
+        assert_eq!(announced.len(), 1, "the dispatch announces the list once");
+        assert_eq!(announced[0].len(), 1, "with one instance");
+        assert!(announced[0][0].running, "running, because nothing has said it ended");
+        assert_eq!(announced[0][0].name, "investigate", "named by the dispatch's description");
+
+        // The roster opening the task moves no fact the card draws - it was
+        // already running - so the list is equal and nothing is announced.
+        task.translate_event(sdk_message(forge_primitives::Message::TaskStarted {
+            task_id: "t-a".to_owned(),
+            description: "investigate".to_owned(),
+            uuid: "u-start".to_owned(),
+            session_id: "s".to_owned(),
+            tool_use_id: Some("tu-dispatch".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
+        }));
+        assert!(
+            announced_cards(&mut updates).is_empty(),
+            "a frame that moves no fact on the list announces nothing",
+        );
+
+        // The terminal row settles the card, and that IS news.
+        task.translate_event(sdk_message(forge_primitives::Message::TaskUpdated {
+            task_id: "t-a".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: Some(1_700_000_000_123),
+                extras: serde_json::Map::new(),
+            },
+            uuid: "u-upd".to_owned(),
+            session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
+        }));
+        let announced = announced_cards(&mut updates);
+        assert_eq!(announced.len(), 1, "the ending announces the list once");
+        assert!(!announced[0][0].running, "and the card is settled");
+        assert_eq!(announced[0][0].ended_at_ms, Some(1_700_000_000_123));
+    }
+
+    /// **A connect seeds the list from its history and announces nothing**,
+    /// the same rule the dispatch flag follows: the read on that event
+    /// answers it, and a fresh `/new` carries none.
+    #[test]
+    fn a_connect_seeds_the_cards_without_announcing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: "resumed-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude"),
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: Some(vec![dispatch_frame(None)]),
+            compaction_count: 0,
+        });
+
+        assert_eq!(
+            task.domain.lock().cards_snapshot.len(),
+            1,
+            "a history that dispatched seeds one card",
+        );
+        assert!(
+            announced_cards(&mut updates).is_empty(),
+            "and the seed is not announced: the read on this event answers it",
+        );
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: "new-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude"),
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        assert!(task.domain.lock().cards_snapshot.is_empty(), "a fresh /new leaves none");
+        assert!(announced_cards(&mut updates).is_empty(), "and the clear is not announced");
     }
 
     /// **A dispatch made in front of a viewer is news, and one whose card the

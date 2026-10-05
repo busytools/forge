@@ -27,7 +27,7 @@ use forge_primitives::{
     ChunkContent, CronEntry, CronKind, McpServerConnectionStatus, McpServerStatus, MonitorRecord,
     MonitorStatus, ToolCallContent,
 };
-use forge_server::family::ToolFamily;
+use forge_server::family::{ToolFamily, tool_label};
 use forge_server::grouping::KindRow;
 use forge_server::model::{
     AnsweredQuestion, LiveTurn, LiveUsage, ToolCallStatus, TurnInfo, format_token_count_grouped,
@@ -40,6 +40,7 @@ use forge_server::surface::inspector::{
 };
 use forge_server::surface::{AccountsView, Agents, LoadingState, PendingKind, Roster, ViewSurface};
 use forge_server::transcript;
+use forge_server::transcript::family_row;
 use forge_server::transcript::{
     ChatUnit, FamilyLeaves, Notice, NoticeSeverity, PeerCard, ToolLeaf,
 };
@@ -820,8 +821,9 @@ fn subagents_section(cards: &[SubagentCard], cwd: Option<&Path>) -> Markup {
                 @if card.running {
                     @for call in &card.tail {
                         div .tt {
-                            (icons::icon(family_icon(call.row), "tg"))
-                            " " (call.label) " " (call_target(call, cwd))
+                            (icons::icon(family_icon(family_row(&call.name).0), "tg"))
+                            " " (tool_label(&call.name)) " "
+                            (call_target(tool_label(&call.name), &call.title, cwd))
                         }
                     }
                 } @else {
@@ -848,8 +850,11 @@ fn card_state(card: &SubagentCard) -> String {
     }
     // An age only when the frame that settled it stated one: a number
     // counted from the page's own clock would be a fact nothing said.
-    let settled = match card.ended_at {
-        Some(at) => format!("settled {}", crate::home::elapsed_label(at)),
+    let settled = match card.ended_at_ms {
+        Some(end_ms) => {
+            let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(end_ms);
+            format!("settled {}", crate::home::elapsed_label(at))
+        }
         None => "settled".to_owned(),
     };
     tools.map_or_else(|| settled.clone(), |tools| format!("{tools} \u{b7} {settled}"))
@@ -1688,7 +1693,7 @@ fn leaf_row(leaf: &ToolLeaf, open: bool, cwd: Option<&Path>) -> Markup {
         details .leaf .cmd[named_by_its_command(leaf)] open[open] data-k=(format!("leaf-{}", leaf.id)) {
             summary {
                 (status_icon(leaf.status))
-                span .tn { (call_target(leaf, cwd)) }
+                span .tn { (call_target(leaf.label, &leaf.title, cwd)) }
                 (icons::chevron(""))
             }
             @if !leaf.content.is_empty() {
@@ -2016,11 +2021,9 @@ fn opens_by_default(row: KindRow) -> bool {
 /// A call's title without the family word the row above already says, and
 /// without the working directory the reader is already in: the mockup draws
 /// `crates/.../family.rs` under a `read` label.
-fn call_target(leaf: &ToolLeaf, cwd: Option<&Path>) -> String {
-    let title = leaf
-        .title
-        .strip_prefix(leaf.label)
-        .map_or(leaf.title.clone(), |rest| rest.trim_start().to_owned());
+fn call_target(label: &str, title: &str, cwd: Option<&Path>) -> String {
+    let title =
+        title.strip_prefix(label).map_or(title.to_owned(), |rest| rest.trim_start().to_owned());
     let Some(cwd) = cwd.and_then(|cwd| cwd.to_str()) else {
         return title;
     };
