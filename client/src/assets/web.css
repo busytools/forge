@@ -815,6 +815,97 @@ details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-sp
    prose tone rather than the row's own muting, so a mark reads as a mark. */
 details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+/* A dispatch row's own fields, joined from the record's card: the agent type,
+   the background chip, and - once settled - the figures at the row's right.
+   Namespaced `sg-` so no bare name of the sheet's other surfaces catches
+   them, the same rule the card's classes follow. */
+details.leaf > summary .sg-ty { color: var(--dim); font-size: var(--fs-data); flex: none; }
+details.leaf > summary .sg-ty::before { content: '\00b7'; color: var(--line); margin-right: 6px; }
+details.leaf > summary .sg-chip { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--warn); border: 1px solid rgba(201,161,59,.4); border-radius: 99px;
+  padding: 0 7px; flex: none; }
+details.leaf > summary .sg-fig { margin-left: auto; color: var(--dim); flex: none;
+  font-family: var(--mono); font-size: var(--fs-data); }
+/* The figures take the free space when they are there, so the chevron tucks in
+   behind them instead of splitting the gap with them. */
+details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
+
+/* The instance's own expansion: the brief, the live line, the timeline of its
+   calls (each opening onto what it ran and what came back), the heartbeat on
+   the open call, and the meta line. `sg-` for the same reason as above - the
+   classes exist only inside a dispatch row, so these selectors never name the
+   shared `.body`/`.term` and cannot reach another row's drawing. */
+.sg-brief { color: var(--dim); font-size: var(--fs-base); padding: 2px 0 6px;
+  max-width: 72ch; }
+.sg-brief .sg-lb { color: var(--warn); font-family: var(--mono);
+  font-size: var(--fs-label); text-transform: uppercase; letter-spacing: .08em;
+  margin-right: 7px; }
+.sg-tl { padding-top: 4px; }
+.sg-pr { color: var(--muted); font-size: var(--fs-base); padding: 3px 0;
+  max-width: 72ch; }
+.sg-hb { display: flex; gap: 7px; align-items: center; color: var(--dim);
+  font-family: var(--mono); font-size: var(--fs-label); padding: 1px 0 4px 22px; }
+.sg-hb .ring { width: 7px; height: 7px; }
+.sg-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  border-top: 1px solid rgba(34,42,60,.55); margin-top: 7px; padding-top: 6px;
+  overflow-wrap: anywhere; }
+.sg-meta span { color: var(--muted); }
+/* The result is the instance's own output, not more metadata: a labelled,
+   railed block so the path above reads as the file's facts and this as its
+   contents. */
+.sg-result { margin-top: 6px; border-left: 2px solid var(--line); padding-left: 10px; }
+.sg-result .sg-lb { display: block; color: var(--warn); font-family: var(--mono);
+  font-size: var(--fs-label); text-transform: uppercase; letter-spacing: .08em;
+  padding-bottom: 3px; }
+/* The row's prose reads in the row's own voice, one style for every piece of
+   it - the brief, what the instance wrote, its outcome line, its result text -
+   and never in the conversation's: prose at conversation size and colour
+   inside a row is the main thread talking, which is confusing. */
+.sg-brief .prose, .sg-pr .prose, .sg-result .prose {
+  font-size: var(--fs-data); color: var(--dim); }
+.sg-brief .prose p + p, .sg-pr .prose p + p, .sg-result .prose p + p {
+  margin-top: 8px; }
+
+/* The sub-agent segment of the strip: the count at the strip's right, and the
+   way into each instance. `sg-` namespaced like the row's own fields. */
+.sg-seg { position: relative; display: inline-flex; margin-left: auto; }
+.sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
+  border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
+  font: inherit; color: var(--muted); }
+.sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
+.sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+.sg-seg .sg-tog .ic.ok { color: var(--ok); }
+/* The panel's rows FILL it: no padding of its own, and the hairline drawn as
+   an inset outline rather than a border, so every pixel a pointer can cross
+   belongs to a row and carries that row's leave. A padded panel leaves strips
+   with no listener, and a pointer leaving through one never arms the close. */
+.sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
+  min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
+  box-shadow: 0 14px 38px rgba(0,0,0,.5); }
+/* The list's scrollbar wears the same skin as every other scroller on the
+   page - an unstyled one is a white bar over a dark panel - and it is stable:
+   nothing here appears or moves on hover. */
+.sg-list::-webkit-scrollbar { width: 8px; }
+.sg-list::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.sg-list::-webkit-scrollbar-track { background: transparent; }
+.sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
+  background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
+.sg-list .sg-it .ring { width: 9px; height: 9px; flex: none; }
+.sg-list .sg-it .ic { flex: none; }
+.sg-list .sg-it .ic.ok { color: var(--ok); }
+.sg-list .sg-it .ic.bad { color: var(--bad); }
+.sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
+.sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+.sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+@media (pointer: coarse) { .sg-list .sg-it { min-height: 44px; } }
+
+/* The one flash the reveal leaves on the row it lands on: a tint that arrives
+   and leaves. */
+details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
+@keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
@@ -1576,9 +1667,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dict .esc { margin-left: auto; }
 }
 
-/* ---------- the session header's facts, and the four sections a view
-   reads from the session itself: subagents, mcp servers, processes,
-   monitors ---------- */
+/* ---------- the session header's facts, and the sections a view
+   reads from the session itself: mcp servers, processes, monitors
+   (subagents left the inspector; their row lives in the strip) ---------- */
 
 /* Every setting reads label-then-value, so the line is one kind of thing. */
 .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import Call from './Call.svelte';
 import type { ToolLeaf } from './leaves';
+import { subagents } from './subagents.svelte';
+import type { SubagentCard } from '../session/wire';
 
 /** A backgrounded call that has ended, as the fold hands it to the row. */
 const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
@@ -231,5 +233,227 @@ describe('the row one call draws', () => {
     expect(drawn, 'the block draws').toContain('class="dec"');
     expect(drawn, 'with the answer as its number').toContain('0.93');
     expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
+  });
+});
+
+describe('the dispatch row, joined to its instance', () => {
+  /**
+   * A `Task` dispatch, as the fold hands it to the row: the call itself is
+   * COMPLETED - the CLI's launch-ack answered it in a second - while the
+   * instance it opened runs on for minutes.
+   */
+  const dispatch = (): ToolLeaf => ({
+    id: 'toolu_task',
+    row: { kind: 'family', family: 'tool' },
+    name: 'Task',
+    title: 'review the fold',
+    command: null,
+    status: 'completed',
+    note: null,
+    body: [{ kind: 'text', text: 'Report: **closed**.' }],
+    mutation: null,
+    decision: null,
+    skill: null,
+    image: null,
+    imageNote: null,
+  });
+
+  const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
+    name: 'review the fold',
+    dispatch_id: 'toolu_task',
+    agent_type: 'code-reviewer',
+    running: true,
+    failed: false,
+    backgrounded: false,
+    ended_at: null,
+    calls: 3,
+    tail: [],
+    usage: { total_tokens: 12_000, tool_uses: 3, duration_ms: 184_000 },
+    ...over,
+  });
+
+  /** The dispatch itself, as the session's own assistant frame carries it. */
+  const dispatchFrame = () => ({
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_task',
+          name: 'Task',
+          input: {
+            description: 'review the fold',
+            prompt: 'do the thing',
+            subagent_type: 'code-reviewer',
+          },
+        },
+      ],
+    },
+  });
+
+  it('draws the instance running while the settled call would have said done', () => {
+    subagents.sync([card({ backgrounded: true })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the loader is the liveness of the instance, not the call').toContain(
+      '<span class="ring"></span>',
+    );
+    expect(drawn, 'the agent type rides the row').toContain('code-reviewer');
+    expect(drawn, 'and the background chip does').toContain('>background<');
+    expect(drawn, 'no figures while it runs').not.toContain('sg-fig');
+
+    subagents.sync(null);
+  });
+
+  it('draws the figures once the instance settles', () => {
+    subagents.sync([card({ running: false })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the settled figures').toContain('3 calls \u{b7} 12.0k tokens \u{b7} 3m 04s');
+    expect(drawn).not.toContain('<span class="ring"></span>');
+
+    subagents.sync(null);
+  });
+
+  it('stops a backgrounded instance at its own report', () => {
+    // Its own text is the launch ack, which says nothing a reader acts on -
+    // so no output block and no transcript path - while its task facts stay,
+    // the same line a foreground row carries minus the path.
+    subagents.sync([card({ backgrounded: true, running: false })]);
+    const drawn = render(Call, {
+      props: {
+        call: dispatch(),
+        k: 'task',
+        open: true,
+        messages: [
+          dispatchFrame(),
+          {
+            type: 'system',
+            subtype: 'task_started',
+            tool_use_id: 'toolu_task',
+            task_id: 't1',
+            task_type: 'local_agent',
+            spawn_depth: 1,
+          },
+        ],
+      },
+    }).body;
+
+    expect(drawn, 'no output block').not.toContain('sg-result');
+    expect(drawn, 'the task facts are drawn either way').toContain('sg-meta');
+    expect(drawn, 'and the transcript path is not').not.toContain('output file');
+
+    subagents.sync(null);
+  });
+
+  it('draws the instance own report once, not twice off the notification', () => {
+    // The notification's summary echoes the agent's final message; the
+    // timeline draws that message as its own prose, and a block drawn from
+    // the summary too would show the whole report twice.
+    subagents.sync([card({ running: false })]);
+    const drawn = render(Call, {
+      props: {
+        call: dispatch(),
+        k: 'task',
+        open: true,
+        messages: [
+          dispatchFrame(),
+          {
+            type: 'assistant',
+            parent_tool_use_id: 'toolu_task',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'unique-report-text' }],
+            },
+          },
+          {
+            type: 'system',
+            subtype: 'task_notification',
+            tool_use_id: 'toolu_task',
+            task_id: 't1',
+            status: 'completed',
+            summary: 'unique-report-text',
+          },
+        ],
+      },
+    }).body;
+
+    expect(drawn.split('unique-report-text').length - 1, 'the report draws once').toBe(1);
+
+    subagents.sync(null);
+  });
+
+  it('crosses a failed instance even while the roster still calls it running', () => {
+    // `failed` comes from the dispatch's answer and can land before the
+    // roster settles the task: the cross leads the ring, so the row never
+    // wears a spinner over work that already failed.
+    subagents.sync([card({ running: true, failed: true })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the cross draws').toContain('i-x');
+    expect(drawn, 'and the ring does not').not.toContain('<span class="ring">');
+
+    subagents.sync(null);
+  });
+
+  it('leaves a call that opened no instance exactly as it was', () => {
+    // No card in the store: a plain call row, whose liveness is its own
+    // status - which is what a pre-resume dispatch draws.
+    subagents.sync(null);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'settled, so no loader').not.toContain('<span class="ring"></span>');
+    expect(drawn, 'and none of the instance chrome').not.toContain('sg-ty');
+    expect(drawn, 'nor figures').not.toContain('sg-fig');
+  });
+
+  it('opens onto the instance own timeline, read from the turn own frames', () => {
+    subagents.sync([card({ running: true })]);
+    const messages = [
+      dispatchFrame(),
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_task',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'c1', name: 'Grep', input: { pattern: 'subagent' } }],
+        },
+      },
+      {
+        type: 'user',
+        parent_tool_use_id: 'toolu_task',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'c1', content: '3 matches' }],
+        },
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_task',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Report: **two nits** on the fold.' }],
+        },
+      },
+    ];
+
+    const drawn = render(Call, {
+      props: { call: dispatch(), k: 'task', open: true, messages },
+    }).body;
+
+    expect(drawn, 'the brief it was given').toContain('do the thing');
+    expect(drawn, 'every call the frames hold, not just the card tail').toContain('subagent');
+    expect(drawn, 'with what it came back with').toContain('3 matches');
+    expect(drawn, 'the brief renders as markdown, structure and all').toContain('class="prose"');
+    expect(drawn, 'and so does the prose the instance wrote between calls').toContain(
+      '<strong>two nits</strong>',
+    );
+    expect(drawn, 'the result text renders as prose too, not a terminal box').toContain(
+      '<strong>closed</strong>',
+    );
+
+    subagents.sync(null);
   });
 });

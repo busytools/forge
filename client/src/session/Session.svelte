@@ -13,6 +13,7 @@
   import Rail from './Rail.svelte';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { subagents } from '../chat/subagents.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
@@ -71,6 +72,15 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
+
+  /**
+   * The dispatch join follows the record: the chat's rows read their cards
+   * from the store, so a row's liveness and the record's list are one fact
+   * and cannot disagree.
+   */
+  $effect(() => {
+    subagents.sync(record?.subagent_instances ?? null);
+  });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */
   const collides = $derived(orgNeeded(wire, slot));

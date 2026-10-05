@@ -8,6 +8,7 @@
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine } from './text';
+  import Thought from './Thought.svelte';
   import type { PeerCard, PeerRow, WorkRow } from './units';
 
   /** A peer row's title, in the three parts the row draws: lead, name, tail. */
@@ -29,7 +30,14 @@
    * a peer row's mark says which way the message went, and a thought row reads
    * as the model talking to itself.
    */
-  let { rows }: { rows: WorkRow[] } = $props();
+  let {
+    rows,
+    messages = null,
+  }: {
+    rows: WorkRow[];
+    /** The turn's messages, handed down for a dispatch row's own timeline. */
+    messages?: readonly unknown[] | null;
+  } = $props();
 
   /** What identifies a row: its own key, or a card's id under its own prefix. */
   function rowKey(row: WorkRow): string {
@@ -85,30 +93,13 @@
 <div class="leaves">
   {#each rows as row (rowKey(row))}
     {#if row.tag === 'call'}
-      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} />
+      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {messages} />
     {:else if row.tag === 'hook'}
       <Hook run={row.run} />
     {:else if row.tag === 'inbound'}
       <Inbound {row} />
     {:else if row.tag === 'thought'}
-      {@const lead = renderInlineProse(joinedLine(row.text))}
-      <!-- The body is markdown: the model writes its reasoning in headings,
-           lists and code, and the terminal has no row for it at all. -->
-      <details class="leaf">
-        <summary>
-          <Icon name="message-circle-more" class="gl" />
-          <!--
-            The row's rendered line, which the module produced from escaped
-            input: same renderer as the body, raw HTML off.
-          -->
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-          <span class="tn">{@html lead}</span>
-          <Chevron />
-        </summary>
-        <div class="body">
-          <Prose text={row.text} />
-        </div>
-      </details>
+      <Thought text={row.text} />
     {:else if row.tag === 'card'}
       {@const title = titleOf(row.card)}
       <details class="leaf">

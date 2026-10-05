@@ -45,9 +45,6 @@ same family.
 for it instead of an indent. Where it is proposed to go, per surface:
 
 - **The chat's turn**, where it already is.
-- **A subagent's card in the inspector**, which is the strongest case:
-  a dispatched agent with the calls it made under it is genuinely a tree,
-  and today that relationship is an indent.
 - **The composer's dock**, where prompt requests queue behind one another
   and the queue is a short run.
 - **The home's worker rows**, as an option rather than a change: the

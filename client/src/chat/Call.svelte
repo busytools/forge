@@ -5,10 +5,15 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import Call from './Call.svelte';
   import { iconOf } from './families';
-  import { languageFor, type CallBody, type ToolLeaf } from './leaves';
+  import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
+  import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
+  import Thought from './Thought.svelte';
+  import { subagents } from './subagents.svelte';
+  import { dispatchFrames } from './timeline';
 
   /**
    * One call: what it was, whether it came back, and what it came back with.
@@ -27,9 +32,21 @@
     call,
     open = false,
     k,
+    messages = null,
   }: {
     call: ToolLeaf;
     open?: boolean;
+    /**
+     * The page's messages, across every turn, as the wire carried them.
+     *
+     * Read only by a dispatch row that is open: the instance's own frames
+     * (its calls, their results, the prose between them) carry the parent id
+     * that names the dispatch, and the row's timeline is read from them here
+     * rather than from the card, whose tail caps at four. Every turn rather
+     * than the row's own, because a backgrounded instance's frames arrive in
+     * LATER turns than the dispatch that opened it.
+     */
+    messages?: readonly unknown[] | null;
     /**
      * The fold's own name for this row, which the row draws in `data-k`.
      *
@@ -173,24 +190,185 @@
         ? ' err'
         : '',
   );
+
+  /**
+   * The sub-agent instance this call dispatched, when it is one.
+   *
+   * A dispatch row draws the INSTANCE's liveness rather than the call's own:
+   * the launch-ack answers the call in a second while the agent runs on for
+   * minutes, so the call's status alone would draw a finished row over work
+   * that is still going.
+   */
+  const card = $derived(subagents.by(call.id));
+
+  /** Whether the row reads as work in flight, which for a dispatch is the instance's own answer. */
+  const running = $derived(
+    card === undefined
+      ? call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'
+      : card.running,
+  );
+
+  /**
+   * Whether the row's text brightens, which is the narrower condition the
+   * group's own rule uses: a call that has a frame in hand. A dispatch takes
+   * the instance's answer instead, so it brightens for as long as the agent
+   * actually works rather than for the second the ack takes.
+   */
+  const bright = $derived(card === undefined ? call.status === 'in_progress' : card.running);
+
+  /** The kind glyph's tone, off the instance when this row carries one. */
+  const shownTone = $derived(
+    card === undefined ? tone : card.failed ? ' err' : card.running ? '' : ' ok',
+  );
+
+  /**
+   * The figures a settled dispatch draws at the row's right: how many calls
+   * it made, the tokens it spent, and how long it took. Tokens and the clock
+   * come from the usage the CLI reported, so each draws only when it is
+   * there; the call count always is.
+   */
+  const figures = $derived(
+    card === undefined || card.running
+      ? null
+      : [
+          `${card.calls} ${card.calls === 1 ? 'call' : 'calls'}`,
+          card.usage === null ? null : `${tokens(card.usage.total_tokens)} tokens`,
+          card.usage === null ? null : duration(card.usage.duration_ms),
+        ]
+          .filter((part) => part !== null)
+          .join(' \u{b7} '),
+  );
+
+  /**
+   * The dispatch's own frames, read only while the row is open: a shut row
+   * pays nothing for a timeline nobody is looking at.
+   */
+  const sub = $derived(
+    card !== undefined && opened ? dispatchFrames(messages ?? [], call.id) : null,
+  );
+
+  /** Whether this dispatch owns its RESULT text on the row: only a foreground
+   * one does. A backgrounded instance's result is the launch ack, so neither
+   * that block nor the transcript path draws for it - its task facts do. */
+  const grounded = $derived(card !== undefined && !card.backgrounded);
+
+  /** The meta line's own pairs: what the CLI said about the task itself. */
+  const meta = $derived(
+    sub === null
+      ? []
+      : (
+          [
+            sub.model === null ? null : ['model', sub.model],
+            sub.taskType === null ? null : ['task', sub.taskType],
+            sub.taskId === null ? null : ['agent', sub.taskId],
+            sub.depth === null ? null : ['depth', String(sub.depth)],
+            sub.isolation === null ? null : ['isolation', sub.isolation],
+          ] as ([string, string] | null)[]
+        ).filter((part): part is [string, string] => part !== null),
+  );
 </script>
 
 <details
   class="leaf"
-  class:running={call.status === 'in_progress'}
+  class:running={bright}
   bind:open={opened}
   data-k={`call-${k}`}
+  data-sg={card?.dispatch_id}
 >
   <summary>
-    <Icon name={iconOf(call.row)} class={`gl${tone}`} />
-    {#if call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'}
+    <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
+    {#if card !== undefined && card.failed}
+      <!-- A shape, not the glyph's tint alone: a failed instance and a clean
+           one must not differ by colour only on a closed row - and the cross
+           leads the ring, because `failed` can land before the roster settles
+           the task. -->
+      <Icon name="x" class="gl err" />
+    {:else if running}
       <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>
+    {#if card !== undefined && card.agent_type !== null}
+      <span class="sg-ty">{card.agent_type}</span>
+    {/if}
+    {#if card !== undefined && card.backgrounded}
+      <span class="sg-chip">background</span>
+    {/if}
+    {#if figures !== null}
+      <span class="sg-fig">{figures}</span>
+    {/if}
     <Chevron />
   </summary>
 
-  {#if call.image !== null}
+  {#if sub !== null}
+    <!-- The instance's own expansion: the brief it was given, what it is
+         doing now, and every call it has made with what each came back with.
+         The frames carry the instance's work in full; the card's tail caps at
+         four, and the record's usage covers the figures. -->
+    <div class="body">
+      {#if sub.brief !== null}
+        <!-- The brief is markdown, as prompts are: rendered, not spooned out
+             as raw text with its structure collapsed. -->
+        <div class="sg-brief">
+          <span class="sg-lb">brief</span>
+          <Prose text={sub.brief} />
+        </div>
+      {/if}
+
+      {#if sub.lines.length > 0}
+        <div class="sg-tl">
+          {#each sub.lines as line, at (at)}
+            {#if line.kind === 'call'}
+              <!-- The instance's calls are the session's own tool rows: the
+                   same component, the same glyph and body, because a second
+                   rendering of the same facts is a second thing to keep in
+                   step. -->
+              <Call
+                call={line.leaf}
+                k={line.leaf.id}
+                open={opensByDefault(line.leaf.name, line.leaf.body, line.leaf.decision)}
+              />
+              {#if line.leaf.status !== 'completed' && line.leaf.status !== 'failed' && line.leaf.status !== 'killed' && sub.beats.has(line.leaf.id)}
+                <div class="sg-hb"><span class="ring"></span>heartbeat</div>
+              {/if}
+            {:else if line.kind === 'thought'}
+              <Thought text={line.text} />
+            {:else if line.kind === 'hook'}
+              <div class="sg-pr">{line.text}</div>
+            {:else}
+              <div class="sg-pr"><Prose text={line.text} /></div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+
+      <!-- The task facts, for both carriers: only the transcript PATH is
+           dropped for a backgrounded instance, whose own text is the launch
+           ack and says nothing a reader acts on - the facts are the
+           instance's either way. -->
+      {#if meta.length > 0 || (grounded && sub.outputFile !== null)}
+        <div class="sg-meta">
+          {#each meta as [label, value], at (label)}{#if at > 0}
+              &#183;
+            {/if}<span>{label}</span>
+            {value}{/each}{#if grounded && sub.outputFile !== null}<br /><span>output file</span>
+            {sub.outputFile}{/if}
+        </div>
+      {/if}
+
+      {#if grounded && call.body.length > 0}
+        <!-- A dispatch's own result text - the launch ack, the hand-back, the
+             notification's report - is prose, so it renders as markdown here
+             rather than as a terminal box: the report is a list and its
+             backticks are code, and spooning it out raw showed both. One
+             wrapper for the row's own prose voice, so it never reads in the
+             conversation's. -->
+        <div class="sg-result">
+          <span class="sg-lb">output</span>
+          {@render pieces(rest, true)}
+        </div>
+      {/if}
+    </div>
+  {:else if call.image !== null}
     <!-- The picture the call read, drawn only while the row is open: decoding
          a screenshot is real work, and a column of closed rows must not pay
          it. The harness's own line about it rides under as the caption, and
@@ -300,7 +478,7 @@
 
 <!-- One statement of how a result's pieces draw, so the picture's branch and
      the body's branch cannot drift apart. -->
-{#snippet pieces(parts: RunPiece[])}
+{#snippet pieces(parts: RunPiece[], asProse = false)}
   {#each parts as piece, at (at)}
     {#if piece.kind === 'image'}
       <div class="term">
@@ -318,6 +496,8 @@
         <div class="m">{piece.message}</div>
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
+    {:else if asProse}
+      <Prose text={piece.text} preserveLines />
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />
     {:else}

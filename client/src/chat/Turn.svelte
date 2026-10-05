@@ -27,10 +27,16 @@
   let {
     turn,
     slot = null,
+    history = null,
     carried = null,
   }: {
     turn: HeldTurn;
     slot?: Self | null;
+    /**
+     * Every message the page holds, for a dispatch row's own timeline: a
+     * backgrounded instance's frames arrive in later turns than its dispatch.
+     */
+    history?: readonly unknown[] | null;
     /**
      * The key of this turn's report row that the pin above the box is drawing,
      * or `null` where the pin is drawing none of them.
@@ -139,7 +145,7 @@
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
           {:else if unit.kind === 'leaves'}
-            <Leaves rows={unit.rows} />
+            <Leaves rows={unit.rows} messages={history ?? turn.messages} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}

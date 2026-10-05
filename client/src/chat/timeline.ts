@@ -1,0 +1,276 @@
+/**
+ * A dispatch's own frames, read into the timeline its row draws.
+ *
+ * **The card says how the instance is doing; the frames say what it did.**
+ * The record's card carries the liveness, the usage and the last four calls;
+ * the turn's own messages carry every call in order, each with its input, its
+ * result and its clock. They are already in hand: a dispatched agent's frames
+ * ride the turn they ran in, under the parent id that names the dispatch.
+ *
+ * **Each call is built as the session's own tool leaf.** The row draws them
+ * through the same component the session draws its calls with - same glyph,
+ * same title, same body - because a second rendering of the same facts is a
+ * second thing to keep in step.
+ *
+ * Read lazily, only for a row that is open: a shut row pays nothing.
+ */
+
+import { taskStatus } from './families';
+import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
+
+/** One line of the instance's own work. */
+export type SubLine =
+  | { kind: 'call'; leaf: ToolLeaf }
+  | { kind: 'prose'; text: string }
+  | { kind: 'thought'; text: string }
+  | { kind: 'hook'; text: string };
+
+/** Everything the row's expansion reads off a dispatch's frames. */
+export interface DispatchFrames {
+  /** The brief the dispatch carried, which is the prompt it was given. */
+  brief: string | null;
+  /** The model the dispatch named, when it named one. */
+  model: string | null;
+  /** The isolation the dispatch asked for (a worktree), when it asked. */
+  isolation: string | null;
+  /** The CLI's own handle for the task, off the roster's first frame. */
+  taskId: string | null;
+  /** How deep the task nested, off the roster. */
+  depth: number | null;
+  /** The CLI's word for what kind of task it is (`local_agent`, `local_bash`). */
+  taskType: string | null;
+  /** Where the CLI writes the instance's own transcript, off its ending. */
+  outputFile: string | null;
+  /** The lines: the instance's calls (as the session's own tool rows) and the
+   * prose between them, in order. */
+  lines: SubLine[];
+  /** The calls the CLI's heartbeat has beaten for, by call id. */
+  beats: Set<string>;
+}
+
+/** The frame shapes this reader touches, as loosely as the wire is held. */
+interface Frame {
+  type?: unknown;
+  subtype?: unknown;
+  parent_tool_use_id?: unknown;
+  tool_use_id?: unknown;
+  task_id?: unknown;
+  spawn_depth?: unknown;
+  task_type?: unknown;
+  output_file?: unknown;
+  is_backgrounded?: unknown;
+  status?: unknown;
+  summary?: unknown;
+  actions?: unknown;
+  patch?: unknown;
+  tool_use_result?: unknown;
+  message?: { content?: unknown };
+}
+
+function obj(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** One call the instance made, before its result has been folded in. */
+interface CallDraft {
+  kind: 'call';
+  id: string;
+  name: string;
+  input: unknown;
+  result: Block | undefined;
+  /** The frame's own structured result, where an edit's hunks live. */
+  record: unknown;
+}
+
+/**
+ * The dispatch's own frames, read into what the row draws.
+ *
+ * `messages` is the turn's messages as the wire carried them - the fold hands
+ * the row's timeline these rather than the units, because the units are the
+ * conversation's and a dispatched agent's frames are not in them.
+ */
+export function dispatchFrames(messages: readonly unknown[], dispatchId: string): DispatchFrames {
+  const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook'; text: string })[] = [];
+  const at = new Map<string, CallDraft>();
+  const beats = new Set<string>();
+  /** The task id the CLI assigned a child call, so its ending can be placed. */
+  const owners = new Map<string, string>();
+  /** What the roster said about each child call, by call id. */
+  const tasks = new Map<string, BackgroundTask>();
+  let brief: string | null = null;
+  let model: string | null = null;
+  let isolation: string | null = null;
+  let taskId: string | null = null;
+  let depth: number | null = null;
+  let taskType: string | null = null;
+  let outputFile: string | null = null;
+
+  for (const raw of messages) {
+    const frame = obj(raw) as Frame;
+    const parent = str(frame.parent_tool_use_id);
+
+    // The heartbeat names the call it beats for, so it lands on that line.
+    if (frame.type === 'tool_progress') {
+      if (parent !== null) beats.add(parent);
+      continue;
+    }
+
+    // A hook summary under the dispatch draws as a plain line rather than
+    // being dropped: rule 25's default for a frame with no vocabulary here.
+    if (frame.type === 'system' && parent === dispatchId) {
+      if (frame.subtype === 'stop_hook_summary') {
+        const actions = typeof frame.actions === 'number' ? frame.actions : null;
+        lines.push({
+          kind: 'hook',
+          text:
+            actions === null ? 'hooks ran' : `hooks · ${actions} action${actions === 1 ? '' : 's'}`,
+        });
+      }
+      continue;
+    }
+
+    if (parent === dispatchId) {
+      for (const block of blocksOf(frame.message?.content)) {
+        if (frame.type === 'assistant' && block.type === 'tool_use') {
+          const id = str(block.id);
+          const name = str(block.name);
+          if (id === null || name === null) continue;
+          const draft: CallDraft = {
+            kind: 'call',
+            id,
+            name,
+            input: block.input,
+            result: undefined,
+            record: undefined,
+          };
+          lines.push(draft);
+          at.set(id, draft);
+        } else if (frame.type === 'assistant' && block.type === 'text') {
+          const text = typeof block.text === 'string' ? block.text.trim() : '';
+          if (text !== '') lines.push({ kind: 'prose', text });
+        } else if (frame.type === 'assistant' && block.type === 'thinking') {
+          // The instance's reasoning, which the session draws as its own row -
+          // dropped here it would be the one frame type with no row at all.
+          const text = typeof block.thinking === 'string' ? block.thinking.trim() : '';
+          if (text !== '') lines.push({ kind: 'thought', text });
+        } else if (frame.type === 'user' && block.type === 'tool_result') {
+          const owner = at.get(str(block.tool_use_id) ?? '');
+          if (owner === undefined) continue;
+          owner.result = block;
+          // The frame's own structured result rides along: an edit's hunks
+          // live there and on nothing else, and the session's own fold hands
+          // it through for the same reason.
+          owner.record = frame.tool_use_result;
+          beats.delete(owner.id);
+        }
+      }
+      continue;
+    }
+
+    if (parent !== null) continue;
+
+    // The dispatch itself: its input carries the brief, a named model and an
+    // isolation request, none of which repeat anywhere else.
+    if (frame.type === 'assistant') {
+      for (const block of blocksOf(frame.message?.content)) {
+        if (block.type !== 'tool_use' || str(block.id) !== dispatchId) continue;
+        const input = obj(block.input);
+        brief = str(input['prompt']);
+        model = str(input['model']);
+        isolation = str(input['isolation']);
+      }
+    }
+    // The roster's own facts about the task the dispatch opened: its handle,
+    // its depth, its kind, and where its transcript is written. `task_updated`
+    // is not read here: it names only the task and never the call.
+    if (frame.type === 'system' && str(frame.tool_use_id) === dispatchId) {
+      if (frame.subtype === 'task_started') {
+        taskId = str(frame.task_id) ?? taskId;
+        depth = typeof frame.spawn_depth === 'number' ? frame.spawn_depth : depth;
+        taskType = str(frame.task_type) ?? taskType;
+      }
+      if (frame.subtype === 'task_notification') {
+        outputFile = str(frame.output_file) ?? outputFile;
+      }
+    }
+
+    // A CHILD call's own task frames - the same bookkeeping the session's fold
+    // keeps, so a backgrounded call the instance made draws as the work it is
+    // rather than as the settled launch ack it was answered with.
+    if (frame.type === 'system') {
+      const call = str(frame.tool_use_id);
+      const task = str(frame.task_id);
+      if (frame.subtype === 'task_started' && call !== null && at.has(call)) {
+        if (task !== null) owners.set(task, call);
+        tasks.set(call, {
+          status: 'in_progress',
+          note: null,
+          backgrounded: frame.is_backgrounded === true,
+        });
+      } else if (
+        (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') &&
+        task !== null
+      ) {
+        // The frame's own call id first, the roster's link second: a
+        // notification whose `task_started` was never seen still names the
+        // call it ends, and dropping it would leave that call running.
+        const owner = (call !== null && at.has(call) ? call : undefined) ?? owners.get(task);
+        if (owner !== undefined) {
+          const held = tasks.get(owner) ?? {
+            status: 'in_progress' as const,
+            note: null,
+            backgrounded: false,
+          };
+          const wire = str(frame.status) ?? str(obj(frame.patch)['status']);
+          const summary = str(frame.summary);
+          tasks.set(owner, {
+            status: taskStatus(wire) ?? held.status,
+            note:
+              frame.subtype === 'task_notification' && summary !== null
+                ? {
+                    text: summary,
+                    tone:
+                      taskStatus(wire) === 'failed' || taskStatus(wire) === 'killed'
+                        ? 'fail'
+                        : 'sum',
+                  }
+                : held.note,
+            backgrounded: held.backgrounded,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    brief,
+    model,
+    isolation,
+    taskId,
+    depth,
+    taskType,
+    outputFile,
+    // Each call becomes the session's own tool leaf, built by the same
+    // builder the conversation fold uses.
+    lines: lines.map((line) =>
+      line.kind === 'call'
+        ? {
+            kind: 'call',
+            leaf: leafOf(
+              line.id,
+              line.name,
+              line.input,
+              line.result,
+              line.record,
+              tasks.get(line.id),
+            ),
+          }
+        : line,
+    ),
+    beats,
+  };
+}

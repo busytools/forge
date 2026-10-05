@@ -145,9 +145,6 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     /** One pushed process walk for this seat, the frame a held seat's own loop sends. */
     walk: (snapshot: unknown) =>
       emit({ kind: 'update', update: { processes_changed: { key: LEAD, snapshot } } }),
-    /** The pushed flag a seat's dispatch raises. */
-    dispatched: () =>
-      emit({ kind: 'update', update: { dispatches_changed: { key: LEAD, has_dispatches: true } } }),
     /** One frame for a seat this page is not looking at. */
     other: () => emit({ kind: 'update', update: { chat_appended: { key: OTHER, msg: block() } } }),
     /** One frame that names no seat at all. */
@@ -161,23 +158,6 @@ function block(text = 'hello'): Record<string, unknown> {
     type: 'assistant',
     uuid: `a${text}`,
     message: { role: 'assistant', content: [{ type: 'text', text }] },
-    session_id: 's',
-    parent_tool_use_id: null,
-  };
-}
-
-/**
- * A dispatch as it arrives: the frame this page is sent when a seat makes one,
- * and not the record's own answer, which the section draws from.
- */
-function dispatched(): Record<string, unknown> {
-  return {
-    type: 'assistant',
-    uuid: 'a-dispatch',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }],
-    },
     session_id: 's',
     parent_tool_use_id: null,
   };
@@ -354,46 +334,6 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **The section follows the record's own answer, not a scan of its frames.**
-   * The server folds whether a seat dispatched where the conversation is folded,
-   * because a client holds only what it has been sent - so a page that scanned
-   * what it held would draw "no sub-agents ran" for a seat that dispatched an
-   * hour ago, which this section's own copy calls the same mistake as drawing a
-   * settled state for one nobody described.
-   *
-   * Both directions are asserted, because either alone is passed by a section
-   * that is always drawn or by one that never is.
-   */
-  it('draws the subagents section over an empty conversation when the record says it dispatched', () => {
-    open([], { has_dispatches: true });
-    const keys = drawn().map((section) => section.key);
-
-    expect(keys, `a record that dispatched drew no section: ${JSON.stringify(keys)}`).toContain(
-      'sec-subagents',
-    );
-  });
-
-  it('leaves the section absent for a frame that dispatched while the record says none', () => {
-    const server = open([], { has_dispatches: false });
-    counts.clear();
-    const before = drawn().map((section) => section.key);
-
-    // A dispatch arrives as a chat frame. What the section draws from is the
-    // record's answer, and this build does not re-derive it from the
-    // conversation: the CORE folds the frame and raises the flag itself, so
-    // the frame below moves the section only through the pushed update that
-    // follows it - and this case sends none.
-    arrive(() => server.update(dispatched()));
-
-    const after = drawn().map((section) => section.key);
-    const measured = JSON.stringify({ before, after });
-    expect(before, `the section was there before the frame: ${measured}`).not.toContain(
-      'sec-subagents',
-    );
-    expect(after, `a frame turned the section on: ${measured}`).not.toContain('sec-subagents');
-  });
-
-  /**
    * **The process walk reaches the section as a pushed row.** The walk used to
    * reach it on the read's answer; now the seat's own hold sends it, so the
    * section appearing on a frame - without the page asking anything - is the
@@ -418,25 +358,6 @@ describe('what one arriving frame costs the inspector', () => {
     const keys = drawn().map((section) => section.key);
     expect(keys, `a pushed walk drew no section: ${JSON.stringify(keys)}`).toContain(
       'sec-processes',
-    );
-    expect(server.asked.length, 'the frame re-read the seat').toBe(0);
-  });
-
-  /**
-   * **A dispatch made while this page is open reaches the section as a pushed
-   * frame.** The core raises the flag on the frame the CLI already sends, so
-   * the section appears as the dispatch happens, with nothing asked for.
-   */
-  it('draws the subagents section from a pushed dispatch', () => {
-    const fields: Record<string, unknown> = { has_dispatches: false, mcp: null };
-    const server = open([], fields);
-    expect(drawn().map((section) => section.key)).not.toContain('sec-subagents');
-
-    arrive(() => server.dispatched());
-
-    const keys = drawn().map((section) => section.key);
-    expect(keys, `a pushed dispatch drew no section: ${JSON.stringify(keys)}`).toContain(
-      'sec-subagents',
     );
     expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });

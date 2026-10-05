@@ -713,6 +713,13 @@
   .strip .ti > span { white-space: nowrap; }
   .strip .ti .sep { opacity: .5; }
   .strip .ti .st.err { color: var(--bad); }
+  /* The agents row: the count at the strip's right, and the way into each
+     instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
+  .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
+  .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
+    border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
+    font: inherit; color: var(--muted); }
+  .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -2077,6 +2084,18 @@ branch main, nothing to commit</div>
                that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
           <span id="lv-cost" style="display:none">$4.82 cumulative</span>
+          <!-- The agents row, at the strip's right: the seat's instances, the
+               count it has out and the count it has finished. It is where a
+               subagent is announced outside the chat, and the way into each
+               one - a hover opens the list, a click reveals that dispatch's
+               chat row. The inspector has no subagents section. Drawn CLOSED
+               here: the open list is runtime state, and the specimen draws
+               the resting row. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-subagents"/></svg>
+              <span class="ring"></span>2 running &#183; 1 finished</button>
+          </span>
         </div>
       </div>
       <div class="cstates" data-mock-ignore>
@@ -2274,29 +2293,6 @@ branch main, nothing to commit</div>
           <div class="tk done"><span class="b"></span><span>
             <div class="s">Merge, release and install the layout pass</div>
             <div class="meta"><b>lead</b> &#183; completed 24m ago</div></span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-subagents"/></svg> subagents
-          <span class="c2">1 running</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="note">The only surface subagents have - the chat suppresses them.</div>
-          <div class="sa">
-            <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-subagents"/></svg>
-              <span class="nm">cli-version</span><span class="n">7 tools &#183; settled 3m</span></div>
-            <div class="settled">settled - its calls are not drawn</div>
-          </div>
-          <div class="sa">
-            <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
-              <svg class="ic gl"><use href="#i-subagents"/></svg>
-              <span class="nm">web-session-review</span><span class="n">running &#183; 4 tools</span></div>
-            <div class="tt"><svg class="ic tg"><use href="#i-read"/></svg> Read docs/book/src/ui/chat.md</div>
-            <div class="tt"><svg class="ic tg"><use href="#i-edit"/></svg> Edit docs/book/src/ui/client/web-session.html</div>
-            <div class="tt"><svg class="ic tg"><use href="#i-bash"/></svg> Bash cargo nextest run -p forge-web</div>
-            <div class="tt"><svg class="ic tg"><use href="#i-search"/></svg> Grep "subagent" crates/forge-tui</div>
-          </div>
         </div>
       </details>
 

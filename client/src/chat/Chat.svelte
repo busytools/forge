@@ -22,6 +22,8 @@
   import { echoes, ownWords } from './echoes.svelte';
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
+  import { turnOfDispatch } from './dispatch-jump';
+  import { reachableIds, reveal, subagents } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -604,6 +606,30 @@
   );
 
   /**
+   * Every message the page holds, across every turn.
+   *
+   * **A dispatch's row reads its instance's frames from here, not from its own
+   * turn.** A backgrounded instance runs on past the turn that dispatched it,
+   * so its calls arrive in LATER turns - looked for in the dispatch row's own
+   * turn alone, a backgrounded instance's timeline reads empty.
+   */
+  const history = $derived(held.turns.flatMap((one) => one.messages));
+
+  /**
+   * The dispatches the loaded conversation can reach, published for the
+   * agents list.
+   *
+   * **A list entry that cannot lead to its row must not be shown.** The
+   * record's list is the session's whole history while these turns are a
+   * window of it, so an instance whose dispatch is not in a loaded turn -
+   * and whose turn the transport can no longer page back to - would give a
+   * click that goes nowhere.
+   */
+  $effect(() => {
+    subagents.syncReachable(reachableIds(held.turns));
+  });
+
+  /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.
    *
    * **Through the element rather than through the list's handle, and that is
@@ -661,6 +687,35 @@
       asking = true;
     }
     if (!asking || !held.loaded) return;
+    // A dispatch's row may sit in a turn the virtualised list has not drawn:
+    // scroll to its turn first, then chase the row, which mounts a frame
+    // after the scroll that asked for it.
+    if (ask?.what === 'dispatch' && ask.dispatch !== undefined) {
+      const wanted = ask.dispatch;
+      const at = turnOfDispatch(held.turns, wanted);
+      if (at !== null) {
+        asking = false;
+        list?.scrollToIndex(at, { align: 'start' });
+        // The row mounts with the turn, and a tall turn takes real time to
+        // draw: the chase runs on a wall-clock budget rather than frames, so
+        // a slow mount is not mistaken for a dispatch that is not there.
+        const until = Date.now() + 2500;
+        const chase = () => {
+          if (reveal(wanted)) return;
+          if (Date.now() < until) setTimeout(chase, 60);
+        };
+        setTimeout(chase, 0);
+      } else if (held.cursor === null) {
+        // The real top: the dispatch is not in this conversation at all.
+        asking = false;
+      } else {
+        // Keep asking while pages land: `older()` answers false for a fetch
+        // already in flight as well as for the top, and treating that as the
+        // top is what made an older dispatch's click do nothing at all.
+        loadOlder();
+      }
+      return;
+    }
     const at = latestCompaction(held.turns);
     if (at !== null) {
       asking = false;
@@ -898,7 +953,12 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {slot} carried={turn.key === newest ? (pinned?.key ?? null) : null} />
+        <Turn
+          {turn}
+          {slot}
+          {history}
+          carried={turn.key === newest ? (pinned?.key ?? null) : null}
+        />
         <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or
              joins, so nothing moves when the send is taken. -->

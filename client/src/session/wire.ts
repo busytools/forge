@@ -212,10 +212,11 @@ export interface SessionRecord {
   /**
    * Whether this seat's conversation holds a sub-agent dispatch at all.
    *
-   * **The server's, folded where the conversation is folded.** The turns above
-   * are a window of the conversation, not the whole of it, so a page that
-   * worked this out from what it held would draw no sub-agents for a seat that
-   * dispatched in a turn it never received.
+   * **Parsed, and nothing reads it.** The inspector's subagents section was
+   * its only reader and the section is gone - the dispatch rows and the
+   * strip's agents row read `subagent_instances` instead. The field stays on
+   * the wire: dropping it would be a protocol change, so the parse stays
+   * here until the wire itself moves.
    */
   has_dispatches: boolean;
   /** The working tree's branch and count, and whether git could read it. */
