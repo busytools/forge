@@ -50,6 +50,10 @@ pub struct ViewFacts {
     /// because the fold that raises it runs in the session task, which a
     /// fixture does not start.
     pub has_dispatches: bool,
+    /// The instances that fold has folded, for the same reason: the list a
+    /// record reads is the one the session task pushes, and a fixture has no
+    /// task to push it.
+    pub cards: Vec<forge_primitives::runtime::SubagentCard>,
 }
 
 /// A view surface over a stub workspace, plus the seeding a test needs to
@@ -520,6 +524,7 @@ impl Fleet {
         held.background_tasks = facts.background_tasks;
         held.monitors = facts.monitors;
         held.has_dispatches = facts.has_dispatches;
+        held.cards_snapshot = facts.cards;
     }
 
     fn project_view(&self, project: &str) -> Result<forge_workspace::ProjectView, FixtureError> {

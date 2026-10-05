@@ -27,7 +27,7 @@ forge-test-harness->  primitives + sdk
 | `forge-sdk` | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder. |
 | `forge-agent` | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out. |
 | `forge-workspace` | The multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, and the in-process MCP server forge exposes to every spawned session. |
-| `forge-server` | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the fold that turns a session's dispatches into the sub-agent instances a view draws, a Monitor's watched-command output tail, and the socket that carries all of it. Nothing here draws, so a second client attaches beside the TUI rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
+| `forge-server` | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the sub-agent instance list the session task's own fold keeps and pushes, a Monitor's watched-command output tail, and the socket that carries all of it. Nothing here draws, so a second client attaches beside the TUI rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
 | `forge-web` | The web view, parked: the socket took the port its pages were served on, so nothing serves them until a client lands. axum plus server-rendered markup - a home and a page per session, each kept live by a stream - reading the core through the view surface in `forge-server`, git plumbing included, and never naming `forge-workspace`. Nothing depends on it; the client is built against the socket, and this crate is deleted then. |
 | `forge-tui` | The view layer. Rendering, key and mouse handling, per-session presentation state. Ships the `forge` binary. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path. |
@@ -95,14 +95,14 @@ Work top-down; the first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
 `cli_version`, `conversation`, `slash_commands`,
-`forge_commands`, `subagents`, `has_dispatches`,
+`forge_commands`, `subagents`, `has_dispatches`, `subagent_cards`,
 `file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
 `processes`, `work`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-eight exist in `forge-server`, and the TUI reads
+core. All twenty-nine exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk

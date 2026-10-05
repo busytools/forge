@@ -3558,6 +3558,24 @@ impl Workspace {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().has_dispatches)
     }
 
+    /// The sub-agent instances the session at `slot` has folded, as the list
+    /// the session task pushes when it moves.
+    ///
+    /// **A record reads this rather than folding the conversation itself.**
+    /// The task folds a card per frame and announces the list moving, so a
+    /// second fold over the held conversation would be a second answer to a
+    /// question one fold already answers - and one that disagrees with the
+    /// frames as soon as the conversation a record can see is shorter than the
+    /// one the session has run.
+    pub fn subagent_cards_for(
+        &self,
+        slot: &SessionSlot,
+    ) -> Vec<forge_primitives::runtime::SubagentCard> {
+        self.domain_session_for(slot)
+            .map(|domain| domain.lock().cards_snapshot.clone())
+            .unwrap_or_default()
+    }
+
     /// Whether the session at `key` currently has a live agent
     /// handle stamped onto its [`DomainSession`]. Encapsulates the
     /// presence check so callers don't need to peek at

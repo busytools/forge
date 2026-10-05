@@ -67,6 +67,7 @@
 mod account_cache;
 mod account_loader;
 mod config;
+pub mod conversation_window;
 mod crons;
 mod dictate;
 mod domain_session;

@@ -274,7 +274,14 @@ impl SessionTask {
                 let history = history_updates.unwrap_or_default();
                 // Kept before the update takes it, so a consumer that joins
                 // later can be handed what this task was handed.
-                self.conversation = Some((history.clone(), compaction_count));
+                //
+                // **The window of it rather than a clone of it.** A resume
+                // hands over the whole transcript, and what is kept here
+                // answers a replay - which its reader cuts to the same window
+                // anyway. Cloning the whole history to keep a window of it is
+                // a transcript-sized allocation per connect.
+                self.conversation =
+                    Some((crate::conversation_window::tail_of(&history), compaction_count));
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
                 // the seat.
@@ -1095,6 +1102,10 @@ impl SessionTask {
     /// A compaction boundary bumps the count rather than the frame list: the
     /// CLI's boundary frame is a `ChatAppended` like any other and stays in
     /// the conversation, and the count is what a view draws its marker from.
+    ///
+    /// **And the copy is a window, not the run.** Its one reader cuts it to
+    /// the newest turns, so a session up for days would otherwise carry a run
+    /// that nothing reads (see [`crate::conversation_window`]).
     fn retain(&mut self, message: &forge_primitives::Message) {
         let Some((history, compaction_count)) = self.conversation.as_mut() else {
             // Before the first connect there is no conversation to add to,
@@ -1103,6 +1114,14 @@ impl SessionTask {
         };
         if matches!(message, forge_primitives::Message::CompactBoundary { .. }) {
             *compaction_count = compaction_count.saturating_add(1);
+        }
+        // Before the push, so the drop pays for the room it makes rather than
+        // for a doubling it is about to throw away.
+        if history.len()
+            >= crate::conversation_window::CONVERSATION_CAP
+                + crate::conversation_window::CONVERSATION_SLACK
+        {
+            crate::conversation_window::drop_past_cap(history);
         }
         history.push(message.clone());
     }
@@ -4933,6 +4952,112 @@ provider = "anthropic"
         let lead_bucket = workspace.take_parked_for_slot(&lead_slot).cron;
         assert_eq!(lead_bucket.len(), 1, "the lead's cron stays buffered");
         assert_eq!(lead_bucket[0].text, "lead work");
+    }
+
+    /// **A session that runs long does not carry its whole run.** The copy a
+    /// replay answers with is a window, for the reason the transport's held
+    /// copy is: what its reader does with it is cut it to the newest turns,
+    /// so a copy that grows with the transcript is a transcript-sized
+    /// allocation per session, cloned again per replay.
+    ///
+    /// Both routes in are asserted apart - the history a connect hands over,
+    /// and the frames the session emits after it - because each is its own
+    /// call site and either could keep the whole run while the other does not.
+    #[tokio::test]
+    async fn a_session_keeps_its_conversation_in_the_same_window() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("window-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        let cap = crate::conversation_window::CONVERSATION_CAP;
+        let slack = crate::conversation_window::CONVERSATION_SLACK;
+        let frame = |at: usize| {
+            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": format!("frame {at}")},
+                "session_id": session_key.display(),
+            }))
+            .expect("a user frame")
+        };
+        // A resume, which hands over a transcript twice the cap - the shape
+        // the clone this replaced was worst on.
+        let mut event = connected_event(&session_key.display(), "/tmp/window");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some((0..cap * 2).map(frame).collect());
+        }
+        task.translate_event(event);
+
+        let (seeded, _) = task.conversation.as_ref().expect("the task keeps a conversation");
+        assert_eq!(
+            seeded.len(),
+            cap,
+            "a connect hands over a transcript and the copy keeps a window"
+        );
+        assert!(
+            seeded.capacity() <= cap + slack,
+            "held in a window-sized store rather than the transcript's: capacity for {} messages",
+            seeded.capacity(),
+        );
+
+        // And the frames that arrive after it, which is where a long-running
+        // session's copy grows.
+        for at in 0..=(cap * 2 + slack) {
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: session_key.display(),
+                msg: frame(at),
+            });
+        }
+        while update_rx.try_recv().is_ok() {}
+
+        task.execute_command(crate::protocol::Command::ReplayConversation {
+            key: session_key.clone(),
+        });
+        let mut replayed = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::HistoryReplayed { history, .. } = update {
+                replayed = Some(history);
+            }
+        }
+        let history = replayed.expect("a replay is answered with the conversation");
+
+        assert!(
+            (cap..=cap + slack).contains(&history.len()),
+            "however long the session has run, the replay answers with a window: {} messages",
+            history.len(),
+        );
+        assert!(
+            !history.iter().any(|message| {
+                matches!(message, forge_primitives::Message::User { message, .. }
+                    if message.content.iter().any(|block| matches!(block,
+                        forge_primitives::ContentBlock::Text { text, .. }
+                            if text == "frame 0")))
+            }),
+            "and the frames it dropped are the oldest ones",
+        );
+
+        // **The store is what the cap is for**, so the shape is pinned as well
+        // as the length: a drop that drained would trim the copy and keep the
+        // transcript's buffer under it.
+        let (held, _) = task.conversation.as_ref().expect("the task keeps a conversation");
+        assert!(
+            held.capacity() <= cap + slack,
+            "the copy is held in a window-sized store: capacity for {} messages",
+            held.capacity(),
+        );
+        assert_eq!(held.len(), history.len(), "and holds the frames the replay answered with");
     }
 
     /// The count has coverage at both ends - the scan produces it, the

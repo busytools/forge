@@ -517,7 +517,15 @@ async fn handle_client(
             let seat = conversation.clone();
             let opening = before.clone();
             let folded = tokio::task::spawn_blocking(move || {
-                held.read(|held| page(held.messages(), held.rendered(), opening.as_deref(), turns))
+                held.read(|held| {
+                    page(
+                        held.messages(),
+                        held.rendered(),
+                        held.dropped(),
+                        opening.as_deref(),
+                        turns,
+                    )
+                })
             })
             .await;
             // **A fold that did not finish is refused for the reason the arm
