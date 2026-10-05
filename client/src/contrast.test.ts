@@ -144,6 +144,8 @@ const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
   ['--text', '--s2', TEXT],
+  // The walked pile card's own ground: its words draw on `--s3`.
+  ['--text', '--s3', TEXT],
   ['--muted', '--bg', TEXT],
   ['--muted', '--s1', TEXT],
   ['--muted', '--s2', TEXT],
@@ -191,19 +193,6 @@ const DRAWN: readonly Pair[] = [
  * Named rather than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
-
-/**
- * The one ground the TABLE names that carries no text pair: `--s3` is a
- * progress track there, and the only pair naming it is the bar fill. Named
- * rather than left out, so a ground whose text pair goes missing is a failure
- * and not a quiet exception.
- *
- * **What it does not scan**: a component's own style block. The walked pile
- * card draws its words and its source chips on `--s3`, and nothing here reads
- * that block - so this claims what the table names, not everything the sheet
- * draws.
- */
-const NO_TEXT_GROUND = ['--s3'];
 
 /**
  * Two grounds one step apart, which is the shape a wrong entry in the table
@@ -298,7 +287,7 @@ describe('the palette', () => {
     expect(
       [...grounds].filter((ground) => !withText.has(ground)).sort(),
       'a ground that has lost its text pair',
-    ).toEqual([...NO_TEXT_GROUND]);
+    ).toEqual([]);
   });
 
   it('draws every pair it names inside its band', () => {
