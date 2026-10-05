@@ -22,6 +22,7 @@ import {
   monitorFrom,
   prFrom,
   processesFrom,
+  subagentCardFrom,
   workFrom,
   type ComposerState,
   type Conversation,
@@ -171,6 +172,13 @@ export const HANDLERS: Record<string, Apply> = {
   subagents_changed: (held, payload) => ({
     ...held,
     subagents: list(payload['subagents']),
+  }),
+
+  // The joined instance list, carried whole under the frame's own name, with
+  // the same narrowers the record read uses.
+  subagent_cards_changed: (held, payload) => ({
+    ...held,
+    subagent_instances: list(payload['cards']).map(subagentCardFrom),
   }),
 
   // The frame carries the flag's own value. A payload naming no bool is a

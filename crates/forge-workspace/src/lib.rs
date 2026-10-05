@@ -85,6 +85,7 @@ mod single_instance;
 mod slack;
 mod spawn;
 pub mod store;
+pub mod subagent_cards;
 mod systemone;
 mod target;
 mod tasks;

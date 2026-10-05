@@ -198,6 +198,112 @@
             "parent_tool_use_id": null,
             "uuid": "a2",
             "timestamp": "2025-01-02T03:04:05.000Z"
+          },
+          {
+            "type": "assistant",
+            "message": {
+              "id": "m-sub",
+              "role": "assistant",
+              "model": "claude-opus-5",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "tu-sub",
+                  "name": "Task",
+                  "input": {
+                    "description": "map the calls",
+                    "subagent_type": "general-purpose",
+                    "run_in_background": false,
+                    "prompt": "do the thing"
+                  }
+                }
+              ],
+              "stop_reason": null,
+              "stop_sequence": null
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "parent_tool_use_id": null,
+            "uuid": "a3"
+          },
+          {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t-sub",
+            "description": "map the calls",
+            "uuid": "s1",
+            "session_id": "s",
+            "tool_use_id": "tu-sub",
+            "task_type": "local_agent",
+            "subagent_type": "general-purpose",
+            "is_backgrounded": false,
+            "spawn_depth": 1
+          },
+          {
+            "type": "assistant",
+            "message": {
+              "id": "m-sub1",
+              "role": "assistant",
+              "model": "claude-opus-5",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "tu-sub1",
+                  "name": "Read",
+                  "input": {
+                    "file_path": "src/lib.rs"
+                  }
+                }
+              ],
+              "stop_reason": null,
+              "stop_sequence": null
+            },
+            "session_id": "s",
+            "parent_tool_use_id": "tu-sub",
+            "uuid": "a4"
+          },
+          {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "tu-sub1",
+                  "content": "ok",
+                  "is_error": false
+                }
+              ]
+            },
+            "session_id": "s",
+            "parent_tool_use_id": "tu-sub",
+            "uuid": "u5"
+          },
+          {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t-sub",
+            "description": "Running Read",
+            "usage": {
+              "total_tokens": 9714,
+              "tool_uses": 1,
+              "duration_ms": 2716
+            },
+            "uuid": "s2",
+            "session_id": "s",
+            "tool_use_id": "tu-sub",
+            "last_tool_name": "Read",
+            "subagent_type": "general-purpose"
+          },
+          {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "t-sub",
+            "patch": {
+              "status": "completed",
+              "end_time": 1750000000000
+            },
+            "uuid": "s3",
+            "session_id": "s"
           }
         ]
       }
@@ -207,6 +313,30 @@
   "has_dispatches": false,
   "slash_commands": [],
   "subagents": [],
+  "subagent_instances": [
+    {
+      "name": "map the calls",
+      "dispatch_id": "tu-sub",
+      "agent_type": "general-purpose",
+      "running": false,
+      "failed": false,
+      "backgrounded": false,
+      "ended_at_ms": 1750000000000,
+      "calls": 1,
+      "tail": [
+        {
+          "name": "Read",
+          "title": "Read src/lib.rs",
+          "status": "completed"
+        }
+      ],
+      "usage": {
+        "total_tokens": 9714,
+        "tool_uses": 1,
+        "duration_ms": 2716
+      }
+    }
+  ],
   "file_index": {
     "entries": {}
   },
