@@ -318,16 +318,32 @@ describe('the dispatch row, joined to its instance', () => {
   });
 
   it('stops a backgrounded instance at its own report', () => {
-    // Its result text is the launch ack, which says nothing a reader acts on,
-    // and its task facts live in the CLI's own transcript file: neither the
-    // output block nor the meta line is drawn for a backgrounded instance.
+    // Its own text is the launch ack, which says nothing a reader acts on -
+    // so no output block - while its task facts and the transcript path stay,
+    // the same line a foreground row carries minus the path.
     subagents.sync([card({ backgrounded: true, running: false })]);
     const drawn = render(Call, {
-      props: { call: dispatch(), k: 'task', open: true, messages: [dispatchFrame()] },
+      props: {
+        call: dispatch(),
+        k: 'task',
+        open: true,
+        messages: [
+          dispatchFrame(),
+          {
+            type: 'system',
+            subtype: 'task_started',
+            tool_use_id: 'toolu_task',
+            task_id: 't1',
+            task_type: 'local_agent',
+            spawn_depth: 1,
+          },
+        ],
+      },
     }).body;
 
     expect(drawn, 'no output block').not.toContain('sg-result');
-    expect(drawn, 'and no task facts either').not.toContain('sg-meta');
+    expect(drawn, 'the task facts are drawn either way').toContain('sg-meta');
+    expect(drawn, 'and the transcript path is not').not.toContain('output file');
 
     subagents.sync(null);
   });

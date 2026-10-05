@@ -2,7 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import { askReveal } from '../session/scroll-ask';
   import { duration } from './numbers';
-  import { latestFirst, subagents, transcribable } from './subagents.svelte';
+  import { subagents, transcribable } from './subagents.svelte';
   import { firstLine } from './text';
 
   /**
@@ -22,8 +22,11 @@
    */
   const MAX_ACTIVITY = 64;
 
-  /** Whether the list is open: hover, tap and focus all ask for it. */
+  /** Whether the list is open: hover, tap, focus and Escape all speak to it. */
   let open = $state(false);
+  /** The segment and its list, so leaving and opening can be told apart. */
+  let segEl: HTMLElement | null = $state(null);
+  let listEl: HTMLElement | null = $state(null);
   /** A beat of grace on leaving, so crossing the gap into the list lands. */
   let closing: ReturnType<typeof setTimeout> | null = null;
 
@@ -32,9 +35,6 @@
   const listed = $derived(transcribable(subagents.all()));
   const running = $derived(listed.filter((card) => card.running));
   const finished = $derived(listed.length - running.length);
-  // Read newest first: the instance a reader just watched start is the one
-  // they came to the list for.
-  const latest = $derived(latestFirst(listed));
 
   /** What one instance is doing, short enough for a row: one line, capped. */
   const doing = (card: (typeof listed)[number]) => {
@@ -47,17 +47,72 @@
     closing = null;
     open = true;
   }
-  function release() {
+
+  /**
+   * Leaving arms the close, but focus moving WITHIN the segment is not
+   * leaving it: tabbing from the toggle into the list fires a bubbling
+   * `focusout` whose related target is still inside, and the close it armed
+   * would unmount the element the reader just tabbed to.
+   */
+  function release(event?: FocusEvent) {
+    const next = event?.relatedTarget;
+    if (next != null && segEl !== null && segEl.contains(next)) return;
     if (closing !== null) clearTimeout(closing);
     closing = setTimeout(() => {
       closing = null;
       open = false;
-    }, 250);
+    }, 120);
   }
+
+  /**
+   * The list opens at its foot: the instances read oldest first, the way the
+   * chat reads, so the one just started is the newest and the one a reader
+   * came for. A new instance landing while the list is open is followed only
+   * when the reader is already at the foot.
+   */
+  let seated = false;
+
+  /** Put the list's scroll at its foot. */
+  function toFoot(el: HTMLElement): void {
+    el.scrollTop = el.scrollHeight;
+  }
+
+  /** Whether the reader has the foot of the list on screen. */
+  function atFoot(el: HTMLElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
+
+  $effect(() => {
+    const el = listEl;
+    void listed.length;
+    if (!open || el === null) {
+      seated = false;
+      return;
+    }
+    if (!seated) {
+      seated = true;
+      toFoot(el);
+      return;
+    }
+    if (atFoot(el)) toFoot(el);
+  });
 </script>
 
 {#if listed.length > 0}
-  <span class="sg-seg" class:open onmouseenter={hold} onmouseleave={release} onfocusout={release}>
+  <span
+    class="sg-seg"
+    class:open
+    bind:this={segEl}
+    onmouseenter={hold}
+    onmouseleave={() => release()}
+    onfocusin={hold}
+    onfocusout={release}
+    onkeydown={(event) => {
+      if (event.key !== 'Escape') return;
+      open = false;
+      segEl?.querySelector('button')?.focus();
+    }}
+  >
     <button type="button" class="sg-tog" aria-expanded={open} onclick={() => (open = !open)}>
       <!-- The subagents glyph leads, so the segment reads as what it is; the
            mark after it is the state. -->
@@ -71,8 +126,8 @@
     </button>
 
     {#if open}
-      <div class="sg-list">
-        {#each latest as card (card.dispatch_id)}
+      <div class="sg-list" bind:this={listEl}>
+        {#each listed as card (card.dispatch_id)}
           <button
             type="button"
             class="sg-it"

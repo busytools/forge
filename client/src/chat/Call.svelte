@@ -247,9 +247,10 @@
     card !== undefined && opened ? dispatchFrames(messages ?? [], call.id) : null,
   );
 
-  /** Whether this dispatch owns its result text on the row: only a foreground
-   * one does. A backgrounded instance's result is the launch ack, so it is not
-   * drawn and its task facts (path included) go with it. */
+  /** Whether this dispatch owns its RESULT text on the row: only a foreground
+   * one does. A backgrounded instance's result is the launch ack, so that block
+   * is not drawn - its task facts and the transcript path still are, because
+   * the file's existence is a fact about the instance either way. */
   const grounded = $derived(card !== undefined && !card.backgrounded);
 
   /** The meta line's own pairs: what the CLI said about the task itself. */
@@ -279,6 +280,10 @@
     <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
     {#if running}
       <span class="st"><span class="ring"></span></span>
+    {:else if card !== undefined && card.failed}
+      <!-- A shape, not the glyph's tint alone: a failed instance and a clean
+           one must not differ by colour only on a closed row. -->
+      <Icon name="x" class="gl err" />
     {/if}
     <span class="tn">{call.title}</span>
     {#if card !== undefined && card.agent_type !== null}
@@ -340,17 +345,16 @@
         </div>
       {/if}
 
-      <!-- A backgrounded instance stops at its own report: its result text is
-           the launch ack, which says nothing a reader acts on, and its task
-           facts live in the CLI's own transcript file. A foreground one keeps
-           both - the hand-back IS its result, and the path is where the
-           transcript landed. -->
-      {#if grounded && (meta.length > 0 || sub.outputFile !== null)}
+      <!-- The task facts, for both carriers: only the transcript PATH is
+           dropped for a backgrounded instance, whose own text is the launch
+           ack and says nothing a reader acts on - the facts are the
+           instance's either way. -->
+      {#if meta.length > 0 || (grounded && sub.outputFile !== null)}
         <div class="sg-meta">
           {#each meta as [label, value], at (label)}{#if at > 0}
               &#183;
             {/if}<span>{label}</span>
-            {value}{/each}{#if sub.outputFile !== null}<br /><span>output file</span>
+            {value}{/each}{#if grounded && sub.outputFile !== null}<br /><span>output file</span>
             {sub.outputFile}{/if}
         </div>
       {/if}

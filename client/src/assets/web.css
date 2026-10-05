@@ -880,6 +880,12 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
   border: 1px solid var(--line); border-radius: 11px; padding: 6px 0;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
+/* The list's scrollbar wears the same skin as every other scroller on the
+   page - an unstyled one is a white bar over a dark panel - and it is stable:
+   nothing here appears or moves on hover. */
+.sg-list::-webkit-scrollbar { width: 8px; }
+.sg-list::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.sg-list::-webkit-scrollbar-track { background: transparent; }
 .sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 13px;
   background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
 .sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
