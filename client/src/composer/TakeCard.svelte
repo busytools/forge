@@ -10,15 +10,14 @@
     take: Take;
     /**
      * The take's wire side, when this page owns the capture: frames produced,
-     * bytes the socket has taken, the pace, and the frames the ring is holding
-     * while the socket is down. `null` for a take this page did not start,
-     * since the counts are the producer's own fact.
+     * bytes the socket has taken, the pace, and this side's own levels and
+     * clock. `null` for a take this page did not start, since the counts are
+     * the producer's own fact.
      */
     wire: {
       frames: number;
       bytes: number;
       rate: number | null;
-      held: number;
       dbfs: number[];
       elapsedMs: number;
     } | null;
@@ -35,6 +34,25 @@
   /** Above this many sections the ticks stop being ticks and the bar fills. */
   const SECTION_TICKS = 8;
 
+  /**
+   * The frames produced, inside the eight characters the count slots hold.
+   *
+   * A take runs 50 frames a second against a 30-minute cap, so the count
+   * reaches five digits at a few minutes and ~90k at the cap: past ten
+   * thousand it is rounded to thousands, which is the reading a diagnostic
+   * needs and all the card can hold.
+   */
+  function count(frames: number): string {
+    return frames < 10_000 ? `${String(frames)} fr` : `${String(Math.round(frames / 1000))}k fr`;
+  }
+
+  /** The bytes taken, in the unit that keeps the reading under eight characters. */
+  function size(bytes: number): string {
+    return bytes < 1_000_000
+      ? `${(bytes / 1024).toFixed(1)} KB`
+      : `${(bytes / 1_048_576).toFixed(1)} MB`;
+  }
+
   const transcribing = $derived(take.phase === 'transcribing');
   const done = $derived(take.progress.done);
   const total = $derived(take.progress.total);
@@ -42,25 +60,24 @@
   /**
    * Every reading this side produced, read together.
    *
-   * The frame count is the one counter the ring makes a signal; the bytes, the
-   * pace, the hold, the levels and the clock are its plain readings beside it.
-   * They are read in one derivation so a change in ANY of them lands here: the
-   * pace and the hold are computed when the card repaints, so a socket going
-   * down or catching up has to bring a repaint with it, and the counter that
-   * moves every frame is that repaint's cause.
+   * The frame count and the bytes are the ring's own signals; the pace, the
+   * levels and the clock are its plain readings, computed when the card
+   * repaints. They are read in one derivation so a change in ANY of them lands
+   * here: a flush moves the bytes without moving the frames, and a frame moves
+   * the frames without necessarily moving the bytes, so the pace and the
+   * levels have to ride whichever of the two moved.
    *
-   * The card is a reading, not a live region: these move about fifty times a
-   * second, and an `aria-live` on any of them would read a take out loud frame
-   * by frame. The state changes that matter - a take starting, landing, being
-   * refused - are announced by the composer's own rows.
+   * The counts are deliberately not a live region: they move about fifty times
+   * a second, and an `aria-live` on any of them would read a take out loud
+   * frame by frame. The phase has a status of its own, which changes once per
+   * take state rather than once per frame.
    */
   const live = $derived.by(() => {
     if (wire === null) return null;
     return {
-      frames: wire.frames,
-      bytes: `${(wire.bytes / 1024).toFixed(1)} KB`,
+      frames: count(wire.frames),
+      bytes: size(wire.bytes),
       pace: wire.rate === null ? null : `${String(Math.round(wire.rate / 1024))} KB/s`,
-      held: wire.held,
       dbfs: wire.dbfs,
       elapsedMs: wire.elapsedMs,
     };
@@ -123,15 +140,10 @@
     {#if done > 0}<span class="ready">{done} ready</span>{/if}
   {/if}
   {#if live !== null}
-    <span class="fr">{live.frames} fr</span>
+    <span class="fr">{live.frames}</span>
     {#if !transcribing}
-      {#if live.held > 0}
-        <!-- The one reading that says the audio is not leaving. -->
-        <span class="held">holding {live.held} fr</span>
-      {:else}
-        <span class="kb">{live.bytes}</span>
-        {#if live.pace !== null}<span class="pace">{live.pace}</span>{/if}
-      {/if}
+      <span class="kb">{live.bytes}</span>
+      {#if live.pace !== null}<span class="pace">{live.pace}</span>{/if}
     {/if}
   {/if}
   <button
@@ -143,4 +155,8 @@
   >
     &#10005;
   </button>
+  <!-- One status per phase, not per frame: the counts above move fifty times a
+       second and are silent on purpose, so this is the only thing a screen
+       reader hears from the card. -->
+  <span class="sr" role="status">{transcribing ? 'transcribing the take' : 'dictating'}</span>
 </div>

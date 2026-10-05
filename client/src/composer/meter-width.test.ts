@@ -51,7 +51,7 @@ describe("the card graph's bars", () => {
     expect(track, 'the track sizes itself to its bars').toContain('width: 116px');
     expect(track, 'the track takes the box width').toContain('flex: none');
     expect(SHEET, 'the graph is squeezed instead of removed when the card narrows').toMatch(
-      /@container \(max-width: \d+px\) \{ \.tc \.bars \{ display: none; \} \}/,
+      /@container \(max-width: \d+px\) \{ \.tc \.bars,[^{]*\{ display: none; \} \}/,
     );
   });
 });

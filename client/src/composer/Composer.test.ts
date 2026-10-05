@@ -428,11 +428,9 @@ describe('the box', () => {
     });
     flushSync();
 
-    expect(document.querySelector('.box .tc'), 'the card rides the box').not.toBeNull();
-    expect(
-      document.querySelector('.box'),
-      'and rides it rather than growing it - the card is out of the flow',
-    ).not.toBeNull();
+    const card = document.querySelector('.box .tc');
+    expect(card, 'the card is drawn inside the box').not.toBeNull();
+    expect(card?.previousElementSibling, 'as its first row, above the draft').toBeNull();
 
     harness.page.record = record();
     flushSync();
@@ -1037,12 +1035,7 @@ describe('the key', () => {
     for (let at = 0; at < 100; at += 1) mic.held.onFrame?.(frame);
     flushSync();
     expect(card(), 'the frames produced, a hundred of them later').toContain('112 fr');
-    expect(card(), 'and the hold named where the bytes and the pace were').toContain(
-      'holding 100 fr',
-    );
-    expect(card(), 'which means nothing claims a pace while nothing is leaving').not.toContain(
-      'KB/s',
-    );
+    expect(card(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
   });
 
   /**
@@ -1083,15 +1076,14 @@ describe('the key', () => {
   });
 
   /**
-   * The graph reads this side's own audio, so a socket that stops taking does
-   * not stop the graph.
+   * The graph reads this side's own frames, not the record's echo of them.
    *
-   * The card is holding frames for exactly as long as the socket is behind,
-   * and while it holds them the record's levels are stale or absent: a graph
-   * fed by them would freeze precisely when the reader most needs to see that
-   * they are still speaking.
+   * The record's levels are whatever the core last metered and sent back; the
+   * card's own reading is the audio it just produced. This drives frames the
+   * socket does not take at all, which the record's levels never see - so a
+   * card drawing those would hold still and this one moves.
    */
-  it('keeps the graph moving while the socket is down', async () => {
+  it("reads the graph off its own frames, not the record's levels", async () => {
     const shared = wire();
     const harness = open({ dictation: true }, shared);
     harness.page.record = bound('right_cmd', 'auto');
@@ -1105,16 +1097,14 @@ describe('the key', () => {
     const newest = () => document.querySelector('.tc .bars i:last-child')?.getAttribute('style');
     mic.held.onFrame?.(encodeFrame([0.9]));
     flushSync();
-    expect(newest(), 'a loud frame, which the socket took').toBe('height: 94%;');
+    expect(newest(), "a loud frame's own reading").toBe('height: 94%;');
 
-    // The socket stops taking: the frame is held, and the graph still reads it.
+    // A quieter frame the socket does not take: the record's levels never see
+    // it, and the card's graph reads it anyway.
     shared.takes = false;
     mic.held.onFrame?.(encodeFrame([0.4]));
     flushSync();
-    expect(drawn(), 'the hold is named while it lasts').toContain('holding 1 fr');
-    expect(newest(), 'and the graph moved with the audio, not with the socket').toBe(
-      'height: 83%;',
-    );
+    expect(newest(), 'and a quieter one, read where it was produced').toBe('height: 83%;');
   });
 
   /**
@@ -1157,6 +1147,35 @@ describe('the key', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The card's way out is Escape's way out.
+   *
+   * Both go through the take's own action, so the microphone is let go of
+   * locally whichever the socket is doing, and the stop goes out when it can:
+   * a close that only dispatched would do nothing at all on a closed socket.
+   */
+  it('abandons the take from the card, as Escape does', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const stops = mic.held.stops;
+    const close = document.querySelector('.tc .x');
+    if (!(close instanceof HTMLElement)) throw new Error('the card drew no way out');
+    close.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the stop goes out as an abandon').toEqual({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
   });
 
   it('learns what the system default is from the first take that opens it', async () => {
@@ -2125,6 +2144,17 @@ describe('the frame', () => {
   });
 
   /**
+   * The ladder's steps are container queries, so the box has to BE the
+   * container: without this the queries never match and the card simply grows
+   * past its box at every width below the full reading.
+   */
+  it('makes the box the container the card ladder measures', () => {
+    expect(baseRule('.box'), 'the box is not a container, so no step can fire').toContain(
+      'container-type: inline-size',
+    );
+  });
+
+  /**
    * The card's ladder: as the box narrows, one reading leaves at a time from
    * the left, and the dot and the way out are never among them.
    *
@@ -2140,7 +2170,16 @@ describe('the frame', () => {
       // The sheet holds container queries for other surfaces too; this asks
       // only about the card's own steps.
       .filter((step) => step.hidden.startsWith('.tc'));
-    const leaving = ['.tc .clock', '.tc .bars', '.tc .ready', '.tc .fr', '.tc .kb', '.tc .pace'];
+    // The section bar and the count are the transcribing anatomy of the same
+    // two slots, so they leave with the graph and the tally they replace.
+    const leaving = [
+      '.tc .clock',
+      '.tc .bars, .tc .ticks, .tc .bar',
+      '.tc .ready, .tc .count',
+      '.tc .fr',
+      '.tc .kb',
+      '.tc .pace',
+    ];
     expect(
       steps.map((step) => step.hidden),
       'the ladder hides something other than the readings, or reorders them',

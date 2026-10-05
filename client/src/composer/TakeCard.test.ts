@@ -39,7 +39,6 @@ const produced = (
     frames: number;
     bytes: number;
     rate: number | null;
-    held: number;
     dbfs: number[];
     elapsedMs: number;
   }> = {},
@@ -47,7 +46,6 @@ const produced = (
   frames: 412,
   bytes: 257_512,
   rate: 32_768,
-  held: 0,
   dbfs: [-30, -12, 0],
   // Deliberately unlike the record's own 7 s, so a card that read the record's
   // clock instead of this side's would show the wrong figure rather than pass.
@@ -64,6 +62,17 @@ function open(
     props: { take: narrowed(over), wire, oncancel: () => (cancelled += 1) },
   });
   flushSync();
+}
+
+/** Swap the card drawn for another, which is one case after another in a test. */
+function again(
+  over: Record<string, unknown> = {},
+  wire: ReturnType<typeof produced> | null = produced(),
+) {
+  if (app !== null) void unmount(app);
+  app = null;
+  document.body.innerHTML = '';
+  open(over, wire);
 }
 
 const drawn = () => document.body.textContent ?? '';
@@ -120,14 +129,6 @@ describe('the take card', () => {
     expect(document.querySelector('.tc .ready'), 'nothing ready draws no count').toBeNull();
   });
 
-  it('says a held take in words, in place of the readings that stopped', () => {
-    open({}, produced({ frames: 1712, bytes: 70_656, rate: 0, held: 1212 }));
-
-    expect(drawn(), 'the frames keep counting while the socket is down').toContain('1712 fr');
-    expect(drawn(), 'and the hold is named rather than inferred').toContain('holding 1212 fr');
-    expect(drawn(), 'nothing claims bytes while they are not leaving').not.toContain('KB');
-  });
-
   it('counts sections in ticks while there are eight or fewer', () => {
     open({ phase: 'transcribing', progress: [2, 6] }, produced({ rate: null }));
 
@@ -157,6 +158,24 @@ describe('the take card', () => {
       'width: 38%;',
     );
     expect(drawn()).toContain('18 of 48');
+  });
+
+  it('ticks up to exactly eight sections and fills from nine', () => {
+    for (const sections of [1, 8]) {
+      again({ phase: 'transcribing', progress: [1, sections] }, produced({ rate: null }));
+      expect(
+        document.querySelectorAll('.tc .ticks i'),
+        `${String(sections)} sections are drawn as ticks`,
+      ).toHaveLength(sections);
+    }
+    for (const sections of [9, 60]) {
+      again({ phase: 'transcribing', progress: [1, sections] }, produced({ rate: null }));
+      expect(
+        document.querySelector('.tc .ticks'),
+        `${String(sections)} sections are past the ticks`,
+      ).toBeNull();
+      expect(document.querySelector('.tc .bar > i'), 'and the bar carries them').not.toBeNull();
+    }
   });
 
   it('sweeps, claiming nothing, until the section count is in', () => {

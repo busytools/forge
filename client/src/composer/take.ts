@@ -58,21 +58,19 @@ export class LocalTake {
   readonly resolved: { id: string; label: string } | null;
   /**
    * The take's wire side, read live: frames produced, bytes the socket has
-   * taken, the pace it is taking them at, how many frames the ring is holding
-   * while the socket is down, and the levels of the frames this side produced.
-   * One stable object whose getters read the ring's own signals, so a panel
-   * that holds it repaints as the numbers move.
+   * taken, the pace it is taking them at, and the levels and clock of this
+   * side's own take. One stable object whose getters read the ring's own
+   * signals, so a panel that holds it repaints as the numbers move.
    *
-   * The levels and the clock are this side's own reading of its own take: the
-   * core meters the frames it receives and echoes them back, but a graph that
-   * waits on that freezes the moment the socket stops taking, which is exactly
-   * when the page is holding frames. Same audio, same measure, one fewer trip.
+   * The levels and the clock are read here rather than off the record: the
+   * core meters the frames it receives and echoes them back at its own 50 ms
+   * cadence, where this side has the audio before it encodes it. Same measure
+   * over the same frames, read where the frames are made.
    */
   readonly wire: {
     readonly frames: number;
     readonly bytes: number;
     readonly rate: number;
-    readonly held: number;
     readonly dbfs: number[];
     readonly elapsedMs: number;
   };
@@ -112,9 +110,6 @@ export class LocalTake {
       },
       get rate(): number {
         return ring.rate;
-      },
-      get held(): number {
-        return ring.heldFrames;
       },
       get dbfs(): number[] {
         return ring.dbfs;

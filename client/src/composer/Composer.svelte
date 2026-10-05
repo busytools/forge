@@ -189,14 +189,12 @@
     if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
-    // that is still producing, and nothing is held once the socket's side is
-    // done with it. The levels go with them - the section bar holds the
-    // graph's slot while a take transcribes.
+    // that is still producing. The levels go with them - the section bar holds
+    // the graph's slot while a take transcribes.
     return {
       frames: wireDone.frames,
       bytes: wireDone.bytes,
       rate: null,
-      held: 0,
       dbfs: [],
       elapsedMs: wireDone.elapsedMs,
     };
@@ -908,7 +906,7 @@
       class:done={ring === 'done'}
     >
       {#if composer.take !== null}
-        <TakeCard take={composer.take} {wire} oncancel={abandon} />
+        <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}

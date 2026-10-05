@@ -133,20 +133,13 @@
     overflow: hidden; flex: none; }
   .tc .bar > i { display: block; height: 100%; border-radius: 999px;
     background: linear-gradient(90deg, #2f486d, var(--blue)); }
+  .tc .bar.sweep > i { width: 40%;
+    background: linear-gradient(90deg, transparent, var(--blue), transparent);
+    animation: sweep 1.5s linear infinite; }
+  @keyframes sweep { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
   /* The meter is a scrolling history, not bars pulsing in place: each cell
      is one past sample, newest at the right, flowing left. Two copies of
      the shape translate by half, so the loop is seamless. */
-  .wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
-  .wtr { display: flex; align-items: flex-end; gap: 2px; height: 100%;
-    width: max-content; animation: flow 2.6s linear infinite; }
-  .wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
-  .wtr i.mid { background: #ab6100; }
-  .wtr i.hot { background: var(--hot); }
-  .wave.tr .wtr { animation: none; }
-  .wave.tr .wtr i { background: #26354a; }
-  .wave.tr .wtr i.mid { background: #2f486d; }
-  .wave.tr .wtr i.hot { background: #365582; }
-  @keyframes flow { to { transform: translateX(-50%); } }
   .notice { font-family: var(--mono); font-size: var(--fs-data); }
   .notice.q { color: var(--dim); }
   .notice.bad { color: var(--bad); }
@@ -487,29 +480,31 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
           <span class="tc tr"><span class="spin"></span><span class="clock">22:40</span>
             <span class="bar"><i style="width:38%"></i></span>
             <span class="count">18 of 48</span>
-            <span class="fr">68.1k fr</span>
+            <span class="fr">68k fr</span>
             <span class="x">&#10005;</span></span>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Past eight sections one tick stops meaning one
-      section, and the bar fills with the count in words instead.</p>
+      section, and the bar fills with the count in words instead. Frames past ten thousand read
+      in thousands, which is what the count slot holds.</p>
     </div>
     <div class="col">
-      <div class="lab">recording &middot; the socket is down</div>
+      <div class="lab">transcribing &middot; the count is not in yet</div>
       <div class="comp">
-        <div class="box rec">
-          <span class="tc"><span class="dot"></span><span class="clock">0:34</span>
-            <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
-            <span class="ready">2 ready</span>
+        <div class="box tr">
+          <span class="tc tr"><span class="spin"></span><span class="clock">0:34</span>
+            <span class="bar sweep"><i></i></span>
+            <span class="count">transcribing</span>
             <span class="fr">1712 fr</span>
-            <span class="held">holding 1212 fr</span>
             <span class="x">&#10005;</span></span>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0">While the ring holds frames, the bytes and the pace
-      give way to the hold in warn: the one reading that says the audio is not leaving.</p>
+      <p class="note" style="margin:8px 0 0">Before the core has said how many sections the take
+      has, the bar sweeps: motion that claims nothing, until a count arrives and the ticks or the
+      fill take its place. Under reduced motion the sweep rests as one dim full bar, which also
+      claims nothing.</p>
     </div>
     <div class="col">
       <div class="lab">landed &middot; one green beat, then idle</div>
@@ -812,27 +807,5 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
   this dock down and leaves a line in its place saying which ending it was.</p>
 </div>
 
-<script>
-/* The meter is a history of levels, so it is drawn from a shape rather than
-   typed out: two copies of the same envelope, scrolling as one track. */
-(function () {
-  var SHAPE = [12,26,48,72,94,64,40,26,14,10,30,54,78,96,70,46,28,14,10,
-               22,44,66,50,34,20,12];
-  document.querySelectorAll('.wave, .mwave').forEach(function (w) {
-    var track = document.createElement('span');
-    track.className = 'wtr';
-    for (var pass = 0; pass < 2; pass++) {
-      SHAPE.forEach(function (h) {
-        var b = document.createElement('i');
-        b.style.height = h + '%';
-        if (h >= 70) { b.className = 'hot'; }
-        else if (h >= 40) { b.className = 'mid'; }
-        track.appendChild(b);
-      });
-    }
-    w.appendChild(track);
-  });
-})();
-</script>
 </body>
 </html>
