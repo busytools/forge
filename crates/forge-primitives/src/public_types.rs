@@ -196,6 +196,11 @@ pub struct TranscriptSpan {
     /// so a caller holding a cursor into the span can hand the row below it
     /// back as a [`TranscriptAnchor`] the next read seeks to.
     pub offsets: Vec<u64>,
+    /// The session's own index for each frame of [`Self::messages`], aligned
+    /// with it: the rows a transcript holds are not consecutive frames when
+    /// the live stream sent frames the file never wrote, so a page cut here
+    /// needs the number each row carries rather than its position.
+    pub frames: Vec<usize>,
 }
 
 /// Where a transcript read stopped, for the read below it.

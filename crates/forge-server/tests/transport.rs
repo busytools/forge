@@ -3110,4 +3110,24 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     };
     assert!(none.is_empty(), "with nothing above it");
     assert!(end.is_none(), "and no cursor, which is what stops a client asking");
+
+    // **The count is the client's, so it is clamped.** A hundred thousand
+    // turns would have the read hand over its whole cap and the page encode
+    // every row of it; zero is a page that opens nowhere, whose cursor names
+    // the message it was asked with.
+    for asked in [100_000_u32, 0] {
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: lead_seat(), before: None, turns: asked },
+        )
+        .await;
+        let ServerMessage::Page { turns: page, .. } = page_answer(&mut socket).await else {
+            panic!("a more with {asked} turns is still answered with a page");
+        };
+        assert!(
+            (1..=20).contains(&page.len()),
+            "a page of {asked} turns is clamped to the twenty a subscribe carries: {}",
+            page.len(),
+        );
+    }
 }

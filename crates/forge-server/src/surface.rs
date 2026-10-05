@@ -263,7 +263,8 @@ impl ViewSurface {
         slot: &SessionSlot,
         cwd_raw: &Path,
         anchors: &[forge_primitives::TranscriptAnchor],
-        ends_before: usize,
+        cursor: usize,
+        rowless: &[usize],
         rows: usize,
     ) -> Option<forge_primitives::TranscriptSpan> {
         let (session_id, cwd) = self.transcript_place(slot, cwd_raw)?;
@@ -272,7 +273,8 @@ impl ViewSurface {
             &session_id,
             &cwd,
             anchors,
-            ends_before,
+            cursor,
+            rowless,
             rows,
         )
     }

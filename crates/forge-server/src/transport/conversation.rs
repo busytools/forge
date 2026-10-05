@@ -229,10 +229,15 @@ impl Conversation {
         // it, so nothing above the new floor is needed; a carried replay keeps
         // the seat's own positions and adds the frames this seed took off its
         // front, which the floor has just passed.
+        // **The seat's own positions are what a carried replay keeps.** The
+        // frames below the new floor are the ones it already knew - its list
+        // covers them or the frames this seed took off its front - so a
+        // window that reaches deeper brings no new below-floor frames and
+        // none are read off the incoming list, which is numbered for a
+        // different copy.
         self.without_rows = if carried {
             let mut kept = std::mem::take(&mut self.without_rows);
             kept.retain(|at| *at < self.dropped);
-            kept.extend(incoming.into_iter().filter(|at| *at < self.dropped));
             kept.extend(leaving);
             kept
         } else {
@@ -290,6 +295,11 @@ impl Conversation {
         let cut = forge_workspace::conversation_window::frames_dropped(&self.messages);
         self.without_rows.extend(rowless(&self.messages[..cut], self.dropped, &self.forged));
         self.dropped = self.dropped.saturating_add(drop_past_cap(&mut self.messages));
+        // A forged row the seat no longer holds cannot be met again, so the
+        // set that answers "did forge forge this" keeps only what it keeps.
+        let held: std::collections::HashSet<&str> =
+            self.messages.iter().filter_map(frame_id).collect();
+        self.forged.retain(|id| held.contains(id.as_str()));
         // The same reason a seed clears them: the boundaries name message
         // indices, and the drop has just moved every one of them.
         self.rendered.turns.clear();
@@ -297,52 +307,10 @@ impl Conversation {
         self.dirty = true;
     }
 
-    /// The row number the transcript read should end a page at, for a page
-    /// below the frame `cursor` names.
-    ///
-    /// The read numbers transcript rows as if every frame were one, because
-    /// that is all it can see; the seat counts the frames the transcript
-    /// never wrote, so this is where the two numberings meet. `cursor` is a
-    /// frame index in this conversation's own numbering, and the number this
-    /// returns is the read's: the rows strictly below the cursor, ended after
-    /// the newest of them.
-    pub fn rows_below_frame(&self, cursor: usize) -> usize {
-        // The session's first frame has nothing above it, and a cursor naming
-        // it is a client asking for the page above the beginning.
-        if cursor == 0 {
-            return 0;
-        }
-        let carried = self.without_rows.len();
-        let rowless_at_or_below =
-            |frame: usize| self.without_rows.partition_point(|at| *at <= frame);
-        // The newest ROW strictly below the cursor: a frame the transcript
-        // never wrote is stepped over, because there is no row to end at.
-        let cursor = cursor.saturating_sub(1);
-        let mut row = cursor;
-        while row > 0 && rowless_at_or_below(row) > rowless_at_or_below(row - 1) {
-            row -= 1;
-        }
-        // The read's number for that row, and one past it: a row at true
-        // index `row` counts as `row + carried - k(row)` - every rowless
-        // frame below the floor shifts it up by one.
-        carried + row - rowless_at_or_below(row) + 1
-    }
-
-    /// The frame index the transcript read's row number `row` stands for:
-    /// the inverse of the numbering [`Self::rows_below_frame`] reads.
-    pub fn frame_of_row(&self, row: usize) -> usize {
-        let carried = self.without_rows.len();
-        let rowless_at_or_below =
-            |frame: usize| self.without_rows.partition_point(|at| *at <= frame);
-        let mut frame = row.saturating_sub(carried);
-        for _ in 0..8 {
-            let stepped = row - carried + rowless_at_or_below(frame);
-            if stepped <= frame {
-                break;
-            }
-            frame = stepped;
-        }
-        frame
+    /// The frames the drops have taken that no transcript row carries, sorted:
+    /// the basis a paging read below the floor is numbered on.
+    pub fn without_rows(&self) -> &[usize] {
+        &self.without_rows
     }
 
     /// The messages if the fold is behind them, taken in O(1).
@@ -391,12 +359,6 @@ impl Conversation {
     /// turns a held index into the one a page's cursor carries.
     pub fn dropped(&self) -> usize {
         self.dropped
-    }
-
-    /// The frames the drops have taken that no transcript row carries: the
-    /// count a page below the floor is numbered through.
-    pub fn without_rows(&self) -> &[usize] {
-        &self.without_rows
     }
 }
 

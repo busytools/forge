@@ -74,9 +74,10 @@ pub fn transcript_span(
     session_id: &str,
     cwd: &str,
     anchors: &[forge_primitives::TranscriptAnchor],
-    ends_before: usize,
+    cursor: usize,
+    rowless: &[usize],
     rows: usize,
 ) -> Option<forge_primitives::TranscriptSpan> {
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    userdata::catalog::scan::read_span(config_dir, session_id, dir, anchors, ends_before, rows)
+    userdata::catalog::scan::read_span(config_dir, session_id, dir, anchors, cursor, rowless, rows)
 }

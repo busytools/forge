@@ -534,23 +534,7 @@ async fn handle_client(
                 .filter(|named| *named < held.lock().dropped());
             if let Some(named) = below {
                 let anchors = anchors_of(&held.lock());
-                // **The two numberings meet here.** The client's cursor is a
-                // frame index in the conversation's own count, and the read
-                // below counts transcript rows; the seat says what the cursor
-                // is worth in rows, and the page comes back in frame terms.
-                let ends_before = held.lock().rows_below_frame(named);
-                return match below_floor(
-                    state,
-                    &seat,
-                    &cwd,
-                    &held,
-                    anchors,
-                    named,
-                    ends_before,
-                    turns,
-                )
-                .await
-                {
+                return match below_floor(state, &seat, &cwd, &held, anchors, named, turns).await {
                     BelowFloor::Page(page) => {
                         send(
                             socket,
@@ -814,14 +798,13 @@ fn anchors_of(
 /// first turn names the span's first row, which is inside it too.
 fn next_anchor(
     span: &forge_primitives::TranscriptSpan,
-    row: usize,
+    position: usize,
     index: usize,
 ) -> Option<forge_primitives::TranscriptAnchor> {
-    let at = row.checked_sub(span.first)?;
     Some(forge_primitives::TranscriptAnchor {
-        row: row_id(span.messages.get(at)?)?,
+        row: row_id(span.messages.get(position)?)?,
         index,
-        offset: span.offsets.get(at).copied(),
+        offset: span.offsets.get(position).copied(),
     })
 }
 
@@ -871,7 +854,6 @@ async fn below_floor(
     held: &crate::transport::conversation::Held,
     held_anchors: Vec<forge_primitives::TranscriptAnchor>,
     cursor: usize,
-    ends_before: usize,
     turns: u32,
 ) -> BelowFloor {
     // **A walk that is still descending reads from where its last page
@@ -893,38 +875,28 @@ async fn below_floor(
     let surface = Arc::clone(&state.surface);
     let session = seat.clone();
     let cwd = cwd.to_path_buf();
+    // **The basis the read cannot see.** Which frames carry no transcript row
+    // is the seat's own count: the frames it let go of as its window dropped
+    // them. The read is handed them, so it can tell a frame index from a row
+    // count and answer in the numbering the cursor lives in.
+    let rowless = held.lock().without_rows().to_vec();
     // The read's own row budget, from the page it is read for: a page is
     // twenty turns, and the heaviest twenty-turn run measured is 2,799 rows.
     let rows = (turns as usize)
         .saturating_mul(forge_workspace::userdata::catalog::scan::SPAN_ROWS_PER_TURN);
     let read = tokio::task::spawn_blocking(move || {
-        surface.transcript_span(&session, &cwd, &anchors, ends_before, rows)
+        surface.transcript_span(&session, &cwd, &anchors, cursor, &rowless, rows)
     })
     .await;
     let Some(span) = read.ok().flatten() else {
         tracing::debug!(
             event_name = "transcript_page_unavailable",
             slot = %seat.display(),
-            ends_before,
+            cursor,
             "the transcript has no span for this page; the client is told the history ends here",
         );
         return BelowFloor::Empty;
     };
-    // **The file's end is the history's end only when the file's first row is
-    // the session's first frame.** A transcript whose head was rewritten
-    // lines up with no numbering, and every frame the file never wrote sits
-    // between the two, so a read that reached the file's start reached a
-    // point that is not the session's beginning.
-    if span.exhausted && held.lock().frame_of_row(span.first) != 0 {
-        tracing::debug!(
-            event_name = "transcript_page_diverged",
-            slot = %seat.display(),
-            first = span.first,
-            "the transcript's first row is not the session's first frame; this page is answered \
-             empty",
-        );
-        return BelowFloor::Empty;
-    }
     let folded = tokio::task::spawn_blocking(move || (page_of_span(&span, turns), span)).await;
     let Ok((page, span)) = folded else {
         tracing::warn!(
@@ -935,19 +907,21 @@ async fn below_floor(
         );
         return BelowFloor::Refused;
     };
+    // **The page's cursor in the session's own numbers.** `page()` writes it
+    // from the span's positions, and a row is not its position when the live
+    // stream sent frames the file never wrote: the span carries each row's
+    // own index, and the page is numbered in them here. The same row is the
+    // anchor the page below this one reads from, remembered against the seat
+    // until it is asked for.
     let mut page = page;
-    // **The page is cut in row numbers and answered in frames.** The client
-    // counts every frame the session emitted; the read could only count rows,
-    // so the seat turns its cursor back into the client's own numbering.
-    let rows_cursor = page.cursor.as_deref().and_then(|at| at.parse::<usize>().ok());
-    if let Some(row) = rows_cursor {
-        let index = held.lock().frame_of_row(row);
-        // Where the page below this one reads from, remembered against the
-        // seat until it is asked for.
-        if let Some(at) = next_anchor(&span, row, index) {
-            state.conversations.remember_anchor(seat, at);
+    if let Some(at) = page.cursor.as_deref().and_then(|cursor| cursor.parse::<usize>().ok()) {
+        let position = at.saturating_sub(span.first);
+        if let Some(index) = span.frames.get(position) {
+            page.cursor = Some(index.to_string());
+            if let Some(anchor) = next_anchor(&span, position, *index) {
+                state.conversations.remember_anchor(seat, anchor);
+            }
         }
-        page.cursor = Some(index.to_string());
     }
     BelowFloor::Page(page)
 }
@@ -1419,6 +1393,7 @@ mod tests {
             messages: transcript[..seam].to_vec(),
             exhausted: true,
             offsets: Vec::new(),
+            frames: (0..seam).collect(),
         };
         let below = page_of_span(&span, 4);
 
@@ -1445,6 +1420,7 @@ mod tests {
             messages: transcript[100..106].to_vec(),
             exhausted: false,
             offsets: Vec::new(),
+            frames: (100..106).collect(),
         };
         // Six turns asked for as eight: the page serves them all, and its
         // cursor is the span's own start rather than `None`.
@@ -1505,11 +1481,13 @@ mod tests {
             },
             forge_primitives::TranscriptAnchor { row: "u40".to_owned(), index: 40, offset: None },
         ];
-        let ends_before = held.lock().rows_below_frame(40);
-        assert_eq!(ends_before, 40, "precondition: every frame in the window is a row");
+        assert!(
+            held.lock().without_rows().is_empty(),
+            "precondition: every frame in the window has a row, so the two counts agree",
+        );
 
         let BelowFloor::Page(page) =
-            below_floor(&state, &seat, &cwd, &held, anchor.clone(), 40, ends_before, 4).await
+            below_floor(&state, &seat, &cwd, &held, anchor.clone(), 40, 4).await
         else {
             panic!("the transcript answers a page below the floor")
         };
@@ -1525,7 +1503,7 @@ mod tests {
         // position - not the held window's anchor - is what the next read
         // seeks to; the page below it is the one directly above.
         let BelowFloor::Page(below) =
-            below_floor(&state, &seat, &cwd, &held, anchor.clone(), 36, 36, 4).await
+            below_floor(&state, &seat, &cwd, &held, anchor.clone(), 36, 4).await
         else {
             panic!("the walk answers the page below the one it served")
         };
@@ -1553,7 +1531,7 @@ mod tests {
         }];
         assert!(
             matches!(
-                below_floor(&state, &seat, &cwd, &held, stranger, 40, 40, 4).await,
+                below_floor(&state, &seat, &cwd, &held, stranger, 40, 4).await,
                 BelowFloor::Empty
             ),
             "a transcript that does not line up is the empty page",
@@ -1570,7 +1548,7 @@ mod tests {
         std::fs::remove_file(transcript).expect("the file goes");
         assert!(
             matches!(
-                below_floor(&state, &seat, &cwd, &held, anchor, 40, 40, 4).await,
+                below_floor(&state, &seat, &cwd, &held, anchor, 40, 4).await,
                 BelowFloor::Empty
             ),
             "a session whose file is gone is the empty page too",
@@ -1629,9 +1607,8 @@ mod tests {
         // above it, with none of them stepped over.
         let cursor = dropped.saturating_sub(4);
         assert!(cursor < dropped, "precondition: the cursor is below the floor");
-        let ends_before = held.lock().rows_below_frame(cursor);
         let BelowFloor::Page(page) =
-            below_floor(&state, &seat, &cwd, &held, anchors, cursor, ends_before, 4).await
+            below_floor(&state, &seat, &cwd, &held, anchors, cursor, 4).await
         else {
             panic!("the transcript answers a page below the floor")
         };
@@ -1641,6 +1618,80 @@ mod tests {
             format!("turn {}", (cursor - 1) / 2),
             "the newest turn the page serves is the one whose frame sits just below the cursor - \
              not stepped over for every result frame in between",
+        );
+    }
+
+    /// **The walk reaches the transcript's beginning, page after page.** The
+    /// two numberings are one convention here: each page's cursor is a frame
+    /// index, the page below it is the rows directly above that frame, and the
+    /// cursor keeps descending through the result frames - hundreds of pages
+    /// of them - until the transcript's own first frame ends the walk. This is
+    /// the shape that died after six pages when the two sides counted
+    /// different things.
+    #[tokio::test]
+    async fn a_walk_below_the_floor_reaches_the_transcripts_start() {
+        const TURNS: usize = 2_600;
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let rows = transcript_rows(TURNS);
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let held = crate::transport::conversation::Held::new(
+            crate::transport::conversation::Conversation::new(live_frames(TURNS), 0),
+        );
+        let dropped = held.lock().dropped();
+        assert!(
+            held.lock().without_rows().len() > 100,
+            "precondition: the walk crosses hundreds of frames with no row",
+        );
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+
+        let mut cursor = dropped.saturating_sub(4);
+        assert!(cursor < dropped, "precondition: the walk starts below the floor");
+        let mut pages = 0_usize;
+        let reached = loop {
+            let anchors = anchors_of(&held.lock());
+            let BelowFloor::Page(page) =
+                below_floor(&state, &seat, &cwd, &held, anchors, cursor, 20).await
+            else {
+                panic!("the page at cursor {cursor} is answered from the transcript");
+            };
+            let texts = turn_texts(&page);
+            assert!(!texts.is_empty(), "the page at cursor {cursor} holds turns");
+            assert_eq!(
+                texts.last().expect("a turn"),
+                &format!("turn {}", (cursor - 1) / 2),
+                "the page at cursor {cursor} ends at the cursor rather than stepping over the \
+                 result frames below it",
+            );
+            let Some(next) = page.cursor.as_deref().and_then(|at| at.parse::<usize>().ok()) else {
+                break texts;
+            };
+            assert!(next < cursor, "the cursor at {cursor} descends rather than repeating");
+            cursor = next;
+            pages += 1;
+            assert!(pages < 200, "the walk reached the transcript's beginning");
+        };
+        assert_eq!(
+            reached.first().map(String::as_str),
+            Some("turn 0"),
+            "and the last page it served runs down to the transcript's own first turn",
         );
     }
 }
