@@ -5164,31 +5164,42 @@ impl Workspace {
         if domain.lock().awaiting_login {
             return L::AuthRequired;
         }
-        let guard = domain.lock();
-        // A permission request only exists during a turn, so with no
-        // turn there is nothing to be blocked on - a slot outliving its
-        // turn (busytools/forge#672) is incoherent state rather than a
-        // worker awaiting input, and must not read as `Attention`.
-        if !guard.turn_in_flight() {
-            return L::Idle;
-        }
-        // A turn is in flight, so ask whether it can advance on its own.
-        // `RequiresAction` is the CLI naming its own block; a held slot
-        // is forge naming it. Either way a human has to move first, and
-        // calling that `Running` is what makes a blocked worker
-        // invisible. This arm is reachable only because
-        // `turn_in_flight()` counts `RequiresAction` as in-flight:
-        // drop it from that OR and a `RequiresAction` session falls
-        // through the gate above to `Idle` instead.
-        if matches!(
-            guard.runtime_state,
-            Some(forge_primitives::RuntimeSessionState::RequiresAction)
-        ) || !guard.pending_interactions.is_empty()
-        {
-            L::Attention
-        } else {
-            L::Running
-        }
+        let blocked = {
+            let guard = domain.lock();
+            // A permission request only exists during a turn, so with no
+            // turn there is nothing to be blocked on - a slot outliving its
+            // turn (busytools/forge#672) is incoherent state rather than a
+            // worker awaiting input, and must not read as `Attention`.
+            if !guard.turn_in_flight() {
+                return L::Idle;
+            }
+            // `RequiresAction` is the CLI naming its own block; a held slot
+            // is forge naming it. Either way a human has to move first, and
+            // calling that `Running` is what makes a blocked worker
+            // invisible. This arm is reachable only because
+            // `turn_in_flight()` counts `RequiresAction` as in-flight:
+            // drop it from that OR and a `RequiresAction` session falls
+            // through the gate above to `Idle` instead.
+            matches!(
+                guard.runtime_state,
+                Some(forge_primitives::RuntimeSessionState::RequiresAction)
+            ) || !guard.pending_interactions.is_empty()
+        };
+        // **A parked draft is a person's to answer too, and it lives
+        // outside the set the arm above reads**: the draft registry is the
+        // workspace's own, so a seat with no domain can still hold one. Read
+        // after the guard comes off, un-nested, the way `pending_asks` reads
+        // it - and without this a held draft leaves the seat `Running`,
+        // which is what kept the client's lifecycle-driven needs mark quiet
+        // while the dock sat unanswered (#1758).
+        if blocked || self.has_slack_draft(slot) { L::Attention } else { L::Running }
+    }
+
+    /// Whether `slot` is holding a parked Slack draft. The workspace's own
+    /// registry rather than the session's pending set, so a seat with no
+    /// domain answers too.
+    fn has_slack_draft(&self, slot: &SessionSlot) -> bool {
+        self.slack_drafts.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
     /// `entry` projected to the wire shape with `activity` derived.
@@ -11640,6 +11651,43 @@ mod worker_activity_tests {
             ws.worker_activity(&entry("w-stranded", WorkerLiveness::Running)),
             L::Idle,
             "a held slot with no turn in flight is incoherent state, not a worker awaiting input",
+        );
+    }
+
+    /// A parked Slack draft is a pending interaction like any other: the
+    /// seat is waiting on a person, so the lifecycle has to say
+    /// `Attention` - or every view that draws its needs mark from the
+    /// lifecycle (the client's) stays quiet while the dock sits
+    /// unanswered. The draft lives in the workspace's own registry rather
+    /// than the session's pending set, which is exactly why this arm needs
+    /// the read of its own.
+    #[tokio::test]
+    async fn a_parked_slack_draft_reads_as_attention() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-draft");
+        let domain = ws.register_domain_session(seat.clone(), None);
+        domain.lock().turn_pending = true;
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Running,
+            "a turn advancing on its own is Running, which is the control",
+        );
+
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::new_v4(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "acme".to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
+        };
+        let (_id, _decision) = ws.register_slack_draft(&seat, draft);
+
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Attention,
+            "a held draft is a person's to answer, not a running turn's",
         );
     }
 

@@ -69,6 +69,11 @@ const REDRAWS = new Set([
   'permission_request',
   'question_request',
   'pending_interaction_resolved',
+  // The third kind of ask (#1758): a held Slack draft moves its seat's row
+  // exactly as the two above do, and the core now says so in the lifecycle -
+  // the row can only draw it if this side re-reads on the news.
+  'slack_post_pending',
+  'slack_draft_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
   // moved. The home's own row draws all three sections, so the update is a

@@ -316,6 +316,8 @@ describe('what one update asks of the fleet', () => {
       { permission_request: { key: LEAD } },
       { question_request: { key: LEAD } },
       { pending_interaction_resolved: { key: LEAD } },
+      { slack_post_pending: { key: LEAD } },
+      { slack_draft_resolved: { key: LEAD } },
       { worker_status_changed: {} },
     ];
     for (const update of redraws) {
