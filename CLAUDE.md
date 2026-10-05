@@ -1021,12 +1021,20 @@ one tag name both halves. The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
 opens, and a client running from the installed bundle is a refusal rather
 than a replace: replacing a live bundle underneath itself is the one way
-this fails quietly. Pushing a tag and cutting a release stay the
-maintainer's call, and `just check-release` and `just check-feature-configs`
-gate the recipe because `cargo install` builds in release mode and would
-otherwise find the error after the tag exists. The second is the one that
-compiles the configuration `install.sh` builds; `check-release`'s
-`--all-features` enables the test-only features that build leaves off.
+this fails quietly. It then stages the Android release APK, through
+`client-android-release`: arm64, release-signed from the local keystore the
+client README documents (nothing in the repo), at
+`client/src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`,
+to attach when the tag is published. The Android half fails rather than
+skipping when its toolchain or keystore is missing, and reads the version,
+the ABI and the signer back off the built APK, so one that never built, or
+was signed by anything else, cannot read as a released half. Pushing a tag
+and cutting a release stay the maintainer's call, and `just check-release`
+and `just check-feature-configs` gate the recipe because `cargo install`
+builds in release mode and would otherwise find the error after the tag
+exists. The second is the one that compiles the configuration `install.sh`
+builds; `check-release`'s `--all-features` enables the test-only features
+that build leaves off.
 
 ## Workflows in skills
 

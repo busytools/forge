@@ -83,8 +83,8 @@ version, so the tag and the installed app carry the same number.
 ## The Android target
 
 The same shell builds for Android through Tauri's own CLI. It wants the
-Android SDK with an NDK, and a JDK 17 or newer, and it reads `ANDROID_HOME`
-or `ANDROID_SDK_ROOT`, `NDK_HOME` and `JAVA_HOME`:
+Android SDK with an NDK, and a JDK 17 or newer, and the raw command below
+reads `ANDROID_HOME` or `ANDROID_SDK_ROOT`, `NDK_HOME` and `JAVA_HOME`:
 
 ```sh
 export ANDROID_HOME=/path/to/sdk     # a root with cmdline-tools in it
@@ -92,13 +92,21 @@ export NDK_HOME="$ANDROID_HOME/ndk/<version>"
 export JAVA_HOME=/path/to/jdk
 ```
 
+`just client-android-release` resolves those itself rather than requiring
+them, because a fresh shell may export none of the three while the CLI's own
+fallback lands on an empty `~/Library/Android/sdk` first: it takes an SDK
+that holds `platforms/` or an `ndk/`, the NDK inside it, and java from
+`PATH`, prints what it found, and fails with this section's name when it
+genuinely cannot.
+
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
-Gradle files are project source rather than build output, so its two local
-edits - the manifest's mic permissions and the activity's back handling -
-survive a clean clone. Re-running `tauri android init` overwrites them, so
-re-apply either change after one. The debug APK is one command, and it
-builds the frontend first the same way the desktop build does:
+Gradle files are project source rather than build output, so its three
+local edits - the manifest's mic permissions, the activity's back handling
+and the release signing block in `app/build.gradle.kts` - survive a clean
+clone. Re-running `tauri android init` overwrites them, so re-apply them
+after one. The debug APK is one command, and it builds the frontend first
+the same way the desktop build does:
 
 ```sh
 npm run tauri -- android build --debug --apk --ci
@@ -112,6 +120,41 @@ phone. `--target aarch64` builds one ABI rather than all four.
 The manifest declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`: wry's
 `WebChromeClient` requests both together for a `getUserMedia` prompt, so one
 missing from the manifest denies the whole request.
+
+### The release APK
+
+`just release <version>` stages a release-signed APK at
+`src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`, and
+`just client-android-release <version>` runs that half alone - attach the
+file to the GitHub release when the tag is published. Release builds sign
+with a keystore at `~/.android/forge-release.keystore`, minted once:
+
+```sh
+keytool -genkeypair -v -keystore ~/.android/forge-release.keystore \
+  -alias forge -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=forge release"
+chmod 600 ~/.android/forge-release.keystore
+```
+
+and named in `src-tauri/gen/android/app/key.properties`, which is gitignored
+like the keystore itself; neither is ever committed:
+
+```properties
+storeFile=/Users/you/.android/forge-release.keystore
+storePassword=<the password you chose>
+keyAlias=forge
+keyPassword=<the same password>
+```
+
+`storeFile` must be an absolute path: a relative one resolves inside the
+checkout. The keystore itself (and any `*.jks`) is gitignored at any depth
+under `gen/android/`.
+
+The recipe refuses before building when either file is missing, and reads
+the version, the ABI and the signer back off the built APK afterwards. Keep
+both files backed up: the keystore is the app's identity, and every future
+release must be signed by it to upgrade in place. One one-time note: the
+first release-signed install needs the debug-signed build uninstalled from
+the phone first, since Android cannot replace an app across signatures.
 
 ## What is here
 
