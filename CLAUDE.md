@@ -256,8 +256,11 @@ Three things hold at the line:
   doing its job. What it may NOT hold is the decision about how any of it
   appears.
 - **The server owns no git-level presentation.** It carries the working
-  tree as state - the branch, what changed - and nothing that renders one:
-  no diff, no tree, no colouring, no highlighted excerpt.
+  tree as state - the branch, what changed, and the changed files' raw
+  hunks - and nothing that renders any of it: no colouring, no tree, no
+  folding, no highlighted excerpt. A hunk crosses as lines with their
+  kinds and line numbers, which is what changed; how any of it appears
+  is the client's.
 - **A thing the TUI needs moves into `forge-tui`; it is never dropped.**
   A thing both need keeps its home on the server with only the
   presentation half leaving, and the terminal works out of the box at

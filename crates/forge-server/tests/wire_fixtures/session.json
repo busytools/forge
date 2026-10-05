@@ -352,7 +352,7 @@
   },
   "work": {
     "branch": "worktree-pr",
-    "changed": 3,
+    "changed": 2,
     "gate": "in_repo"
   },
   "pr": {
@@ -364,5 +364,100 @@
       "number": 1215,
       "url": "https://example.test/issues/1215"
     }
-  ]
+  ],
+  "diff": {
+    "worktree": {
+      "populated": [
+        {
+          "path": "added.txt",
+          "old_path": null,
+          "status": "added",
+          "binary": false,
+          "submodule": false,
+          "truncated": false,
+          "hunks": [
+            {
+              "old_start": 0,
+              "old_count": 0,
+              "new_start": 1,
+              "new_count": 1,
+              "lines": [
+                {
+                  "kind": "added",
+                  "text": "added one",
+                  "old_line": null,
+                  "new_line": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path": "kept.txt",
+          "old_path": null,
+          "status": "modified",
+          "binary": false,
+          "submodule": false,
+          "truncated": false,
+          "hunks": [
+            {
+              "old_start": 1,
+              "old_count": 2,
+              "new_start": 1,
+              "new_count": 3,
+              "lines": [
+                {
+                  "kind": "context",
+                  "text": "one",
+                  "old_line": 1,
+                  "new_line": 1
+                },
+                {
+                  "kind": "context",
+                  "text": "two",
+                  "old_line": 2,
+                  "new_line": 2
+                },
+                {
+                  "kind": "added",
+                  "text": "three",
+                  "old_line": null,
+                  "new_line": 3
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "branch_ahead": {
+      "populated": [
+        {
+          "path": "branch.txt",
+          "old_path": null,
+          "status": "added",
+          "binary": false,
+          "submodule": false,
+          "truncated": false,
+          "hunks": [
+            {
+              "old_start": 0,
+              "old_count": 0,
+              "new_start": 1,
+              "new_count": 1,
+              "lines": [
+                {
+                  "kind": "added",
+                  "text": "committed on the branch",
+                  "old_line": null,
+                  "new_line": 1
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "truncated": false
+  }
 }

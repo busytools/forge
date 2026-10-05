@@ -5,9 +5,11 @@ forge serves one WebSocket, at `/socket` on the address `[web]`
 sessions, so a client costs a listener rather than a second scheduler, a
 second cron store or a second set of connectors.
 
-It serves data and nothing else. There is no page, no markup, no diff and
-no colouring on it: a client is its own program, it draws everything
-itself, and what it gets from here is what the core knows.
+It serves data and nothing else. There is no page, no markup and no
+colouring on it: a client is its own program, it draws everything itself,
+and what it gets from here is what the core knows. The changed files cross
+as raw hunks - lines with their kinds and their line numbers, bounded and
+flagged - never as anything drawn.
 
 ## Reaching it
 
@@ -277,6 +279,7 @@ conversation, and what the composer is doing.
 | `has_dispatches` | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries - pushed as `dispatches_changed` when one is made. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
 | `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
+| `diff` | The changed files with their raw hunks - data, never a rendering. Both layers the `work` row's state describes (`worktree` against `HEAD`, `branch_ahead` against the merge base), each `clean`, `populated` or `scan_failed`; a populated file carries its path, the old path a rename came from, its status, `binary` / `submodule` / `truncated` flags, and the carried lines with their kind, text and line numbers. Bounded per file and per read - 400 lines and 32 KiB per file, 512 KiB of carried line text over 100 files - with every cap that bites flagged. Read once per record and never pushed, so a client that wants it fresher re-reads the seat; the tree's movement arrives as `work` updates. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference, and pushed as `file_index_changed` when a walk finds it moved. The walk follows the seat's change watch: writes inside one poke become one walk, a still tree is walked at most once per five seconds, and a frame goes out only when the index differs from the one last announced. |
 | `mcp` | The session's MCP servers, their status and tools, and the failure when the read did not complete. |
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat somebody is showing is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it. |
@@ -354,9 +357,12 @@ than facts about a session.
 
 ## What is not here
 
-- **The diff.** A session's working tree arrives as state - its branch and
-  how much changed - and not as a diff. A full diff is a heavier read, and
-  it is a surface of its own.
+- **Anything drawn from the diff.** The changed files and their raw hunks
+  cross, bounded and flagged (the session table's `diff` row); what does
+  not is any rendering of them - glyphs, colours, folding, a tree,
+  highlighting - and the heavier reads a review surface may want beyond
+  those two layers, like a per-commit history or a diff against an
+  arbitrary base.
 - **A monitor's output tail.** A `MonitorRecord` carries the path the
   watched command writes to, and that path is on the server's machine: the
   live tail is not reachable over this socket. It is a deliberate gap
