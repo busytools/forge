@@ -25,6 +25,68 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  */
 export const PROTOCOL_VERSION = 5;
 
+/**
+ * The oldest protocol this client reads.
+ *
+ * A step back is tolerated because the read is proven rather than because a
+ * skew is believed harmless: `wire/floor.test.ts` folds a committed
+ * protocol-4 payload through this client's own read path, so the floor is
+ * one where "it still reads" is checked rather than assumed. A bump keeps
+ * this where it is until the new step is covered the same way, which is why
+ * it is a literal rather than `PROTOCOL_VERSION - 1`.
+ */
+export const MIN_PROTOCOL = 4;
+
+/**
+ * The release this client was built from, baked in by the build.
+ *
+ * `client/src-tauri/Cargo.toml` is where `just release` sets it, and this
+ * is the only way the built app can know it: a bundle carries no manifest to
+ * read.
+ */
+export const CLIENT_VERSION = __FORGE_CLIENT_VERSION__;
+
+/** A greeting below this client's own protocol, and within the floor. */
+export interface Skew {
+  /** The protocol the greeting declared. */
+  serverProtocol: number;
+  /**
+   * The build the greeting named, or `null` when it named none.
+   *
+   * `null` is the common case rather than the odd one: a server this client
+   * is skewed against predates the greeting's own release fields.
+   */
+  serverVersion: string | null;
+}
+
+/** The release part of a build stamp, without the sha the build adds. */
+function releaseOf(version: string): string {
+  const [release] = version.split(/[+ ]/);
+  return release ?? version;
+}
+
+/**
+ * One sentence for a protocol skew, naming both halves and the way out.
+ *
+ * Both refusal sites and every notice read from here, so the halves and the
+ * command cannot be named at one of them and forgotten at another.
+ */
+export function skewMessage(skew: Skew): string {
+  const command = 'In the forge checkout run `just install` and restart forge.';
+  const mine = `this client is v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION})`;
+  if (skew.serverVersion === null || skew.serverVersion === '') {
+    return `this forge server speaks protocol ${skew.serverProtocol}; ${mine}. ${command}`;
+  }
+  if (releaseOf(skew.serverVersion) === releaseOf(CLIENT_VERSION)) {
+    return (
+      `this forge server and this client are both v${releaseOf(CLIENT_VERSION)}, but they speak ` +
+      `protocols ${skew.serverProtocol} and ${PROTOCOL_VERSION}: a mixed install of one build. ` +
+      `Reinstall both. ${command}`
+    );
+  }
+  return `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol}); ${mine}. ${command}`;
+}
+
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';
 
