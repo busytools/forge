@@ -70,6 +70,9 @@ const REDRAWS = new Set([
   'question_request',
   'pending_interaction_resolved',
   'worker_status_changed',
+  // The project's task set moved. The home's own row draws the section, so
+  // the update is a redraw of that row and nothing the fleet reads.
+  'tasks_changed',
 ]);
 
 /** Whether a `Result` frame is a turn that finished well. */

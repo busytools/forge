@@ -601,6 +601,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::HistoryReplayed { .. }
         | SessionUpdate::DictateAvailability
         | SessionUpdate::WorkChanged { .. }
+        // The project's task set, which the Inspector TASKS section reads
+        // through its own refresh rather than from this stream.
+        | SessionUpdate::TasksChanged { .. }
         | SessionUpdate::MonitorsChanged { .. }
         | SessionUpdate::BackgroundTasksChanged { .. }
         | SessionUpdate::ProcessesChanged { .. }

@@ -1272,6 +1272,17 @@ pub enum SessionUpdate {
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },
+    /// The project's task list moved, as the whole set the core holds.
+    ///
+    /// **Pushed rather than read.** The `tasks__*` writes are the only movers
+    /// and the section a view draws sits on the home's project row - the
+    /// project's lead seat, which exists for every declared project - so the
+    /// write announces the set rather than leaving the row to the next
+    /// unrelated read.
+    TasksChanged {
+        key: SessionSlot,
+        tasks: Vec<forge_primitives::tasks::Task>,
+    },
     /// The `/` menu's catalogue moved, as the whole list the core holds.
     ///
     /// **Pushed rather than read.** The CLI advertises it on a turn's init and
@@ -1646,6 +1657,7 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::TasksChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
@@ -1778,6 +1790,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::TasksChanged { key, tasks } => f
+                .debug_struct("TasksChanged")
+                .field("key", key)
+                .field("count", &tasks.len())
+                .finish(),
             Self::SlashCommandsChanged { key, commands } => f
                 .debug_struct("SlashCommandsChanged")
                 .field("key", key)

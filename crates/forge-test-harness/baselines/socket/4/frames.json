@@ -72,6 +72,7 @@
     "Spawning": "spawning",
     "StatusSnapshot": "status_snapshot",
     "SubagentsChanged": "subagents_changed",
+    "TasksChanged": "tasks_changed",
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",

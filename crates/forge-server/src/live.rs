@@ -195,7 +195,9 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // drops the inspector's pending row, so it redraws a row even though
         // it is the composer that asked for it.
         | SessionUpdate::PendingInteractionResolved { .. }
-        | SessionUpdate::WorkerStatusChanged { .. } => FleetNews::Redraw,
+        | SessionUpdate::WorkerStatusChanged { .. }
+        // The project's task set moved, which the home's project row draws.
+        | SessionUpdate::TasksChanged { .. } => FleetNews::Redraw,
         // Everything else is the conversation, which no row shows.
         _ => FleetNews::Nothing,
     }
