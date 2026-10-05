@@ -370,6 +370,120 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     }
 }
 
+/// One live take per connection, enforced at the socket: the same client
+/// asking for a second take on another seat is refused by name, and the
+/// first take is untouched - which is what "a frame carries no seat" costs,
+/// since two takes on one connection would have no stream their audio could
+/// belong to.
+#[tokio::test]
+async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.add_worker("TestOrg", "proj", "worker").expect("a worker seat");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+    let other_seat = SessionSlot::worker("TestOrg", "proj", "worker");
+
+    let mut owner = connect(&url).await;
+    for seat in [lead_seat(), other_seat.clone()] {
+        send(
+            &mut owner,
+            ClientMessage::Subscribe { what: Subject::Session(seat), answering: true },
+        )
+        .await;
+        let _ = snapshot_answering(&mut owner).await;
+    }
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut owner, "the first take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: other_seat.clone(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let refused = update_until(&mut owner, "the second take's refusal", |update| {
+        matches!(update, SessionUpdate::DictateEnded { .. })
+    })
+    .await;
+    let SessionUpdate::DictateEnded {
+        outcome: forge_workspace::DictateOutcome::Refused { message },
+        ..
+    } = refused
+    else {
+        panic!("the second take must be refused, got {refused:?}")
+    };
+    assert!(
+        message.contains("another seat"),
+        "the refusal names where the live take is, got: {message}"
+    );
+
+    // The first take is untouched - and this is the seat memory's own
+    // case, because the refused start ran through the same dispatch: its
+    // frames still feed the first take's meter.
+    let mut frame = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    owner.send(Message::Binary(frame.into())).await.expect("the frame goes");
+    update_until(&mut owner, "the first take's meter", |update| {
+        matches!(update, SessionUpdate::DictateLevel { peak_db, .. } if (*peak_db + 6.02).abs() < 0.5)
+    })
+    .await;
+
+    // And the teardown closes the take: the seat is startable by the next
+    // client, which is what a take left behind would have refused.
+    let attached = fleet.subscriber_count();
+    drop(owner);
+    assert!(
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "the server must notice the streaming connection is gone",
+    );
+    let mut next = connect(&url).await;
+    send(
+        &mut next,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut next).await;
+    send(
+        &mut next,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut next, "the freed seat's next start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+}
+
 /// A client-captured take over the socket: the start names the seat, the
 /// binary frames that follow on that same ordered connection feed the take
 /// it registered, and the meter that reads them comes back on that same
@@ -416,14 +530,10 @@ async fn a_clients_frames_feed_the_take_it_started() {
     // about -6 dB - and only a routed frame produces one: a connection
     // that had forgotten the take it started drops the frame silently,
     // and every window reads the silence floor instead.
-    let hearing = update_until(&mut socket, "the pushed frame's own peak", |update| {
+    update_until(&mut socket, "the pushed frame's own peak", |update| {
         matches!(update, SessionUpdate::DictateLevel { peak_db, .. } if (*peak_db + 6.02).abs() < 0.5)
     })
     .await;
-    assert!(
-        matches!(hearing, SessionUpdate::DictateLevel { .. }),
-        "the take's meter must report the pushed frame's own peak, or the frame never reached the take"
-    );
 }
 
 /// A client that drops mid-take leaves nothing behind: the take is DROPPED

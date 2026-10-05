@@ -214,6 +214,20 @@
     }
   },
   "command_sampled": {
+    "DictateStop": {
+      "": [
+        "dictate_stop"
+      ],
+      "/dictate_stop": [
+        "key",
+        "submit"
+      ],
+      "/dictate_stop/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "DictateStream": {
       "": [
         "dictate_stream"

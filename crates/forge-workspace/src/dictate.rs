@@ -942,9 +942,19 @@ pub(crate) fn register_stream_take(
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
     let mut runtime = ws.dictate_runtime.lock();
     if runtime.recordings.contains_key(key) {
-        return Err(
+        let ours = runtime.recordings.get(key).is_some_and(|held| held.initiator == initiator);
+        return Err(if ours {
+            "this client is already dictating on this session · dictation did not start".to_owned()
+        } else {
             "another client is already dictating on this session · dictation did not start"
-                .to_owned(),
+                .to_owned()
+        });
+    }
+    // One live take per connection, because a frame carries no seat: with two
+    // takes on one connection, a frame would have no stream it belonged to.
+    if runtime.recordings.values().any(|live| live.sink.is_some() && live.initiator == initiator) {
+        return Err(
+            "this client is already dictating on another seat · dictation did not start".to_owned()
         );
     }
     let engine = ws
@@ -2151,9 +2161,10 @@ mod dictate_lifecycle_tests {
                     Some(2),
                     "the refusal answers the connection that was refused, not the holder"
                 );
-                assert!(
-                    message.contains("already dictating"),
-                    "the refusal must say the seat is busy, got: {message}"
+                assert_eq!(
+                    message,
+                    "another client is already dictating on this session · dictation did not start",
+                    "decision 3's whole deliverable is that wording"
                 );
             }
             other => panic!("expected the refusal, got {other:?}"),
@@ -2165,8 +2176,8 @@ mod dictate_lifecycle_tests {
         );
     }
 
-    /// Two seats may stream at once: a take fed by a client's frames
-    /// holds no device, so nothing about it is exclusive.
+    /// Two seats may stream at once, one take per connection: a take fed by
+    /// a client's frames holds no device, so nothing about it is exclusive.
     #[tokio::test]
     async fn two_seats_may_stream_at_once() {
         let (ws, _updates) = crate::Workspace::testing_stub();
@@ -2177,11 +2188,11 @@ mod dictate_lifecycle_tests {
         live_session(&ws, &first);
         live_session(&ws, &second);
 
-        for session in [&first, &second] {
+        for (at, session) in [&first, &second].into_iter().enumerate() {
             ws.dispatch(Command::DictateStream {
                 key: session.clone(),
                 options: DictateAxes::default(),
-                initiator: Some(1),
+                initiator: Some(at as u64 + 1),
             })
             .expect("dispatch");
             assert!(
@@ -2190,6 +2201,58 @@ mod dictate_lifecycle_tests {
             );
         }
         assert_eq!(ws.dictate_runtime.lock().recordings.len(), 2, "both takes are live");
+    }
+
+    /// One live take per connection: a frame carries no seat, so a second
+    /// take on another seat from the same connection would have no stream
+    /// its audio could belong to. The refusal rides the same outcome a busy
+    /// seat's does, so the client that pressed draws it by name.
+    #[tokio::test]
+    async fn a_second_take_from_one_connection_is_refused() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let first = key("first");
+        let second = key("second");
+        live_session(&ws, &first);
+        live_session(&ws, &second);
+
+        ws.dispatch(Command::DictateStream {
+            key: first.clone(),
+            options: DictateAxes::default(),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        ws.dispatch(Command::DictateStream {
+            key: second.clone(),
+            options: DictateAxes::default(),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+
+        let started = updates.recv().await.expect("the first start echoes");
+        assert!(
+            matches!(started, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
+            "got {started:?}"
+        );
+        let refusal = updates.recv().await.expect("the refusal echoes");
+        match refusal {
+            SessionUpdate::DictateEnded {
+                outcome: DictateOutcome::Refused { message },
+                initiator,
+                ..
+            } => {
+                assert_eq!(initiator, Some(1), "the refusal answers the client that asked");
+                assert_eq!(
+                    message,
+                    "this client is already dictating on another seat · dictation did not start",
+                    "the refusal names the reason in the client's own terms"
+                );
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
+        assert!(ws.dictate_push(&first, &[0.5; 320]), "the first take keeps its frames");
+        assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "nothing else registered");
     }
 
     /// A frame for a seat with no live take is dropped rather than kept:
@@ -2437,9 +2500,9 @@ mod dictate_lifecycle_tests {
     }
 
     /// A stop belongs to the connection whose take it addresses: a stop
-    /// from any other connection, or one carrying no connection at all,
-    /// leaves the take running rather than silently killing a view's
-    /// dictation.
+    /// from any other connection parks for its own connection rather than
+    /// reaching this take, so a view's dictation is not killed by a stop
+    /// that never owned it.
     #[tokio::test]
     async fn a_stop_from_another_connection_leaves_the_take_running() {
         let (ws, mut updates) = crate::Workspace::testing_stub();
@@ -2456,15 +2519,49 @@ mod dictate_lifecycle_tests {
         .expect("dispatch");
         let _ = updates.recv().await.expect("the start echoes");
 
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: false,
-            initiator: Some(2),
-        })
-        .expect("dispatch");
-
+        // Awaited rather than dispatched: the dispatch arm spawns the
+        // handler, so an assertion right after it reads before the handler
+        // has run. The park is this property's own statement - the stop
+        // found no take of its own and left one for a start that never
+        // comes - and it is settled the moment the handler returns.
+        handle_dictate_stop(&ws, &session, false, Some(2)).await;
+        assert!(
+            matches!(
+                &ws.dictate_runtime.lock().stop_pending,
+                Some((parked, who, _)) if parked == &session && *who == Some(2)
+            ),
+            "a foreign stop parks for its own connection rather than reaching this take"
+        );
         assert!(ws.dictate_push(&session, &[0.5; 320]), "a foreign stop must not end the take");
         assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "and the take is still live");
+    }
+
+    /// A take already submitted is still its connection's to cancel: the
+    /// transcript would have no reader left, so the close abandons it - and
+    /// another connection's close is not this take's at all.
+    #[tokio::test]
+    async fn closing_a_finishing_take_abandons_its_transcript() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let session = key("finishing");
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().finishing.push(FinishingTake {
+            key: session.clone(),
+            stop: stop_tx,
+            initiator: Some(1),
+        });
+
+        assert!(!ws.dictate_close(&session, 2), "another connection's close is not this take's");
+        assert_eq!(
+            ws.dictate_runtime.lock().finishing.len(),
+            1,
+            "and a foreign close leaves the take awaiting its transcript"
+        );
+        assert!(ws.dictate_close(&session, 1), "the submitted take is its owner's to cancel");
+        assert_eq!(
+            stop_rx.try_recv(),
+            Ok(false),
+            "the close abandons the transcript rather than submitting it"
+        );
     }
 
     /// A DEVICE take is not the connection's to close: its audio comes from

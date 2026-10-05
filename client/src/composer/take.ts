@@ -206,8 +206,8 @@ export class LocalTake {
     try {
       void this.connection.dispatch({ dictate_stop: { key: this.seat, submit } });
     } catch {
-      // The socket closed between the check and the send; the server
-      // submits on the close either way.
+      // The socket closed between the check and the send; the server drops
+      // the take on the close either way.
     }
   }
 }

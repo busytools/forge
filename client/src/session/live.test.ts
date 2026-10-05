@@ -1197,4 +1197,29 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(other.read().wire?.work.branch, 'the control took the record').toBe('new');
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
   });
+
+  it('does not read a take or a notice off the record', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    // A record from a server that still carried them: the narrowing reads
+    // neither, because a take belongs to the connection that started it and
+    // this client builds its own from that connection's updates.
+    page.land(
+      snapshotOf(LEAD, {
+        composer: {
+          take: { phase: 'recording', floor_db: -50, levels: [], peak_db: -50 },
+          notice: { kind: 'landed', text: 'the words', truncated: false },
+          compacting: false,
+          sign_in: null,
+        },
+      }),
+    );
+
+    expect(
+      page.read().wire?.composer.take,
+      "a record-carried take is not this client's",
+    ).toBeNull();
+    expect(page.read().wire?.composer.notice).toBeNull();
+    page.stop();
+  });
 });

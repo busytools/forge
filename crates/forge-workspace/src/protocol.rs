@@ -2453,6 +2453,54 @@ mod dictate_level_wire_tests {
 }
 
 #[cfg(test)]
+mod dictate_wire_ownership_tests {
+    use super::*;
+
+    /// The initiator is transport-side state and never crosses: a take's
+    /// updates serialize exactly as v4's frames did. Catches a `serde(skip)`
+    /// dropped from any of the five - a token on the wire is a contract
+    /// change a client would read as an unknown field.
+    #[test]
+    fn no_dictate_update_carries_its_initiator_across() {
+        let key = SessionSlot::from_str_for_test("initiator-wire".to_owned());
+        let updates = [
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: Some(7),
+            },
+            SessionUpdate::DictateLevel { key: key.clone(), peak_db: -20.0, initiator: Some(7) },
+            SessionUpdate::DictateTranscribing { key: key.clone(), initiator: Some(7) },
+            SessionUpdate::DictateProgress {
+                key: key.clone(),
+                generation: 1,
+                done: 1,
+                total: Some(2),
+                initiator: Some(7),
+            },
+            SessionUpdate::DictateEnded {
+                key,
+                outcome: DictateOutcome::Cancelled,
+                generation: 1,
+                initiator: Some(7),
+            },
+        ];
+        for update in &updates {
+            let encoded = serde_json::to_value(update).expect("an update encodes");
+            let body = encoded
+                .as_object()
+                .and_then(|wrapper| wrapper.values().next())
+                .expect("an update encodes as its own name around its body");
+            assert!(
+                body.get("initiator").is_none(),
+                "{update:?} carried its initiator across the wire: {encoded}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod workers_command_tests {
     use super::*;
 
