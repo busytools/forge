@@ -602,13 +602,18 @@
     pending = null;
     opening = true;
     try {
+      // The pick in force AT THE PRESS, read once: the panel stays live
+      // under the permission prompt, so a pick changed while the open is in
+      // flight must not turn the take the reader asked for into a learned
+      // "default" - nor a default open into a pick's name.
+      const picked = deviceFor(at);
       const started = await LocalTake.begin({
         connection,
         seat: untrack(() => slot),
         // The axes in force, which the panel's own state holds: re-reading
         // storage here would miss an edit made since the page drew.
         options: untrack(() => seatAxes),
-        device: deviceFor(at),
+        device: picked,
         onLine: (text) => {
           target.dictateLine = { tone: 'bad', text };
         },
@@ -624,7 +629,7 @@
       // is the one moment the browser names what that default IS - the list
       // it offers carries no default mark. The panel's row says the name
       // from then on.
-      if (deviceFor(at) === null && started.resolved !== null && started.resolved.label !== '') {
+      if (picked === null && started.resolved !== null && started.resolved.label !== '') {
         rememberDefaultDevice(started.resolved);
       }
       take = started;

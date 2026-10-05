@@ -177,7 +177,7 @@
     color: var(--dim); }
   .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
-    background: var(--s2); }
+    background: var(--s2); color: var(--dim); }
   .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
   .pop .dev .chev { margin-left: auto; color: var(--dim); }
   .pop .ft { padding: 13px 15px 14px; }
@@ -520,7 +520,6 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="ax">
             <div class="lbl">INPUT DEVICE</div>
             <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
-            <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
           </div>
           <div class="ft"><span class="rst">Reset all to defaults</span></div>
         </div>
@@ -550,7 +549,6 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="list">
             <div class="note bad">the inputs could not be listed &#183; try again</div>
           </div>
-          <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0"><b>The refusal is drawn where the list would have
@@ -562,12 +560,43 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
           <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present</span><span class="chev">&#9656;</span></div>
-          <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0"><b>An input that is absent is named and marked</b>
       rather than drawn as one that is there: a device can be unplugged between takes, and the row
       says so before the next take fails to open.</p>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">the default, once a take has named it</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">INPUT DEVICE</div>
+          <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B (system default)</span><span class="chev">&#9656;</span></div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>The browser names the system default only at the
+      moment a take opens it</b> - its device list carries no default mark - so the row learns the
+      name from the first take that records without a pick and remembers it; before that it reads
+      a plain <span class="mono">System default</span>.</p>
+    </div>
+    <div class="col">
+      <div class="lab">before the microphone has been allowed</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">INPUT DEVICE</div>
+          <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">System default</span><span class="chev">&#9656;</span></div>
+          <div class="list">
+            <div class="row"><span class="nm">System default</span></div>
+            <div class="row"><span class="nm">Microphone 1</span></div>
+            <div class="row"><span class="nm">Microphone 2</span></div>
+          </div>
+          <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>The names line is drawn only while the list has
+      unnamed rows</b>: once the browser hands its names over, it is gone.</p>
     </div>
   </div>
 </div>

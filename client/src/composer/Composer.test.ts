@@ -905,6 +905,9 @@ describe('the box', () => {
  */
 describe('the key', () => {
   /** A record whose composer carries the binding and the mode under test. */
+  /** The seat's own storage key, which the page reads its pick and default by. */
+  const SEAT = subjectKey({ session: SLOT });
+
   const bound = (bind: string, mode: string, take: Record<string, unknown> | null = null) =>
     record({
       composer: { take, notice: null, compacting: false, sign_in: null, bind, mode },
@@ -1003,6 +1006,55 @@ describe('the key', () => {
     } finally {
       mic.held.resolved = null;
       localStorage.removeItem('forge.dictate.default');
+    }
+  });
+
+  it('learns nothing when the take opened a picked device', async () => {
+    rememberDevice(SEAT, 'mic-9');
+    mic.held.resolved = { id: 'mic-9', label: 'MacBook Pro Microphone' };
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      key('ControlRight', 'keyup');
+
+      expect(
+        localStorage.getItem('forge.dictate.default'),
+        'a picked device is not the machine default',
+      ).toBeNull();
+    } finally {
+      mic.held.resolved = null;
+      rememberDevice(SEAT, null);
+    }
+  });
+
+  it('learns nothing when the pick was cleared while the open ran', async () => {
+    rememberDevice(SEAT, 'mic-2');
+    mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
+    mic.held.gated = true;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown'); // startTake captures the pick here
+      await Promise.resolve();
+      rememberDevice(SEAT, null); // the reader resets while the prompt is up
+      mic.held.release?.(); // the permission lands; the picked stream resolves
+      await opened();
+
+      expect(
+        localStorage.getItem('forge.dictate.default'),
+        'the take asked for the picked device, so it names no default',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      mic.held.resolved = null;
+      rememberDevice(SEAT, null);
     }
   });
 
