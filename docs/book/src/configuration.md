@@ -384,6 +384,12 @@ missing one refuses the load naming the key - the message reads
 endpoint itself rejects surfaces as a tool error naming `api_key`;
 forge never substitutes another credential.
 
+What the endpoint takes: up to 32k tokens of state inside a 64k-token
+request, up to 255 options in a choice question, and 2 to 10 levels in a
+score question. It serves about 100K tokens/s at 80 requests/s and bills
+$0.042 per million input tokens; the default 30s `timeout_ms` has ample
+headroom.
+
 ## `[[slack]]`
 
 Optional, and repeatable: one entry per Slack workspace. Absent or empty
