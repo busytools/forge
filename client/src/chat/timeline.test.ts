@@ -93,7 +93,10 @@ describe('a dispatch read into its timeline', () => {
     expect(frames.isolation).toBe('worktree');
   });
 
-  it('carries the CLI own outcome line from the task notification', () => {
+  it('carries where the CLI wrote the task own transcript', () => {
+    // The notification's `summary` is deliberately NOT read: it repeats the
+    // agent's final message, which the timeline already draws as its own
+    // prose, so drawing it too showed the same report twice.
     const frames = dispatchFrames(
       [
         dispatch(),
@@ -103,14 +106,12 @@ describe('a dispatch read into its timeline', () => {
           tool_use_id: 'tu-task',
           task_id: 't1',
           status: 'completed',
-          summary: 'The review came back with two nits.',
           output_file: '/tmp/tasks/t1.output',
         },
       ],
       'tu-task',
     );
 
-    expect(frames.summary).toBe('The review came back with two nits.');
     expect(frames.outputFile).toBe('/tmp/tasks/t1.output');
   });
 

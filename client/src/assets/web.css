@@ -864,11 +864,25 @@ details.sg-cl .sg-cout { color: var(--muted); font-family: var(--mono); font-siz
 .sg-hb { display: flex; gap: 7px; align-items: center; color: var(--dim);
   font-family: var(--mono); font-size: var(--fs-label); padding: 1px 0 4px 22px; }
 .sg-hb .ring { width: 7px; height: 7px; }
-.sg-sum { padding-top: 5px; }
 .sg-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   border-top: 1px solid rgba(34,42,60,.55); margin-top: 7px; padding-top: 6px;
   overflow-wrap: anywhere; }
 .sg-meta span { color: var(--muted); }
+/* The result is the instance's own output, not more metadata: a labelled,
+   railed block so the path above reads as the file's facts and this as its
+   contents. */
+.sg-result { margin-top: 6px; border-left: 2px solid var(--line); padding-left: 10px; }
+.sg-result .sg-lb { display: block; color: var(--warn); font-family: var(--mono);
+  font-size: var(--fs-label); text-transform: uppercase; letter-spacing: .08em;
+  padding-bottom: 3px; }
+/* The row's prose reads in the row's own voice, one style for every piece of
+   it - the brief, what the instance wrote, its outcome line, its result text -
+   and never in the conversation's: prose at conversation size and colour
+   inside a row is the main thread talking, which is confusing. */
+.sg-brief .prose, .sg-pr .prose, .sg-result .prose {
+  font-size: var(--fs-data); color: var(--dim); }
+.sg-brief .prose p + p, .sg-pr .prose p + p, .sg-result .prose p + p {
+  margin-top: 8px; }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the

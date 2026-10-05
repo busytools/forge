@@ -49,8 +49,6 @@ export interface DispatchFrames {
   outputFile: string | null;
   /** The lines: the instance's calls and the prose between them, in order. */
   lines: SubLine[];
-  /** The CLI's own outcome line, from the task notification when one arrived. */
-  summary: string | null;
 }
 
 /** The frame shapes this reader touches, as loosely as the wire is held. */
@@ -65,7 +63,6 @@ interface Frame {
   output_file?: unknown;
   message?: { content?: unknown };
   timestamp?: unknown;
-  summary?: unknown;
 }
 
 function obj(value: unknown): Record<string, unknown> {
@@ -121,7 +118,6 @@ export function dispatchFrames(
   let depth: number | null = null;
   let taskType: string | null = null;
   let outputFile: string | null = null;
-  let summary: string | null = null;
 
   for (const raw of messages) {
     const frame = obj(raw) as Frame;
@@ -188,11 +184,10 @@ export function dispatchFrames(
         taskType = str(frame.task_type) ?? taskType;
       }
       if (frame.subtype === 'task_notification' || frame.subtype === 'task_updated') {
-        summary = str(frame.summary) ?? summary;
         outputFile = str(frame.output_file) ?? outputFile;
       }
     }
   }
 
-  return { brief, model, isolation, taskId, depth, taskType, outputFile, lines, summary };
+  return { brief, model, isolation, taskId, depth, taskType, outputFile, lines };
 }

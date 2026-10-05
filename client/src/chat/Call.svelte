@@ -299,7 +299,12 @@
          four, and the record's usage covers the figures. -->
     <div class="body">
       {#if sub.brief !== null}
-        <div class="sg-brief"><span class="sg-lb">brief</span>{sub.brief}</div>
+        <!-- The brief is markdown, as prompts are: rendered, not spooned out
+             as raw text with its structure collapsed. -->
+        <div class="sg-brief">
+          <span class="sg-lb">brief</span>
+          <Prose text={sub.brief} />
+        </div>
       {/if}
 
       {#if card !== undefined && card.running}
@@ -320,7 +325,7 @@
         <div class="sg-tl">
           {#each sub.lines as line, at (at)}
             {#if line.kind === 'prose'}
-              <div class="sg-pr">{line.text}</div>
+              <div class="sg-pr"><Prose text={line.text} /></div>
             {:else}
               <details class="sg-cl">
                 <summary>
@@ -354,10 +359,6 @@
         </div>
       {/if}
 
-      {#if sub.summary !== null}
-        <div class="term sg-sum">{sub.summary}</div>
-      {/if}
-
       {#if meta.length > 0 || sub.outputFile !== null}
         <div class="sg-meta">
           {#each meta as [label, value], at (label)}{#if at > 0} &#183; {/if}<span>{label}</span>
@@ -367,7 +368,16 @@
       {/if}
 
       {#if call.body.length > 0}
-        {@render pieces(rest)}
+        <!-- A dispatch's own result text - the launch ack, the hand-back, the
+             notification's report - is prose, so it renders as markdown here
+             rather than as a terminal box: the report is a list and its
+             backticks are code, and spooning it out raw showed both. One
+             wrapper for the row's own prose voice, so it never reads in the
+             conversation's. -->
+        <div class="sg-result">
+          <span class="sg-lb">output</span>
+          {@render pieces(rest, true)}
+        </div>
       {/if}
     </div>
   {:else if call.image !== null}
@@ -480,7 +490,7 @@
 
 <!-- One statement of how a result's pieces draw, so the picture's branch and
      the body's branch cannot drift apart. -->
-{#snippet pieces(parts: RunPiece[])}
+{#snippet pieces(parts: RunPiece[], asProse = false)}
   {#each parts as piece, at (at)}
     {#if piece.kind === 'image'}
       <div class="term">
@@ -498,6 +508,8 @@
         <div class="m">{piece.message}</div>
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
+    {:else if asProse}
+      <Prose text={piece.text} preserveLines />
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />
     {:else}

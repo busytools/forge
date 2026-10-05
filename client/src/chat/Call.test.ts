@@ -250,7 +250,7 @@ describe('the dispatch row, joined to its instance', () => {
     command: null,
     status: 'completed',
     note: null,
-    body: [{ kind: 'text', text: 'Async agent launched successfully.' }],
+    body: [{ kind: 'text', text: 'Report: **closed**.' }],
     mutation: null,
     decision: null,
     skill: null,
@@ -338,7 +338,7 @@ describe('the dispatch row, joined to its instance', () => {
       {
         type: 'assistant',
         parent_tool_use_id: 'toolu_task',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'The pane folds its own cards.' }] },
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Report: **two nits** on the fold.' }] },
       },
     ];
 
@@ -349,8 +349,12 @@ describe('the dispatch row, joined to its instance', () => {
     expect(drawn, 'the brief it was given').toContain('do the thing');
     expect(drawn, 'every call the frames hold, not just the card tail').toContain('subagent');
     expect(drawn, 'with what it came back with').toContain('3 matches');
-    expect(drawn, 'and the prose the instance wrote between calls').toContain(
-      'The pane folds its own cards.',
+    expect(drawn, 'the brief renders as markdown, structure and all').toContain('class="prose"');
+    expect(drawn, 'and so does the prose the instance wrote between calls').toContain(
+      '<strong>two nits</strong>',
+    );
+    expect(drawn, 'the result text renders as prose too, not a terminal box').toContain(
+      '<strong>closed</strong>',
     );
 
     subagents.sync(null);
