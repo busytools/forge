@@ -113,17 +113,18 @@ network.
 a failure of its own**, with its own line. The connection was made, so the
 unreachable hint would send the reader to look at their network and their
 `forge.toml` for a problem that is neither. The line is the skew sentence
-itself: which build answered, which build this client is, and the command
-that updates the stale half.
+itself: the command that updates the stale half, this client's build, and
+the answering build where the greeting carried it - a server ahead carries
+it, and one a step back predates it.
 
 **A forge one protocol behind is read rather than refused, and the door
 says so.** The client tolerates one step back, so a connect to an older
-forge presses through to the home; and while the door is up over a
-connection that is skewed - a Back onto `/connect`, or a session address
-whose read never landed - it draws a one-line notice above the field
-naming the two builds and the command. It is a notice rather than a
-failure, so it takes the failure block's shape with the alarm taken out
-rather than the `--bad` rail: nothing has to be fixed for the page to
+forge presses through to the home; and while `/connect` is up over a
+connection that is skewed - the reader went back to the door - it draws a
+one-line notice above the field naming what the wire carries: the command
+that updates the stale half and this client's build. It is a notice rather
+than a failure, so it takes the failure block's shape with the alarm taken
+out rather than the `--bad` rail: nothing has to be fixed for the page to
 keep working.
 
 ## What the first pass got wrong
