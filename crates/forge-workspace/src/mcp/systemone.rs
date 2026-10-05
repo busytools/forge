@@ -277,9 +277,10 @@ impl Tool for AskScore {
         "Ask the System One decision model to place a state (a string, a JSON object, or an \
          array) on an ordered rubric you define. Returns a fractional score (it can land \
          between levels), the probability of each level, a legend mapping level positions to \
-         your text, and a confidence. The model never writes prose. `instructions` may be any \
-         JSON - the question in one field, referenced data in others, named with backticks; \
-         the levels stay strings. When to reach for it: \
+         your text, and a confidence. The model never writes prose. \
+         `instructions` and criteria values may be any JSON - the question in one field, \
+         referenced data in others, named with backticks. \
+         When to reach for it: \
          severity, quality, priority, or risk judgments where the levels are meaningful to you. \
          Beyond those moments, score a judgment when it matters to the user and is not obvious, \
          and skip it when the position would not change what you do. \
@@ -305,7 +306,7 @@ impl Tool for AskScore {
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": { "type": ["string", "object", "array"] },
                     "minItems": 2,
                     "maxItems": 10,
                     "description": "The ordered level descriptions, lowest first.",
@@ -429,7 +430,7 @@ mod tests {
         let out = choice
             .call(input(serde_json::json!({
                 "state": "x",
-                "instructions": "Which team?",
+                "instructions": {"question": "Which team?", "touched": ["a.rs"]},
                 "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
             })))
             .await;
@@ -440,7 +441,7 @@ mod tests {
             .call(input(serde_json::json!({
                 "state": "x",
                 "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
-                "criteria": ["Routine", "Urgent"]
+                "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
             })))
             .await;
         assert!(!out.is_error, "a structured score question is accepted: {}", out.blocks[0].text);
@@ -474,7 +475,7 @@ mod tests {
             serde_json::to_value(&calls[1].1).expect("question serializes"),
             serde_json::json!({
                 "type": "choice",
-                "instructions": "Which team?",
+                "instructions": {"question": "Which team?", "touched": ["a.rs"]},
                 "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
             }),
             "structured choice values reach the wire verbatim"
@@ -484,9 +485,9 @@ mod tests {
             serde_json::json!({
                 "type": "score",
                 "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
-                "criteria": ["Routine", "Urgent"]
+                "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
             }),
-            "a structured score question reaches the wire verbatim"
+            "structured score levels reach the wire verbatim"
         );
     }
 
@@ -510,8 +511,9 @@ mod tests {
             "choice option values advertise the API's union"
         );
         assert_eq!(
-            score["properties"]["criteria"]["items"]["type"], "string",
-            "score levels stay strings"
+            score["properties"]["criteria"]["items"]["type"],
+            serde_json::json!(["string", "object", "array"]),
+            "score levels advertise the API's union, which has no null"
         );
         for (tool, schema) in [("noul", &noul), ("choice", &choice), ("score", &score)] {
             assert_eq!(
@@ -629,7 +631,11 @@ mod tests {
             calls[0].1,
             Question::Score {
                 instructions: serde_json::json!("How urgent?"),
-                criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
+                criteria: vec![
+                    serde_json::json!("Routine"),
+                    serde_json::json!("Soon"),
+                    serde_json::json!("Urgent"),
+                ],
             }
         );
     }

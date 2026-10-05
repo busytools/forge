@@ -5,8 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// One typed question; serialized as the request's `questions` value.
 /// `instructions` and the criteria values the API types as any JSON
-/// (string, object, array or null) cross verbatim; a score question's
-/// levels are the API's strings.
+/// (string, object, array or null; a score level no null) cross verbatim.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
@@ -21,7 +20,7 @@ pub enum Question {
     },
     Score {
         instructions: serde_json::Value,
-        criteria: Vec<String>,
+        criteria: Vec<serde_json::Value>,
     },
 }
 
@@ -191,7 +190,11 @@ mod tests {
     fn score_question() -> Question {
         Question::Score {
             instructions: serde_json::json!("How urgent?"),
-            criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
+            criteria: vec![
+                serde_json::json!("Routine"),
+                serde_json::json!("Soon"),
+                serde_json::json!("Urgent"),
+            ],
         }
     }
 
@@ -227,7 +230,11 @@ mod tests {
         );
         let s = Question::Score {
             instructions: serde_json::json!("How urgent?"),
-            criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
+            criteria: vec![
+                serde_json::json!("Routine"),
+                serde_json::json!("Soon"),
+                serde_json::json!("Urgent"),
+            ],
         };
         assert_eq!(
             serde_json::to_value(&s).unwrap(),
@@ -254,6 +261,22 @@ mod tests {
                 "type": "choice",
                 "instructions": {"question": "Which team?", "touched": ["a.rs"]},
                 "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            })
+        );
+
+        let s = Question::Score {
+            instructions: serde_json::json!({"question": "How urgent?", "note": "per `sev.md`"}),
+            criteria: vec![
+                serde_json::json!("Routine"),
+                serde_json::json!({"label": "Urgent", "scope": "page now"}),
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&s).unwrap(),
+            serde_json::json!({
+                "type": "score",
+                "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
+                "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
             })
         );
     }

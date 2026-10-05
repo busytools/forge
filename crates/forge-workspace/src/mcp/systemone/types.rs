@@ -25,5 +25,6 @@ pub(crate) struct ChoiceArgs {
 pub(crate) struct ScoreArgs {
     pub state: serde_json::Value,
     pub instructions: serde_json::Value,
-    pub criteria: Vec<String>,
+    /// The ordered levels, lowest first; each level is any JSON but null.
+    pub criteria: Vec<serde_json::Value>,
 }
