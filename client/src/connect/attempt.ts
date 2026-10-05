@@ -211,8 +211,8 @@ export async function connectTo(
     // The protocol's only mismatch detector, and the range is the client's
     // own: one step back is read - the connection already carries the skew
     // for whatever draws it - and anything outside the range is refused with
-    // both builds named. A `why` of two protocol numbers alone names neither
-    // a build nor a way out.
+    // the way out named. A `why` of two protocol numbers alone names no
+    // build and no way out.
     if (skew !== null && !readableProtocol(version)) {
       connection.close();
       return { ok: false, kind: 'version', why: skewMessage(skew) };

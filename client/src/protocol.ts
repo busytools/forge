@@ -54,8 +54,9 @@ export interface Skew {
   /**
    * The build the greeting named, or `null` when it named none.
    *
-   * `null` is the common case rather than the odd one: a server this client
-   * is skewed against predates the greeting's own release fields.
+   * `null` is the case for a server one step back, which predates the
+   * greeting's own release fields; a server ahead of this client carries
+   * them.
    */
   serverVersion: string | null;
 }
@@ -66,12 +67,6 @@ function releaseOf(version: string): string {
   return release ?? version;
 }
 
-/**
- * One sentence for a protocol skew, naming both halves and the way out.
- *
- * Both refusal sites and every notice read from here, so the halves and the
- * command cannot be named at one of them and forgotten at another.
- */
 /** Whether this client reads a server speaking `version`. */
 export function readableProtocol(version: number): boolean {
   return version >= MIN_PROTOCOL && version <= PROTOCOL_VERSION;
@@ -82,24 +77,48 @@ export function skewOf(greeting: Extract<ServerMessage, { kind: 'greeting' }>): 
   if (greeting.version === PROTOCOL_VERSION) return null;
   return {
     serverProtocol: greeting.version,
-    serverVersion: greeting.forge_version_short ?? greeting.forge_version ?? null,
+    // Narrowed here rather than in the sentence, for the same reason
+    // `settingsFrom` narrows beside it: the greeting crosses as blind JSON,
+    // and a value that is not a string would reach the text as `v[object
+    // Object]` at the one moment the text matters.
+    serverVersion: releaseFrom(greeting.forge_version_short, greeting.forge_version),
   };
 }
 
+/** The first of the two stamps that is a release, or `null` when neither is. */
+function releaseFrom(short: unknown, long: unknown): string | null {
+  for (const stamp of [short, long]) {
+    if (typeof stamp === 'string' && stamp !== '') return stamp;
+  }
+  return null;
+}
+
+/**
+ * One sentence for a protocol skew: what the wire carries, and the way out.
+ *
+ * Both refusal sites and every notice read from here, so the command and the
+ * halves that CAN be named cannot be named at one site and forgotten at
+ * another.
+ */
 export function skewMessage(skew: Skew): string {
   const command = 'In the forge checkout run `just install` and restart forge.';
   const mine = `this client is v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION})`;
   // A server ahead of this client is the half this client cannot fix by
-  // rebuilding the server: the half to update is this one.
+  // rebuilding the server: the half to update is this one, and the command
+  // is the one that installs a client.
   if (skew.serverProtocol > PROTOCOL_VERSION) {
+    const named =
+      skew.serverVersion === null || skew.serverVersion === '' ? null : skew.serverVersion;
     const theirs =
-      skew.serverVersion === null || skew.serverVersion === ''
+      named === null
         ? `this forge server speaks protocol ${skew.serverProtocol}`
-        : `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol})`;
-    return (
-      `${theirs}; ${mine}. This client is the half that is behind, so reinstall it from the ` +
-      'checkout that built the server.'
-    );
+        : `this forge server is v${named} (protocol ${skew.serverProtocol})`;
+    const command =
+      named === null
+        ? 'in the forge checkout run `just client-release <version>` with the release the server ' +
+          'reports, and restart the app.'
+        : `in the forge checkout run \`just client-release ${releaseOf(named)}\` and restart the app.`;
+    return `${theirs}; ${mine}. This client is the half that is behind: ${command}`;
   }
   if (skew.serverVersion === null || skew.serverVersion === '') {
     return `this forge server speaks protocol ${skew.serverProtocol}; ${mine}. ${command}`;

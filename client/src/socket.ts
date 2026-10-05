@@ -39,7 +39,7 @@ export type ConnectionStatus =
    * It is not a connection failure and retrying cannot fix it, so the
    * connection stops rather than reconnecting into the same answer and
    * drawing against a shape it cannot read. What the greeting said is on
-   * `skew()`, so the refusal can name both builds.
+   * `skew()`, so the refusal can name the builds the wire carried.
    */
   | 'mismatched';
 

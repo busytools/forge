@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { CLIENT_VERSION, MIN_PROTOCOL, PROTOCOL_VERSION, skewMessage } from './protocol';
+import { CLIENT_VERSION, MIN_PROTOCOL, PROTOCOL_VERSION, skewMessage, skewOf } from './protocol';
+import { DEFAULT_SETTINGS } from './wire/types';
 
 /**
  * The protocol version the server declares, read out of its source.
@@ -85,6 +86,44 @@ describe('the floor this client tolerates', () => {
   });
 });
 
+describe('the build a greeting names', () => {
+  /** A greeting with the fields a skew reads, for the narrowing cases below. */
+  function greeting(named: Record<string, unknown>): Parameters<typeof skewOf>[0] {
+    return {
+      kind: 'greeting',
+      version: MIN_PROTOCOL,
+      settings: DEFAULT_SETTINGS,
+      ...named,
+    } as unknown as Parameters<typeof skewOf>[0];
+  }
+
+  /**
+   * The greeting crosses as blind JSON, so what a release is gets decided
+   * here rather than in the sentence: anything else would print `v` beside
+   * an object at the moment the sentence matters most.
+   */
+  it('reads a release only when the greeting carried a string', () => {
+    expect(skewOf(greeting({ forge_version_short: { sha: 'abc' } }))?.serverVersion).toBeNull();
+    expect(skewOf(greeting({ forge_version_short: '' }))?.serverVersion).toBeNull();
+    expect(skewOf(greeting({}))?.serverVersion).toBeNull();
+  });
+
+  /**
+   * The short stamp is the one a tight line carries, and the long one is
+   * what a server that sent only it gets named by rather than nothing.
+   */
+  it('prefers the short stamp, and falls back to the long one', () => {
+    expect(
+      skewOf(
+        greeting({ forge_version: '1.0.112+longsha', forge_version_short: '1.0.112+shortsha' }),
+      )?.serverVersion,
+    ).toBe('1.0.112+shortsha');
+    expect(skewOf(greeting({ forge_version: '1.0.112+longsha' }))?.serverVersion).toBe(
+      '1.0.112+longsha',
+    );
+  });
+});
+
 describe('what a skew says', () => {
   /**
    * The reader has to be able to tell which half is stale and what to run:
@@ -113,17 +152,48 @@ describe('what a skew says', () => {
   });
 
   /**
-   * A server ahead of this client is the other direction, and the half to
-   * fix is this one: sending the reader to rebuild the server would be
-   * advice that changes nothing.
+   * A server ahead of this client is the other direction, and the half that
+   * has to move is this one: `just install` rebuilds the server, which is
+   * not the stale half, so the command here is the one that updates a
+   * client.
    */
-  it('names this client as the half behind when the server is ahead', () => {
+  it('names this client as the half behind when the server is ahead, and its own command', () => {
     expect(
       skewMessage({ serverProtocol: PROTOCOL_VERSION + 1, serverVersion: '1.0.116+abc1234' }),
     ).toBe(
       `this forge server is v1.0.116+abc1234 (protocol ${PROTOCOL_VERSION + 1}); this client is ` +
         `v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION}). This client is the half that is ` +
-        'behind, so reinstall it from the checkout that built the server.',
+        'behind: in the forge checkout run `just client-release 1.0.116` and restart the app.',
+    );
+  });
+
+  /**
+   * The ahead direction needs a command even when no build was named, and
+   * the argument is then the release the reader has to match rather than a
+   * number this side can spell.
+   */
+  it('gives the ahead direction a command with no build to name', () => {
+    expect(skewMessage({ serverProtocol: PROTOCOL_VERSION + 1, serverVersion: null })).toBe(
+      `this forge server speaks protocol ${PROTOCOL_VERSION + 1}; this client is ` +
+        `v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION}). This client is the half that is ` +
+        'behind: in the forge checkout run `just client-release <version>` with the release the ' +
+        'server reports, and restart the app.',
+    );
+  });
+
+  /**
+   * A release that crossed the wire as an empty string is no build at all:
+   * the sentence falls back to naming the protocol, which is the half it
+   * does know, rather than printing "v".
+   */
+  it('treats an empty release as one that was never named', () => {
+    expect(skewMessage({ serverProtocol: 3, serverVersion: '' })).toBe(
+      `this forge server speaks protocol 3; this client is v${CLIENT_VERSION} ` +
+        `(protocol ${PROTOCOL_VERSION}). In the forge checkout run \`just install\` and ` +
+        'restart forge.',
+    );
+    expect(skewMessage({ serverProtocol: PROTOCOL_VERSION + 1, serverVersion: '' })).toContain(
+      'this forge server speaks protocol',
     );
   });
 

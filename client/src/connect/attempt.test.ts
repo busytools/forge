@@ -146,9 +146,11 @@ describe('one attempt', () => {
     expect(answer.ok).toBe(false);
     expect(answer.ok === false && answer.kind).toBe('version');
     expect(answer.ok === false && answer.why).toContain(`protocol ${PROTOCOL_VERSION + 1}`);
-    // The ahead direction is the client's to fix, and the message says which
-    // half is behind rather than sending the reader to rebuild the server.
-    expect(answer.ok === false && answer.why).toContain('reinstall');
+    // The ahead direction is this client's to fix: the command it names
+    // updates this half, and `just install` - which rebuilds the server, the
+    // half that is NOT stale - is not the one offered.
+    expect(answer.ok === false && answer.why).toContain('just client-release');
+    expect(answer.ok === false && answer.why).not.toContain('just install');
   });
 
   /**
