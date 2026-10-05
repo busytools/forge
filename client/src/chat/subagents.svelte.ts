@@ -74,6 +74,35 @@ export function transcribable(
 }
 
 /**
+ * The dispatches the loaded turns hold: every top-level `tool_use` id, which
+ * is the join key a dispatch row's data attribute carries. A frame from a
+ * dispatched agent is skipped - its calls live inside a row, not as rows of
+ * their own, so none of them is a dispatch the list could lead to.
+ */
+export function reachableIds(
+  turns: readonly { messages: readonly unknown[] }[],
+): ReadonlySet<string> {
+  const ids = new SvelteSet<string>();
+  for (const turn of turns) {
+    for (const message of turn.messages) {
+      const frame = message as {
+        parent_tool_use_id?: unknown;
+        message?: { content?: unknown };
+      };
+      const parent = frame.parent_tool_use_id;
+      if (typeof parent === 'string' && parent !== '') continue;
+      const content = frame.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        const held = block as { type?: unknown; id?: unknown };
+        if (held.type === 'tool_use' && typeof held.id === 'string') ids.add(held.id);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
  * Reveal the chat row a dispatch drew: open it, bring it into view, and give
  * it one flash so the eye lands on it.
  *

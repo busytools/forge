@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
-import { SubagentCards, reveal, transcribable } from './subagents.svelte';
+import { SubagentCards, reachableIds, reveal, transcribable } from './subagents.svelte';
 
 /** One instance, as the record holds it. */
 const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
@@ -90,6 +90,48 @@ describe('which instances a list may lead to', () => {
     const keeping = transcribable([card({ running: false, calls: 0 })], noneReachable);
 
     expect(keeping).toEqual([]);
+  });
+});
+
+describe('the dispatches the loaded turns hold', () => {
+  const dispatch = (id: string) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Task', input: {} }] },
+  });
+
+  it('keeps every top-level tool_use id, across every loaded turn', () => {
+    const ids = reachableIds([
+      { messages: [dispatch('tu-one')] },
+      {
+        messages: [
+          { type: 'user', message: { content: [{ type: 'text', text: 'and then?' }] } },
+          dispatch('tu-two'),
+        ],
+      },
+    ]);
+
+    expect(ids.has('tu-one'), 'a dispatch in the first turn').toBe(true);
+    expect(ids.has('tu-two'), 'and one in a later turn').toBe(true);
+  });
+
+  it('skips an instance own frames, which live inside a row rather than as one', () => {
+    const ids = reachableIds([
+      {
+        messages: [
+          dispatch('tu-one'),
+          {
+            type: 'assistant',
+            parent_tool_use_id: 'tu-one',
+            message: {
+              content: [{ type: 'tool_use', id: 'tu-inside', name: 'Read', input: {} }],
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(ids.has('tu-one'), 'the dispatch itself').toBe(true);
+    expect(ids.has('tu-inside'), 'the call under it is no dispatch').toBe(false);
   });
 });
 

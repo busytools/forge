@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
 
   import Icon from '../components/Icon.svelte';
@@ -23,7 +23,7 @@
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
-  import { reveal, subagents } from './subagents.svelte';
+  import { reachableIds, reveal, subagents } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -626,21 +626,7 @@
    * click that goes nowhere.
    */
   $effect(() => {
-    const ids = new SvelteSet<string>();
-    for (const turn of held.turns) {
-      for (const message of turn.messages) {
-        const frame = message as { message?: { content?: unknown } };
-        const content = frame.message?.content;
-        if (!Array.isArray(content)) continue;
-        for (const block of content) {
-          const heldBlock = block as { type?: unknown; id?: unknown };
-          if (heldBlock.type === 'tool_use' && typeof heldBlock.id === 'string') {
-            ids.add(heldBlock.id);
-          }
-        }
-      }
-    }
-    subagents.syncReachable(ids);
+    subagents.syncReachable(reachableIds(held.turns));
   });
 
   /**

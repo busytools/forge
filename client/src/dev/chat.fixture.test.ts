@@ -1,28 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { reachableIds } from '../chat/subagents.svelte';
 import fixture from './chat.fixture.json';
-
-/** Every top-level `tool_use` id the canned turns carry, as the page reads them. */
-function dispatchIds(): Set<string> {
-  const ids = new Set<string>();
-  for (const turn of fixture.turns) {
-    for (const message of turn.messages) {
-      const frame = message as {
-        parent_tool_use_id?: unknown;
-        message?: { content?: unknown };
-      };
-      const parent = frame.parent_tool_use_id;
-      if (typeof parent === 'string' && parent !== '') continue;
-      const content = frame.message?.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        const held = block as { type?: unknown; id?: unknown };
-        if (held.type === 'tool_use' && typeof held.id === 'string') ids.add(held.id);
-      }
-    }
-  }
-  return ids;
-}
 
 describe('the chat fixture', () => {
   /**
@@ -32,7 +11,7 @@ describe('the chat fixture', () => {
    * the fixture exists to show would be silently absent.
    */
   it('carries a card only for dispatches its turns hold', () => {
-    const ids = dispatchIds();
+    const ids = reachableIds(fixture.turns);
     expect(ids.size, 'the turns carry dispatches at all').toBeGreaterThan(0);
     expect(fixture.cards, 'the fixture carries cards at all').not.toHaveLength(0);
     for (const card of fixture.cards) {
