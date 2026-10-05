@@ -8,7 +8,7 @@
     take,
     slot,
     connection,
-    wire = null,
+    wire,
   }: {
     take: Take;
     slot: SessionSlot;
@@ -16,9 +16,11 @@
     /**
      * The take's wire side, when this page owns the capture: frames produced
      * and bytes the socket has taken. `null` for a take this page did not
-     * start, since the count is the producer's own fact.
+     * start, since the count is the producer's own fact. Required rather than
+     * defaulted, so a page that forgets it fails the type check instead of
+     * drawing a row with no count and nothing else wrong.
      */
-    wire?: { frames: number; bytes: number } | null;
+    wire: { frames: number; bytes: number } | null;
   } = $props();
 
   const transcribing = $derived(take.phase === 'transcribing');
