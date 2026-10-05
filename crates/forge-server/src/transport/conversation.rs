@@ -22,13 +22,15 @@
 //! is applied to what the replay left. Two producers is what made the earlier
 //! design race with itself; there is one here.
 //!
-//! **Nothing is released, and nothing drops messages from the front.** A page
-//! cursor is a message index, so a prefix dropped under a client holding one
-//! would answer the wrong window silently; and a held copy let go is rebuilt
-//! from a replay, which the session task answers out of its own stream - so a
-//! frame forge itself forged, which never passes through that stream, would
-//! be discarded with it. The seat's copy is therefore kept for the seat's
-//! life, and the memory is one conversation per seat that has ever connected.
+//! **What is released is the front, and no more of it than the cap.** A page
+//! cursor names a message in the conversation's own numbering rather than in
+//! the held list's, so a cursor a drop has passed is answered as what it is -
+//! the floor, with nothing above it - rather than as a window the client did
+//! not ask for; and a held copy let go is rebuilt from a replay, which the
+//! session task answers out of its own stream - so a frame forge itself
+//! forged, which never passes through that stream, would be discarded with
+//! it. The seat's copy is therefore kept for the seat's life, and what that
+//! costs is bounded by the cap below rather than by the transcript.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -37,6 +39,26 @@ use forge_primitives::{Message, SessionSlot};
 
 use crate::SessionUpdate;
 use crate::transcript::Rendered;
+
+/// How many messages one seat's held conversation keeps.
+///
+/// **Sized from the read that consumes it.** What a client is handed is the
+/// newest twenty turns (`SUBSCRIBE_TURNS`), and across the eight largest
+/// transcripts measured on a live machine that window spans 85 to 1,270
+/// messages, with the heaviest twenty-turn run at 2,799 - so the cap holds
+/// every window any of them would serve. What it buys is a seat's copy no
+/// longer tracking its transcript's length: the live heap grew a pair of
+/// ~90MB contiguous buffers an hour through this structure, and a seat held
+/// in a cap-sized window cannot reach one.
+const HELD_CAP: usize = 4_000;
+
+/// How far past the cap a seat's conversation may grow before the drop runs.
+///
+/// The drop rebuilds what it keeps into an allocation of its own, so running
+/// it on every append past the cap would pay that rebuild per frame instead
+/// of once per slack - and the slack costs a proportion of the cap, not a
+/// second conversation.
+const HELD_SLACK: usize = 1_000;
 
 /// One seat's conversation: the messages, where its turns sit and how many
 /// times it has compacted.
@@ -55,6 +77,15 @@ pub struct Conversation {
     /// for something nothing here reads.
     rendered: Rendered,
     compaction_count: u32,
+    /// The messages the cap has dropped off the front, ever.
+    ///
+    /// **A page cursor is measured against this rather than against the held
+    /// list.** A cursor names a message in the conversation's own numbering,
+    /// which a drop does not move, so a cursor that outlived one still names
+    /// the message it meant - and one naming a message the drop has taken is
+    /// answered with the floor rather than with whatever now sits at its old
+    /// place in the list.
+    dropped: usize,
     /// The messages moved since the fold last ran.
     ///
     /// **Memoized rather than made incremental**, because making it
@@ -89,10 +120,12 @@ impl Conversation {
     /// an 18 ms render on whatever task built this, and that task is the
     /// socket's single stream folder.
     pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
+        let (messages, dropped) = held_only(messages);
         Self {
             messages: as_blocks(messages),
             rendered: Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
+            dropped,
             dirty: true,
             folding: false,
         }
@@ -110,6 +143,7 @@ impl Conversation {
     /// [`Conversation::new`] gives: this is reached from the stream fold, and
     /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
+        let (messages, dropped) = held_only(messages);
         self.messages = as_blocks(messages);
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
@@ -118,6 +152,10 @@ impl Conversation {
         // fold rebuilds them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
+        // **The numbering restarts with the conversation.** A cursor from
+        // before the seed names a list that is gone, and counting from here
+        // leaves it exactly as unplaceable as it was before the cap existed.
+        self.dropped = dropped;
         self.compaction_count = compaction_count;
         self.dirty = true;
     }
@@ -131,7 +169,26 @@ impl Conversation {
         if matches!(message, Message::CompactBoundary { .. }) {
             self.compaction_count = self.compaction_count.saturating_add(1);
         }
+        // **Before the push, so the drop pays for the room it makes.** After
+        // it, this one frame is what tips the store into a doubling the drop
+        // is about to throw away.
+        if self.messages.len() >= HELD_CAP + HELD_SLACK {
+            self.drop_to_cap();
+        }
         self.messages.push(message);
+        self.dirty = true;
+    }
+
+    /// Drop the oldest messages once the held list has outgrown the cap's
+    /// slack, and leave the seat due a fold.
+    fn drop_to_cap(&mut self) {
+        let (messages, dropped) = held_only(std::mem::take(&mut self.messages));
+        self.messages = messages;
+        self.dropped = self.dropped.saturating_add(dropped);
+        // The same reason a seed clears them: the boundaries name message
+        // indices, and the drop has just moved every one of them.
+        self.rendered.turns.clear();
+        self.rendered.endings.clear();
         self.dirty = true;
     }
 
@@ -176,6 +233,30 @@ impl Conversation {
     pub fn compaction_count(&self) -> u32 {
         self.compaction_count
     }
+
+    /// How many messages the cap has dropped off the front, which is what
+    /// turns a held index into the one a page's cursor carries.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+}
+
+/// The newest [`HELD_CAP`] of `messages`, and how many that left behind.
+///
+/// **A fresh allocation rather than a `drain`**, because a `Vec` keeps the
+/// store it grew to: the point of the cap is that a seat stops holding the
+/// backing store of a conversation it no longer has, and a drain would leave
+/// it holding all of it with a window's worth of messages in front.
+fn held_only(messages: Vec<Message>) -> (Vec<Message>, usize) {
+    let excess = messages.len().saturating_sub(HELD_CAP);
+    if excess == 0 {
+        return (messages, 0);
+    }
+    // Sized for the slack as well, so the appends that refill it do not
+    // double the store on the way back up.
+    let mut kept: Vec<Message> = Vec::with_capacity(HELD_CAP + HELD_SLACK);
+    kept.extend(messages.into_iter().skip(excess));
+    (kept, excess)
 }
 
 /// A history as the CLI wrote it, with its task notices in the shape a view
@@ -334,12 +415,13 @@ impl Drop for Folding<'_> {
 
 /// The conversations the transport is holding, one per live seat.
 ///
-/// **Every live seat, not only the watched ones, and nothing is released.**
-/// A conversation has no read behind it any more, so letting one go is not a
+/// **Every live seat, not only the watched ones, and no seat is let go.** A
+/// conversation has no read behind it any more, so releasing one is not a
 /// bound - nothing could rebuild it, and the next ask for that seat would
 /// have no answer. What it holds is therefore proportional to what is
 /// RUNNING rather than to what is being read, which is the price of having
-/// one producer of the conversation rather than two.
+/// one producer of the conversation rather than two. What one seat costs is
+/// the cap's window rather than its transcript.
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
@@ -490,6 +572,83 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// `turns` turns of three frames each: the row that opens one, a call the
+    /// turn made, and the result answering it.
+    ///
+    /// **Three rather than one, so a drop lands mid-turn.** A cap that cut
+    /// its window at a turn boundary whatever it did would be a cap this
+    /// fixture could not tell from one that cut wherever it liked.
+    fn a_long_history(turns: usize) -> Vec<Message> {
+        let mut messages = Vec::with_capacity(turns * 3);
+        for at in 0..turns {
+            messages.push(a_frame(&format!("turn {at}")));
+            messages.push(
+                serde_json::from_value(serde_json::json!({
+                    "type": "assistant",
+                    "uuid": format!("a{at}"),
+                    "message": {
+                        "id": format!("m{at}"),
+                        "role": "assistant",
+                        "model": "claude-opus-5",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": format!("tu{at}"),
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        }],
+                    },
+                    "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                }))
+                .expect("an assistant frame"),
+            );
+            messages.push(
+                serde_json::from_value(serde_json::json!({
+                    "type": "user",
+                    "uuid": format!("u{at}"),
+                    "message": {
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": format!("tu{at}"),
+                            "content": "ok",
+                        }],
+                    },
+                    "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                }))
+                .expect("a user frame"),
+            );
+        }
+        messages
+    }
+
+    /// The words each turn of a page opened on.
+    fn turn_texts(page: &crate::transport::wire::Page) -> Vec<String> {
+        page.turns
+            .iter()
+            .map(|turn| {
+                turn.messages
+                    .iter()
+                    .find_map(|frame| {
+                        frame["message"]["content"][0]["text"].as_str().map(str::to_owned)
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// The newest page of a held conversation, as a client reads one.
+    fn newest_page(held: &Held, turns: u32) -> crate::transport::wire::Page {
+        held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                None,
+                turns,
+            )
+        })
     }
 
     fn a_connect(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
@@ -755,8 +914,9 @@ mod tests {
         held.apply(&a_replay(vec![a_frame("replaced")], 0));
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
-        let page = conversation
-            .read(|held| crate::transport::wire::page(held.messages(), held.rendered(), None, 5));
+        let page = conversation.read(|held| {
+            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 5)
+        });
         assert_eq!(page.turns.len(), 1, "the reseeded conversation is one turn");
         assert_eq!(
             page.turns[0].messages.len(),
@@ -816,5 +976,165 @@ mod tests {
         });
 
         assert_eq!(held.len(), 0, "a frame alone does not materialise a seat");
+    }
+
+    /// The cap bounds what a seat holds: appending past its slack drops the
+    /// oldest messages and keeps the newest.
+    ///
+    /// **The drop runs at the slack and keeps the cap**, so the seat carries
+    /// a window plus a slack's worth of room for the appends that refill it -
+    /// and it runs before the push, which is what keeps the store from
+    /// doubling past the slack it was sized for.
+    #[test]
+    fn an_append_past_the_caps_slack_drops_the_oldest_messages() {
+        let mut conversation = Conversation::empty();
+        for at in 0..HELD_CAP + HELD_SLACK {
+            conversation.append(a_frame(&format!("{at}")));
+        }
+        assert_eq!(
+            conversation.messages().len(),
+            HELD_CAP + HELD_SLACK,
+            "precondition: the slack is filled and nothing has been dropped",
+        );
+
+        conversation.append(a_frame("one past the slack"));
+
+        assert_eq!(
+            conversation.messages().len(),
+            HELD_CAP + 1,
+            "the drop keeps the cap, and the frame that triggered it joins them",
+        );
+        assert_eq!(
+            conversation.dropped(),
+            HELD_SLACK,
+            "and it counted every message it left behind",
+        );
+        assert_eq!(
+            said(&conversation.messages()[0]),
+            format!("{HELD_SLACK}"),
+            "the oldest kept is the one the cap reaches back to",
+        );
+        assert_eq!(
+            said(conversation.messages().last().expect("a newest")),
+            "one past the slack",
+            "and the newest is the frame that just arrived",
+        );
+    }
+
+    /// **The store the drop frees is the point of it.** A `Vec` keeps the
+    /// capacity it grew to, so a drop that drained rather than rebuilt would
+    /// leave the seat holding a transcript's worth of buffer with a window's
+    /// worth of messages in it - which is what the live heap's large
+    /// contiguous blocks look like from the inside.
+    #[test]
+    fn a_conversation_over_the_cap_is_held_in_a_window_sized_store() {
+        let one = a_frame("a message");
+        let history = vec![one; HELD_CAP * 4];
+
+        let conversation = Conversation::new(history, 0);
+
+        assert_eq!(conversation.messages().len(), HELD_CAP, "a seed keeps the cap");
+        assert_eq!(conversation.dropped(), HELD_CAP * 3, "and reports what it left behind");
+        assert!(
+            conversation.messages.capacity() <= HELD_CAP + HELD_SLACK,
+            "the store it left is the window's rather than the history's: capacity for {} \
+             messages over a history of {}",
+            conversation.messages.capacity(),
+            HELD_CAP * 4,
+        );
+    }
+
+    /// **The drop does not touch the window.** `SUBSCRIBE_TURNS` is what every
+    /// client is handed when it attaches, so the page read over a capped
+    /// conversation has to answer exactly what it answers over the same
+    /// conversation with nothing dropped - the same turns, whole, and a
+    /// cursor naming the same message.
+    #[test]
+    fn the_drop_leaves_the_newest_page_exactly_as_it_was() {
+        let messages = a_long_history(HELD_CAP + HELD_SLACK);
+        let whole = crate::transcript::render(&messages);
+        let unbounded = crate::transport::wire::page(
+            &messages,
+            &whole,
+            0,
+            None,
+            crate::transport::wire::SUBSCRIBE_TURNS,
+        );
+
+        let conversation = Conversation::new(messages, 0);
+        assert!(conversation.dropped() > 0, "precondition: the seed was over the cap");
+        let held = Held::new(conversation);
+        let capped = newest_page(&held, crate::transport::wire::SUBSCRIBE_TURNS);
+
+        assert_eq!(
+            turn_texts(&capped),
+            turn_texts(&unbounded),
+            "the newest page is the conversation's, not the window's",
+        );
+        assert_eq!(
+            capped.cursor, unbounded.cursor,
+            "and the cursor above it names the same message: a drop renumbers the held list, \
+             not the conversation",
+        );
+    }
+
+    /// **A cursor outlives the drop it was written before.** It names a
+    /// message in the conversation's own numbering, so the page above it is
+    /// still the page above it - and a cursor the drop has passed is answered
+    /// with the floor, which is what the client holding it can actually read,
+    /// rather than with whatever now sits at that index in the held list.
+    #[test]
+    fn a_cursor_survives_a_drop_and_stops_at_the_floor() {
+        let conversation = Conversation::new(a_long_history(HELD_CAP + HELD_SLACK), 0);
+        let held = Held::new(conversation);
+        let dropped = held.lock().dropped();
+        assert!(dropped > 0, "precondition: the seed was over the cap");
+
+        // The newest page, and the cursor it hands back for the page above it.
+        let newest = held.read(|held| {
+            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 2)
+        });
+        let cursor = newest.cursor.expect("there is a page above the newest one");
+
+        let above = held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                Some(&cursor),
+                2,
+            )
+        });
+        let carried = held.read(|held| {
+            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
+        });
+        assert_eq!(
+            turn_texts(&above),
+            turn_texts(&carried)[..2].to_vec(),
+            "the cursor names the turn it was handed for, and the page above it is that page's \
+             own",
+        );
+
+        // A client whose oldest turn is below the floor is asking for what is
+        // above a conversation this seat no longer holds: the page above it
+        // is empty, and its `None` is what stops the walk.
+        let floor = held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                Some(&dropped.saturating_sub(1).to_string()),
+                2,
+            )
+        });
+        assert!(
+            floor.turns.is_empty(),
+            "a cursor the drop passed is answered with nothing above it: {:?}",
+            turn_texts(&floor),
+        );
+        assert!(
+            floor.cursor.is_none(),
+            "and with no page above it to ask for: the turn it named is not held any more",
+        );
     }
 }

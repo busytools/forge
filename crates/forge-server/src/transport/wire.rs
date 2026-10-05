@@ -740,7 +740,18 @@ pub fn all_turns(messages: &[Message], rendered: &Rendered) -> Vec<TurnWire> {
 /// conversation, and a client reading `None` as "nothing above" stops after
 /// the first page. The message the page's first turn opens at is the one thing
 /// that always names it.
-pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, turns: u32) -> Page {
+///
+/// **`dropped` is how many messages the held conversation has lost off the
+/// front**, and it is what makes that position survive a drop: the held list
+/// is renumbered by one and the conversation is not, so a page carries the
+/// conversation's numbering and this is the offset between the two.
+pub fn page(
+    messages: &[Message],
+    rendered: &Rendered,
+    dropped: usize,
+    before: Option<&str>,
+    turns: u32,
+) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
     // already opened at, so a client walking back would ask for the same page
     // forever.
@@ -750,10 +761,23 @@ pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, tur
 
     // A cursor names the message the previous page BEGAN at, so the page above
     // ends where that one started: the two meet exactly.
-    let ends_at = before
-        .and_then(|cursor| cursor.parse::<usize>().ok())
-        .and_then(|started| opens.iter().position(|&(open, _)| open == started))
-        .unwrap_or(ranges.len());
+    //
+    // **In the conversation's numbering rather than the held list's.**
+    // `dropped` is what the cap has taken off the front: a cursor written
+    // before a drop still names the message it meant, and one resolving below
+    // the floor names a turn this seat has let go - answered from the empty
+    // page above it rather than from a window the client did not ask for. A
+    // cursor no turn opens at, or one this server did not write, keeps the
+    // fallback it always had.
+    let ends_at = match before.and_then(|cursor| cursor.parse::<usize>().ok()) {
+        None => ranges.len(),
+        Some(named) => match named.checked_sub(dropped) {
+            None => 0,
+            Some(started) => {
+                opens.iter().position(|&(open, _)| open == started).unwrap_or(ranges.len())
+            }
+        },
+    };
 
     // Only the window is rendered: building every turn to keep a few of them
     // would walk and encode the whole conversation on a path a reader hits
@@ -767,8 +791,13 @@ pub fn page(messages: &[Message], rendered: &Rendered, before: Option<&str>, tur
     // `None` is the real "nothing above this page": a page already opening on
     // the conversation's first turn has nothing to walk back to, and that is
     // the one case a client stops asking.
-    let cursor =
-        if first == 0 { None } else { opens.get(first).map(|&(open, _)| open.to_string()) };
+    let cursor = if first == 0 {
+        None
+    } else {
+        // Written back into the conversation's numbering, which is the
+        // numbering the client hands it back in.
+        opens.get(first).map(|&(open, _)| (open + dropped).to_string())
+    };
 
     Page { turns: page_turns, cursor }
 }
@@ -1041,19 +1070,21 @@ async fn session(
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
     let conversation = conversation_for(state, slot).await;
-    let (turns, compaction_count, instances) = match conversation {
+    let (turns, compaction_count) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
                 held.read(|held| {
                     (
-                        page(held.messages(), held.rendered(), None, SUBSCRIBE_TURNS).turns,
+                        page(
+                            held.messages(),
+                            held.rendered(),
+                            held.dropped(),
+                            None,
+                            SUBSCRIBE_TURNS,
+                        )
+                        .turns,
                         held.compaction_count(),
-                        // The same walk the page is cut on answers the card
-                        // list: one read, and the instances are the same fold
-                        // the session pushes live (`SubagentCardsChanged`),
-                        // driven over the conversation the transport holds.
-                        forge_workspace::subagent_cards::subagent_cards(held.messages()),
                     )
                 })
             })
@@ -1065,11 +1096,19 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0, Vec::new())
+                (Vec::new(), 0)
             })
         }
-        None => (Vec::new(), 0, Vec::new()),
+        None => (Vec::new(), 0),
     };
+    // The instance list crosses from the fold that ANNOUNCES it rather than
+    // from a second walk here: the session task folds a card per frame and
+    // pushes `SubagentCardsChanged` off the same walk, so this is what that
+    // fold holds. **It was folded here until the cap landed** - over the whole
+    // held conversation on every read, which a drop would have shortened: a
+    // record answering a window of cards over a window of messages is a
+    // section that shrinks with the cap rather than with the conversation.
+    let instances = surface.subagent_cards(slot);
     // The dispatch flag is the workspace's, raised by the fold that can
     // announce its raise: read here rather than recomputed, so the record and
     // the `DispatchesChanged` frame cannot disagree about it.
@@ -1215,7 +1254,7 @@ mod tests {
 
     /// The words every turn of a conversation opened on, oldest first.
     fn every_turn(messages: &[Message], rendered: &Rendered) -> Vec<String> {
-        page(messages, rendered, None, u32::MAX).turns.iter().map(opened_on).collect()
+        page(messages, rendered, 0, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
     /// A turn's frames as the messages they are, so a test can fold one turn
@@ -1353,7 +1392,7 @@ mod tests {
             let mut paged: Vec<Vec<ChatUnit>> = Vec::new();
             let mut before: Option<String> = None;
             loop {
-                let page = page(&messages, &rendered, before.as_deref(), 1);
+                let page = page(&messages, &rendered, 0, before.as_deref(), 1);
                 for turn in &page.turns {
                     paged.push(crate::transcript::render_units(&turn_messages(turn)));
                 }
@@ -1384,10 +1423,10 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&messages, &rendered, None, 2);
+        let lower = page(&messages, &rendered, 0, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&messages, &rendered, Some(&cursor), 0);
+        let above = page(&messages, &rendered, 0, Some(&cursor), 0);
 
         assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
@@ -1408,7 +1447,7 @@ mod tests {
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        let first = page(&messages, &rendered, None, 10);
+        let first = page(&messages, &rendered, 0, None, 10);
 
         assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
         assert_eq!(
@@ -1441,7 +1480,7 @@ mod tests {
         );
         assert!(!messages.is_empty(), "precondition: and it has content");
 
-        let page = page(&messages, &rendered, None, 10);
+        let page = page(&messages, &rendered, 0, None, 10);
 
         assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
         assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
@@ -1468,7 +1507,7 @@ mod tests {
             "precondition: and both open at the one message that carried them",
         );
 
-        let page = page(&messages, &rendered, None, 10);
+        let page = page(&messages, &rendered, 0, None, 10);
 
         assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
         assert_eq!(
@@ -1485,7 +1524,7 @@ mod tests {
         let rows = turns_of(50);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
         let (messages, rendered) = a_conversation(&borrowed);
-        let first = page(&messages, &rendered, None, 10);
+        let first = page(&messages, &rendered, 0, None, 10);
 
         // A page is the turns it was asked for, each opening where a turn
         // does. A page beginning anywhere else hands a client the tail of one
@@ -1510,7 +1549,7 @@ mod tests {
         // may never skip one, because a skipped turn is history the reader has
         // no way to ask for again.
         let all = every_turn(&messages, &rendered);
-        let second = page(&messages, &rendered, first.cursor.as_deref(), 10);
+        let second = page(&messages, &rendered, 0, first.cursor.as_deref(), 10);
         let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
@@ -1546,7 +1585,7 @@ mod tests {
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&messages, &rendered, cursor.as_deref(), 5);
+            let asked = page(&messages, &rendered, 0, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
             seen.extend(asked.turns.iter().map(opened_on));
@@ -1668,7 +1707,10 @@ mod tests {
         fleet.seed_test_pending_interaction(&fixture_seat(), PendingKind::Permission);
         // A rostered background task, so the fixture carries a populated
         // registry rather than an empty list a reader cannot tell from an
-        // unwired field.
+        // unwired field - and the two sub-agent facts, which the session
+        // task's one fold raises and this fixture has no task to run: the
+        // dispatch the transcript seeded, as the card list and the flag a
+        // seat that ran it would hold.
         fleet.seed_view_facts(
             &fixture_seat(),
             ViewFacts {
@@ -1677,6 +1719,27 @@ mod tests {
                     task_type: "local_bash".to_owned(),
                     description: "gh run watch".to_owned(),
                     command: Some("gh run watch 123 --exit-status".to_owned()),
+                }],
+                cards: vec![forge_primitives::runtime::SubagentCard {
+                    name: "map the calls".to_owned(),
+                    dispatch_id: "tu-sub".to_owned(),
+                    agent_type: Some("general-purpose".to_owned()),
+                    running: false,
+                    failed: false,
+                    backgrounded: false,
+                    ended_at_ms: Some(1_750_000_000_000),
+                    calls: 1,
+                    tail: vec![forge_primitives::runtime::SubagentCall {
+                        name: "Read".to_owned(),
+                        title: "Read src/lib.rs".to_owned(),
+                        status: forge_primitives::runtime::SubagentCallStatus::Completed,
+                    }],
+                    usage: Some(forge_primitives::messages::TaskUsage {
+                        total_tokens: 9_714,
+                        tool_uses: 1,
+                        duration_ms: 2_716,
+                        extras: serde_json::Map::new(),
+                    }),
                 }],
                 ..ViewFacts::default()
             },
@@ -1726,32 +1789,6 @@ mod tests {
         fleet
             .hold_conversation(&state, "TestOrg", "proj", "lead")
             .expect("the fixture's conversation is held");
-        // A dispatched instance, appended as the LIVE frames a running
-        // session carries: the resumed read holds no task-lifecycle rows, so
-        // a seeded transcript alone can only ever fold a dispatch and its
-        // answer. Fixed instants, so the fixture is deterministic.
-        if let Some(held) = state.conversations.get(&fixture_seat()) {
-            let frame = |raw: &str| {
-                serde_json::from_str::<forge_primitives::Message>(raw)
-                    .expect("the fixture frame decodes")
-            };
-            let mut conversation = held.lock();
-            conversation.append(frame(
-                r#"{"type":"system","subtype":"task_started","task_id":"t-sub","tool_use_id":"tu-sub","description":"map the calls","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent","uuid":"s1","session_id":"s"}"#,
-            ));
-            conversation.append(frame(
-                r#"{"type":"assistant","uuid":"a4","parent_tool_use_id":"tu-sub","session_id":"s","message":{"id":"m-sub1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu-sub1","name":"Read","input":{"file_path":"src/lib.rs"}}]}}"#,
-            ));
-            conversation.append(frame(
-                r#"{"type":"user","uuid":"u5","parent_tool_use_id":"tu-sub","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-sub1","content":"ok"}]}}"#,
-            ));
-            conversation.append(frame(
-                r#"{"type":"system","subtype":"task_progress","task_id":"t-sub","tool_use_id":"tu-sub","description":"Running Read","subagent_type":"general-purpose","usage":{"total_tokens":9714,"tool_uses":1,"duration_ms":2716},"last_tool_name":"Read","uuid":"s2","session_id":"s"}"#,
-            ));
-            conversation.append(frame(
-                r#"{"type":"system","subtype":"task_updated","task_id":"t-sub","patch":{"status":"completed","end_time":1750000000000},"uuid":"s3","session_id":"s"}"#,
-            ));
-        }
         state
     }
 
@@ -1992,6 +2029,85 @@ mod tests {
         assert_eq!(
             after["has_dispatches"], true,
             "and the flag the workspace holds is the one the record answers with: {after}",
+        );
+    }
+
+    /// **The instance list the record carries is the workspace's**, not a
+    /// fold the record takes over the conversation.
+    ///
+    /// It was folded here until the cap landed - over the whole held
+    /// conversation, on every read - and the two answers part company the
+    /// moment the conversation a record can see is shorter than the one the
+    /// session has run: a section that shrank with the cap would be one no
+    /// viewer of the session's own frames agrees with. The seat below
+    /// dispatches in its conversation, so a fold here would answer a card,
+    /// and what the record carries has to be the workspace's rather than it.
+    #[tokio::test]
+    async fn the_record_reads_the_instance_list_from_the_workspace() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &[
+                    r#"{"type":"user","message":{"role":"user","content":"map it"},"session_id":"s"}"#,
+                    r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu-sub","name":"Task","input":{"description":"from the conversation","subagent_type":"Explore"}}]}}"#,
+                ],
+            )
+            .expect("the transcript seeds");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+        fleet
+            .hold_conversation(&state, "TestOrg", "proj", "lead")
+            .expect("the fixture's conversation is held");
+
+        let before =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        assert_eq!(
+            before["subagent_instances"].as_array().expect("a list").len(),
+            0,
+            "the conversation's own dispatch is not folded by the read: {before}",
+        );
+
+        fleet.seed_view_facts(
+            &fixture_seat(),
+            ViewFacts {
+                has_dispatches: true,
+                cards: vec![forge_primitives::runtime::SubagentCard {
+                    name: "from the workspace".to_owned(),
+                    dispatch_id: "tu-sub".to_owned(),
+                    agent_type: Some("Explore".to_owned()),
+                    running: true,
+                    failed: false,
+                    backgrounded: false,
+                    ended_at_ms: None,
+                    calls: 0,
+                    tail: Vec::new(),
+                    usage: None,
+                }],
+                ..ViewFacts::default()
+            },
+        );
+
+        let after =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+        let cards = after["subagent_instances"].as_array().expect("a list");
+        assert_eq!(
+            cards.len(),
+            1,
+            "and the list the workspace holds is the one that crosses: {after}"
+        );
+        assert_eq!(
+            cards[0]["name"], "from the workspace",
+            "named by the fold that announces it rather than by a second one here: {after}",
         );
     }
 

@@ -1,11 +1,14 @@
-//! `slash_commands()`, `subagents()`, `forge_commands()`, `file_index()`,
-//! `respect_gitignore()`: what the composer's autocomplete triggers read.
+//! `slash_commands()`, `subagents()`, `has_dispatches()`, `subagent_cards()`,
+//! `forge_commands()`, `file_index()`, `respect_gitignore()`: what the
+//! composer's autocomplete triggers read, and the two sub-agent facts a
+//! record draws its section from.
 //!
-//! Two of them are facts about a session - what the CLI advertised - so
-//! the core holds them and these verbs read through it. The other three
-//! have no session in them at all: forge's own command table and the file
-//! walk are data a view reads, and the walk's ignore preference is the
-//! user's own, which the core reads on the walk's behalf.
+//! Three of them are facts about a session - what the CLI advertised, and what
+//! its conversation dispatched - so the core holds them and these verbs read
+//! through it. The other three have no session in them at all: forge's own
+//! command table and the file walk are data a view reads, and the walk's
+//! ignore preference is the user's own, which the core reads on the walk's
+//! behalf.
 //!
 //! The emoji set is not here. Which shortcodes exist and which a query
 //! selects is the typeahead's own business, so it lives with the typeahead
@@ -75,6 +78,20 @@ impl ViewSurface {
     /// what that fold holds rather than scanning the messages again here.
     pub fn has_dispatches(&self, slot: &SessionSlot) -> bool {
         self.workspace.has_dispatches_for(slot)
+    }
+
+    /// The sub-agent instances the session at `slot` has folded, as the list
+    /// it pushes when the list moves.
+    ///
+    /// The same fold as [`Self::has_dispatches`] and the same reason for
+    /// reading it here: a record that folded the conversation's messages
+    /// itself would answer with whatever window of them it holds, which is
+    /// not the conversation the cards describe.
+    pub fn subagent_cards(
+        &self,
+        slot: &SessionSlot,
+    ) -> Vec<forge_primitives::runtime::SubagentCard> {
+        self.workspace.subagent_cards_for(slot)
     }
 
     /// The seat's file index, as the seat's own loop last walked it, or
