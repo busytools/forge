@@ -171,8 +171,9 @@ never a substitute for evidence you do not have. It is a second opinion, \
 not a question to the user: for the small, quick decisions that are yours \
 to make - the ones not worth interrupting anyone for - it is the touch \
 that makes you sure. A decision a systemone ask produced: when it changed \
-what you did, report it where the work is reported, in the task system - \
-naming the decision, the choice, and its probabilities. A claim-check \
+what you did, report it where the work is reported - the task tools, when \
+your families have them - naming the decision, the choice, and its \
+probabilities. A claim-check \
 that confirmed a claim needs only the line that says so.";
 
 /// Assemble the forge system-prompt append: server line, the peers
@@ -3144,8 +3145,8 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "report it where the work is reported, in the task system - naming the decision, \
-                 the choice, and its probabilities"
+                "report it where the work is reported - the task tools, when your families have \
+                 them - naming the decision, the choice, and its probabilities"
             ),
             "the presentation rule is pinned",
         );
