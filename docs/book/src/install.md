@@ -155,9 +155,10 @@ the client over `/Applications/forge.app`, and stages the Android release
 APK. The binary goes first, so a refusal later in the sequence - a client
 running from the installed bundle, a missing Android keystore or
 toolchain - cannot leave it stale. A failure after the tag aborts the
-release with the tag cut; each half re-runs alone (`just install`,
-`just client-release <version>`, `just client-android-release <version>`),
-while re-running `just release` refuses because the tag exists.
+release with the tag cut; each half re-runs alone with the tree still at
+the tag (`just install`, `just client-release <version>`,
+`just client-android-release <version>`), while re-running `just release`
+refuses because the tag exists.
 
 ## First run
 

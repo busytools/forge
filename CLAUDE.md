@@ -1027,9 +1027,10 @@ The server install goes first, so the client's refusal - the one that
 names `just client-release` as its recovery - cannot leave the binary
 behind. It is unconditional and fails rather than skipping: an install
 that cannot complete aborts the recipe with the tag cut and no OK line,
-and each half re-runs alone (`just install`, `just client-release
-<version>`, `just client-android-release <version>`), while a fresh
-`just release` refuses on the existing tag.
+and each half re-runs alone with the tree still at the tag (`just
+install`, `just client-release <version>`,
+`just client-android-release <version>`), while a fresh `just release`
+refuses on the existing tag.
 
 The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
