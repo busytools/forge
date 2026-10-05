@@ -18,17 +18,49 @@ import type { SubagentCard } from '../session/wire';
 
 export class SubagentCards {
   #byDispatch = new SvelteMap<string, SubagentCard>();
+  #list = $state<SubagentCard[]>([]);
 
   /** Take the seat's cards whole: what the record holds is what a row joins to. */
   sync(cards: readonly SubagentCard[] | null | undefined): void {
+    const next = [...(cards ?? [])];
+    this.#list = next;
     this.#byDispatch.clear();
-    for (const card of cards ?? []) this.#byDispatch.set(card.dispatch_id, card);
+    for (const card of next) this.#byDispatch.set(card.dispatch_id, card);
   }
 
   /** The card a dispatch opened, or `undefined` for a call that opened none. */
   by(dispatchId: string): SubagentCard | undefined {
     return this.#byDispatch.get(dispatchId);
   }
+
+  /** Every instance the record holds, in dispatch order. */
+  all(): SubagentCard[] {
+    return this.#list;
+  }
+
+  /** How many of them are still working. */
+  running(): number {
+    return this.#list.filter((card) => card.running).length;
+  }
+}
+
+/**
+ * Reveal the chat row a dispatch drew: open it, bring it into view, and give
+ * it one flash so the eye lands on it.
+ *
+ * **Focus is left alone** - the reader keeps whatever they were typing - and a
+ * row the page does not hold answers false rather than throwing.
+ */
+export function reveal(dispatchId: string, root: ParentNode = document): boolean {
+  const row = root.querySelector(`details[data-sg="${dispatchId}"]`) as HTMLDetailsElement | null;
+  if (row === null) return false;
+  row.open = true;
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  row.classList.remove('sg-hit');
+  void row.offsetWidth;
+  row.classList.add('sg-hit');
+  setTimeout(() => row.classList.remove('sg-hit'), 1700);
+  return true;
 }
 
 /** One per client, as the seat records are. */

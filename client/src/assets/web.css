@@ -866,6 +866,37 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   font-size: var(--fs-data); color: var(--dim); }
 .sg-brief .prose p + p, .sg-pr .prose p + p, .sg-result .prose p + p {
   margin-top: 8px; }
+
+/* The sub-agent segment of the strip: the count at the strip's right, and the
+   way into each instance. `sg-` namespaced like the row's own fields. */
+.sg-seg { position: relative; display: inline-flex; margin-left: auto; }
+.sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
+  border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
+  font: inherit; color: var(--muted); }
+.sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
+.sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+.sg-seg .sg-tog .ic.ok { color: var(--ok); }
+.sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
+  min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  border: 1px solid var(--line); border-radius: 11px; padding: 6px 0;
+  box-shadow: 0 14px 38px rgba(0,0,0,.5); }
+.sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 13px;
+  background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
+.sg-list .sg-it .ring { width: 9px; height: 9px; flex: none; }
+.sg-list .sg-it .ic { flex: none; }
+.sg-list .sg-it .ic.ok { color: var(--ok); }
+.sg-list .sg-it .ic.bad { color: var(--bad); }
+.sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
+.sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+.sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+@media (pointer: coarse) { .sg-list .sg-it { min-height: 44px; } }
+
+/* The one flash the reveal leaves on the row it lands on: a tint that arrives
+   and leaves. */
+details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
+@keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the

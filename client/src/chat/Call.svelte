@@ -270,6 +270,7 @@
   class:running={bright}
   bind:open={opened}
   data-k={`call-${k}`}
+  data-sg={card?.dispatch_id}
 >
   <summary>
     <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />

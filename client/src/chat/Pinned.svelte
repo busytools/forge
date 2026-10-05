@@ -1,5 +1,6 @@
 <script lang="ts">
   import Strip from './Strip.svelte';
+  import SubagentSegment from './SubagentSegment.svelte';
   import type { TurnInfo } from './units';
 
   /**
@@ -20,6 +21,6 @@
 
 {#if info !== null}
   <div class="strip">
-    <div class="ti"><Strip {info} /></div>
+    <div class="ti"><Strip {info} /><SubagentSegment /></div>
   </div>
 {/if}

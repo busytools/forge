@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
-import { SubagentCards } from './subagents.svelte';
+import { SubagentCards, reveal } from './subagents.svelte';
 
 /** One instance, as the record holds it. */
 const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
@@ -44,5 +44,39 @@ describe('the dispatch join', () => {
     cards.sync(null);
 
     expect(cards.by('toolu_task'), 'no list is no cards').toBeUndefined();
+  });
+
+  it('keeps the list in dispatch order and counts the running', () => {
+    const cards = new SubagentCards();
+    cards.sync([card(), card({ dispatch_id: 'toolu_other', running: false })]);
+
+    expect(cards.all().map((one) => one.dispatch_id), 'the strip lists them in order').toEqual([
+      'toolu_task',
+      'toolu_other',
+    ]);
+    expect(cards.running(), 'one of the two is still working').toBe(1);
+  });
+});
+
+describe('revealing the row a dispatch drew', () => {
+  it('opens the row, brings it into view and flashes it', () => {
+    const held = {
+      open: false,
+      offsetWidth: 0,
+      scrollIntoView: () => {},
+      classList: { remove: () => {}, add: () => {} },
+    };
+    const root = {
+      querySelector: (selector: string) => (selector.includes('toolu_task') ? held : null),
+    } as unknown as ParentNode;
+
+    expect(reveal('toolu_task', root), 'the row is on the page').toBe(true);
+    expect(held.open, 'and the reveal opened it').toBe(true);
+  });
+
+  it('answers false for a row the page does not hold', () => {
+    const root = { querySelector: () => null } as unknown as ParentNode;
+
+    expect(reveal('toolu_gone', root), 'nothing to reveal').toBe(false);
   });
 });
