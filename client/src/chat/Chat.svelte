@@ -181,10 +181,9 @@
     const held = echoes.of(seat);
     if (held === undefined) return;
     // Whether this send starts a turn, read from the CONNECTION's own store
-    // rather than from the turn this page draws: the record is written once per
-    // painted frame, so a turn-start frame can be applied and not yet drawn -
-    // and a retry posted as not-running is taken by the very paint that carries
-    // the turn, where a refusal can no longer reach it.
+    // rather than from the turn this page draws - `runningAt`'s own doc has the
+    // mechanism. A retry posted as not-running is taken by the very paint that
+    // carries the turn, where a refusal can no longer reach it.
     //
     // The id is this send's own, freshly minted: the prompt the first attempt
     // sent is dead, so the retry is a new prompt that happens to say the same

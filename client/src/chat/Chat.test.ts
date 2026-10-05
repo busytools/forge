@@ -80,8 +80,8 @@ function stub() {
       this.send({ kind: 'page', conversation: LEAD, turns, cursor });
     },
     /**
-     * A frame the connection holds for a seat, which is what a reader of the
-     * live store sees before any page has folded it into a record.
+     * A frame the connection holds for a seat: folded into the store, not yet
+     * painted into any record this page draws - the gap a send reads across.
      */
     hold(slot: SessionSlot, ...updates: SessionUpdate[]): void {
       const store = stores.open({ session: slot });
@@ -1015,6 +1015,40 @@ describe('the reader own words before the core has them', () => {
     expect(
       mark?.state === 'sending' ? mark.running : null,
       'the retry was posted into the turn the seat already had',
+    ).toBe(true);
+  });
+
+  /**
+   * The drawn turn is the fallback where the seat has no store.
+   *
+   * A page that reached a seat mid-flight has its turn from the snapshot, and a
+   * connection with no store of its own is what the fallback argument is for:
+   * the retry must still be posted as running there, or the paint carrying the
+   * turn takes it past the point a refusal can reach it.
+   */
+  it('reads the drawn turn when the seat has no store to read', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    const mark = echoes.of(key);
+    expect(
+      mark?.state === 'sending' ? mark.running : null,
+      'the retry reads the drawn turn where the connection has no store',
     ).toBe(true);
   });
 });
