@@ -29,7 +29,7 @@ use forge_workspace::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::composer::{NoticeWire, Phase, SignIn};
+use crate::composer::SignIn;
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::{Rendered, TaskEnding, TurnSpan};
@@ -449,8 +449,11 @@ pub struct SessionStateWire {
 /// What one seat's composer is doing.
 ///
 /// A client attaching to a running session cannot reconstruct any of it: the
-/// stream announces a take, a notice, a compaction and a sign-in once each and
-/// retains nothing.
+/// stream announces a compaction and a sign-in once each and retains nothing.
+///
+/// **No take and no notice**: a take belongs to the connection that started
+/// it, whose own updates carry its meter, its phases and its words, so the
+/// shared record says nothing about one and no other subscriber draws it.
 ///
 /// The ASKS the composer is answering ride `pending_asks` on this same record
 /// rather than appearing here, because that is the same thing the session's own
@@ -458,8 +461,6 @@ pub struct SessionStateWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ComposerWire {
-    pub take: Option<TakeWire>,
-    pub notice: Option<NoticeWire>,
     pub compacting: bool,
     pub sign_in: Option<SignIn>,
     /// The push-to-talk key and how a press maps onto a take, in the
@@ -471,22 +472,6 @@ pub struct ComposerWire {
     /// different chord on every install that moved it.
     pub bind: String,
     pub mode: String,
-}
-
-/// A take in flight, as its meter draws it.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TakeWire {
-    pub phase: Phase,
-    pub levels: Vec<f32>,
-    pub peak_db: f32,
-    /// How many segments settled, and the total once the take closed: a live
-    /// take cannot know its own total.
-    pub progress: (usize, Option<usize>),
-    pub floor_db: f32,
-    /// How long the take has run. `Instant` is a Rust mechanism and does not
-    /// cross, so what crosses is the duration a client draws.
-    pub elapsed_ms: u64,
 }
 
 /// The session's header facts, including the two a client cannot otherwise
@@ -1169,15 +1154,6 @@ async fn session(
             let live = crate::live::Live::lock(&state.live).snapshot();
             let composer = &live.composer;
             ComposerWire {
-                take: composer.take(slot).map(|take| TakeWire {
-                    phase: take.phase,
-                    levels: take.levels.iter().copied().collect(),
-                    peak_db: take.peak_db,
-                    progress: take.progress,
-                    floor_db: take.floor_db(),
-                    elapsed_ms: u64::try_from(take.elapsed().as_millis()).unwrap_or(u64::MAX),
-                }),
-                notice: composer.notice(slot).map(NoticeWire::from),
                 compacting: composer.compacting(slot),
                 sign_in: composer.sign_in(slot).cloned(),
                 bind: surface.dictate_bind().label().to_owned(),

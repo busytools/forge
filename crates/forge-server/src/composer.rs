@@ -5,6 +5,11 @@
 //! composer draws is folded here from the stream. A view that attaches to an
 //! already-running session reads none of it from the core, which is why it
 //! lives beside the surface rather than in the view.
+//!
+//! **The take and the notice are read only in-process** - by the parked web
+//! view, which folds beside the sessions - and never cross the socket: a
+//! take belongs to the connection that started it, so the record says
+//! nothing about one and its updates go to that connection alone.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
@@ -105,29 +110,6 @@ pub enum Notice {
     Landed { text: String, truncated: bool },
     /// A line about a take that produced nothing to insert.
     Line { tone: &'static str, text: String },
-}
-
-/// A notice as it crosses, with the tone owned: the composer's own type holds
-/// a `&'static str` so it never needs an owned one, and a client reading one
-/// back does.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NoticeWire {
-    Landed { text: String, truncated: bool },
-    Line { tone: String, text: String },
-}
-
-impl From<&Notice> for NoticeWire {
-    fn from(notice: &Notice) -> Self {
-        match notice {
-            Notice::Landed { text, truncated } => {
-                Self::Landed { text: text.clone(), truncated: *truncated }
-            }
-            Notice::Line { tone, text } => {
-                Self::Line { tone: (*tone).to_owned(), text: text.clone() }
-            }
-        }
-    }
 }
 
 impl Notice {
@@ -232,7 +214,7 @@ impl Composer {
     /// way on both applications.
     pub fn apply(&mut self, update: &SessionUpdate) -> bool {
         match update {
-            SessionUpdate::DictateStarted { key, floor_db, generation } => {
+            SessionUpdate::DictateStarted { key, floor_db, generation, .. } => {
                 // A new take supersedes whatever the seat was doing, its
                 // notice included: the words it left are already in the
                 // draft the browser holds.
@@ -240,7 +222,7 @@ impl Composer {
                 self.notices.remove(key);
                 true
             }
-            SessionUpdate::DictateLevel { key, peak_db } => {
+            SessionUpdate::DictateLevel { key, peak_db, .. } => {
                 // The wire carries no generation on a level, and the
                 // stream is one order per seat, so the take it belongs to
                 // is whichever is live: the level that arrives after one
@@ -253,14 +235,14 @@ impl Composer {
                 }
                 false
             }
-            SessionUpdate::DictateTranscribing { key } => {
+            SessionUpdate::DictateTranscribing { key, .. } => {
                 if let Some(take) = self.takes.get_mut(key) {
                     take.phase = Phase::Transcribing;
                     return true;
                 }
                 false
             }
-            SessionUpdate::DictateProgress { key, generation, done, total } => {
+            SessionUpdate::DictateProgress { key, generation, done, total, .. } => {
                 if let Some(take) = self.takes.get_mut(key)
                     && take.generation == *generation
                 {
@@ -269,7 +251,7 @@ impl Composer {
                 }
                 false
             }
-            SessionUpdate::DictateEnded { key, outcome, generation } => {
+            SessionUpdate::DictateEnded { key, outcome, generation, .. } => {
                 // The take goes only if it is the one this resolves - a
                 // refusal resolves none, and a tail from a take that is gone
                 // is not this one - but the answer is the seat's either way,
@@ -698,6 +680,7 @@ mod tests {
             !composer.apply(&SessionUpdate::DictateLevel {
                 key: SessionSlot::lead("Busytools", "forge"),
                 peak_db: -20.0,
+                initiator: None,
             }),
             "a level with no take to draw it in is not this box's news",
         );
@@ -718,6 +701,7 @@ mod tests {
                 key: slot,
                 outcome: DictateOutcome::NoAudio { peak_db: -61.0, seconds: 3 },
                 generation: 7,
+                initiator: None,
             }),
             "an end that resolves a take this fold no longer holds still redraws the box",
         );
@@ -737,6 +721,7 @@ mod tests {
                 key: slot.clone(),
                 outcome: DictateOutcome::Refused { message: "no microphone".to_owned() },
                 generation: 0,
+                initiator: None,
             }),
             "a take that never started still redraws the box",
         );

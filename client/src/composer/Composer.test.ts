@@ -981,6 +981,68 @@ describe('the key', () => {
   });
 
   /**
+   * A second seat reaches the server, which owns the refusal.
+   *
+   * The take is one per connection, and a page's guard sees only its own:
+   * a second seat's page holds take state of its own, so its press goes out
+   * on the same connection - and the server, which alone knows what that
+   * connection already holds, refuses it by name. A client that blocked
+   * locally would be guessing about a take it cannot see.
+   */
+  it('lets a second seat reach the server, which owns the refusal', async () => {
+    const shared = wire();
+    app = mount(Harness, {
+      target: document.body,
+      props: {
+        wire: shared,
+        initial: { record: bound('right_cmd', 'auto'), dictation: true },
+        dictation: true,
+      },
+    });
+    flushSync();
+    second = mount(Harness, {
+      target: document.body,
+      props: {
+        wire: shared,
+        initial: {
+          record: record({
+            slot: ELSEWHERE,
+            composer: {
+              take: null,
+              notice: null,
+              compacting: false,
+              sign_in: null,
+              bind: 'right_cmd',
+              mode: 'auto',
+            },
+          }),
+          slot: ELSEWHERE,
+          dictation: true,
+        },
+        dictation: true,
+      },
+    });
+    flushSync();
+
+    // One press: the window listener is each page's own, so both pages hear
+    // the same key and each asks for its own seat's take.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+
+    const seats = shared.sent
+      .flatMap((sent) => {
+        const start = sent.command['dictate_stream'];
+        return start === undefined ? [] : [(start as { key: SessionSlot }).key.label];
+      })
+      .sort();
+    expect(seats, 'both seats pressed once, and both starts reach the one connection').toEqual([
+      'lead',
+      'other',
+    ]);
+  });
+
+  /**
    * A gesture that lands while the microphone is still opening must END the
    * take it belongs to.
    *

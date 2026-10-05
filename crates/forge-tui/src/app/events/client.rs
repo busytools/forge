@@ -100,6 +100,24 @@ fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) ->
     }
 }
 
+/// Whether this update belongs to another view's dictation take.
+///
+/// The terminal's own take - the one its push-to-talk key starts - is the
+/// only take this process draws; its updates carry no connection. A take a
+/// connection started carries that connection's stamp, and its meter, its
+/// phases and its words are that connection's alone to draw.
+fn belongs_to_another_view(update: &SessionUpdate) -> bool {
+    let (SessionUpdate::DictateStarted { initiator, .. }
+    | SessionUpdate::DictateLevel { initiator, .. }
+    | SessionUpdate::DictateTranscribing { initiator, .. }
+    | SessionUpdate::DictateProgress { initiator, .. }
+    | SessionUpdate::DictateEnded { initiator, .. }) = update
+    else {
+        return false;
+    };
+    initiator.is_some()
+}
+
 /// Per-session event multiplexer. Each [`SessionUpdate`] is routed
 /// to the [`crate::app::session::UiSession`] bucket it targets via the
 /// envelope's [`SessionUpdate::slot`] accessor.
@@ -109,6 +127,9 @@ fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) ->
 /// silently. App-global events (no slot) flip the redraw
 /// flag unconditionally because they affect the rendered view.
 pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
+    if belongs_to_another_view(&update) {
+        return;
+    }
     // INVARIANT: `is_active_or_global` is captured BEFORE the match
     // so reducers that themselves mutate `active_session_key` (e.g.
     // `Connected`, `SessionReplaced`) must set `needs_redraw = true`
@@ -619,7 +640,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // drop at the core.
         | SessionUpdate::SubagentCardsChanged { .. }
         | SessionUpdate::FileIndexChanged { .. } => {}
-        SessionUpdate::DictateStarted { key, floor_db, generation } => {
+        SessionUpdate::DictateStarted { key, floor_db, generation, .. } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
                 bucket.dictate =
@@ -633,21 +654,21 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     Some(crate::app::dictate::DictateBorder::live(previous, Instant::now()));
             }
         }
-        SessionUpdate::DictateLevel { key, peak_db } => {
+        SessionUpdate::DictateLevel { key, peak_db, .. } => {
             if let Some(bucket) = app.session_mut(&key)
                 && let Some(indicator) = bucket.dictate.as_mut()
             {
                 indicator.push_level(peak_db);
             }
         }
-        SessionUpdate::DictateTranscribing { key } => {
+        SessionUpdate::DictateTranscribing { key, .. } => {
             if let Some(bucket) = app.session_mut(&key)
                 && let Some(indicator) = bucket.dictate.as_mut()
             {
                 indicator.begin_transcribing();
             }
         }
-        SessionUpdate::DictateProgress { key, generation, done, total } => {
+        SessionUpdate::DictateProgress { key, generation, done, total, .. } => {
             if let Some(bucket) = app.session_mut(&key)
                 && let Some(indicator) = bucket.dictate.as_mut()
                 && indicator.generation == generation
@@ -655,7 +676,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 indicator.set_progress(done, total);
             }
         }
-        SessionUpdate::DictateEnded { key, outcome, generation } => {
+        SessionUpdate::DictateEnded { key, outcome, generation, .. } => {
             app.dictate_take_pending = false;
             if let Some(text) = clipboard_text_for_outcome(&outcome) {
                 let _ = crate::app::keys::write_text_to_clipboard(text.to_owned());
@@ -4802,6 +4823,54 @@ mod tests {
         assert!(
             app.sessions.get(&key_b).and_then(|s| s.review_replies_waiting.clone()).is_none(),
             "a zero count clears the parked signal",
+        );
+    }
+
+    /// Another view's take draws nothing here, and does not touch this
+    /// view's own press: a take belongs to the connection that started it,
+    /// so its meter, its phases and its words are that connection's alone.
+    #[test]
+    fn a_client_take_does_not_draw_on_the_terminal() {
+        let mut app = App::test_default();
+        let key = test_key();
+        // A press whose start the server has not answered yet.
+        app.dictate_take_pending = true;
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: Some(7),
+            },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0, initiator: Some(7) },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::DictateEnded {
+                key: key.clone(),
+                generation: 1,
+                outcome: forge_workspace::DictateOutcome::Landed {
+                    text: "their words".to_owned(),
+                    truncated: false,
+                },
+                initiator: Some(7),
+            },
+        );
+
+        let bucket = app.session_mut(&key).expect("the bucket stays");
+        assert!(bucket.dictate.is_none(), "a client's take must not arm this view's indicator");
+        assert!(
+            bucket.input.text().is_empty(),
+            "and its words must never land in the terminal's draft"
+        );
+        assert!(
+            app.dictate_take_pending,
+            "and its updates do not answer this view's own pending press"
         );
     }
 }

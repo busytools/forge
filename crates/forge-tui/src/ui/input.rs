@@ -752,9 +752,17 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
-            apply_session_update(&mut app, SessionUpdate::DictateLevel { key, peak_db: -6.0 });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateLevel { key, peak_db: -6.0, initiator: None },
+            );
 
             let rows = render_input(&mut app, 80, 4);
             assert!(
@@ -790,17 +798,25 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0 },
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0, initiator: None },
             );
-            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateTranscribing { key: key.clone(), initiator: None },
+            );
             // A reading that races past the handoff must not redraw the row.
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -2.0 },
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -2.0, initiator: None },
             );
 
             let rows = render_input(&mut app, 80, 5);
@@ -822,9 +838,17 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
-            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateTranscribing { key: key.clone(), initiator: None },
+            );
             apply_session_update(
                 &mut app,
                 SessionUpdate::DictateProgress {
@@ -832,6 +856,7 @@ mod tests {
                     generation: 1,
                     done: 2,
                     total: Some(6),
+                    initiator: None,
                 },
             );
 
@@ -849,9 +874,17 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
-            apply_session_update(&mut app, SessionUpdate::DictateTranscribing { key: key.clone() });
+            apply_session_update(
+                &mut app,
+                SessionUpdate::DictateTranscribing { key: key.clone(), initiator: None },
+            );
             apply_session_update(
                 &mut app,
                 SessionUpdate::DictateProgress {
@@ -859,6 +892,7 @@ mod tests {
                     generation: 1,
                     done: 1,
                     total: Some(1),
+                    initiator: None,
                 },
             );
 
@@ -876,11 +910,16 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0 },
+                SessionUpdate::DictateLevel { key: key.clone(), peak_db: -6.0, initiator: None },
             );
             apply_session_update(
                 &mut app,
@@ -889,6 +928,7 @@ mod tests {
                     generation: 1,
                     done: 2,
                     total: None,
+                    initiator: None,
                 },
             );
 
@@ -914,7 +954,12 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
             apply_session_update(
                 &mut app,
@@ -925,6 +970,7 @@ mod tests {
                         text: "run just check".to_owned(),
                         truncated: false,
                     },
+                    initiator: None,
                 },
             );
 
@@ -969,7 +1015,12 @@ mod tests {
             let key = active_key(&app);
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+                SessionUpdate::DictateStarted {
+                    key,
+                    floor_db: -50.0,
+                    generation: 1,
+                    initiator: None,
+                },
             );
             app.input_mut().expect("active session").set_text("hello world");
             app.input_mut().expect("active session").set_cursor_col(11);
@@ -1007,6 +1058,7 @@ mod tests {
                     key: key.clone(),
                     generation: 1,
                     outcome: DictateOutcome::NoAudio { peak_db: -38.2, seconds: 4 },
+                    initiator: None,
                 },
             );
 
@@ -1052,6 +1104,7 @@ mod tests {
                         text: "run just check".to_owned(),
                         truncated: false,
                     },
+                    initiator: None,
                 },
             );
             assert_eq!(
@@ -1076,7 +1129,12 @@ mod tests {
             // take of the same session still finishing.
             apply_session_update(
                 &mut app,
-                SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 2 },
+                SessionUpdate::DictateStarted {
+                    key: key.clone(),
+                    floor_db: -50.0,
+                    generation: 2,
+                    initiator: None,
+                },
             );
 
             apply_session_update(
@@ -1088,6 +1146,7 @@ mod tests {
                         text: "stale words".to_owned(),
                         truncated: false,
                     },
+                    initiator: None,
                 },
             );
             {
@@ -1105,6 +1164,7 @@ mod tests {
                     key: key.clone(),
                     generation: 2,
                     outcome: DictateOutcome::Cancelled,
+                    initiator: None,
                 },
             );
             assert!(

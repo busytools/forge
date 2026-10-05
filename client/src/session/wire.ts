@@ -158,9 +158,12 @@ export interface Conversation {
 /**
  * What the seat's composer is doing.
  *
- * `compacting` is narrowed because the composer draws a line for it; the
- * other three are the composer's own states and are left as they came, for
- * the component that owns them rather than for every reader to re-narrow.
+ * `take` and `notice` are this client's own: a take belongs to the
+ * connection that started it, so the record carries neither of them - they
+ * open empty and only the take's own updates, which this connection alone
+ * receives, fill them. `compacting` is narrowed because the composer draws
+ * a line for it; `sign_in` is left as it came, for the component that owns
+ * it rather than for every reader to re-narrow.
  */
 export interface ComposerState {
   take: unknown;
@@ -465,8 +468,10 @@ export function processesFrom(value: unknown): ProcessSnapshot | null {
 function composerFrom(value: unknown): ComposerState {
   const held = record(value);
   return {
-    take: held['take'] ?? null,
-    notice: held['notice'] ?? null,
+    // A take and its notice are this client's own, built from the take's
+    // updates and never read off a snapshot: the record carries neither.
+    take: null,
+    notice: null,
     compacting: held['compacting'] === true,
     sign_in: held['sign_in'] ?? null,
   };

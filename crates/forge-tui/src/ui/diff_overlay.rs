@@ -3099,7 +3099,7 @@ mod tests {
         crate::app::view::set_active_view(&mut app, crate::app::ActiveView::Diff);
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1, initiator: None },
         );
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");

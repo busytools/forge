@@ -61,18 +61,6 @@ function initFrame(fields: Record<string, unknown> = {}): Record<string, unknown
   return { type: 'system', subtype: 'init', session_id: 's', ...fields };
 }
 
-/** A take as a READ answered with it: the wire's own shape, and no generation. */
-function readTake(): Record<string, unknown> {
-  return {
-    phase: 'recording',
-    levels: [0.4],
-    peak_db: -20,
-    progress: [1, null],
-    floor_db: -50,
-    elapsed_ms: 4_200,
-  };
-}
-
 /** A prompt as the CLI writes one, which is the frame shape the dev fixture carries. */
 function prompt(text: string, uuid = 'u1'): Record<string, unknown> {
   return {
@@ -796,46 +784,32 @@ describe('applyUpdate', () => {
       expect(ended.composer.notice).toBeNull();
     });
 
-    it('resolves a take the record was read with, which carries no generation', () => {
-      // `TakeWire` has no generation: a take a READ answered with is one this
-      // client never saw start, so there is none to compare a report against.
-      const held = {
-        ...empty(),
-        composer: { ...empty().composer, take: readTake() },
-      };
-
-      const ended = applyUpdate(held, {
+    it("draws the core's own refusal line for a take the server refused", () => {
+      // The client starts the take locally and the server refuses it - a
+      // second take on a busy seat, or on another seat of this connection -
+      // so the line is the core's wording, passed through.
+      const started = applyUpdate(empty(), {
+        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+      });
+      const ended = applyUpdate(started, {
         dictate_ended: {
           key: SLOT,
-          outcome: { landed: { text: 'hello', truncated: false } },
-          generation: 7,
+          outcome: {
+            refused: {
+              message:
+                'another client is already dictating on this session \u{b7} dictation did not start',
+            },
+          },
+          generation: 0,
         },
       });
 
-      expect(ended.composer.take, 'a read take never ended').toBeNull();
+      expect(ended.composer.take).toBeNull();
       expect(ended.composer.notice).toEqual({
-        kind: 'landed',
-        text: 'hello',
-        truncated: false,
+        kind: 'line',
+        tone: 'bad',
+        text: 'another client is already dictating on this session \u{b7} dictation did not start',
       });
-    });
-
-    it('keeps a read take running through a progress report', () => {
-      const held = { ...empty(), composer: { ...empty().composer, take: readTake() } };
-
-      const next = applyUpdate(held, {
-        dictate_progress: { key: SLOT, generation: 7, done: 2, total: 3 },
-      });
-
-      expect(take(next)['progress']).toEqual([2, 3]);
-    });
-
-    it("keeps a read take's own clock, which the wire carried", () => {
-      const held = { ...empty(), composer: { ...empty().composer, take: readTake() } };
-
-      const next = applyUpdate(held, { dictate_level: { key: SLOT, peak_db: -10 } });
-
-      expect(take(next)['elapsed_ms'], "the take's clock was reset by a reading").toBe(4_200);
     });
 
     it('keeps the take for a progress report that carries no counts', () => {

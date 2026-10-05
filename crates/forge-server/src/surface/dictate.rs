@@ -35,14 +35,14 @@ pub struct DictateView {
 }
 
 impl ViewSurface {
-    /// The connection that was streaming a take for `key` has gone: submit
-    /// what arrived and free the seat for the next take.
+    /// The connection that was streaming a take for `key` has gone: drop
+    /// the take it started and free the seat for the next one.
     ///
     /// A connection's own lifecycle rather than a user action, which is why
     /// it is a verb here and not a command: nothing a view dispatches means
     /// "the client went away".
-    pub fn dictate_close(&self, key: &SessionSlot) -> bool {
-        self.workspace.dictate_close(key)
+    pub fn dictate_close(&self, key: &SessionSlot, initiator: u64) -> bool {
+        self.workspace.dictate_close(key, initiator)
     }
 
     /// The axes a client that captures starts on and resets to: the
@@ -52,14 +52,16 @@ impl ViewSurface {
     }
 
     /// Push one frame of client-captured audio into a seat's live take,
-    /// answering whether the samples were kept.
+    /// answering whether the samples were kept. The take must belong to
+    /// `initiator`: a seat's live take can be another connection's, and its
+    /// audio is not the pushing connection's to feed.
     ///
     /// A data plane rather than a command: a client sends this ~50 times a
     /// second for as long as it talks, and the command bus's dispatch is
     /// for the actions a view takes on the user's behalf, not for the
     /// audio itself.
-    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
-        self.workspace.dictate_push(key, samples)
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
+        self.workspace.dictate_push(key, samples, initiator)
     }
 
     pub fn dictate(&self) -> DictateView {

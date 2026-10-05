@@ -741,7 +741,7 @@ const METER_CEILING_DB = 0;
 /** The floor a take with none of its own is measured against, as the server's fold falls back. */
 const FALLBACK_FLOOR_DB = -50;
 
-/** A take as it begins, in the shape the record's own reader narrows. */
+/** A take as it begins, as this page's own state holds it. */
 function newTake(floorDb: number, generation: unknown): Record<string, unknown> {
   return {
     phase: 'recording',
@@ -754,8 +754,7 @@ function newTake(floorDb: number, generation: unknown): Record<string, unknown> 
     elapsed_ms: 0,
     started_ms: Date.now(),
     // This side's own bookkeeping, so a report for a superseded take is
-    // dropped rather than drawn over the live one. The record's reader does
-    // not look at it and the wire never sends it.
+    // dropped rather than drawn over the live one. The wire never sends it.
     generation,
   };
 }
@@ -771,9 +770,9 @@ function withTake(
   take: Record<string, unknown>,
   notice: Record<string, unknown> | null,
 ): SessionRecord {
-  // Only a take this page watched begin has a clock of its own. A take the
-  // record was READ with carries the duration the wire computed and no start,
-  // so its own reading of the elapsed time stands rather than restarting at 0.
+  // The start this page watched stamped the take's own clock; a take that
+  // somehow lacks one keeps its own reading of the elapsed time rather than
+  // restarting at 0.
   const started = number(take['started_ms']);
   const stamped = started === null ? take : { ...take, elapsed_ms: Date.now() - started };
   return {
@@ -785,10 +784,11 @@ function withTake(
 /**
  * Whether a report about a take is about THIS take.
  *
- * A take this page watched begin carries its own generation. One a read
- * answered with carries none, because the wire's take has no such field - so
- * there is no number to check a report against, and one arriving for it is
- * about it by construction: only one take per seat is live at a time.
+ * A take this connection's `dictate_started` opened carries its generation,
+ * so a report naming another one is about a take that is over. A take with
+ * no generation at all - a start whose frame was malformed - checks nothing,
+ * and a report arriving for it is about it by construction: only one take
+ * per seat is live at a time.
  */
 function ofThisTake(take: Record<string, unknown>, payload: Record<string, unknown>): boolean {
   const heldGeneration = take['generation'];
@@ -810,16 +810,12 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
  * The notice a finished take leaves, worded as `crates/forge-server/src/composer.rs:130-161`
  * words it.
  *
- * **The server's own words, because the same notice arrives by two paths.**
- * A record can hold this from a read, which carries what the server wrote, or
- * from this reducer, and no update re-syncs it - so a client wording of its
- * own would make one event read two ways until the next whole read. Four of
- * the notices are literals copied from
- * there, the fifth is the core's own refusal message passed through, and the
- * truncated line a landed take draws is mirrored already by
- * `composer/view.ts`. The day the read path normalises what it carries, these
- * copies can go and the wording can be the client's; until then it is the
- * server's, named here so the drift is a grep away rather than silent.
+ * **The server's own words, mirrored.** The outcome crosses on the update and
+ * the wording is built here, but it is the core's vocabulary - a reader who
+ * dictates in any view reads the same lines - so four of the notices are
+ * literals copied from there, the fifth is the core's own refusal message
+ * passed through, and the truncated line a landed take draws is mirrored
+ * already by `composer/view.ts`. A drift is a grep away rather than silent.
  */
 function noticeOf(
   outcome: Record<string, unknown>,

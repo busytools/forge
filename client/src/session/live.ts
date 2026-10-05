@@ -98,10 +98,9 @@ interface Seat {
    * landing after the count moved is refused and asked for again rather than
    * replacing a record the frames have already carried past it.
    *
-   * The composer's notice is the case that made it. The seat's own record
-   * carries a landed take, a `dictate_started` frame takes that notice off, and
-   * an answer from before the frame puts it back - so the box takes words the
-   * reader has already sent a second time.
+   * A turn's own end is the case that keeps it: `turn_complete` settles the
+   * turn as a frame, and an answer from before it puts a running turn back -
+   * so the box refuses a send the turn has already taken.
    */
   frames: number;
   /** The frame count the ask in flight was issued at. */

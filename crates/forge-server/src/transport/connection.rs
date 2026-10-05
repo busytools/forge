@@ -104,6 +104,11 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
+    // This connection's own number: the stamp that names which take is
+    // this connection's, on the commands that start and stop one and on
+    // the updates that come back. Minted here so the teardown closes the
+    // take this connection started and no other.
+    let me = mint_connection_id();
     let mut watched: Vec<Subject> = Vec::new();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
@@ -111,9 +116,13 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // so giving back a hold this connection never took would spend one another
     // connection is still using.
     let mut holds = Holds::new(&state.surface);
-    // The seat this connection is streaming a take for, if any: a dictation
-    // frame carries no seat of its own, so this is what addresses it.
-    let mut dictate: Option<SessionSlot> = None;
+    // The seats this connection has started takes for, oldest first: a
+    // dictation frame carries no seat of its own, so these are what address
+    // it, and the teardown below closes every one of them. A refused start
+    // adds its seat here too - the dispatch cannot tell a registration from
+    // a refusal, both answering through the stream - and the take's own end
+    // takes it back out.
+    let mut dictate: Vec<SessionSlot> = Vec::new();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
@@ -123,21 +132,23 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
 
     let outcome =
-        run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate).await;
+        run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate, me)
+            .await;
 
-    // The take this connection was streaming ends with it: what already
-    // arrived is submitted, and the seat is free for the next take. A
+    // Every take this connection started ends with it: each is DROPPED
+    // rather than submitted - its reader is gone, so nothing it produced
+    // would land anywhere - and the seat is free for the next take. A
     // DEVICE take is not touched - its audio is this machine's, and its
     // recording task outlives any one client.
-    if let Some(seat) = dictate.as_ref()
-        && state.surface.dictate_close(seat)
-    {
-        tracing::debug!(
-            target: "forge_server::transport",
-            event_name = "dictate_take_closed",
-            slot = %seat.display(),
-            "the connection that was streaming a take went away; the take was submitted",
-        );
+    for seat in &dictate {
+        if state.surface.dictate_close(seat, me) {
+            tracing::debug!(
+                target: "forge_server::transport",
+                event_name = "dictate_take_dropped",
+                slot = %seat.display(),
+                "the connection that was streaming a take went away; the take was dropped",
+            );
+        }
     }
 
     // Every way out of the loop runs this, a failed read included: a client
@@ -166,7 +177,8 @@ async fn run_connection(
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-    dictate: &mut Option<SessionSlot>,
+    dictate: &mut Vec<SessionSlot>,
+    me: u64,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
     loop {
@@ -179,16 +191,26 @@ async fn run_connection(
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
-                handle_client(socket, state, watched, holds, updates, dictate, msg).await?;
+                handle_client(socket, state, watched, holds, updates, dictate, me, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
             // would silently stop delivering while the socket stayed open.
             heard = next_update(updates) => {
                 let Some(update) = heard else { break };
+                // A take of this connection's that ends takes its seat back
+                // out: with the take gone, the seat has no stream a frame
+                // could belong to. Read before the watch gate, because the
+                // list is the connection's own bookkeeping rather than
+                // something a subscriber hears.
+                if let SessionUpdate::DictateEnded { key, initiator: Some(id), .. } = &update
+                    && *id == me
+                {
+                    dictate.retain(|seat| seat != key);
+                }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if watched.iter().any(|what| what.covers(&update)) {
+                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
                     held.push(Instant::now(), update);
                 }
             }
@@ -263,7 +285,8 @@ async fn handle_client(
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-    dictate: &mut Option<SessionSlot>,
+    dictate: &mut Vec<SessionSlot>,
+    me: u64,
     msg: Message,
 ) -> anyhow::Result<()> {
     let text = match msg {
@@ -272,7 +295,7 @@ async fn handle_client(
         // never answered: a take's audio has no reply channel, and the
         // take's own outcome is what a reader sees either way.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate.as_ref(), &bytes);
+            take_frame(&state.surface, dictate.as_slice(), me, &bytes);
             return Ok(());
         }
         _ => return Ok(()),
@@ -294,7 +317,7 @@ async fn handle_client(
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
             for update in open_stream(state, updates, answering) {
-                if watched.iter().any(|what| what.covers(&update)) {
+                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
                     queued.push(update);
                 }
             }
@@ -351,7 +374,20 @@ async fn handle_client(
             }
         }
         ClientMessage::Command { command, reply_to } => {
-            let command = *command;
+            // This connection's own stamp on the two commands that carry
+            // one: the take a start begins and the stop that ends it are
+            // this connection's alone, and the stamp riding back on the
+            // take's updates is what routes them home. A client cannot
+            // claim another's - the field never crosses the wire.
+            let command = match *command {
+                Command::DictateStream { key, options, .. } => {
+                    Command::DictateStream { key, options, initiator: Some(me) }
+                }
+                Command::DictateStop { key, submit, .. } => {
+                    Command::DictateStop { key, submit, initiator: Some(me) }
+                }
+                other => other,
+            };
             // The seat a stream start names is this connection's to
             // remember: the dictation frames that follow carry no seat of
             // their own, and this is the one message that says which take
@@ -398,8 +434,17 @@ async fn handle_client(
                 }
                 (None, false) => match state.surface.dispatch(command) {
                     Ok(()) => {
-                        if streamed.is_some() {
-                            *dictate = streamed;
+                        // Remembered optimistically: the dispatch answers Ok
+                        // for a refusal too - a refused take's reason rides
+                        // the stream as its own `DictateEnded` - so the seat
+                        // is added here and taken back out when that end
+                        // arrives. It has to be added BEFORE the next message
+                        // on this socket, or the frame that follows a start
+                        // would find no seat to address.
+                        if let Some(seat) = streamed
+                            && !dictate.contains(&seat)
+                        {
+                            dictate.push(seat);
                         }
                         Ok(())
                     }
@@ -549,11 +594,43 @@ async fn handle_client(
     }
 }
 
+/// The next number for a connection, unique for the process's life.
+///
+/// A take belongs to the connection it started on, so the number is what
+/// both halves of that routing name: the transport stamps it on
+/// `dictate_stream` and `dictate_stop`, the core echoes it on the take's
+/// updates, and a connection forwards only what carries its own. Minted
+/// process-wide rather than per transport so two servers in one process -
+/// a test's, a scratch instance beside the real one - cannot hand the same
+/// number to different connections.
+fn mint_connection_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether this connection is one of an update's readers.
+///
+/// Every `Dictate*` update about a take belongs to the connection that
+/// started it, so a connection hears its own take and no other's - and the
+/// terminal's in-process take, whose updates carry no connection at all,
+/// is nobody's on the socket. Every other update keeps the watch rule
+/// alone.
+fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
+    match update {
+        SessionUpdate::DictateStarted { initiator, .. }
+        | SessionUpdate::DictateLevel { initiator, .. }
+        | SessionUpdate::DictateTranscribing { initiator, .. }
+        | SessionUpdate::DictateProgress { initiator, .. }
+        | SessionUpdate::DictateEnded { initiator, .. } => *initiator == Some(me),
+        _ => true,
+    }
+}
+
 /// Where one binary message went, decided without touching a take.
 #[derive(Debug, PartialEq)]
 enum FrameRoute {
-    /// The seat's take, and the samples for it.
-    Take(SessionSlot, Vec<f32>),
+    /// The samples of a frame, for the seats this connection started.
+    Frame(Vec<f32>),
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
     /// A frame, but this connection has not started a take to give it to.
@@ -562,36 +639,41 @@ enum FrameRoute {
 
 /// Decide one binary message's destination.
 ///
-/// **The frame carries no seat of its own**: it addresses the take the
-/// connection that sent it started, because a connection streams one take
-/// at a time and its messages are ordered, so a frame can only arrive
-/// between its own take's start and its stop.
-fn frame_route(bytes: &[u8], dictate: Option<&SessionSlot>) -> FrameRoute {
+/// **The frame carries no seat of its own**: it belongs to whatever take the
+/// connection that sent it started, and its messages are ordered, so a frame
+/// can only arrive between a start of its own and that take's end. It is
+/// offered to every seat the connection started - a refused start's seat is
+/// among them until the refusal reaches the client - and the push below keeps
+/// it only where the live take is THAT connection's.
+fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
     let decoded = match super::frame::decode(bytes) {
         Ok(decoded) => decoded,
         Err(refusal) => return FrameRoute::Refused(refusal),
     };
-    match dictate {
-        Some(seat) => FrameRoute::Take(seat.clone(), decoded.samples),
-        None => FrameRoute::NoTake,
+    if dictate.is_empty() {
+        return FrameRoute::NoTake;
     }
+    FrameRoute::Frame(decoded.samples)
 }
 
-/// Push one dictation frame into this connection's take, recording
+/// Push one dictation frame into this connection's takes, recording
 /// anything else.
 ///
 /// Every refusal is a `debug` record rather than a warning: a client
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: Option<&SessionSlot>, bytes: &[u8]) {
+fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, bytes: &[u8]) {
     match frame_route(bytes, dictate) {
-        FrameRoute::Take(seat, samples) => {
-            if !surface.dictate_push(&seat, &samples) {
+        FrameRoute::Frame(samples) => {
+            // Offered to each seat this connection started, kept only where
+            // the live take is THIS connection's - a seat's take can be
+            // another connection's, and its audio is not this one's to feed.
+            let kept = dictate.iter().any(|seat| surface.dictate_push(seat, &samples, Some(me)));
+            if !kept {
                 tracing::debug!(
                     event_name = "dictate_frame_dropped",
-                    slot = %seat.display(),
-                    "a dictation frame arrived for a take that has stopped or is gone",
+                    "a dictation frame arrived for takes that have stopped or are another connection's",
                 );
             }
         }
@@ -844,6 +926,34 @@ mod tests {
         );
     }
 
+    /// A connection hears its own take's updates and no other's: another
+    /// connection's take is dropped, and so is the terminal's own - which
+    /// carries no connection at all - because neither is this connection's
+    /// to draw.
+    #[test]
+    fn only_its_own_takes_updates_are_heard() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let mine = SessionUpdate::DictateStarted {
+            key: seat.clone(),
+            floor_db: -50.0,
+            generation: 1,
+            initiator: Some(7),
+        };
+        assert!(ours_to_hear(&mine, 7), "a connection hears the take it started");
+        assert!(!ours_to_hear(&mine, 8), "and not one another connection started");
+
+        let terminal = SessionUpdate::DictateLevel { key: seat, peak_db: -20.0, initiator: None };
+        assert!(
+            !ours_to_hear(&terminal, 7),
+            "the terminal's in-process take is nobody's on the socket"
+        );
+
+        assert!(
+            ours_to_hear(&SessionUpdate::CatalogLoaded, 7),
+            "every other update keeps the watch rule alone"
+        );
+    }
+
     /// A binary message at the wire's shape: the codec tag, then the
     /// samples.
     fn payload(samples: &[i16]) -> Vec<u8> {
@@ -854,15 +964,16 @@ mod tests {
         bytes
     }
 
-    /// A frame routes to the take its own connection started: the seat
-    /// comes from the memory, never from the message.
+    /// A frame is the samples its bytes carry, addressed to the seats its
+    /// own connection started: the seats come from the memory, never from
+    /// the message.
     #[test]
-    fn a_frame_routes_to_the_seat_the_connection_started() {
+    fn a_frame_is_the_samples_its_own_connection_sent() {
         let seat = SessionSlot::lead("TestOrg", "proj");
         assert_eq!(
-            frame_route(&payload(&[16384]), Some(&seat)),
-            FrameRoute::Take(seat, vec![0.5]),
-            "the connection's own seat, and the samples the bytes carry"
+            frame_route(&payload(&[16384]), &[seat]),
+            FrameRoute::Frame(vec![0.5]),
+            "the samples the bytes carry"
         );
     }
 
@@ -870,7 +981,7 @@ mod tests {
     /// go, and is dropped rather than held for a take that may never come.
     #[test]
     fn a_frame_on_a_connection_with_no_take_goes_nowhere() {
-        assert_eq!(frame_route(&payload(&[0]), None), FrameRoute::NoTake);
+        assert_eq!(frame_route(&payload(&[0]), &[]), FrameRoute::NoTake);
     }
 
     /// A binary message that is not a frame is refused with its own
@@ -879,11 +990,11 @@ mod tests {
     fn a_binary_message_that_is_not_a_frame_is_refused_by_its_reason() {
         let seat = SessionSlot::lead("TestOrg", "proj");
         assert_eq!(
-            frame_route(&[], Some(&seat)),
+            frame_route(&[], std::slice::from_ref(&seat)),
             FrameRoute::Refused(super::super::frame::Refusal::ShortHeader)
         );
         assert_eq!(
-            frame_route(&[9, 0], Some(&seat)),
+            frame_route(&[9, 0], &[seat]),
             FrameRoute::Refused(super::super::frame::Refusal::UnknownCodec(9))
         );
     }

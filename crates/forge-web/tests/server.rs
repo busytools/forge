@@ -4016,15 +4016,15 @@ async fn settle() {
 }
 
 fn started(generation: u64) -> SessionUpdate {
-    SessionUpdate::DictateStarted { key: lead(), floor_db: -50.0, generation }
+    SessionUpdate::DictateStarted { key: lead(), floor_db: -50.0, generation, initiator: None }
 }
 
 fn level(peak_db: f32) -> SessionUpdate {
-    SessionUpdate::DictateLevel { key: lead(), peak_db }
+    SessionUpdate::DictateLevel { key: lead(), peak_db, initiator: None }
 }
 
 fn ended(generation: u64, outcome: forge_server::surface::DictateOutcome) -> SessionUpdate {
-    SessionUpdate::DictateEnded { key: lead(), outcome, generation }
+    SessionUpdate::DictateEnded { key: lead(), outcome, generation, initiator: None }
 }
 
 /// A live take draws the meter from the readings the stream carried: one
@@ -4095,7 +4095,7 @@ async fn transcribing_freezes_the_same_row() {
 
     fleet.emit(started(1));
     fleet.emit(level(-30.0));
-    fleet.emit(SessionUpdate::DictateTranscribing { key: lead() });
+    fleet.emit(SessionUpdate::DictateTranscribing { key: lead(), initiator: None });
     settle().await;
 
     let (_status, page) = composer(&config, "").await;
@@ -4120,6 +4120,7 @@ async fn progress_tallies_the_settled_segments() {
         generation: 3,
         done: 2,
         total: Some(6),
+        initiator: None,
     });
     settle().await;
 

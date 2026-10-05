@@ -106,9 +106,11 @@
   /**
    * The client-captured take this page started, if any.
    *
-   * One, not one per seat: the microphone is the client's own, and a second
-   * take while this one is live is refused by name rather than opening a
-   * second stream over the first.
+   * One, not one per seat: the microphone is the client's own. This page
+   * refuses its own second press by name, and a take pressed from another
+   * seat of this client is refused by the server - one live take per
+   * connection, because a frame carries no seat - so a second stream never
+   * opens over the first.
    */
   let take = $state<LocalTake | null>(null);
   /** Whether a start is waiting on the browser's permission round trip. */

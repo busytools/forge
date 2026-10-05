@@ -316,7 +316,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
 
         crate::app::events::apply_session_update(
@@ -328,6 +333,7 @@ mod tests {
                     text: "dictated words".to_owned(),
                     truncated: false,
                 },
+                initiator: None,
             },
         );
         let after = overlay(&app);
@@ -350,7 +356,7 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1, initiator: None },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -391,7 +397,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -422,7 +433,7 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1, initiator: None },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -464,7 +475,7 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1, initiator: None },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();
@@ -490,7 +501,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
 
         crate::app::events::apply_session_update(
@@ -502,6 +518,7 @@ mod tests {
                     text: "half a thought".to_owned(),
                     truncated: true,
                 },
+                initiator: None,
             },
         );
         let after = overlay(&app);
@@ -527,7 +544,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         crate::app::events::apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
 
         crate::app::events::apply_session_update(
@@ -539,6 +561,7 @@ mod tests {
                     text: "overview words".to_owned(),
                     truncated: false,
                 },
+                initiator: None,
             },
         );
         let after = overlay(&app);

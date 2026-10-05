@@ -19,8 +19,6 @@
     "queue": []
   },
   "composer": {
-    "take": null,
-    "notice": null,
     "compacting": false,
     "sign_in": null,
     "bind": "right_cmd",
