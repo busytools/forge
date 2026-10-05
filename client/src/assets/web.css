@@ -726,10 +726,7 @@ details.sec[open] > summary .arw { color: var(--accent); }
    a message taller rather than shorter. The rules below carry the same value. */
 .prose p + p { margin-top: 20px; }
 /* The reset above zeroes the padding a list draws its markers in. */
-/* Inside rather than outside: the conversation column scrolls, and an outside
-   marker is painted left of the list's box - outside the scroller's clip - so
-   ordered numbers were never visible and bullets arrived as slivers. */
-.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
+.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -876,9 +873,13 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
 .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
 .sg-seg .sg-tog .ic.ok { color: var(--ok); }
+/* The panel's rows FILL it: no padding of its own, and the hairline drawn as
+   an inset outline rather than a border, so every pixel a pointer can cross
+   belongs to a row and carries that row's leave. A padded panel leaves strips
+   with no listener, and a pointer leaving through one never arms the close. */
 .sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
   min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
-  border: 1px solid var(--line); border-radius: 11px; padding: 6px 0;
+  outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
 /* The list's scrollbar wears the same skin as every other scroller on the
    page - an unstyled one is a white bar over a dark panel - and it is stable:
@@ -886,7 +887,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list::-webkit-scrollbar { width: 8px; }
 .sg-list::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
 .sg-list::-webkit-scrollbar-track { background: transparent; }
-.sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 13px;
+.sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
   background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
 .sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
 .sg-list .sg-it .ring { width: 9px; height: 9px; flex: none; }
@@ -1658,9 +1659,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dict .esc { margin-left: auto; }
 }
 
-/* ---------- the session header's facts, and the four sections a view
-   reads from the session itself: subagents, mcp servers, processes,
-   monitors ---------- */
+/* ---------- the session header's facts, and the sections a view
+   reads from the session itself: mcp servers, processes, monitors
+   (subagents left the inspector; their row lives in the strip) ---------- */
 
 /* Every setting reads label-then-value, so the line is one kind of thing. */
 .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }

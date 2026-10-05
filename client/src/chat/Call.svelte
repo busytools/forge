@@ -7,12 +7,12 @@
   import Decision from './Decision.svelte';
   import Call from './Call.svelte';
   import { iconOf } from './families';
-  import { languageFor, type CallBody, type ToolLeaf } from './leaves';
+  import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
-  import { renderInlineProse } from './prose';
+  import { searchHits } from './text';
+  import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
-  import { joinedLine, searchHits } from './text';
   import { dispatchFrames } from './timeline';
 
   /**
@@ -322,23 +322,18 @@
                    same component, the same glyph and body, because a second
                    rendering of the same facts is a second thing to keep in
                    step. -->
-              <Call call={line.leaf} k={line.leaf.id} />
+              <Call
+                call={line.leaf}
+                k={line.leaf.id}
+                open={opensByDefault(line.leaf.name, line.leaf.body, line.leaf.decision)}
+              />
               {#if line.leaf.status !== 'completed' && line.leaf.status !== 'failed' && line.leaf.status !== 'killed' && sub.beats.has(line.leaf.id)}
                 <div class="sg-hb"><span class="ring"></span>heartbeat</div>
               {/if}
             {:else if line.kind === 'thought'}
-              <!-- The instance's reasoning, drawn as the session draws a
-                   thought: same glyph, same one-line lead, same markdown body
-                   behind the open. -->
-              <details class="leaf">
-                <summary>
-                  <Icon name="message-circle-more" class="gl" />
-                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                  <span class="tn">{@html renderInlineProse(joinedLine(line.text))}</span>
-                  <Chevron />
-                </summary>
-                <div class="body"><Prose text={line.text} /></div>
-              </details>
+              <Thought text={line.text} />
+            {:else if line.kind === 'hook'}
+              <div class="sg-pr">{line.text}</div>
             {:else}
               <div class="sg-pr"><Prose text={line.text} /></div>
             {/if}

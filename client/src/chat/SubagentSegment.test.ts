@@ -44,6 +44,21 @@ describe('the strip segment', () => {
     subagents.sync(null);
   });
 
+  it('counts an instance the page cannot open, so the row never vanishes over its dispatch', () => {
+    // The counts are the session's; the LIST is what leads somewhere. An
+    // instance whose row the conversation does not hold still counts, because
+    // the chat draws its dispatch and a row that vanished would read as none
+    // ran.
+    subagents.sync([card({ running: false, calls: 0 })]);
+    subagents.syncReachable(new Set());
+    const body = render(SubagentSegment, {}).body;
+
+    expect(body, 'the segment draws').toContain('sg-seg');
+    expect(body, 'and counts it').toContain('0 running \u{b7} 1 finished');
+    subagents.sync(null);
+    subagents.syncReachable(new Set());
+  });
+
   it('draws nothing for a seat with no instances', () => {
     subagents.sync(null);
     const body = render(SubagentSegment, {}).body;

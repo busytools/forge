@@ -1,6 +1,8 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
+  import { subagents } from '../chat/subagents.svelte';
   import type { ServerMessage } from '../protocol';
+  import { subagentCardFrom } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
@@ -31,6 +33,9 @@
     turns: unknown[];
     /** One older turn, answered when the page is asked for what is above it. */
     older: unknown;
+    /** The seat's instances, as the record carries them: raw wire JSON,
+     * narrowed where it enters like the record's own read. */
+    cards?: unknown[];
   }
 
   /**
@@ -229,6 +234,10 @@
       if (page.turns === undefined) return;
       canned.page = page;
       canned.held = answerWith(page);
+      // The record's cards, seeded the way a session's own read seeds them:
+      // this fixture mounts Chat without a Session, so nothing else would and
+      // the strip's agents row could never be looked at here.
+      subagents.sync(page.cards === undefined ? null : page.cards.map(subagentCardFrom));
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

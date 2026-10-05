@@ -8,6 +8,7 @@
   import Prose from './Prose.svelte';
   import { renderInlineProse } from './prose';
   import { firstLine, joinedLine } from './text';
+  import Thought from './Thought.svelte';
   import type { PeerCard, PeerRow, WorkRow } from './units';
 
   /** A peer row's title, in the three parts the row draws: lead, name, tail. */
@@ -98,24 +99,7 @@
     {:else if row.tag === 'inbound'}
       <Inbound {row} />
     {:else if row.tag === 'thought'}
-      {@const lead = renderInlineProse(joinedLine(row.text))}
-      <!-- The body is markdown: the model writes its reasoning in headings,
-           lists and code, and the terminal has no row for it at all. -->
-      <details class="leaf">
-        <summary>
-          <Icon name="message-circle-more" class="gl" />
-          <!--
-            The row's rendered line, which the module produced from escaped
-            input: same renderer as the body, raw HTML off.
-          -->
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-          <span class="tn">{@html lead}</span>
-          <Chevron />
-        </summary>
-        <div class="body">
-          <Prose text={row.text} />
-        </div>
-      </details>
+      <Thought text={row.text} />
     {:else if row.tag === 'card'}
       {@const title = titleOf(row.card)}
       <details class="leaf">

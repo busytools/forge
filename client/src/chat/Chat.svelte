@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
 
   import Icon from '../components/Icon.svelte';
@@ -23,7 +23,7 @@
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
-  import { reveal } from './subagents.svelte';
+  import { reveal, subagents } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -614,6 +614,34 @@
    * turn alone, a backgrounded instance's timeline reads empty.
    */
   const history = $derived(held.turns.flatMap((one) => one.messages));
+
+  /**
+   * The dispatches the loaded conversation can reach, published for the
+   * agents list.
+   *
+   * **A list entry that cannot lead to its row must not be shown.** The
+   * record's list is the session's whole history while these turns are a
+   * window of it, so an instance whose dispatch is not in a loaded turn -
+   * and whose turn the transport can no longer page back to - would give a
+   * click that goes nowhere.
+   */
+  $effect(() => {
+    const ids = new SvelteSet<string>();
+    for (const turn of held.turns) {
+      for (const message of turn.messages) {
+        const frame = message as { message?: { content?: unknown } };
+        const content = frame.message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const block of content) {
+          const heldBlock = block as { type?: unknown; id?: unknown };
+          if (heldBlock.type === 'tool_use' && typeof heldBlock.id === 'string') {
+            ids.add(heldBlock.id);
+          }
+        }
+      }
+    }
+    subagents.syncReachable(ids);
+  });
 
   /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.

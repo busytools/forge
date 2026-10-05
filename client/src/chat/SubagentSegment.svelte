@@ -33,14 +33,18 @@
   /** A beat of grace on leaving, so crossing the gap into the list lands. */
   let closing: ReturnType<typeof setTimeout> | null = null;
 
-  // The counts and the list are the SAME set - the instances a transcript can
-  // be opened for - so the numbers and the rows can never disagree.
-  const listed = $derived(transcribable(subagents.all()));
-  const running = $derived(listed.filter((card) => card.running));
-  const finished = $derived(listed.length - running.length);
+  // The COUNTS are the session's: every instance the record holds, so a
+  // settled one the page cannot open still counts rather than the whole row
+  // vanishing while the chat draws its dispatch. The LIST leads only where it
+  // can - running instances (their row is in the live turn) and dispatches
+  // the loaded conversation actually holds.
+  const all = $derived(subagents.all());
+  const running = $derived(all.filter((card) => card.running));
+  const finished = $derived(all.length - running.length);
+  const listed = $derived(transcribable(all, (id) => subagents.reachable(id)));
 
   /** What one instance is doing, short enough for a row: one line, capped. */
-  const doing = (card: (typeof listed)[number]) => {
+  const doing = (card: (typeof all)[number]) => {
     const said = firstLine(card.tail[card.tail.length - 1]?.title ?? 'working').trim();
     return said.length > MAX_ACTIVITY ? `${said.slice(0, MAX_ACTIVITY).trimEnd()}\u{2026}` : said;
   };
@@ -52,27 +56,45 @@
   }
 
   /**
-   * Leaving arms the close, but focus moving WITHIN the segment is not
-   * leaving it: tabbing from the toggle into the list fires a bubbling
-   * `focusout` whose related target is still inside, and the close it armed
-   * would unmount the element the reader just tabbed to.
+   * Leaving arms the close.
+   *
+   * **Pointer and keyboard leave differently.** A pointer leave whose event
+   * carries no related target fires over the panel's own gap; if the segment
+   * is still hovered it is a crossing, not a leave, and arms nothing. A
+   * pointer leave may close while the TOGGLE holds focus - that element stays
+   * mounted - but not while a list ROW holds it: closing would unmount the
+   * row the reader is on. A blur is leaving only when focus moves outside the
+   * segment at all.
    */
   function release(event?: FocusEvent) {
+    if (event === undefined) {
+      if (segEl !== null && segEl.matches(':hover')) return;
+      const active = document.activeElement;
+      const onRow =
+        segEl !== null && listEl !== null && active instanceof Node && listEl.contains(active);
+      if (onRow) return;
+      arm();
+      return;
+    }
     // A blur whose related target is nothing (a click on the panel's own
     // padding) leaves focus wherever the browser put it: read the live one.
-    const next = event?.relatedTarget ?? document.activeElement;
+    const next = event.relatedTarget ?? document.activeElement;
     if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
-    // A leave arms nothing while the segment still holds the reader - the
-    // pointer may be crossing back in, and a row may hold the keyboard.
-    if (event === undefined && segEl !== null && segEl.matches(':hover')) return;
-    if (segEl !== null && document.activeElement !== null && segEl.contains(document.activeElement))
-      return;
+    arm();
+  }
+
+  function arm() {
     if (closing !== null) clearTimeout(closing);
     closing = setTimeout(() => {
       closing = null;
       open = false;
     }, 120);
   }
+
+  /** A pointer that can hover, which a finger cannot: a tap's synthesised
+   * enter must not arm the hover path, or the click that follows toggles the
+   * panel straight back shut. */
+  const hovering = (event: PointerEvent) => event.pointerType === 'mouse';
 
   /**
    * The list opens at its foot: the instances read oldest first, the way the
@@ -125,7 +147,7 @@
   });
 </script>
 
-{#if listed.length > 0}
+{#if all.length > 0}
   <!-- The listeners live on the buttons themselves: the wrapper is a plain
        span, and a span wearing mouse or key handlers is a non-interactive
        element pretending to be a control. The guards in `release` are what
@@ -136,8 +158,12 @@
       class="sg-tog"
       aria-expanded={open}
       onclick={() => (open = !open)}
-      onmouseenter={hold}
-      onmouseleave={() => release()}
+      onpointerenter={(event) => {
+        if (hovering(event)) hold();
+      }}
+      onpointerleave={(event) => {
+        if (hovering(event)) release();
+      }}
       onfocusin={hold}
       onfocusout={release}
       onkeydown={(event) => {
@@ -169,8 +195,12 @@
               askReveal(card.dispatch_id);
               open = false;
             }}
-            onmouseenter={hold}
-            onmouseleave={() => release()}
+            onpointerenter={(event) => {
+              if (hovering(event)) hold();
+            }}
+            onpointerleave={(event) => {
+              if (hovering(event)) release();
+            }}
             onfocusout={release}
             onkeydown={(event) => {
               if (event.key !== 'Escape') return;

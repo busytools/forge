@@ -201,6 +201,79 @@ describe('a dispatch read into its timeline', () => {
     expect(frames.beats.has('c1'), 'the open call carries the pulse').toBe(true);
   });
 
+  it('forgets the beat once the call comes back', () => {
+    // A beaten call that settled must not keep drawing its heartbeat.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'just check' }),
+        {
+          type: 'tool_progress',
+          tool_use_id: 'c1-heartbeat-1',
+          tool_name: 'Bash',
+          parent_tool_use_id: 'c1',
+        },
+        answer('c1', 'done'),
+      ],
+      'tu-task',
+    );
+
+    expect(frames.beats.has('c1'), 'the beat is gone with the answer').toBe(false);
+  });
+
+  it('settles a child from a notification that names its own call', () => {
+    // The frame carries the call id itself, so a notification whose
+    // `task_started` was never seen still ends the call it names.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'sleep 300' }),
+        answer('c1', 'Command running in background with ID: bg1.'),
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          tool_use_id: 'c1',
+          task_id: 'bg1',
+          status: 'stopped',
+        },
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.leaf.status, 'a stopped task is a kill').toBe('killed');
+  });
+
+  it('hands an edit its own record, so its hunks draw as the session draws them', () => {
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Edit', { file_path: 'a.rs', old_string: 'one', new_string: 'two' }),
+        {
+          type: 'user',
+          parent_tool_use_id: 'tu-task',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'ok' }],
+          },
+          tool_use_result: {
+            filePath: 'a.rs',
+            structuredPatch: [
+              { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-one', '+two'] },
+            ],
+          },
+        },
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(
+      first?.kind === 'call' && first.leaf.mutation !== null,
+      'the record reached the leaf',
+    ).toBe(true);
+  });
+
   it('keeps another dispatch frames out of this one', () => {
     const other = {
       ...call('x1', 'Bash', { command: 'echo other' }),

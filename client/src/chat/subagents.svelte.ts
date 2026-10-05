@@ -12,13 +12,23 @@
  * when the record's list moves.
  */
 
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
 import type { SubagentCard } from '../session/wire';
 
 export class SubagentCards {
   #byDispatch = new SvelteMap<string, SubagentCard>();
   #list = $state<SubagentCard[]>([]);
+  /**
+   * The dispatches whose ROWS the page holds, off the loaded turns.
+   *
+   * The record's list is the session's whole history; the conversation is a
+   * window of it, and the transport floors how far back the window pages. An
+   * instance the record holds but the page cannot reach would make a list
+   * entry that clicks through to nothing, so the chat sets this and the list
+   * reads it.
+   */
+  #reachable = $state<ReadonlySet<string>>(new SvelteSet());
 
   /** Take the seat's cards whole: what the record holds is what a row joins to. */
   sync(cards: readonly SubagentCard[] | null | undefined): void {
@@ -26,6 +36,16 @@ export class SubagentCards {
     this.#list = next;
     this.#byDispatch.clear();
     for (const card of next) this.#byDispatch.set(card.dispatch_id, card);
+  }
+
+  /** The dispatches the loaded conversation can actually reach. */
+  syncReachable(ids: ReadonlySet<string>): void {
+    this.#reachable = ids;
+  }
+
+  /** Whether the page holds the row this dispatch drew. */
+  reachable(dispatchId: string): boolean {
+    return this.#reachable.has(dispatchId);
   }
 
   /** The card a dispatch opened, or `undefined` for a call that opened none. */
@@ -37,21 +57,20 @@ export class SubagentCards {
   all(): SubagentCard[] {
     return this.#list;
   }
-
-  /** How many of them are still working. */
-  running(): number {
-    return this.#list.filter((card) => card.running).length;
-  }
 }
 
 /**
- * The instances a transcript can be opened for: one that is running, or one
- * with calls on the page. An instance that ran before a restart or resume has
- * no frames held, so its row would open onto a brief and nothing - it stays
- * out of any list that leads somewhere.
+ * The instances a list may lead to: one that is running, and whose row the
+ * page holds. A running instance's row is still in the live turn; a settled
+ * one's is only reachable when the conversation carries its turn - an instance
+ * from before a restart or resume has no frames held, and one beyond the
+ * transport's floor cannot be paged back to, so neither leads anywhere.
  */
-export function transcribable(cards: readonly SubagentCard[]): SubagentCard[] {
-  return cards.filter((card) => card.running || card.calls > 0);
+export function transcribable(
+  cards: readonly SubagentCard[],
+  reachable: (dispatchId: string) => boolean,
+): SubagentCard[] {
+  return cards.filter((card) => card.running || reachable(card.dispatch_id));
 }
 
 /**
@@ -96,7 +115,16 @@ function flash(row: HTMLDetailsElement): void {
   };
   const doc = row.ownerDocument;
   if (doc != null && typeof doc.addEventListener === 'function') {
-    doc.addEventListener('scrollend', land, { capture: true, once: true });
+    // Capture, so any descendant scroll is seen - but only the scroller the
+    // ROW rides: another scroller's end would re-light this flash early and
+    // eat the one-shot.
+    const onEnd = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node) || !target.contains(row)) return;
+      doc.removeEventListener('scrollend', onEnd, { capture: true });
+      land();
+    };
+    doc.addEventListener('scrollend', onEnd, { capture: true });
   }
   setTimeout(land, 700);
 }

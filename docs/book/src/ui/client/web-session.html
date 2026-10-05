@@ -378,10 +378,8 @@
      a live reply is cut at paragraph boundaries and each block carries one
      trailing break, so every gap it draws is one line box. */
   .prose p + p { margin-top: 20px; }
-  /* The reset above zeroes the padding a list draws its markers in. Inside
-     rather than outside: an outside marker is painted left of the list's box,
-     outside the scrolling column's clip, so the numbers never showed. */
-  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
+  /* The reset above zeroes the padding a list draws its markers in. */
+  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
   .prose li + li { margin-top: 4px; }
   .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
     background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
@@ -2090,7 +2088,9 @@ branch main, nothing to commit</div>
                count it has out and the count it has finished. It is where a
                subagent is announced outside the chat, and the way into each
                one - a hover opens the list, a click reveals that dispatch's
-               chat row. The inspector has no subagents section. -->
+               chat row. The inspector has no subagents section. Drawn CLOSED
+               here: the open list is runtime state, and the specimen draws
+               the resting row. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-subagents"/></svg>

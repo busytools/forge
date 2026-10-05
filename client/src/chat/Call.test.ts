@@ -348,6 +348,43 @@ describe('the dispatch row, joined to its instance', () => {
     subagents.sync(null);
   });
 
+  it('draws the instance own report once, not twice off the notification', () => {
+    // The notification's summary echoes the agent's final message; the
+    // timeline draws that message as its own prose, and a block drawn from
+    // the summary too would show the whole report twice.
+    subagents.sync([card({ running: false })]);
+    const drawn = render(Call, {
+      props: {
+        call: dispatch(),
+        k: 'task',
+        open: true,
+        messages: [
+          dispatchFrame(),
+          {
+            type: 'assistant',
+            parent_tool_use_id: 'toolu_task',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'unique-report-text' }],
+            },
+          },
+          {
+            type: 'system',
+            subtype: 'task_notification',
+            tool_use_id: 'toolu_task',
+            task_id: 't1',
+            status: 'completed',
+            summary: 'unique-report-text',
+          },
+        ],
+      },
+    }).body;
+
+    expect(drawn.split('unique-report-text').length - 1, 'the report draws once').toBe(1);
+
+    subagents.sync(null);
+  });
+
   it('crosses a failed instance even while the roster still calls it running', () => {
     // `failed` comes from the dispatch's answer and can land before the
     // roster settles the task: the cross leads the ring, so the row never

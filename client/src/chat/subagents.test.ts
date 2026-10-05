@@ -54,25 +54,40 @@ describe('the dispatch join', () => {
       cards.all().map((one) => one.dispatch_id),
       'the strip lists them in order',
     ).toEqual(['toolu_task', 'toolu_other']);
-    expect(cards.running(), 'one of the two is still working').toBe(1);
+    expect(cards.all().filter((one) => one.running).length, 'one of the two is still working').toBe(
+      1,
+    );
   });
 });
 
 describe('which instances a list may lead to', () => {
-  it('keeps the running and the ones with calls on the page', () => {
-    const keeping = transcribable([
-      card({ running: true, calls: 0 }),
-      card({ dispatch_id: 'with-calls', running: false, calls: 3 }),
-    ]);
+  const noneReachable = () => false;
 
-    expect(keeping.map((one) => one.dispatch_id)).toEqual(['toolu_task', 'with-calls']);
+  it('keeps the running even when nothing is reachable yet', () => {
+    // A running instance's row is in the live turn; the set may lag one frame.
+    const keeping = transcribable([card({ running: true })], noneReachable);
+
+    expect(keeping.map((one) => one.dispatch_id)).toEqual(['toolu_task']);
+  });
+
+  it('keeps a settled one only when the page holds its row', () => {
+    const cards = [
+      card({ dispatch_id: 'held', running: false }),
+      card({ dispatch_id: 'gone', running: false }),
+    ];
+    const keeping = transcribable(cards, (id) => id === 'held');
+
+    expect(
+      keeping.map((one) => one.dispatch_id),
+      'the page is the judge, not the record',
+    ).toEqual(['held']);
   });
 
   it('drops an instance that ran before a restart or resume', () => {
     // The resumed bound: no frames are held for it, so its row would open
     // onto a brief and nothing - it stays out of any list that leads
     // somewhere.
-    const keeping = transcribable([card({ running: false, calls: 0 })]);
+    const keeping = transcribable([card({ running: false, calls: 0 })], noneReachable);
 
     expect(keeping).toEqual([]);
   });
@@ -98,5 +113,20 @@ describe('revealing the row a dispatch drew', () => {
     const root = { querySelector: () => null } as unknown as ParentNode;
 
     expect(reveal('toolu_gone', root), 'nothing to reveal').toBe(false);
+  });
+
+  it('answers rather than throwing for an id that is not selector-safe', () => {
+    // A quote would close the attribute selector early and throw SyntaxError;
+    // the escaping is what keeps "answers false rather than throwing" true.
+    const seen: string[] = [];
+    const root = {
+      querySelector: (selector: string) => {
+        seen.push(selector);
+        return null;
+      },
+    } as unknown as ParentNode;
+
+    expect(reveal('we"ird', root)).toBe(false);
+    expect(seen[0], 'the quote is escaped, not passed through').toContain('we\\"ird');
   });
 });

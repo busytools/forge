@@ -22,7 +22,8 @@ import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from
 export type SubLine =
   | { kind: 'call'; leaf: ToolLeaf }
   | { kind: 'prose'; text: string }
-  | { kind: 'thought'; text: string };
+  | { kind: 'thought'; text: string }
+  | { kind: 'hook'; text: string };
 
 /** Everything the row's expansion reads off a dispatch's frames. */
 export interface DispatchFrames {
@@ -60,7 +61,9 @@ interface Frame {
   is_backgrounded?: unknown;
   status?: unknown;
   summary?: unknown;
+  actions?: unknown;
   patch?: unknown;
+  tool_use_result?: unknown;
   message?: { content?: unknown };
 }
 
@@ -79,6 +82,8 @@ interface CallDraft {
   name: string;
   input: unknown;
   result: Block | undefined;
+  /** The frame's own structured result, where an edit's hunks live. */
+  record: unknown;
 }
 
 /**
@@ -89,7 +94,7 @@ interface CallDraft {
  * conversation's and a dispatched agent's frames are not in them.
  */
 export function dispatchFrames(messages: readonly unknown[], dispatchId: string): DispatchFrames {
-  const lines: (CallDraft | { kind: 'prose' | 'thought'; text: string })[] = [];
+  const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook'; text: string })[] = [];
   const at = new Map<string, CallDraft>();
   const beats = new Set<string>();
   /** The task id the CLI assigned a child call, so its ending can be placed. */
@@ -114,6 +119,20 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
       continue;
     }
 
+    // A hook summary under the dispatch draws as a plain line rather than
+    // being dropped: rule 25's default for a frame with no vocabulary here.
+    if (frame.type === 'system' && parent === dispatchId) {
+      if (frame.subtype === 'stop_hook_summary') {
+        const actions = typeof frame.actions === 'number' ? frame.actions : null;
+        lines.push({
+          kind: 'hook',
+          text:
+            actions === null ? 'hooks ran' : `hooks · ${actions} action${actions === 1 ? '' : 's'}`,
+        });
+      }
+      continue;
+    }
+
     if (parent === dispatchId) {
       for (const block of blocksOf(frame.message?.content)) {
         if (frame.type === 'assistant' && block.type === 'tool_use') {
@@ -126,6 +145,7 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
             name,
             input: block.input,
             result: undefined,
+            record: undefined,
           };
           lines.push(draft);
           at.set(id, draft);
@@ -141,6 +161,10 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
           const owner = at.get(str(block.tool_use_id) ?? '');
           if (owner === undefined) continue;
           owner.result = block;
+          // The frame's own structured result rides along: an edit's hunks
+          // live there and on nothing else, and the session's own fold hands
+          // it through for the same reason.
+          owner.record = frame.tool_use_result;
           beats.delete(owner.id);
         }
       }
@@ -191,7 +215,10 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
         (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') &&
         task !== null
       ) {
-        const owner = owners.get(task);
+        // The frame's own call id first, the roster's link second: a
+        // notification whose `task_started` was never seen still names the
+        // call it ends, and dropping it would leave that call running.
+        const owner = (call !== null && at.has(call) ? call : undefined) ?? owners.get(task);
         if (owner !== undefined) {
           const held = tasks.get(owner) ?? {
             status: 'in_progress' as const,
@@ -238,7 +265,7 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
               line.name,
               line.input,
               line.result,
-              undefined,
+              line.record,
               tasks.get(line.id),
             ),
           }
