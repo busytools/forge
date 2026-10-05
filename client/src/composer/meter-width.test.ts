@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The width the meter's bars are drawn at.
+ * The width the card's graph draws its bars at.
  *
  * **Where this check can look, and why.** What the bars SPAN is a question
  * about layout, and jsdom performs none, so no rendered assertion can see it:
@@ -11,11 +11,12 @@ import { describe, expect, it } from 'vitest';
  * and `Session.test.ts` read the ones they pin. What a browser paints is
  * measured by width in the pull request, not here.
  *
- * The row's own box is `client/src/assets/web.css`'s `.wave`; the cells are
- * `.wtr i`, one per reading, and the window is the server's `METER_CELLS` -
- * 120 of them, which at a cell's own 4px plus the 2px gap covers a little
- * over 700px. Past that the bars used to stop short of their own box and the
- * level graph ended mid-row; the sheet now shares the leftover across them.
+ * The graph's track is `client/src/assets/web.css`'s `.tc .bars` and the bars
+ * are `.tc .bars i`, one per reading over `CARD_CELLS` (40 of them). The track
+ * is the card's own fixed width, so the bars share it rather than sizing to
+ * the box: the card's ladder removes the graph at narrow widths instead of
+ * squeezing it, and the readings it holds are the newest forty whatever the
+ * track is doing.
  */
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
@@ -29,25 +30,28 @@ function rule(selector: string): string {
 
 /** `flex`, as the three things it sets. */
 function flex(): { grow: number; shrink: number; basis: string } {
-  const declared = /(?:^|[;{])\s*flex:\s*([^;]+)/.exec(rule('.wtr i'))?.[1] ?? '';
+  const declared = /(?:^|[;{])\s*flex:\s*([^;]+)/.exec(rule('.tc .bars i'))?.[1] ?? '';
   const [grow, shrink, basis] = declared.trim().split(/\s+/);
   return { grow: Number(grow), shrink: Number(shrink), basis: basis ?? '' };
 }
 
-describe("the meter's bars", () => {
-  it('share the width their box leaves over, rather than leaving it undrawn', () => {
+describe("the card graph's bars", () => {
+  it('share the width their track leaves over, rather than leaving it undrawn', () => {
     const { grow, basis } = flex();
-    // Measured before this: a 976.11px box at the live window width drew 718px
-    // of bars and left 258px of itself empty, because each cell held its own
-    // 4px whatever the box had room for.
-    expect(grow, 'the bars do not take the width the box leaves over').toBeGreaterThan(0);
-    expect(basis, 'the width the leftover is shared out from is the bar itself').toBe('4px');
+    expect(grow, 'the bars do not take the width the track leaves over').toBeGreaterThan(0);
+    expect(basis, 'the width the leftover is shared out from is the bar itself').toBe('1px');
   });
 
-  it('hold their own width in a box narrower than the window, which clips instead', () => {
-    // The window is 120 cells, and at 430 the box is 382px: they cannot fit.
-    // Shrinking them would draw 120 hairlines and hide that the history is
-    // clipped at the left, which is what the row does at that width.
-    expect(flex().shrink, 'a shrink squeezes the window into a box it cannot fit').toBe(0);
+  it('hold their own width, so the window never squeezes into the track', () => {
+    expect(flex().shrink, 'a shrink squeezes the window into a track it cannot fit').toBe(0);
+  });
+
+  it('holds the track at the card width, which the ladder removes rather than resizes', () => {
+    const track = rule('.tc .bars');
+    expect(track, 'the track sizes itself to its bars').toContain('width: 116px');
+    expect(track, 'the track takes the box width').toContain('flex: none');
+    expect(SHEET, 'the graph is squeezed instead of removed when the card narrows').toMatch(
+      /@container \(max-width: \d+px\) \{ \.tc \.bars,[^{]*\{ display: none; \} \}/,
+    );
   });
 });

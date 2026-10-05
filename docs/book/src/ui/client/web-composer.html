@@ -66,7 +66,7 @@
   .hint.sugg .tab { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
     margin-left: 8px; }
 
-  .box { border: 1.5px solid var(--ctl); border-radius: 16px;
+  .box { position: relative; border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
     padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
@@ -98,36 +98,47 @@
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
-  /* dictation row. One box, one left margin: every row inside starts where the
-     field starts, which is what the footer already took. */
-  .dict { display: flex; align-items: center; gap: 11px;
-    font-family: var(--mono); font-size: var(--fs-data); }
-  .dict .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-    animation: pulse 1.05s ease-in-out infinite; flex: none; }
-  .dict .dot.tr { background: var(--blue); animation: none; }
+  /* the take's card: one pill inside the box, at its top left, the draft
+     below it. */
+  .tc { align-self: flex-start; display: flex; max-width: 100%;
+    align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
+    border-radius: 999px;
+    font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
+    border: 1px solid rgba(244,118,0,.45);
+    background: linear-gradient(180deg, #1b1622, #12161f);
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  .tc.tr { border-color: rgba(97,160,224,.45); }
+  .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
+    background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+  .tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
+    border: 2px solid var(--s3); border-top-color: var(--blue);
+    animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 50% { opacity: .3; } }
-  .dict .t { color: var(--accent); }
-  .dict .t.tr { color: var(--dim); }
-  .dict .db { color: var(--hot); }
-  .dict .db.tr { color: var(--dim); }
-  .dict .lbl { color: var(--dim); }
-  .dict .wire { color: var(--dim); min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; }
-  .dict .esc { margin-left: auto; color: var(--dim); }
+  .tc .clock { color: var(--text); }
+  .tc .ready { color: var(--muted); }
+  .tc .fr, .tc .kb { color: var(--dim); }
+  .tc .pace { color: var(--ok); }
+  .tc .count { color: var(--blue); }
+  .tc .x { color: var(--dim); }
+  .tc .bars { display: flex; align-items: flex-end; gap: 1px; width: 116px;
+    height: 16px; flex: none; }
+  .tc .bars i { flex: 1 0 1px; border-radius: 1px;
+    background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  .tc .ticks { display: flex; gap: 3px; flex: none; }
+  .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
+  .tc .ticks i.on { background: var(--blue); }
+  .tc .bar { width: 116px; height: 6px; border-radius: 999px; background: var(--s3);
+    overflow: hidden; flex: none; }
+  .tc .bar > i { display: block; height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, #2f486d, var(--blue)); }
+  .tc .bar.sweep > i { width: 40%;
+    background: linear-gradient(90deg, transparent, var(--blue), transparent);
+    animation: sweep 1.5s linear infinite; }
+  @keyframes sweep { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
   /* The meter is a scrolling history, not bars pulsing in place: each cell
      is one past sample, newest at the right, flowing left. Two copies of
      the shape translate by half, so the loop is seamless. */
-  .wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
-  .wtr { display: flex; align-items: flex-end; gap: 2px; height: 100%;
-    width: max-content; animation: flow 2.6s linear infinite; }
-  .wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
-  .wtr i.mid { background: #ab6100; }
-  .wtr i.hot { background: var(--hot); }
-  .wave.tr .wtr { animation: none; }
-  .wave.tr .wtr i { background: #26354a; }
-  .wave.tr .wtr i.mid { background: #2f486d; }
-  .wave.tr .wtr i.hot { background: #365582; }
-  @keyframes flow { to { transform: translateX(-50%); } }
   .notice { font-family: var(--mono); font-size: var(--fs-data); }
   .notice.q { color: var(--dim); }
   .notice.bad { color: var(--bad); }
@@ -411,53 +422,89 @@ heading, and a query drops the headings and leaves the order.</p>
 </div>
 
 <h2>Dictation</h2>
-<p class="note">The TUI draws a 26-cell character meter and a dB figure. The web can do the
-same job honestly with a level bar that has real resolution. The row still lives inside the
-box, grows it by one line, and collapses when the take resolves, and the settled count is the
-terminal's own string &#8212; shown in the recording phase too, where the terminal has always
-had it.</p>
+<p class="note">A take draws as one card on the box's top-right corner rather than a row inside
+it, so a running take never moves the draft. The card is the dot, the clock, the level graph,
+the ready tally, the frames, the bytes, the pace and the way out &#8212; and while the take
+transcribes, the graph's slot becomes the section bar: a tick per section up to eight, then a
+fill with the count in words, because a section is a 30 to 60 second window and a take can hold
+sixty of them. As the box narrows, one reading leaves at a time from the left &#8212; clock,
+graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are never removed.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
       <div class="lab">recording</div>
       <div class="comp">
         <div class="box rec">
-          <div class="dict"><span class="dot"></span><span class="t">0:07</span>
-            <span class="db">-18 dB</span>
-            <span class="wave">
-            </span>
-            <span class="lbl">listening &#183; 2 ready</span>
-            <span class="wire">412 fr &#183; 251.5 KB &#183; 32 KB/s</span>
-            <span class="esc">esc cancel</span></div>
+          <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
+            <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
+            <span class="ready">2 ready</span>
+            <span class="fr">412 fr</span>
+            <span class="kb">251.5 KB</span>
+            <span class="pace">32 KB/s</span>
+            <span class="x">&#10005;</span></span>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
       is still running: the segments already transcribed, with no total, because a live take
-      cannot know how many it will produce. The wire line is the page's own count - the frames
-      it produced, the bytes the socket took and the pace it is taking them at - since only the
-      producer can know it.</p>
+      cannot know how many it will produce. The graph, the clock, the frames, the bytes and the
+      pace are the page's own reading of the audio it captured - the same measure the core takes
+      over the same frames, read here so it keeps moving while the socket is holding them. A take
+      this page did not capture falls back to the record's readings, which is the only source
+      there is for it.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>
       <div class="comp">
         <div class="box tr">
-          <div class="dict"><span class="dot tr"></span><span class="t tr">0:07</span>
-            <span class="db tr">-18 dB</span>
-            <span class="wave tr">
-            </span>
-            <span class="lbl">transcribing 2/6</span>
-            <span class="wire">412 fr &#183; 251.5 KB</span>
-            <span class="esc">esc cancel</span></div>
+          <span class="tc tr"><span class="spin"></span><span class="clock">0:07</span>
+            <span class="ticks"><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span>
+            <span class="count">2 of 6</span>
+            <span class="fr">412 fr</span>
+            <span class="x">&#10005;</span></span>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0">Same anatomy, frozen and dimmed toward blue. The
-      meter stops moving because the audio has stopped.</p>
+      <p class="note" style="margin:8px 0 0">The dot becomes the spinner and the graph becomes
+      the section bar; the frames stay because they are what was sent, and the bytes and the
+      pace go because nothing is leaving any more.</p>
     </div>
   </div>
 
   <div class="row">
+    <div class="col">
+      <div class="lab">transcribing &middot; more sections than ticks</div>
+      <div class="comp">
+        <div class="box tr">
+          <span class="tc tr"><span class="spin"></span><span class="clock">22:40</span>
+            <span class="bar"><i style="width:38%"></i></span>
+            <span class="count">18 of 48</span>
+            <span class="fr">68k fr</span>
+            <span class="x">&#10005;</span></span>
+          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0">Past eight sections one tick stops meaning one
+      section, and the bar fills with the count in words instead. Frames past ten thousand read
+      in thousands, which is what the count slot holds.</p>
+    </div>
+    <div class="col">
+      <div class="lab">transcribing &middot; the count is not in yet</div>
+      <div class="comp">
+        <div class="box tr">
+          <span class="tc tr"><span class="spin"></span><span class="clock">0:34</span>
+            <span class="bar sweep"><i></i></span>
+            <span class="count">transcribing</span>
+            <span class="fr">1712 fr</span>
+            <span class="x">&#10005;</span></span>
+          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0">Before the core has said how many sections the take
+      has, the bar sweeps: motion that claims nothing, until a count arrives and the ticks or the
+      fill take its place. Under reduced motion the sweep rests as one dim full bar, which also
+      claims nothing.</p>
+    </div>
     <div class="col">
       <div class="lab">landed &middot; one green beat, then idle</div>
       <div class="comp">
@@ -465,8 +512,8 @@ had it.</p>
           <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0">The row collapses, the words land at the caret,
-      and the border takes one green beat before easing back. No landed row and no label.</p>
+      <p class="note" style="margin:8px 0 0">The card goes with the take, the words land at the
+      caret, and the border takes one green beat before easing back.</p>
     </div>
     <div class="col">
       <div class="lab">notice &middot; shares the row, and wins it</div>
@@ -759,27 +806,5 @@ works, and your in-flight draft is held and restored around the whole thing.</p>
   this dock down and leaves a line in its place saying which ending it was.</p>
 </div>
 
-<script>
-/* The meter is a history of levels, so it is drawn from a shape rather than
-   typed out: two copies of the same envelope, scrolling as one track. */
-(function () {
-  var SHAPE = [12,26,48,72,94,64,40,26,14,10,30,54,78,96,70,46,28,14,10,
-               22,44,66,50,34,20,12];
-  document.querySelectorAll('.wave, .mwave').forEach(function (w) {
-    var track = document.createElement('span');
-    track.className = 'wtr';
-    for (var pass = 0; pass < 2; pass++) {
-      SHAPE.forEach(function (h) {
-        var b = document.createElement('i');
-        b.style.height = h + '%';
-        if (h >= 70) { b.className = 'hot'; }
-        else if (h >= 40) { b.className = 'mid'; }
-        track.appendChild(b);
-      });
-    }
-    w.appendChild(track);
-  });
-})();
-</script>
 </body>
 </html>

@@ -10,7 +10,7 @@
   import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
-  import Dictation from './Dictation.svelte';
+  import TakeCard from './TakeCard.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -127,7 +127,9 @@
    * with it - but the record's take stays on screen through transcription,
    * and the line that says what it sent belongs there for as long as it does.
    */
-  let wireDone = $state<{ seat: string; frames: number; bytes: number } | null>(null);
+  let wireDone = $state<{ seat: string; frames: number; bytes: number; elapsedMs: number } | null>(
+    null,
+  );
   /** Whether a start is waiting on the browser's permission round trip. */
   let opening = false;
   /**
@@ -187,8 +189,15 @@
     if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
-    // that is still producing.
-    return { frames: wireDone.frames, bytes: wireDone.bytes, rate: null };
+    // that is still producing. The levels go with them - the section bar holds
+    // the graph's slot while a take transcribes.
+    return {
+      frames: wireDone.frames,
+      bytes: wireDone.bytes,
+      rate: null,
+      dbfs: [],
+      elapsedMs: wireDone.elapsedMs,
+    };
   });
 
   /**
@@ -651,6 +660,9 @@
               seat: boxKey(finished.seat),
               frames: finished.wire.frames,
               bytes: finished.wire.bytes,
+              // The clock freezes with the counts: the take is over, and a
+              // duration that kept counting would be reading the wait instead.
+              elapsedMs: finished.wire.elapsedMs,
             };
           }
           take = null;
@@ -894,7 +906,7 @@
       class:done={ring === 'done'}
     >
       {#if composer.take !== null}
-        <Dictation take={composer.take} {slot} {connection} {wire} />
+        <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}

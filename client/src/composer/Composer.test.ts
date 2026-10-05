@@ -54,6 +54,7 @@ vi.mock('./mic', () => ({
 }));
 
 import Harness from './Harness.svelte';
+import { encodeFrame } from './capture.svelte';
 import { echoes, type Echo } from '../chat/echoes.svelte';
 import { boxKey } from './box.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
@@ -419,32 +420,32 @@ describe('the box', () => {
     expect(document.querySelector('.stop'), 'no turn, no control').toBeNull();
   });
 
-  it("grows by the take's own row and collapses when the take resolves", () => {
+  it('draws the card on the box while a take runs, and takes it away when it resolves', () => {
     const harness = open();
-    const before = document.querySelector('.box')?.innerHTML ?? '';
 
     harness.page.record = record({
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
     });
     flushSync();
 
-    expect(document.querySelector('.box .dict'), 'the row lives inside the box').not.toBeNull();
-    expect(document.querySelector('.box')?.innerHTML, 'the box grew a row').not.toBe(before);
+    const card = document.querySelector('.box .tc');
+    expect(card, 'the card is drawn inside the box').not.toBeNull();
+    expect(card?.previousElementSibling, 'as its first row, above the draft').toBeNull();
 
     harness.page.record = record();
     flushSync();
 
-    expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
+    expect(document.querySelector('.tc'), 'the card goes with the take').toBeNull();
   });
 
-  it('draws no wire line for a take this page did not start', () => {
+  it('draws no wire counts for a take this page did not start', () => {
     const harness = open();
     harness.page.record = withNotice(null, take());
     flushSync();
 
-    expect(document.querySelector('.dict'), 'the record still draws the take').not.toBeNull();
+    expect(document.querySelector('.tc'), 'the record still draws the take').not.toBeNull();
     expect(
-      document.querySelector('.dict .wire'),
+      document.querySelector('.tc .fr'),
       'a take this page did not capture has no count here',
     ).toBeNull();
   });
@@ -1000,14 +1001,14 @@ describe('the key', () => {
   });
 
   /**
-   * The wire line is a count that moves, not the reading it opened on.
+   * The card's counts move, rather than freezing at their first draw.
    *
-   * The row draws it from the ring's own signals, so frames pushed while the
-   * take runs keep moving it; a line stuck at its first draw would show the
-   * first second of a thirty-second take, which is the reading the line
-   * exists to make impossible.
+   * The card draws them from the ring's own signals, so frames pushed while
+   * the take runs keep moving it; a card stuck at its first draw would show
+   * the first second of a thirty-second take, which is the reading the counts
+   * exist to make impossible.
    */
-  it('moves the wire line as the take produces frames', async () => {
+  it('moves the card counts as the take produces frames', async () => {
     const shared = wire();
     const harness = open({ dictation: true }, shared);
     harness.page.record = bound('right_cmd', 'auto');
@@ -1015,35 +1016,105 @@ describe('the key', () => {
 
     key('ControlRight', 'keydown');
     await opened();
-    // The server's `dictate_started` is what puts the row on the record, and
-    // with it the line this test reads.
+    // The server's `dictate_started` is what puts the take on the record, and
+    // with it the card this test reads.
     harness.page.record = bound('right_cmd', 'auto', take());
     flushSync();
 
-    const line = () => document.querySelector('.dict .wire')?.textContent ?? '';
+    const card = () => document.querySelector('.tc')?.textContent ?? '';
     const frame = new Uint8Array(641);
     for (let at = 0; at < 12; at += 1) mic.held.onFrame?.(frame);
     flushSync();
-    expect(line(), 'the count at the first draw').toContain('12 fr');
-    expect(line(), 'and the bytes the socket took with them').toContain('7.5 KB');
+    expect(card(), 'the count at the first draw').toContain('12 fr');
+    expect(card(), 'and the bytes the socket took with them').toContain('7.5 KB');
 
     // The socket stops taking and the take keeps producing: the two halves
-    // move apart, which is the reading the pair exists to draw.
+    // move apart, and the frames the socket did not take are named rather
+    // than left to be inferred from the gap.
     shared.takes = false;
     for (let at = 0; at < 100; at += 1) mic.held.onFrame?.(frame);
     flushSync();
-    expect(line(), 'the frames produced, a hundred of them later').toContain('112 fr');
-    expect(line(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
+    expect(card(), 'the frames produced, a hundred of them later').toContain('112 fr');
+    expect(card(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
   });
 
   /**
-   * The line outlives the capture, because the take does.
+   * The pace is a live reading, not the one the card opened on.
+   *
+   * It is computed from the ring's own samples when the card draws, so a card
+   * that only recomputed when the pace ITSELF changed would freeze on the
+   * zero it opened with - the frame counter is what has to bring the repaint,
+   * and this walks a second of the take's own cadence to prove it does.
+   */
+  it('shows a pace that moved with the take', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      harness.page.record = bound('right_cmd', 'auto', take());
+      flushSync();
+
+      const card = () => document.querySelector('.tc')?.textContent ?? '';
+      expect(card(), 'the pace it opened on, before a frame has moved').toContain('0 KB/s');
+
+      // Fifty frames twenty milliseconds apart: 641 bytes each over the
+      // window's own 0.98 s, which is 32_050 B/s.
+      for (let at = 0; at < 50; at += 1) {
+        vi.advanceTimersByTime(20);
+        mic.held.onFrame?.(new Uint8Array(641));
+      }
+      flushSync();
+
+      expect(card(), 'the pace a second of the take later').toContain('31 KB/s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The graph reads this side's own frames, not the record's echo of them.
+   *
+   * The record's levels are whatever the core last metered and sent back; the
+   * card's own reading is the audio it just produced. This drives frames the
+   * socket does not take at all, which the record's levels never see - so a
+   * card drawing those would hold still and this one moves.
+   */
+  it("reads the graph off its own frames, not the record's levels", async () => {
+    const shared = wire();
+    const harness = open({ dictation: true }, shared);
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const newest = () => document.querySelector('.tc .bars i:last-child')?.getAttribute('style');
+    mic.held.onFrame?.(encodeFrame([0.9]));
+    flushSync();
+    expect(newest(), "a loud frame's own reading").toBe('height: 94%;');
+
+    // A quieter frame the socket does not take: the record's levels never see
+    // it, and the card's graph reads it anyway.
+    shared.takes = false;
+    mic.held.onFrame?.(encodeFrame([0.4]));
+    flushSync();
+    expect(newest(), 'and a quieter one, read where it was produced').toBe('height: 83%;');
+  });
+
+  /**
+   * The counts outlive the capture, because the take does.
    *
    * A local take lets go of the microphone at the release, while the record
    * keeps drawing the same take through transcription - so the counts the
-   * page produced are kept until the row that draws them goes.
+   * page produced are kept until the card that draws them goes.
    */
-  it('keeps the wire line while the take transcribes, after the release', async () => {
+  it('keeps the card counts while the take transcribes, after the release', async () => {
     vi.useFakeTimers();
     try {
       const harness = open({ dictation: true });
@@ -1059,7 +1130,7 @@ describe('the key', () => {
       vi.advanceTimersByTime(500);
       key('ControlRight', 'keyup');
 
-      // The server moves the same take to transcribing, which is the row the
+      // The server moves the same take to transcribing, which is the card the
       // reader is looking at now; the page's own capture is already gone.
       harness.page.record = bound(
         'right_cmd',
@@ -1068,14 +1139,43 @@ describe('the key', () => {
       );
       flushSync();
 
-      expect(drawn(), 'the row draws the take transcribing').toContain('transcribing 2/6');
-      expect(drawn(), 'with the counts it sent still beside it').toContain('12 fr');
+      expect(drawn(), 'the card draws the take transcribing').toContain('2 of 6');
+      expect(drawn(), 'with the frames it sent still beside it').toContain('12 fr');
       expect(drawn(), 'and no pace, which is a reading of a take still producing').not.toContain(
         'KB/s',
       );
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The card's way out is Escape's way out.
+   *
+   * Both go through the take's own action, so the microphone is let go of
+   * locally whichever the socket is doing, and the stop goes out when it can:
+   * a close that only dispatched would do nothing at all on a closed socket.
+   */
+  it('abandons the take from the card, as Escape does', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const stops = mic.held.stops;
+    const close = document.querySelector('.tc .x');
+    if (!(close instanceof HTMLElement)) throw new Error('the card drew no way out');
+    close.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the stop goes out as an abandon').toEqual({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
   });
 
   it('learns what the system default is from the first take that opens it', async () => {
@@ -2019,26 +2119,80 @@ describe('the frame', () => {
   });
 
   /**
-   * One box, one left margin. The field, the notice, the dictation row and the
-   * blocking states all start where the field starts.
+   * One box, one left margin. The field, the notice and the blocking states
+   * all start where the field starts; the take's card is the one thing that
+   * does not, because it rides the box's right corner rather than the column.
    *
-   * Measured in a browser before this: the notice's and the dictation row's
-   * TEXT sat 25.00px right of the field's, at 1600 and at 430 - the terminal's
-   * gutter, carried through the drawing rather than chosen, and 13px more than
-   * the issue that found it believed. A sheet assertion cannot see that offset;
-   * what it can do is keep the inset from coming back, which is the change
-   * someone would plausibly make.
+   * Measured in a browser before this: the notice's and the (then) dictation
+   * row's TEXT sat 25.00px right of the field's, at 1600 and at 430 - the
+   * terminal's gutter, carried through the drawing rather than chosen, and
+   * 13px more than the issue that found it believed. A sheet assertion cannot
+   * see that offset; what it can do is keep the inset from coming back, which
+   * is the change someone would plausibly make.
    *
-   * **What it reads: the base rules only.** A `padding-left` added to the
-   * media-scoped `.dict` rule inside the narrow block passes this, because the
-   * guard resolves the first rule each selector has. The shipped sheet is right
-   * either way; the limit is stated so a reader does not take this for wider
-   * than it is.
+   * **What it reads: the base rules only.** A `padding-left` added inside a
+   * media block passes this, because the guard resolves the first rule each
+   * selector has. The shipped sheet is right either way; the limit is stated
+   * so a reader does not take this for wider than it is.
    */
   it('starts every row at the left edge of the field', () => {
-    for (const row of ['.dict', '.comp .notice', '.blocked', '.blocked .b2']) {
+    for (const row of ['.comp .notice', '.blocked', '.blocked .b2']) {
       expect(baseRule(row), `${row} carries a left inset the field does not`).not.toMatch(
         /padding-left:\s*[1-9]/,
+      );
+    }
+  });
+
+  /**
+   * The ladder's steps are container queries, so the box has to BE the
+   * container: without this the queries never match and the card simply grows
+   * past its box at every width below the full reading.
+   */
+  it('makes the box the container the card ladder measures', () => {
+    expect(baseRule('.box'), 'the box is not a container, so no step can fire').toContain(
+      'container-type: inline-size',
+    );
+  });
+
+  /**
+   * The card's ladder: as the box narrows, one reading leaves at a time from
+   * the left, and the dot and the way out are never among them.
+   *
+   * Read off the sheet by name, because jsdom performs no layout: what it can
+   * hold is the ORDER and the never-removed pair, which is the shape a later
+   * edit would plausibly break by hiding something else at a smaller width.
+   */
+  it('removes the card readings one at a time from the left, and never the dot', () => {
+    const steps = [
+      ...sheet.matchAll(/@container \(max-width: (\d+)px\) \{ ([^{]+) \{ display: none; \} \}/g),
+    ]
+      .map((match) => ({ width: Number(match[1]), hidden: (match[2] ?? '').trim() }))
+      // The sheet holds container queries for other surfaces too; this asks
+      // only about the card's own steps.
+      .filter((step) => step.hidden.startsWith('.tc'));
+    // The section bar and the count are the transcribing anatomy of the same
+    // two slots, so they leave with the graph and the tally they replace.
+    const leaving = [
+      '.tc .clock',
+      '.tc .bars, .tc .ticks, .tc .bar',
+      '.tc .ready, .tc .count',
+      '.tc .fr',
+      '.tc .kb',
+      '.tc .pace',
+    ];
+    expect(
+      steps.map((step) => step.hidden),
+      'the ladder hides something other than the readings, or reorders them',
+    ).toEqual(leaving);
+    for (let at = 1; at < steps.length; at += 1) {
+      expect(
+        steps[at]?.width,
+        'a step is wider than the one before it, so the order would flip',
+      ).toBeLessThan(steps[at - 1]?.width ?? 0);
+    }
+    for (const kept of ['.tc .dot', '.tc .spin', '.tc .x']) {
+      expect(sheet, `the ladder removes ${kept}, which no width may`).not.toMatch(
+        new RegExp(`@container[^}]*${kept.replace('.', '\\.')}`),
       );
     }
   });
@@ -2126,7 +2280,7 @@ describe('the frame', () => {
 
   it('keeps the separation the rows above the draft had before C moved the field and the footer', () => {
     expect(sheet, 'a row above the draft lost the 8px the box used to give it').toMatch(
-      /\.dict \+ \.line[^{]*\{[^}]*margin-top: 8px/,
+      /\.comp \.notice \+ \.line[^{]*\{[^}]*margin-top: 8px/,
     );
   });
 
