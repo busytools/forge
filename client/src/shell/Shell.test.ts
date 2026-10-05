@@ -309,6 +309,10 @@ describe('a forge that is not the protocol this client speaks', () => {
     const said = drawn();
     expect(said, 'the skew named no protocol').toContain(`protocol ${MIN_PROTOCOL}`);
     expect(said, 'the skew named no way out').toContain('just install');
+    // The home rendered BEHIND the notice: a refused floor draws the same
+    // sentence, so the text alone cannot tell one from the other - the page
+    // it was drawn over can, and this is the header only that page draws.
+    expect(said, 'the forge was refused rather than read').toContain(`socket v${PROTOCOL_VERSION}`);
   });
 
   /**
@@ -326,6 +330,14 @@ describe('a forge that is not the protocol this client speaks', () => {
     const said = drawn();
     expect(said).toContain('just install');
     expect(said.split('just install').length - 1, 'the skew was drawn twice on one screen').toBe(1);
+    // Drawn as the NOTICE and not as a failure: the two carry the same
+    // sentence, so the door's own mark is what tells a read forge from a
+    // refused one.
+    expect(document.querySelector('.note'), 'the door drew no notice').not.toBeNull();
+    expect(
+      document.querySelector('.no'),
+      'the door drew a failure for a forge it reads',
+    ).toBeNull();
   });
 
   /**
@@ -356,7 +368,7 @@ describe('a forge that is not the protocol this client speaks', () => {
     expect(said, 'the door claimed a reconnect that nothing is doing').not.toContain(
       'Reconnecting',
     );
-    expect(said.split('reinstall').length - 1, 'the refusal was drawn twice').toBe(1);
+    expect(said.split('just client-release').length - 1, 'the refusal was drawn twice').toBe(1);
   });
 
   /**

@@ -284,6 +284,23 @@ describe('the connection', () => {
   });
 
   /**
+   * The skew is what the LAST greeting said rather than a latch: a forge
+   * swapped underneath a running client reconnects to one that agrees, and
+   * a notice left standing would accuse a build that is current.
+   */
+  it('clears a tolerated skew when a later greeting agrees', async () => {
+    const { server, conn } = await connected();
+
+    server.send({ kind: 'greeting', version: MIN_PROTOCOL, settings: DEFAULT_SETTINGS });
+    await until(() => conn.skew() !== null, 'the skew to be recorded');
+
+    server.send({ kind: 'greeting', version: PROTOCOL_VERSION, settings: DEFAULT_SETTINGS });
+
+    await until(() => conn.skew() === null, 'the skew to clear');
+    expect(conn.status(), 'the live connection was disturbed by a later greeting').toBe('open');
+  });
+
+  /**
    * A command is the core's own enum, passed through rather than rebuilt:
    * the variant's name around its own fields, which is what the core's
    * externally-tagged enum decodes and what a `kind` field is not.
