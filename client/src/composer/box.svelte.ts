@@ -44,8 +44,9 @@ export class Box {
    * Why the draft this box was drawing left the core without this reader
    * answering, drawn where the dock stood.
    *
-   * The record loses `pending_ask` on the same update that carries this, so
-   * the why has to be held here rather than read off the draft that is gone.
+   * The record drops the draft from `pending_asks` on the same update that
+   * carries this, so the why has to be held here rather than read off the
+   * draft that is gone.
    */
   ended = $state<{ tone: string; text: string } | null>(null);
   /**

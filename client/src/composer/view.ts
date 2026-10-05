@@ -72,8 +72,12 @@ export interface ComposerRecord {
    * only this one acts on.
    */
   composer: unknown;
-  /** The prompt this seat is parked on, or `null` when nothing waits. */
-  pending_ask: unknown;
+  /**
+   * The prompts this seat is holding - a draft leads, then arrival order -
+   * or `[]` when nothing waits. The dock draws the front; the ones behind it
+   * are what the depth line counts.
+   */
+  pending_asks: unknown[];
   header: { turn_in_flight: boolean };
   /** The slash commands the CLI last advertised for this seat. */
   slash_commands: unknown;
@@ -147,9 +151,13 @@ export function composerState(record: ComposerRecord): ComposerState {
   return composerFrom(record.composer);
 }
 
-/** The prompt the seat is parked on, which is the core's answer and never the client's. */
+/**
+ * The prompt the dock draws: the front of the seat's queue, which is the
+ * core's answer and never the client's. A parallel batch parks several at
+ * once, and the front is the oldest - the terminal's own rule for its queue.
+ */
 export function pendingAsk(record: ComposerRecord): Ask | null {
-  return askFrom(record.pending_ask);
+  return askFrom(record.pending_asks[0]);
 }
 
 /**

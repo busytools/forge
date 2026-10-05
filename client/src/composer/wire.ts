@@ -2,9 +2,9 @@
  * What the core sends the composer, narrowed once at the boundary.
  *
  * `crates/forge-server/src/transport/wire.rs` is the sender: `composer` carries
- * the take, the notice, a compaction and a sign-in, and `pending_ask` carries
- * whichever prompt the seat is parked on. Everything here is a narrowing rather
- * than a decision about how any of it looks - the gather into what the markup
+ * the take, the notice, a compaction and a sign-in, and `pending_asks` carries
+ * the prompts the seat is holding. Everything here is a narrowing rather than
+ * a decision about how any of it looks - the gather into what the markup
  * wants is `view.ts`.
  */
 

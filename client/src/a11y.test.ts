@@ -136,9 +136,13 @@ describe('axe over the rendered pages', () => {
       }</main>`;
 
     expect(await idsOf(draw(record())), 'the box').toEqual([]);
-    expect(await idsOf(draw(record({ pending_ask: permissionAsk() }))), 'a permission').toEqual([]);
-    expect(await idsOf(draw(record({ pending_ask: questionAsk() }))), 'a question').toEqual([]);
-    expect(await idsOf(draw(record({ pending_ask: slackDraftAsk() }))), 'a held post').toEqual([]);
+    expect(await idsOf(draw(record({ pending_asks: [permissionAsk()] }))), 'a permission').toEqual(
+      [],
+    );
+    expect(await idsOf(draw(record({ pending_asks: [questionAsk()] }))), 'a question').toEqual([]);
+    expect(await idsOf(draw(record({ pending_asks: [slackDraftAsk()] }))), 'a held post').toEqual(
+      [],
+    );
   });
 
   it('draws a turn of the conversation with no violations', async () => {

@@ -41,6 +41,6 @@ describe("the composer's props as the session page builds them", () => {
       props.seat.pendingDepth,
       'the seat carries the depth the dock states behind its prompt',
     ).toBeTypeOf('number');
-    expect(props.record.pending_ask, 'and the record carries whatever is waiting').toBeDefined();
+    expect(props.record.pending_asks, 'and the record carries whatever is waiting').toBeDefined();
   });
 });

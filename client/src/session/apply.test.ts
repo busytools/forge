@@ -24,6 +24,18 @@ function take(record: SessionRecord): Record<string, unknown> {
   return (record.composer.take ?? {}) as Record<string, unknown>;
 }
 
+/**
+ * One held ask as its own key: the call and the round, which is what tells a
+ * queue apart. A permission carries no round and reads as `id:undefined`,
+ * which no question test shares.
+ */
+function roundOf(ask: unknown): string {
+  const held = ask as Record<string, unknown>;
+  const request = (held['request'] ?? {}) as Record<string, unknown>;
+  const call = (request['tool_call'] ?? {}) as Record<string, unknown>;
+  return `${String(call['tool_call_id'])}:${String(request['question_index'])}`;
+}
+
 /** The frame the TUI's own tests build, which is what the CLI prints on a result. */
 function result(isError = false): Record<string, unknown> {
   return {
@@ -96,30 +108,45 @@ describe('applyUpdate', () => {
       // question (Ved's live find; #1717). The frame names the round it ends.
       let held = empty();
       held = applyUpdate(held, asked(1));
-      expect(held.pending_ask, "the round's ask parks").not.toBeNull();
+      expect(held.pending_asks.map(roundOf), "the round's ask parks").toEqual(['toolu_q:1']);
 
       held = applyUpdate(held, {
         pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q', question_index: 0 },
       });
       expect(
-        held.pending_ask,
+        held.pending_asks.map(roundOf),
         'a resolution for an earlier round leaves the parked ask standing',
-      ).not.toBeNull();
+      ).toEqual(['toolu_q:1']);
 
       held = applyUpdate(held, {
         pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q', question_index: 1 },
       });
-      expect(held.pending_ask, 'and its own round settles it').toBeNull();
+      expect(held.pending_asks, 'and its own round settles it').toEqual([]);
     });
 
-    it.fails('keeps a second parallel ask, which the single slot cannot', () => {
+    it('keeps both rounds of one call, oldest first', () => {
+      // One tool call carries a whole batch and advances the round, so its
+      // rounds share a tool id and the round is what tells them apart: a key
+      // that dropped it would fold round 1 into round 0 and draw one question
+      // twice.
+      let held = empty();
+      held = applyUpdate(held, asked(0));
+      held = applyUpdate(held, asked(1));
+
+      expect(held.pending_asks.map(roundOf), 'both rounds are held, oldest first').toEqual([
+        'toolu_q:0',
+        'toolu_q:1',
+      ]);
+    });
+
+    it('keeps a second parallel ask, and draws the front of the queue', () => {
       // **The real loss, measured by the review's fresh-read axis (forge's
       // own grilling session, 2026-10-04)**: two AskUserQuestion calls in
       // ONE assistant message run in PARALLEL with different tool ids. The
-      // record's single slot drops A the moment B parks, resolution(A)
-      // then id-mismatches and is ignored, and A's next round replaces B
-      // before B ever drew. The fix is a queue of asks per seat - its own
-      // piece - and this stays `it.fails` until that PR flips it to `it`.
+      // record's single slot dropped A the moment B parked, resolution(A)
+      // then id-mismatched and was ignored, and A's next round replaced B
+      // before B ever drew. The record now holds every ask it is told to
+      // park, oldest first, and a resolution takes its own out by the pair.
       const round = (id: string, index: number) =>
         ({
           question_request: {
@@ -142,9 +169,13 @@ describe('applyUpdate', () => {
       });
       held = applyUpdate(held, round('toolu_a', 1));
 
-      expect(JSON.stringify(held.pending_ask), "B's ask survives A's next round").toContain(
+      expect(JSON.stringify(held.pending_asks), "B's ask survives A's next round").toContain(
         'toolu_b',
       );
+      expect(
+        held.pending_asks.map(roundOf),
+        "B leads the queue, and A's next round stands behind it",
+      ).toEqual(['toolu_b:0', 'toolu_a:1']);
     });
 
     it('clears by the tool id alone for a frame that names no round', () => {
@@ -155,7 +186,7 @@ describe('applyUpdate', () => {
       held = applyUpdate(held, {
         pending_interaction_resolved: { key: SLOT, tool_id: 'toolu_q' },
       });
-      expect(held.pending_ask, 'the id still settles it against an older core').toBeNull();
+      expect(held.pending_asks, 'the id still settles it against an older core').toEqual([]);
     });
   });
 
@@ -547,10 +578,36 @@ describe('applyUpdate', () => {
         },
       });
 
-      expect(next.pending_ask).toEqual({
-        kind: 'permission',
-        request: { tool_call: { tool_call_id: 'tool-1', title: 'Bash' }, options: [] },
+      expect(next.pending_asks).toEqual([
+        {
+          kind: 'permission',
+          request: { tool_call: { tool_call_id: 'tool-1', title: 'Bash' }, options: [] },
+        },
+      ]);
+    });
+
+    it('keeps one ask when the same request arrives twice', () => {
+      // The single slot was idempotent under a re-delivered frame, and the
+      // queue has to stay idempotent the same way: the read a seat takes is
+      // the record as the socket had it, and a frame the read already carried
+      // arrives once more beside it.
+      const held = applyUpdate(empty(), {
+        permission_request: {
+          key: SLOT,
+          tool_id: 'tool-1',
+          request: { tool_call: { tool_call_id: 'tool-1' }, options: [] },
+        },
       });
+      const next = applyUpdate(held, {
+        permission_request: {
+          key: SLOT,
+          tool_id: 'tool-1',
+          request: { tool_call: { tool_call_id: 'tool-1' }, options: [] },
+        },
+      });
+
+      expect(next.pending_asks, 'a repeat is not a second ask').toHaveLength(1);
+      expect(next, 'and it leaves the record as it was').toBe(held);
     });
 
     it('drops it when that interaction is resolved', () => {
@@ -565,7 +622,7 @@ describe('applyUpdate', () => {
         pending_interaction_resolved: { key: SLOT, tool_id: 'tool-1' },
       });
 
-      expect(next.pending_ask).toBeNull();
+      expect(next.pending_asks).toEqual([]);
     });
 
     it('keeps a prompt another interaction resolved', () => {
@@ -583,14 +640,42 @@ describe('applyUpdate', () => {
       expect(next).toBe(held);
     });
 
+    it('lands a draft ahead of the asks already waiting', () => {
+      // The rule every hop keeps: a draft leads the queue, then arrival
+      // order. The draft's registry carries no arrival order to offer, and
+      // the single read always answered a draft first - so a fold that
+      // appended it would let a re-read flip the front against the fold.
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const draft = { id: 'd1', workspace: 'Trust Machines', text: 'hello' };
+      const parked = applyUpdate(asked, { slack_post_pending: { key: SLOT, draft } });
+
+      expect(kinds(parked), 'the draft leads the question that was already waiting').toEqual([
+        'slack_draft',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { slack_draft_resolved: { key: SLOT, id: 'd1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+    });
+
     it('parks a held slack draft, and drops the one the core resolved', () => {
       const draft = { id: 'd1', workspace: 'Trust Machines', text: 'hello' };
       const held = applyUpdate(empty(), { slack_post_pending: { key: SLOT, draft } });
-      expect(held.pending_ask).toEqual({ kind: 'slack_draft', request: draft });
+      expect(held.pending_asks).toEqual([{ kind: 'slack_draft', request: draft }]);
 
       expect(
-        applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd1' } }).pending_ask,
-      ).toBeNull();
+        applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd1' } }).pending_asks,
+      ).toEqual([]);
       expect(applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd2' } })).toBe(held);
     });
   });
@@ -1035,6 +1120,34 @@ it('leaves the record alone for a variant it does not know', () => {
   });
 
   expect(next, 'an unknown variant must not move what the page holds').toBe(held);
+});
+
+describe('the read', () => {
+  it('holds the list when the read carries both, and a lone ask as a list of one', () => {
+    // A newer core serves `pending_asks` beside the derived `pending_ask`,
+    // and an older one serves only the single ask. Reading the singular
+    // first would draw the derived front twice and drop what is behind it;
+    // dropping the fallback would read an older core's held ask as nothing.
+    const question = { kind: 'question', request: { tool_call: { tool_call_id: 'tu-a' } } };
+    const permission = { kind: 'permission', request: { tool_call: { tool_call_id: 'tu-b' } } };
+    const draft = { kind: 'slack_draft', request: { id: 'd1' } };
+    const kinds = (held: SessionRecord): unknown[] =>
+      held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+    const both = sessionFrom({
+      slot: SLOT,
+      state: { scan_cwd: '/tmp' },
+      pending_asks: [question, permission],
+      pending_ask: draft,
+    });
+    expect(kinds(both), 'the list wins, in the order the read answered').toEqual([
+      'question',
+      'permission',
+    ]);
+
+    const older = sessionFrom({ slot: SLOT, state: { scan_cwd: '/tmp' }, pending_ask: draft });
+    expect(kinds(older), 'and a lone ask is a list of one').toEqual(['slack_draft']);
+  });
 });
 
 describe('the variant list', () => {

@@ -23,7 +23,7 @@ export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
     slot: SLOT,
     composer: { take: null, notice: null, compacting: false, sign_in: null },
-    pending_ask: null,
+    pending_asks: [],
     header: { turn_in_flight: false },
     slash_commands: [],
     subagents: [],
