@@ -136,12 +136,23 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         // gated on was wrong because workers also legitimately ask "who
         // am I as a peer?".
         let status = if cx.lead_running { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+        // The stamp is the caller's own seat, the value the row
+        // `agents__list` shows for it: a live worker's row carries its
+        // spawn time, a project's own row its session's last activity.
+        let spawned_at = if cx.is_lead {
+            ws.session_last_activity(&cx.lead)
+        } else {
+            ws.list_live_workers(&cx.project_key)
+                .iter()
+                .find(|w| w.slot == *caller)
+                .map(|w| w.spawned_at)
+        };
         Some(PeerStatus {
             name: cx.project_name,
             org: cx.project_org,
             path: cx.project_path,
             status,
-            spawned_at: ws.session_last_activity(&cx.lead),
+            spawned_at,
         })
     }
 
@@ -208,11 +219,12 @@ impl WorkspaceFacade for MockWorkspaceFacade {
     }
 
     fn whoami(&self, caller: &SessionSlot) -> Option<PeerStatus> {
-        // Mock's `whoami` does the same "find by caller's lead session"
-        // shape as the prod impl, but works against the mock's
-        // pre-loaded peers list. Tests that want a specific identity
-        // pre-load the peers with an entry whose name matches their
-        // caller key convention.
+        // Mock's `whoami` answers from the mock's pre-loaded peers list
+        // with the row named for the caller's label - the mock's stand-in
+        // for the caller's own stamp, which the prod impl builds from the
+        // caller's live worker entry or its project's own row.
+        // Tests that want a specific identity pre-load the peers with an
+        // entry whose name matches their caller key convention.
         self.peers.lock().iter().find(|p| p.name == caller.label()).cloned()
     }
 
@@ -337,7 +349,7 @@ mod lead_resolution_tests {
     use crate::workspace::Workspace;
     use crate::{MessageId, SessionSlot, WorkerEntry, WrappedPrompt};
     use forge_primitives::WorkerLiveness;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     fn session(id: &str) -> SessionView {
         SessionView::new_for_test(forge_primitives::SessionId::new(id), id, true, None)
@@ -452,5 +464,84 @@ mod lead_resolution_tests {
             .whoami(&SessionSlot::lead("TestOrg", "myproj"))
             .expect("lead caller still resolves");
         assert_eq!(lead_status.name, "myproj");
+    }
+
+    /// A worker entry for `label` in the fixture's project, carrying a
+    /// chosen spawn stamp so a test can tell whose stamp a read carried.
+    fn entry_stamped(label: &str, spawned_at: SystemTime) -> WorkerEntry {
+        let slot = SessionSlot::worker("TestOrg", "myproj", label);
+        WorkerEntry { label: label.to_owned(), spawned_at, ..worker_entry(slot) }
+    }
+
+    /// #1716: `whoami` answers with the caller's own seat - the stamp the
+    /// `agents__list` row for that seat carries. A worker caller reads its
+    /// own spawn time rather than the lead's; a lead caller reads its
+    /// project's own row, unchanged.
+    #[test]
+    fn whoami_stamps_the_callers_own_seat() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("myproj", "/tmp/myproj");
+        let pk = crate::ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),
+        );
+        // The lead is live and has a row, so its own stamp is a real value
+        // a wrongly-keyed read carries rather than reading as absent.
+        let lead = SessionSlot::lead("TestOrg", "myproj");
+        ws.seed_test_running_session_id(&lead, "lead-session");
+        ws.record_connected_session("/tmp/myproj", "lead-session", None);
+        let lead_stamp = ws.session_last_activity(&lead).expect("the lead's row is seeded");
+
+        // Two live workers, the caller second: a stamp taken from any
+        // worker rather than the caller's own seat lands on the other one.
+        let caller = SessionSlot::worker("TestOrg", "myproj", "caller");
+        let caller_stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        ws.insert_live_worker(
+            &pk,
+            entry_stamped("other", SystemTime::UNIX_EPOCH + Duration::from_secs(2_000)),
+        );
+        ws.insert_live_worker(&pk, entry_stamped("caller", caller_stamp));
+        // The caller runs under a session of its own, so a stamp read from
+        // its transcript's last activity is a different real value.
+        ws.seed_test_running_session_id(&caller, "caller-session");
+        ws.record_connected_session("/tmp/myproj", "caller-session", None);
+
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let worker_status = facade.whoami(&caller).expect("a worker caller resolves");
+        assert_eq!(
+            worker_status.spawned_at,
+            Some(caller_stamp),
+            "a worker caller's stamp is its own seat's, the row agents__list shows for it \
+             (the lead's is {lead_stamp:?})",
+        );
+
+        let lead_status = facade.whoami(&lead).expect("a lead caller resolves");
+        assert_eq!(
+            lead_status.spawned_at,
+            Some(lead_stamp),
+            "a lead caller's stamp is its project's own row, unchanged",
+        );
+    }
+
+    /// #1716: a caller whose live-worker row is gone (the teardown race) is
+    /// answered with no stamp rather than falling back to the lead's - the
+    /// miss branch, where an `or_else` back to the project's stamp would
+    /// resurrect the #1716 shape.
+    #[test]
+    fn whoami_answers_a_caller_with_no_row_with_no_stamp() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("myproj", "/tmp/myproj");
+        // The lead's own stamp is a real value here, so a fallback to it
+        // reads as a wrong answer rather than as absence.
+        let lead = SessionSlot::lead("TestOrg", "myproj");
+        ws.seed_test_running_session_id(&lead, "lead-session");
+        ws.record_connected_session("/tmp/myproj", "lead-session", None);
+
+        let gone = SessionSlot::worker("TestOrg", "myproj", "gone");
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let status = facade.whoami(&gone).expect("a worker caller still resolves to its project");
+        assert_eq!(
+            status.spawned_at, None,
+            "a caller with no live-worker row is answered with no stamp, not the lead's",
+        );
     }
 }
