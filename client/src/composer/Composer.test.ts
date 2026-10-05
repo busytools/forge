@@ -3864,6 +3864,41 @@ describe('the dock', () => {
     ).toBeNull();
   });
 
+  /**
+   * A rejection's wait belongs to the rejection.
+   *
+   * The row a REFUSED answer named is not the row the next answer came from, so
+   * the row the dock holds has to be cleared when the reader rejects instead -
+   * otherwise the wait for the rejection draws on a row nobody answered with.
+   */
+  it("draws a rejected answer's wait under the list, not on the refused answer's row", () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    options()[1]?.click();
+    flushSync();
+
+    // The core refuses it, so the dock comes back live with the reason.
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the prompt was already answered' });
+    flushSync();
+
+    press('Escape');
+    flushSync();
+
+    expect(commands(harness).at(-1), 'the rejection went').toMatchObject({
+      respond_question: { outcome: { outcome: 'cancelled' } },
+    });
+    expect(
+      document.querySelector('.dock .keys .answering'),
+      'the wait draws under the list, where an answer with no row rides',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .opt .answering'),
+      'and not on the row the refused answer named',
+    ).toBeNull();
+  });
+
   it('draws the wait under the list for an answer that came from the words', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
