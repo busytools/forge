@@ -285,6 +285,11 @@ function slackFrom(value: unknown): Ask {
  */
 function subjectOf(raw: unknown): string {
   const input = record(raw);
+  // **The server's own order**, so the client shows the subject the terminal
+  // shows: Claude's one-line description first - it reads better than a command
+  // that opens with a long `cd` - then the command, path or url it is about.
+  const description = line(input['description']);
+  if (description !== null) return description;
   for (const key of ['command', 'file_path', 'url']) {
     const value = text(input[key]);
     if (value !== null) return value;

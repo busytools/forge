@@ -1619,7 +1619,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    surface, with the accent left to the row being marked and the question's
    own mark. The warm border and the orange-tinted gradient read as a state
    rather than as a surface. */
-.dock { border: 1px solid var(--line); border-radius: 14px;
+/* A container as well as a card: the take's own ladder measures its container,
+   and in here that is this dock - without it a card drawing in the words row
+   keeps every reading and runs the row out past the dock's edge. */
+.dock { container-type: inline-size;
+  border: 1px solid var(--line); border-radius: 14px;
   background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
   box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
   display: flex; flex-direction: column; gap: 10px; }
@@ -1629,7 +1633,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    a permission's subject as it arrives, or a draft's destination. */
 .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
 .dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+/* The trailing element of the head - the tool's name, the verb a post is -
+   sits at the far edge, which is how the mock draws the head. */
 .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+  margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .d-head .q.mono { font-weight: 400; }
 .dock .d-q { font-size: 16px; font-weight: 600; letter-spacing: -.01em;
@@ -1713,7 +1720,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
 /* The one row that takes words, which is also where a take's words land: the
    field, and the mic that is this surface's own door to a take. */
-.dock .custom { display: flex; align-items: center; gap: 10px;
+/* The row wraps rather than pushing the mic out of the dock: the card in here
+   is the composer's own, shed by the ladder above only so far, and at a narrow
+   dock the mic is what would otherwise hang past the edge. */
+.dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   border-top: 1px solid var(--line); padding-top: 10px; }
 .dock .custom .notes { flex: 1; min-width: 0; }
 .dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
@@ -1725,8 +1735,22 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
   border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
-/* The way out of the field keeps a finger's target under a coarse pointer. */
-@media (pointer: coarse) { .dock .btn, .dock .custom .micb { min-height: 44px; } }
+/* A take running behind a held post, whose branch draws no words row. */
+.dock .blip { display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+.dock .blip .dot.tr { background: var(--blue); animation: none; }
+/* The actions and the mic keep a finger's target under a coarse pointer: the
+   sheet's own button rule gives the height, and the mic is narrower than the
+   floor, so its width is stated here. */
+@media (pointer: coarse) {
+  .dock .btn { min-height: 44px; }
+  .dock .custom .micb { min-height: 44px; min-width: 44px; }
+}
+/* The phase or the batch, for a screen reader only: the marks say nothing. */
+.dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown
@@ -1743,7 +1767,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .notes::placeholder { color: var(--dim); }
 
 @media (prefers-reduced-motion: reduce) {
-  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring {
+  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring, .dock .blip .dot {
     animation: none;
   }
   .tc .bars i { transition: none; }

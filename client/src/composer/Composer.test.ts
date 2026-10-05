@@ -2632,9 +2632,12 @@ describe('the dock', () => {
     const marks = [...document.querySelectorAll('.dock .segs i')];
     expect(marks, 'a batch draws one mark per question').toHaveLength(3);
     expect(
-      marks.filter((mark) => mark.classList.contains('on')),
-      'with this one and the ones behind it lit',
-    ).toHaveLength(2);
+      marks.findIndex((mark) => mark.classList.contains('on')),
+      'with the one this question is lit, which is the mock the design settled on',
+    ).toBe(1);
+    expect(drawn(), 'and the position in words, which is what a screen reader reads').toContain(
+      'question 2 of 3',
+    );
   });
 
   it("draws an option's description under its name, where the terminal draws it", () => {
@@ -3550,20 +3553,27 @@ describe('the dock', () => {
     );
   });
 
-  it('draws the next held draft as a fresh dock, rather than carrying the words over', () => {
+  it('draws the next held draft as its own body, not the one before it', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    // A draft draws no rows: its verbs are buttons, and the only thing that
-    // could carry over between two drafts is the body they would send.
-    expect(drawn()).toContain('Deploy finished on staging.');
+    expect(drawn(), 'the first draft').toContain('Deploy finished on staging.');
 
-    // The second draft, which is the next prompt the seat is parked on.
+    // The second draft, which is the next prompt the seat is parked on - with a
+    // body of its own, which is what tells a fresh dock from a carried-over one.
     harness.page.record = record({
-      pending_asks: [slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' })],
+      pending_asks: [
+        slackDraftAsk({
+          id: '0192e1c0-0000-7000-8000-000000000001',
+          text: 'The rollback finished; production is on the previous build.',
+        }),
+      ],
     });
     flushSync();
 
-    expect(drawn(), 'the next draft is drawn as its own').toContain('Post to Slack');
+    expect(drawn(), 'the next draft draws its own body').toContain(
+      'The rollback finished; production is on the previous build.',
+    );
+    expect(drawn(), 'and the one before it is gone').not.toContain('Deploy finished on staging.');
   });
 
   it('refuses the held draft from its own no-verb', () => {
@@ -3604,6 +3614,261 @@ describe('the dock', () => {
 
     expect(document.querySelector('.dock .qm use')?.getAttribute('href')).toBe('#i-question');
     expect(drawn(), 'and the queue line carries no glyph').not.toContain('▼');
+  });
+
+  /**
+   * A focused action keeps the keys that activate it.
+   *
+   * A button's activation is native - jsdom does not run it, and a real engine
+   * does - so what a test can pin is the half that is this component's: the
+   * dock must not preventDefault the key on its way to the button, which is how
+   * a permission lost every keyboard path to its actions.
+   */
+  it('does not swallow the keys a focused action answers to', () => {
+    open({ record: record({ pending_asks: [permissionAsk()] }) });
+
+    const allow = action('Allow once');
+    allow.focus();
+    flushSync();
+
+    for (const key of ['Enter', ' ']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      allow.dispatchEvent(event);
+      flushSync();
+
+      expect(event.defaultPrevented, `the dock swallowed ${key} on its way to the button`).toBe(
+        false,
+      );
+    }
+  });
+
+  it('sends one answer, however many keys arrive after it', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    options()[1]?.click();
+    flushSync();
+    expect(commands(harness), 'the answer went').toHaveLength(1);
+
+    press('Enter');
+    press('Escape');
+    flushSync();
+
+    expect(commands(harness), 'and neither key sends a second one').toHaveLength(1);
+  });
+
+  /**
+   * A refused take is not the answer's refusal.
+   *
+   * The wire's `dispatch` refusal cannot say which command it was about, and
+   * taking it as the outstanding answer's own reason clears the stand-down -
+   * which is the door the answer goes out of a second time.
+   */
+  it("does not take a refused take for the answer's own refusal", async () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+      dictation: true,
+    });
+
+    /** The answers alone: the take's own commands are not what this counts. */
+    const answers = () => commands(harness).filter((command) => 'respond_question' in command);
+
+    options()[1]?.click();
+    flushSync();
+    expect(answers(), 'the answer went').toHaveLength(1);
+
+    await micPress();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'dictation is not ready' });
+    flushSync();
+
+    press('Enter');
+
+    expect(answers(), 'and the refused take does not send it again').toHaveLength(1);
+  });
+
+  /** Press the dock's mic and let the take it starts settle. */
+  async function micPress(): Promise<void> {
+    const button = document.querySelector('.dock .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the dock drew no mic');
+    button.click();
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    flushSync();
+  }
+
+  /**
+   * The mic, which is the spec's own AUQ case: this surface's door to a take,
+   * and the words it produces land in the row it was pressed on.
+   */
+  it('draws the mic only where this install can dictate', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }), dictation: false });
+    expect(
+      document.querySelector('.dock .micb'),
+      'a control this install cannot honour is worse than none',
+    ).toBeNull();
+
+    if (app !== null) void unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+    expect(document.querySelector('.dock .micb'), 'and the door where it can').not.toBeNull();
+  });
+
+  it('draws no mic on a held post, whose text is approved rather than composed', () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }), dictation: true });
+
+    expect(
+      document.querySelector('.dock .micb'),
+      'the words are approved, not composed, and the box is where they are edited',
+    ).toBeNull();
+  });
+
+  it('starts a take from the mic and ends it there', async () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+
+    await micPress();
+    expect(
+      harness.sent.map((entry) => entry.command),
+      'the press opens the microphone',
+    ).toMatchObject([
+      { dictate_stream: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+    ]);
+
+    await micPress();
+    expect(harness.sent.at(-1)?.command, 'and the second press submits it').toMatchObject({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+    });
+  });
+
+  it("lands a take's words in the words row, which the prompt is holding", async () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+
+    await micPress();
+    await micPress();
+
+    // The server says the take is running, then that it landed: the box has to
+    // have watched it for the landing to be its own.
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const field = document.querySelector('.dock textarea.notes');
+    expect(
+      field instanceof HTMLTextAreaElement ? field.value : null,
+      'the words land in the row the mic started them from, not in a box this slot is not drawing',
+    ).toBe('the dictated answer');
+  });
+
+  it('refuses a mic press on a seat whose take belongs to another', async () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+    await micPress();
+
+    // The page moves to another seat, whose own prompt draws the same mic.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, pending_asks: [questionAsk()] });
+    flushSync();
+
+    const sent = harness.sent.length;
+    await micPress();
+
+    expect(harness.sent.length, 'the press stops nothing it cannot see').toBe(sent);
+    expect(drawn(), 'and it is refused by name, as the key path refuses it').toContain(
+      'the microphone is in use',
+    );
+  });
+
+  it('answers the row a number names, which is the number the row draws', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    expect(
+      [...document.querySelectorAll('.dock .opt .n')].map((held) => held.textContent),
+      'the rows carry their own numbers, the first row one',
+    ).toEqual(['1', '2']);
+
+    press('2');
+
+    expect(commands(harness), 'and the key answers the row it names').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q-prod'], annotation: null },
+        },
+      },
+    ]);
+  });
+
+  it('says on the submit key how many rows will go', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    options()[0]?.click();
+    options()[1]?.click();
+    flushSync();
+
+    expect(drawn(), 'a set is never submitted unseen').toContain('submit 2');
+  });
+
+  it("draws a permission's subject as it arrives, prose or command", () => {
+    const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
+    expect(
+      document.querySelector('.dock .d-q')?.textContent,
+      'the command the fixture carries',
+    ).toBe('git push origin main');
+
+    // The same wire with Claude's own description instead of a command: the
+    // server prefers the description, and this side reads the subject its way.
+    harness.page.record = record({
+      pending_asks: [
+        {
+          kind: 'permission',
+          request: {
+            tool_call: {
+              tool_call_id: 'tu-2',
+              title: 'Bash',
+              kind: 'execute',
+              status: 'pending',
+              content: [],
+              locations: [],
+              raw_input: { description: 'Push the release tag once the wave lands' },
+            },
+            display: {
+              title: 'Bash',
+              display_name: null,
+              description: null,
+              decision_reason: null,
+            },
+            options: [
+              {
+                option_id: 'opt-once',
+                name: 'Allow once',
+                kind: 'allow',
+                action: { kind: 'allow' },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.dock .d-q')?.textContent,
+      'and prose is drawn as prose rather than dressed as a command',
+    ).toBe('Push the release tag once the wave lands');
   });
 });
 

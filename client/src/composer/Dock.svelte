@@ -23,6 +23,8 @@
     onanswer = () => {},
     onabandon = () => {},
     onmic = () => {},
+    dictation = false,
+    takeline = null,
     answered = false,
   }: {
     ask: Ask;
@@ -63,6 +65,23 @@
      * leave a finger no way to dictate an answer at all.
      */
     onmic?: () => void;
+    /**
+     * Whether this install can dictate at all, which gates the mic.
+     *
+     * The composer's own rule, kept here: a control this install cannot honour
+     * is worse than none, and a mic that starts a take the core refuses draws
+     * nothing a reader can act on.
+     */
+    dictation?: boolean;
+    /**
+     * What became of a take this page started: a failure the server never saw,
+     * or a refusal it sent back.
+     *
+     * Drawn here because the box's own notice row is not on screen while a
+     * prompt holds the slot - the take's line would be invisible exactly when
+     * the reader pressed the mic that produced it.
+     */
+    takeline?: { tone: string; text: string } | null;
     /**
      * What the reader has said in their own words.
      *
@@ -130,6 +149,15 @@
       ? (ask.request.options.find((option) => option.kind === 'notes') ?? null)
       : null,
   );
+  /**
+   * The ONE action drawn primary: the last trusting one, which is the mock's.
+   *
+   * Not every allow: the wire's common prompt offers two of them, and marking
+   * both is no hierarchy at all.
+   */
+  const primary = $derived(
+    [...actions].reverse().find((option) => option.kind === 'allow')?.optionId ?? null,
+  );
 
   function rowsOf(prompt: Ask): Row[] {
     if (prompt.kind === 'permission') {
@@ -158,6 +186,11 @@
   let marked = $state(0);
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
+
+  /** What the submit key says, with the count riding it so a set is never sent unseen. */
+  const submitLabel = $derived(
+    multi && toggled.length > 0 ? `submit ${String(toggled.length)}` : 'submit',
+  );
   /** The field the custom row draws, which is also where a take's words land. */
   let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
@@ -166,6 +199,13 @@
   let root = $state<HTMLDivElement | null>(null);
   /** Whether the reader has been in the words row, which outlives the row. */
   let visited = $state(false);
+  /**
+   * The row this dock answered with, or `null` for an answer from the words.
+   *
+   * The wait is drawn where the answer came from, so it has to be remembered
+   * here: `answered` says an answer is on its way, not which one it was.
+   */
+  let answeredRow = $state<number | null>(null);
 
   const markedRow = $derived(rows[marked]);
 
@@ -191,6 +231,22 @@
     // that unmounts with the prompt loses them.
     const wanted = listbox ?? root;
     if (wanted !== null) wanted.focus({ preventScroll: true });
+  });
+
+  /**
+   * The caret across a take: into the dock while the card draws, and back into
+   * the words row when it returns.
+   *
+   * A take replaces the field with its card, so the caret has to live somewhere
+   * the dock's own keys still reach - on the page body the typing goes nowhere
+   * and the dock's Escape copy is unreachable. And a reader who was writing in
+   * the row is put back in it, rather than left in the option list with their
+   * words a key away from being answered with the marked row.
+   */
+  $effect(() => {
+    if (!visited) return;
+    const el = field ?? root;
+    if (el !== null) el.focus({ preventScroll: true });
   });
 
   /** Whether the caret is in the custom row's field right now. */
@@ -290,6 +346,10 @@
    * cannot express, and the reason that row is always drawn.
    */
   function submit(fromField: boolean): void {
+    // **An answered prompt takes no second answer.** The stand-down is the
+    // reader's mark; a key that reaches here anyway would send the same answer
+    // twice under the same tool id.
+    if (answered) return;
     const row = rows[marked];
     if (row === undefined) return;
 
@@ -307,6 +367,9 @@
     // row at all unless the reader turned some on.
     const ids = multi && toggled.length > 0 ? toggled : fromField ? [] : [row.optionId];
     const annotation = words === null ? null : { preview: null, notes: words };
+    // Which row was answered, so the wait draws there - and nothing for an
+    // answer from the words, which has no row to ride.
+    answeredRow = fromField ? null : marked;
     onanswer(toolId);
     answer({
       respond_question: {
@@ -330,6 +393,8 @@
    * would pick nothing on the reader's behalf.
    */
   function reject(): void {
+    // Same door as `submit`: a prompt already answered takes no refusal.
+    if (answered) return;
     if (ask.kind === 'question') {
       onanswer(ask.request.toolId);
       answer({
@@ -401,7 +466,9 @@
   }
 
   function move(step: number): void {
-    if (rows.length === 0) return;
+    // An answered prompt is standing down: its rows are a record of what was
+    // answered, not a list to move through.
+    if (rows.length === 0 || answered) return;
     marked = (marked + step + rows.length) % rows.length;
   }
 
@@ -433,6 +500,14 @@
 
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
+    // **A button answers its own keys.** The row model's Enter and Space are
+    // for the list; on a focused button they would preventDefault the
+    // activation away, which leaves a permission with NO keyboard path to its
+    // actions - and on a question the mic is a tab stop, so Enter there would
+    // answer the marked row instead.
+    if (event.target instanceof HTMLButtonElement && (event.key === 'Enter' || event.key === ' ')) {
+      return;
+    }
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
       // which is the terminal's own rule for the same slot.
@@ -567,9 +642,23 @@
             }}
           />
         {/if}
-        <button class="micb" type="button" aria-label="dictate the answer" onclick={onmic}>
-          <Icon name="mic" />
-        </button>
+        {#if dictation}
+          <button
+            class="micb"
+            type="button"
+            aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
+            onclick={() => {
+              // **Pressing the mic is being in the row.** It moves no focus, and
+              // without this the words a take lands would go to the composer's
+              // draft - which is not drawn while a prompt holds the slot - so the
+              // phone's only way to dictate an answer would lose the answer.
+              visited = true;
+              onmic();
+            }}
+          >
+            <Icon name="mic" />
+          </button>
+        {/if}
       </div>
     {/if}
     <div class="acts">
@@ -577,7 +666,7 @@
         <button
           class="btn"
           class:d={option.kind === 'deny'}
-          class:p={option.kind === 'allow'}
+          class:p={option.optionId === primary}
           onclick={() => decide(option.kind === 'deny' ? denyWith : option)}
         >
           {option.kind === 'deny' && notes.trim() !== '' && reason !== null
@@ -592,12 +681,14 @@
       <span class="d-q">{ask.request.question}</span>
       {#if ask.request.total > 1}
         <!-- The batch as segments rather than a sentence: a count of three is
-             something to see, not to read. -->
+             something to see, not to read - and the position is said in words
+             beside it, because a row of marks says nothing to a screen reader. -->
         <span class="segs" aria-hidden="true">
           {#each Array.from({ length: ask.request.total }, (_, at) => at) as at (at)}
-            <i class:on={at <= ask.request.index}></i>
+            <i class:on={at === ask.request.index}></i>
           {/each}
         </span>
+        <span class="sr">question {ask.request.index + 1} of {ask.request.total}</span>
       {/if}
     </div>
     <div class="desc">{ask.request.header}</div>
@@ -678,7 +769,7 @@
               <span class="why">{row.detail}</span>
             {/if}
           </span>
-          {#if answered && at === marked}
+          {#if answered && answeredRow === at}
             <!-- The wait rides the row that was answered. -->
             <span class="answering"><span class="ring"></span>sending</span>
           {:else if at === marked}
@@ -697,7 +788,7 @@
     {/if}
   {/if}
 
-  {#if question || reason !== null}
+  {#if question}
     <!-- The one row that takes words, which is also the row a take's words
          land in. It is always drawn rather than revealed by a mark: it is the
          answer for every kind of prompt, not an escape hatch for one. -->
@@ -721,9 +812,23 @@
             }}
           />
         {/if}
-        <button class="micb" type="button" aria-label="dictate the answer" onclick={onmic}>
-          <Icon name="mic" />
-        </button>
+        {#if dictation}
+          <button
+            class="micb"
+            type="button"
+            aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
+            onclick={() => {
+              // **Pressing the mic is being in the row.** It moves no focus, and
+              // without this the words a take lands would go to the composer's
+              // draft - which is not drawn while a prompt holds the slot - so the
+              // phone's only way to dictate an answer would lose the answer.
+              visited = true;
+              onmic();
+            }}
+          >
+            <Icon name="mic" />
+          </button>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -733,6 +838,15 @@
       <button class="btn d" onclick={() => post(false)}>Don't send</button>
       <button class="btn p" onclick={() => post(true)}>Post</button>
     </div>
+    {#if take !== null}
+      <!-- A take still running behind a held post: this branch draws no words
+           row, so without this line a prompt would swallow a recording that is
+           still going. -->
+      <div class="blip">
+        <span class="dot" class:tr={take.phase === 'transcribing'}></span>
+        dictating · the words land in your draft either way
+      </div>
+    {/if}
   {/if}
 
   {#if notice !== null}
@@ -740,10 +854,20 @@
     <div class="refusal">{notice}</div>
   {/if}
 
-  {#if answered && rows.length === 0}
+  {#if takeline !== null}
+    <!-- What became of a take this page started, drawn here rather than in the
+         box's own notice row: that row is not on screen while a prompt holds
+         the slot, and the line would be invisible exactly when the reader
+         pressed the mic that produced it. -->
+    <div class="refusal">{takeline.text}</div>
+  {/if}
+
+  {#if answered && answeredRow === null}
     <!-- The same mark the reader's own words carry while they are on their
          way, because it is the same wait: an answer that has left the reader
-         and has not been taken yet. A question's wait rides its own row. -->
+         and has not been taken yet. A wait with a row to ride draws there; an
+         answer from the words has none, and neither have the kinds that draw
+         buttons. -->
     <div class="keys">
       <span class="answering"
         ><span class="ring"></span>sending · it holds until the core takes it</span
@@ -755,10 +879,7 @@
         <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
         {#if multi}<span><kbd>space</kbd> toggle</span>{/if}
         <span><kbd>1</kbd>&ndash;<kbd>9</kbd> pick</span>
-        <span
-          ><kbd>Enter</kbd> submit{#if multi && toggled.length > 0}
-            {toggled.length}{/if}</span
-        >
+        <span><kbd>Enter</kbd> {submitLabel}</span>
       {:else}
         <span><kbd>Tab</kbd> between the actions</span>
         <span><kbd>Enter</kbd> activates</span>
