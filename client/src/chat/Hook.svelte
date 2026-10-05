@@ -11,10 +11,11 @@
    *
    * **The terminal draws nothing for this**, which is why the shape is the
    * client's to choose rather than a parity port: its arm for the three frames
-   * is a no-op. The row is a tool row like any other - the lane says the kind,
-   * the mark says whether the run exited clean, and the name and the hook's own
-   * words read as the call's own title does - because a hook IS work the
-   * session ran, and anything else makes it a second system inside the group.
+   * is a no-op. The row is a tool row like any other - the glyph says the kind
+   * and its colour says whether the run exited clean, and the name and the
+   * hook's own words read as the call's own title does - because a hook IS
+   * work the session ran, and anything else makes it a second system inside
+   * the group.
    *
    * **What the hook printed is not what it said.** A session-start hook prints
    * the markdown it injects - whose headings and lists are marks a one-line row

@@ -2,13 +2,13 @@
  * The reader's anchor: the row their eye is on, and how far into it they are.
  *
  * **Measured in rows, never in pixels.** The column's layout moves under a
- * reader who is not at the foot - a lane re-sorts to whichever took the latest
- * row, a row measures taller once it is drawn - and an offset that stays put
- * then reads as the page sliding under them (Ved, 2026-10-03). The terminal
- * keeps the same record for the same reason (`ChatViewport`'s message-local
- * anchor, restored across a layout remeasure); this is its client half. The row
- * is found by the key the fold gave it, which the rows draw in `data-k`, so a
- * re-order MOVES the row and the reader moves with it.
+ * reader who is not at the foot - a row measures taller once it is drawn, a
+ * stretch is corrected as frames land - and an offset that stays put then
+ * reads as the page sliding under them (Ved, 2026-10-03). The terminal keeps
+ * the same record for the same reason (`ChatViewport`'s message-local anchor,
+ * restored across a layout remeasure); this is its client half. The row is
+ * found by the key the fold gave it, which the rows draw in `data-k`, so a
+ * row that MOVES takes the reader with it.
  */
 export interface Anchor {
   /** The fold's own key for the row, which the row draws in `data-k`. */

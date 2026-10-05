@@ -9,8 +9,8 @@
   /**
    * One inbound delivery: a cron fire, a Slack message or a Gotify push.
    *
-   * The row is a tool row like any other - the lane says the kind, and the
-   * title and the body's first line read as the call's own title does -
+   * The row is a tool row like any other - its mark says which way it went,
+   * and the title and the body's first line read as the call's own title does -
    * because a delivery IS something the session received, and anything else
    * makes it a second system inside the group.
    *

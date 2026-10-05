@@ -85,10 +85,10 @@
    *
    * **Measured in rows rather than pixels** (the terminal's rule, and
    * `anchor.ts` carries the reasoning): the layout moves under a reader who is
-   * not at the foot - a lane re-sorts to whichever took the latest row, a row
-   * measures taller once drawn - and an offset that stays put reads as the page
-   * sliding under them (Ved, 2026-10-03). It goes the moment the follow is back
-   * on, because the foot is where that reader wants to be.
+   * not at the foot - a row measures taller once drawn, a stretch is corrected
+   * as frames land - and an offset that stays put reads as the page sliding
+   * under them (Ved, 2026-10-03). It goes the moment the follow is back on,
+   * because the foot is where that reader wants to be.
    */
   let anchor: Anchor | null = null;
   let working: Chat | null = null;

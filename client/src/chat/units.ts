@@ -703,10 +703,10 @@ function messageStatus(result: Block | undefined): CallStatus {
   return result.is_error === true ? 'failed' : 'completed';
 }
 
-/** The external kinds an inbound line draws as a lane of its own. */
+/** The external kinds an inbound line draws as a row of its own. */
 export type InboundKind = 'cron' | 'slack' | 'gotify';
 
-/** One inbound delivery, as its lane's row draws it. */
+/** One inbound delivery, as its row draws it. */
 export interface InboundLeaf {
   /** The frame and block it arrived in, which is what the row is keyed by. */
   key: string;

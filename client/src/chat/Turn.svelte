@@ -21,9 +21,8 @@
    * neither re-measures it nor closes what the reader has open.
    *
    * **The fold is not this component's.** `fold` decides what the turn's
-   * messages are - one group per stretch of work, a lane per family and per
-   * kind of peer traffic, a card for a question, a notice for a delivery - and
-   * this draws what it is given.
+   * messages are - one flat list of rows per stretch of work, a card for a
+   * question, a notice for a delivery - and this draws what it is given.
    */
   let {
     turn,

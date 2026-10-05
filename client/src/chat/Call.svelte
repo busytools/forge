@@ -14,7 +14,7 @@
    * One call: what it was, whether it came back, and what it came back with.
    *
    * The group above keys this row by the row's own key, which for a call is
-   * the id the wire gave it. A place in a lane is not a key: a page landing
+   * the id the wire gave it. A place in the list is not a key: a page landing
    * with its copy of the turn can put a block above this row, and every place
    * below it shifts - which remounts the row and closes what the reader had
    * open in it.
@@ -34,8 +34,8 @@
      * The fold's own name for this row, which the row draws in `data-k`.
      *
      * **Required, and the wire id would not do**: an id-less `tool_use` leaves
-     * it empty, and two such rows would carry one key. The lane hands the
-     * fold's key down.
+     * it empty, and two such rows would carry one key. The leaves list hands
+     * the fold's key down.
      *
      * **The column's anchor does not look this far down today**: its scan
      * takes the first row whose box crosses the viewport's top, and the unit
