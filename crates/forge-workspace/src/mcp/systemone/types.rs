@@ -6,22 +6,24 @@ use std::collections::BTreeMap;
 #[derive(serde::Deserialize)]
 pub(crate) struct NoulArgs {
     pub state: serde_json::Value,
-    pub instructions: String,
-    pub criteria: Option<BTreeMap<String, String>>,
+    pub instructions: serde_json::Value,
+    /// The keys stay exactly `true` and `false`; the values are any JSON.
+    pub criteria: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 /// `systemone__ask_choice` arguments.
 #[derive(serde::Deserialize)]
 pub(crate) struct ChoiceArgs {
     pub state: serde_json::Value,
-    pub instructions: String,
-    pub criteria: BTreeMap<String, Option<String>>,
+    pub instructions: serde_json::Value,
+    /// Option names mapped to any JSON: a string, an object, an array or null.
+    pub criteria: BTreeMap<String, serde_json::Value>,
 }
 
 /// `systemone__ask_score` arguments.
 #[derive(serde::Deserialize)]
 pub(crate) struct ScoreArgs {
     pub state: serde_json::Value,
-    pub instructions: String,
+    pub instructions: serde_json::Value,
     pub criteria: Vec<String>,
 }

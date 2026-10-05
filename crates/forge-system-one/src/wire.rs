@@ -4,31 +4,35 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One typed question; serialized as the request's `questions` value.
+/// `instructions` and the criteria values the API types as any JSON
+/// (string, object, array or null) cross verbatim; a score question's
+/// levels are the API's strings.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     Noul {
-        instructions: String,
+        instructions: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         criteria: Option<NoulCriteria>,
     },
     Choice {
-        instructions: String,
-        criteria: BTreeMap<String, Option<String>>,
+        instructions: serde_json::Value,
+        criteria: BTreeMap<String, serde_json::Value>,
     },
     Score {
-        instructions: String,
+        instructions: serde_json::Value,
         criteria: Vec<String>,
     },
 }
 
-/// What yes and no mean for a noul question, when the boundary matters.
+/// What yes and no mean for a noul question, when the boundary matters;
+/// the keys are fixed, the values are any JSON.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct NoulCriteria {
     #[serde(rename = "true")]
-    pub r#true: String,
+    pub r#true: serde_json::Value,
     #[serde(rename = "false")]
-    pub r#false: String,
+    pub r#false: serde_json::Value,
 }
 
 /// One typed answer, deserialized from the response.
@@ -169,15 +173,15 @@ mod tests {
     use super::*;
 
     fn noul_question() -> Question {
-        Question::Noul { instructions: "Is this a bug?".to_owned(), criteria: None }
+        Question::Noul { instructions: serde_json::json!("Is this a bug?"), criteria: None }
     }
 
     fn choice_question() -> Question {
         Question::Choice {
-            instructions: "Which team?".to_owned(),
+            instructions: serde_json::json!("Which team?"),
             criteria: [
-                ("billing".to_owned(), Some("Payments and refunds".to_owned())),
-                ("technical".to_owned(), None),
+                ("billing".to_owned(), serde_json::json!("Payments and refunds")),
+                ("technical".to_owned(), serde_json::Value::Null),
             ]
             .into_iter()
             .collect(),
@@ -186,7 +190,7 @@ mod tests {
 
     fn score_question() -> Question {
         Question::Score {
-            instructions: "How urgent?".to_owned(),
+            instructions: serde_json::json!("How urgent?"),
             criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
         }
     }
@@ -198,10 +202,10 @@ mod tests {
     #[test]
     fn question_serializes_to_the_wire_shape() {
         let q = Question::Noul {
-            instructions: "Is this a billing issue?".to_owned(),
+            instructions: serde_json::json!("Is this a billing issue?"),
             criteria: Some(NoulCriteria {
-                r#true: "Payments or refunds".to_owned(),
-                r#false: "Anything else".to_owned(),
+                r#true: serde_json::json!("Payments or refunds"),
+                r#false: serde_json::json!("Anything else"),
             }),
         };
         assert_eq!(
@@ -209,10 +213,10 @@ mod tests {
             serde_json::json!({"type":"noul","instructions":"Is this a billing issue?","criteria":{"true":"Payments or refunds","false":"Anything else"}})
         );
         let c = Question::Choice {
-            instructions: "Which team?".to_owned(),
+            instructions: serde_json::json!("Which team?"),
             criteria: [
-                ("billing".to_owned(), Some("Payments".to_owned())),
-                ("frontend".to_owned(), None),
+                ("billing".to_owned(), serde_json::json!("Payments")),
+                ("frontend".to_owned(), serde_json::Value::Null),
             ]
             .into_iter()
             .collect(),
@@ -222,12 +226,35 @@ mod tests {
             serde_json::json!({"type":"choice","instructions":"Which team?","criteria":{"billing":"Payments","frontend":null}})
         );
         let s = Question::Score {
-            instructions: "How urgent?".to_owned(),
+            instructions: serde_json::json!("How urgent?"),
             criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
         };
         assert_eq!(
             serde_json::to_value(&s).unwrap(),
             serde_json::json!({"type":"score","instructions":"How urgent?","criteria":["Routine","Soon","Urgent"]})
+        );
+    }
+
+    /// The API types `instructions` and criteria values as any JSON; the
+    /// structure must survive serialization untouched.
+    #[test]
+    fn structured_values_serialize_to_the_wire_shape() {
+        let q = Question::Choice {
+            instructions: serde_json::json!({"question": "Which team?", "touched": ["a.rs"]}),
+            criteria: [
+                ("billing".to_owned(), serde_json::json!({"files": ["a.rs"]})),
+                ("frontend".to_owned(), serde_json::Value::Null),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        assert_eq!(
+            serde_json::to_value(&q).unwrap(),
+            serde_json::json!({
+                "type": "choice",
+                "instructions": {"question": "Which team?", "touched": ["a.rs"]},
+                "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            })
         );
     }
 
@@ -448,8 +475,10 @@ mod tests {
 
     #[test]
     fn score_question_with_no_levels_is_refused() {
-        let question =
-            Question::Score { instructions: "How urgent?".to_owned(), criteria: Vec::new() };
+        let question = Question::Score {
+            instructions: serde_json::json!("How urgent?"),
+            criteria: Vec::new(),
+        };
         let answer =
             Answer::Score { score: 0.0, probabilities: None, confidence: None, legend: None };
         assert_eq!(

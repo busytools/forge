@@ -69,11 +69,11 @@ fn noul_question(args: &NoulArgs) -> Result<Question, String> {
     let criteria = match &args.criteria {
         Some(criteria) => {
             let mut criteria = criteria.clone();
-            let true_text = criteria.remove("true");
-            let false_text = criteria.remove("false");
-            match (true_text, false_text, criteria.is_empty()) {
-                (Some(true_text), Some(false_text), true) => {
-                    Some(NoulCriteria { r#true: true_text, r#false: false_text })
+            let true_value = criteria.remove("true");
+            let false_value = criteria.remove("false");
+            match (true_value, false_value, criteria.is_empty()) {
+                (Some(true_value), Some(false_value), true) => {
+                    Some(NoulCriteria { r#true: true_value, r#false: false_value })
                 }
                 _ => {
                     return Err(
@@ -160,12 +160,12 @@ impl Tool for AskNoul {
             "type": "object",
             "properties": {
                 "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The yes/no question itself." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
                     "properties": {
-                        "true": { "type": "string", "description": "What makes the answer yes." },
-                        "false": { "type": "string", "description": "What makes the answer no." },
+                        "true": { "type": ["string", "object", "array", "null"], "description": "What makes the answer yes." },
+                        "false": { "type": ["string", "object", "array", "null"], "description": "What makes the answer no." },
                     },
                     "description": "Optional: what yes and no mean here. Give both keys or omit.",
                 },
@@ -231,10 +231,10 @@ impl Tool for AskChoice {
             "type": "object",
             "properties": {
                 "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The question the options answer." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
-                    "additionalProperties": { "type": ["string", "null"] },
+                    "additionalProperties": { "type": ["string", "object", "array", "null"] },
                     "description": "Option names mapped to when each applies (null when the name stands alone). Every option must be listed.",
                 },
             },
@@ -296,7 +296,7 @@ impl Tool for AskScore {
             "type": "object",
             "properties": {
                 "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The rubric question itself." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
                     "items": { "type": "string" },
@@ -392,13 +392,127 @@ mod tests {
         assert_eq!(
             calls[0].1,
             Question::Noul {
-                instructions: "Is this a billing issue?".to_owned(),
+                instructions: serde_json::json!("Is this a billing issue?"),
                 criteria: Some(NoulCriteria {
-                    r#true: "Payments".to_owned(),
-                    r#false: "Anything else".to_owned()
+                    r#true: serde_json::json!("Payments"),
+                    r#false: serde_json::json!("Anything else")
                 }),
             }
         );
+    }
+
+    /// The API's own typing: `instructions` and criteria values are any
+    /// JSON, and the tool must carry the structure through verbatim -
+    /// the pre-flight constraints still fire by name around it.
+    #[tokio::test]
+    async fn structured_values_reach_the_facade_verbatim() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        *mock.result.lock() = Some(Ok(outcome(Answer::Noul { noul: 0.83 })));
+
+        let noul = AskNoul { facade: mock.clone() };
+        let out = noul
+            .call(input(serde_json::json!({
+                "state": {"ticket": "x"},
+                "instructions": {"question": "Is this a billing issue?", "policy": "refunds within 30 days"},
+                "criteria": {"true": {"rule": "Payments"}, "false": "Anything else"}
+            })))
+            .await;
+        assert!(!out.is_error, "structured noul arguments are accepted: {}", out.blocks[0].text);
+
+        let choice = AskChoice { facade: mock.clone() };
+        let out = choice
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": "Which team?",
+                "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            })))
+            .await;
+        assert!(!out.is_error, "structured choice values are accepted: {}", out.blocks[0].text);
+
+        let score = AskScore { facade: mock.clone() };
+        let out = score
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
+                "criteria": ["Routine", "Urgent"]
+            })))
+            .await;
+        assert!(!out.is_error, "a structured score question is accepted: {}", out.blocks[0].text);
+
+        let malformed = noul
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": "Is it?",
+                "criteria": {"true": {"rule": "yes"}, "false": "no", "maybe": "hmm"}
+            })))
+            .await;
+        assert!(malformed.is_error, "a third noul key is still refused");
+        assert!(
+            malformed.blocks[0].text.contains("exactly the keys `true` and `false`"),
+            "{}",
+            malformed.blocks[0].text
+        );
+
+        let calls = mock.calls.lock();
+        assert_eq!(calls.len(), 3, "the malformed call never reaches the facade");
+        assert_eq!(
+            serde_json::to_value(&calls[0].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "noul",
+                "instructions": {"question": "Is this a billing issue?", "policy": "refunds within 30 days"},
+                "criteria": {"true": {"rule": "Payments"}, "false": "Anything else"}
+            }),
+            "structured noul values reach the wire verbatim"
+        );
+        assert_eq!(
+            serde_json::to_value(&calls[1].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "choice",
+                "instructions": "Which team?",
+                "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            }),
+            "structured choice values reach the wire verbatim"
+        );
+        assert_eq!(
+            serde_json::to_value(&calls[2].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "score",
+                "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
+                "criteria": ["Routine", "Urgent"]
+            }),
+            "a structured score question reaches the wire verbatim"
+        );
+    }
+
+    /// What each tool advertises: the structured union the API accepts,
+    /// minus the score tool's levels, which stay strings.
+    #[test]
+    fn schemas_advertise_the_structured_union() {
+        let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+        let score = AskScore { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+
+        let union = serde_json::json!(["string", "object", "array", "null"]);
+        assert_eq!(
+            noul["properties"]["instructions"]["type"], union,
+            "noul instructions advertise the API's union"
+        );
+        assert_eq!(noul["properties"]["criteria"]["properties"]["true"]["type"], union);
+        assert_eq!(noul["properties"]["criteria"]["properties"]["false"]["type"], union);
+        assert_eq!(
+            choice["properties"]["criteria"]["additionalProperties"]["type"], union,
+            "choice option values advertise the API's union"
+        );
+        assert_eq!(
+            score["properties"]["criteria"]["items"]["type"], "string",
+            "score levels stay strings"
+        );
+        for (tool, schema) in [("noul", &noul), ("choice", &choice), ("score", &score)] {
+            assert_eq!(
+                schema["properties"]["instructions"]["type"], union,
+                "{tool} instructions advertise the API's union"
+            );
+        }
     }
 
     #[tokio::test]
@@ -508,7 +622,7 @@ mod tests {
         assert_eq!(
             calls[0].1,
             Question::Score {
-                instructions: "How urgent?".to_owned(),
+                instructions: serde_json::json!("How urgent?"),
                 criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
             }
         );
