@@ -6,8 +6,9 @@ import { Chat as HandedChat, type Conversation } from './conversation';
 import { echoes } from './echoes.svelte';
 import { freeze } from './testing/frozen';
 import { subjectKey } from '../protocol';
-import type { ClientMessage, ServerMessage } from '../protocol';
+import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection } from '../socket';
+import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
 import { installResizeObserver } from './testing/viewport';
@@ -42,6 +43,7 @@ function stub() {
   const listeners = new Set<(message: ServerMessage) => void>();
   const asks: ClientMessage[] = [];
   const dispatched: ClientMessage[] = [];
+  const stores = new Stores();
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
     unsubscribe: () => undefined,
@@ -59,7 +61,7 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
-    store: () => undefined,
+    store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
     settings: () => null,
     status: () => 'open' as const,
     close: () => undefined,
@@ -76,6 +78,14 @@ function stub() {
     /** The page the server would answer `more` with. */
     answer(turns: unknown[], cursor: string | null = null): void {
       this.send({ kind: 'page', conversation: LEAD, turns, cursor });
+    },
+    /**
+     * A frame the connection holds for a seat, which is what a reader of the
+     * live store sees before any page has folded it into a record.
+     */
+    hold(slot: SessionSlot, ...updates: SessionUpdate[]): void {
+      const store = stores.open({ session: slot });
+      for (const update of updates) store.push(update);
     },
   };
 }
@@ -971,5 +981,40 @@ describe('the reader own words before the core has them', () => {
     // settles the mark by that id, so a second mint beside it would leave the
     // cancel unable to reach the retry.
     expect(resent?.id, 'and the mark names the id the retry went out under').toBe(resentUuid);
+  });
+
+  /**
+   * The retry reads the seat, not the turn this page happens to be drawing.
+   *
+   * The record is written once per painted frame, so a turn-start frame can be
+   * applied and not yet drawn - and a retry posted as not-running is taken by
+   * the very paint that carries the turn, which is past the point a refusal can
+   * reach it.
+   */
+  it('reads a retry as running from the seat, not from the drawn turn', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+
+    // The turn is on the seat already, while the turn this page draws has not
+    // been written with it.
+    server.hold(LEAD, {
+      chat_appended: { key: LEAD, msg: { type: 'system', subtype: 'init', session_id: 's' } },
+    });
+
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    const mark = echoes.of(key);
+    expect(
+      mark?.state === 'sending' ? mark.running : null,
+      'the retry was posted into the turn the seat already had',
+    ).toBe(true);
   });
 });
