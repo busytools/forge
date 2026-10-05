@@ -116,7 +116,7 @@
   const newestTurn = $derived(
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
-  /** The newest turn's key: the row a compaction in flight belongs under. */
+  /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
 
   /**
@@ -497,17 +497,9 @@
   });
 
   /**
-   * What the follow pass runs on: the seat, the newest turn, and the line that
-   * grows it.
+   * What the follow pass runs on: the seat and the turn count.
    *
-   * **The compaction line is part of the last row and arrives as a PROP**, not
-   * as a frame, so a flip alone grows that row by its height with no scroll
-   * behind it - and nothing else re-runs the follow until some later frame
-   * happens to land, which on a session with no hooks is never. The line then
-   * draws with its baseline below the fold for the whole compaction. Keyed
-   * here so the follow re-sticks when the line appears.
-   *
-   * **And the seat travels in the key as consistency, not as the mechanism**:
+   * **The seat travels in the key as consistency, not as the mechanism**:
    * what re-runs the pass on a switch is the arriving conversation's own
    * record being published to the column, which the effect watches (measured:
    * six constructions tried, none where the key decides) - so the seat is in
