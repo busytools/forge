@@ -3111,6 +3111,52 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     assert!(none.is_empty(), "with nothing above it");
     assert!(end.is_none(), "and no cursor, which is what stops a client asking");
 
+    // **The walk crosses the floor without asking twice.** A client that has
+    // been walking from the newest page reaches the window's start, and the
+    // page there hands the floor back as its cursor - so the next ask lands
+    // in the transcript and the walk carries on to the session's own first
+    // turn rather than stopping at the window.
+    let mut asked: Option<String> = None;
+    let mut crossed = false;
+    let mut pages = 0_usize;
+    loop {
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: lead_seat(), before: asked.clone(), turns: 20 },
+        )
+        .await;
+        let ServerMessage::Page { turns: page, cursor, .. } = page_answer(&mut socket).await else {
+            panic!("the walk's page {pages} is answered");
+        };
+        let texts: Vec<String> = page
+            .iter()
+            .filter_map(|turn| {
+                turn.messages
+                    .first()
+                    .and_then(|frame| frame["message"]["content"][0]["text"].as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        crossed |= texts.iter().any(|text| text == "turn 1999");
+        pages += 1;
+        assert!(pages < 400, "the walk reached the transcript's beginning");
+        let Some(next) = cursor else {
+            assert_eq!(
+                texts.first().map(String::as_str),
+                Some("turn 0"),
+                "and the last page it served runs down to the transcript's own first turn",
+            );
+            break;
+        };
+        assert!(asked.as_deref() != Some(next.as_str()), "the cursor descends");
+        asked = Some(next);
+    }
+    assert!(
+        crossed,
+        "the walk passed the floor's own turn on the way: the window's last page and the \
+         transcript's first are one sequence, not two that stop at the seam",
+    );
+
     // **The count is the client's, so it is clamped.** A hundred thousand
     // turns would have the read hand over its whole cap and the page encode
     // every row of it; zero is a page that opens nowhere, whose cursor names

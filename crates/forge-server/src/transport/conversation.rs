@@ -1519,4 +1519,57 @@ mod tests {
             "and with no page above it to ask for: the turn it named is not held any more",
         );
     }
+
+    /// **A carried replay that reaches less far back records what it lost.**
+    ///
+    /// The frames this seed takes off the seat's own front are below the new
+    /// floor as soon as it lands, and nothing else can count them afterwards:
+    /// the copy that held them is what says which of them carry no transcript
+    /// row, and a page below the floor is numbered through that count.
+    #[test]
+    fn a_shorter_carried_seed_records_the_frames_it_took() {
+        // A live-shaped copy: every turn's row, then the result frame the CLI
+        // sent and never wrote, so the drops take frames with no row.
+        let mut frames = Vec::new();
+        for at in 0..2_600 {
+            frames.push(a_frame(&format!("turn {at}")));
+            frames.push(
+                serde_json::from_value(serde_json::json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "uuid": format!("r{at}"),
+                    "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                    "is_error": false,
+                    "num_turns": at + 1,
+                    "duration_ms": 12,
+                    "duration_api_ms": 9,
+                }))
+                .expect("a result frame"),
+            );
+        }
+        let held = Held::new(Conversation::new(frames, 0));
+        let before = held.lock().without_rows().len();
+        let dropped = held.lock().dropped();
+        assert!(before > 0, "precondition: the first drop counted the frames with no row");
+
+        // The same conversation, ending at the same frame, reaching four
+        // hundred frames less far back.
+        let window = held.lock().messages()[400..].to_vec();
+        held.lock().seed(window, 0, Reseed::Replay);
+
+        assert_eq!(
+            held.lock().dropped(),
+            dropped + 400,
+            "precondition: the shorter window moved the floor up by what it took",
+        );
+        let after = held.lock().without_rows().len();
+        assert!(
+            after > before,
+            "and the frames it took off the front are counted: {before} before, {after} after",
+        );
+        assert!(
+            held.lock().without_rows().windows(2).all(|pair| pair[0] < pair[1]),
+            "the positions stay sorted, which is what a page's numbering searches in",
+        );
+    }
 }

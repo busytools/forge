@@ -970,12 +970,18 @@ fn span_in_window(
     // and the anchor: what the page does not serve.
     let below_cursor = cursor - rowless_at_or_below(rowless, cursor.saturating_sub(1));
     let skip = above.saturating_sub(below_cursor);
-    if skip > at {
+    // A window that holds no row strictly below the cursor has nothing to
+    // serve: growing reaches one that does.
+    if skip >= at {
         return SpanRead::Grow;
     }
     let cut = at - skip;
     let kept = cut.saturating_sub(rows_wanted);
-    let rank = anchor_rank - (at - kept);
+    // A basis the window does not line up with: the rows above the anchor
+    // cannot account for the rank this asks for.
+    let Some(rank) = anchor_rank.checked_sub(at - kept) else {
+        return SpanRead::Diverged("the rows below the cursor do not line up with the file's own");
+    };
     let Some(mut frame) = frame_of_rank(rowless, rank, anchor) else {
         return SpanRead::Diverged("the rows below the cursor do not line up with the file's own");
     };
@@ -2600,11 +2606,13 @@ mod tests {
         let session = "550e8400-e29b-41d4-a716-446655440000";
         write_session_jsonl(&dir, session, &a_transcript(4));
 
-        // Every row the file holds is present, so the ranks say the anchor
-        // sits three rows in - and a basis claiming a frame with no row
-        // between them says otherwise.
+        // The anchor's own index, as the copy counts it, is five: four rows
+        // above a first frame, and one more frame the file does not have. The
+        // ranks and the rows above the anchor disagree, and the read refuses
+        // - where without that check it would serve rows the copy's numbering
+        // gives frames [1, 2], which are not theirs.
         assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u3", 3), 3, &[1], 100)
+            read_span(config.path(), session, Some(cwd), &anchored("u3", 5), 3, &[5], 100)
                 .is_none(),
             "a copy whose counted frames the file does not have answers nothing",
         );

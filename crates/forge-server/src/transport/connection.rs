@@ -531,7 +531,7 @@ async fn handle_client(
             let below = before
                 .as_deref()
                 .and_then(|cursor| cursor.parse::<usize>().ok())
-                .filter(|named| *named < held.lock().dropped());
+                .filter(|named| *named <= held.lock().dropped());
             if let Some(named) = below {
                 let anchors = anchors_of(&held.lock());
                 return match below_floor(state, &seat, &cwd, &held, anchors, named, turns).await {
@@ -571,6 +571,7 @@ async fn handle_client(
                 };
             }
             let opening = before.clone();
+            let floor = held.lock().dropped();
             let folded = tokio::task::spawn_blocking(move || {
                 held.read(|held| {
                     page(
@@ -589,7 +590,17 @@ async fn handle_client(
             // would make the seat unreachable rather than merely unread this
             // time.
             let page = match folded {
-                Ok(page) => page,
+                // **The window's own start is not the history's.** A page cut
+                // there with a floor above it hands the floor back as the
+                // cursor, so an uninterrupted walk crosses into the
+                // transcript instead of stopping; with no floor above it, the
+                // `None` is the honest end of the history.
+                Ok(mut page) => {
+                    if page.cursor.is_none() && floor > 0 {
+                        page.cursor = Some(floor.to_string());
+                    }
+                    page
+                }
                 Err(err) => {
                     tracing::warn!(
                         event_name = "transcript_fold_failed",
@@ -1618,6 +1629,73 @@ mod tests {
             format!("turn {}", (cursor - 1) / 2),
             "the newest turn the page serves is the one whose frame sits just below the cursor - \
              not stepped over for every result frame in between",
+        );
+    }
+
+    /// **A page read from the window's middle is still numbered by its own
+    /// rows.** Past the first megabyte the read's window no longer reaches the
+    /// file's start, so the span it hands back begins part-way in - and its
+    /// cursor is the row's own frame index rather than its place in the span.
+    /// A transcript the app's own sessions grow past easily; a smaller one
+    /// hides the conversion, because the span starts at frame zero.
+    #[tokio::test]
+    async fn a_page_from_the_middle_of_a_large_transcript_keeps_its_numbering() {
+        const ROWS: usize = 13_000;
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let rows = transcript_rows(ROWS);
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let held = crate::transport::conversation::Held::new(
+            crate::transport::conversation::Conversation::new(transcript_frames(ROWS), 0),
+        );
+        let dropped = held.lock().dropped();
+        assert!(dropped > 0, "precondition: the copy outgrew its window");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+
+        let cursor = dropped.saturating_sub(4);
+        // **Bound, never inlined into the call.** The guard a `held.lock()`
+        // returns lives to the end of its statement, and an await is inside
+        // that statement: inlined here it would still be held when the read
+        // takes the same lock, and the test would wait on itself.
+        let anchors = anchors_of(&held.lock());
+        let BelowFloor::Page(page) =
+            below_floor(&state, &seat, &cwd, &held, anchors, cursor, 4).await
+        else {
+            panic!("a page below the floor is answered")
+        };
+        assert_eq!(
+            page.cursor.as_deref(),
+            Some((cursor - 4).to_string().as_str()),
+            "four turns below the cursor the page began: a cursor in the session's own numbers, \
+             not the span's position",
+        );
+        let anchors = anchors_of(&held.lock());
+        let BelowFloor::Page(below) =
+            below_floor(&state, &seat, &cwd, &held, anchors, cursor - 4, 4).await
+        else {
+            panic!("the page below it is answered too")
+        };
+        assert_eq!(
+            turn_texts(&below).first().map(String::as_str),
+            Some(format!("turn {}", cursor - 8).as_str()),
+            "and that page's oldest turn is the one below where the first page began",
         );
     }
 
