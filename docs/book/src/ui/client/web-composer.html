@@ -217,25 +217,33 @@
     color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 
   /* ---------- the dock: the box morphed into a prompt ---------- */
-  .dock { border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
+  .dock { container-type: inline-size;
+    border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
     background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
     box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
     display: flex; flex-direction: column; gap: 11px; }
   .dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-  .dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
-  .dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
-  .dock .head .t { font-weight: 650; color: var(--text); }
-  .dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
+  .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
+  .dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+  .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
+  .dock .d-q { font-size: 16px; font-weight: 600; color: var(--text); }
+  .dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+  .dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
+  .dock .segs i.on { background: var(--accent); }
+  .dock .tag { font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
+    padding: 3px 10px; }
+  .dock .tag.warn { color: var(--warn); border: 1px solid rgba(201,161,59,.45); }
+  .dock .dest { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
   .dock .reason { color: var(--warn); font-size: var(--fs-base); }
   .dock .desc { color: var(--dim); font-size: var(--fs-base); }
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
-  .opt { display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+  .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
-  .opt .cur { width: 12px; flex: 0 0 12px; color: var(--accent); }
-  .opt .ic { color: var(--dim); }
-  .opt .ic.ok { color: var(--ok); }
-  .opt .ic.no { color: var(--bad); }
-  .opt .ic.ed { color: var(--blue); }
+  .opt .n { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    flex: none; width: 10px; margin-top: 1px; }
+  .opt.sel .n { color: var(--hot); }
+  .opt .kk { margin-left: auto; flex: none; opacity: .85; }
   .opt .tx { flex: 1; min-width: 0; }
   .opt .lbl { color: var(--dim); }
   /* What choosing an option means, on its own line under the name and in the
@@ -249,21 +257,34 @@
     border: 1.5px solid var(--ctl); display: grid; place-items: center; }
   .opt .box2.on { border-color: var(--ok); color: var(--ok); }
   .opt .box2 svg { width: 11px; height: 11px; }
-  .dock .notes { margin-left: 31px; border: 1px solid var(--ctl); border-radius: 9px;
-    padding: 7px 11px; font-size: var(--fs-base); color: var(--text);
-    background: rgba(13,17,26,.6); }
+  /* The one row that takes words, which is also where a take's words land. It
+     wraps rather than pushing the mic out of a narrow dock. */
+  .dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border-top: 1px solid var(--line); padding-top: 10px; }
+  .dock .notes { flex: 1; min-width: 0; font-size: var(--fs-base); color: var(--text); }
+  .dock .notes.ph { color: var(--dim); font-style: italic; }
+  .dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+    border: 1px solid var(--line); color: var(--dim); display: grid; place-items: center; }
+  .dock .custom.live .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
   .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
+    font-size: var(--fs-label); color: var(--dim); }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+  /* A permission's actions and a post's verbs: buttons, the trusting one
+     primary, the refusal as reachable as the approval. */
+  .dock .acts { display: flex; gap: 8px; justify-content: flex-end; }
+  .dock .btn { border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+    font-family: var(--mono); font-size: var(--fs-label); padding: 7px 13px; }
+  .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
+    background: rgba(244,118,0,.1); }
+  .dock .btn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
+  /* A refusal is a row of its own, in the tone of a thing gone wrong. */
+  .dock .refusal { border: 1px solid rgba(224,104,62,.45); border-radius: 10px;
+    padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
   /* The message itself, set apart because it is the thing being approved. */
   .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
     font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
     border-radius: 0 10px 10px 0; padding: 9px 13px;
     background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
-  .blip { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); padding-left: 31px; }
-  .blip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-    animation: pulse 1.05s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -686,124 +707,165 @@ way the TUI does it &#8212; the slot always says why it is not accepting keys.</
 </div>
 
 <h2>The prompt dock</h2>
-<p class="note">The part that matters most, and the part the web can do better than a
-character grid. The box morphs into the prompt: your eye is already in that slot, so a
+<p class="note">The box morphs into the prompt: your eye is already in that slot, so a
 permission request arrives where you were about to type rather than somewhere else on the
-screen. Options are clickable rows with the real icon for their meaning, the keyboard still
-works, and your in-flight draft is held and restored around the whole thing.</p>
+screen. Each kind says what it is: a question draws its own words with the batch as marks, a
+permission draws the subject it is about with its actions as buttons, and a held post draws
+the body that would go out. The one row that takes words is always drawn, carries the mic, and
+is where a take's words land. Your in-flight draft is held and restored around the whole
+thing.</p>
 
 <div class="stage">
   <div class="row">
     <div class="col">
       <div class="lab">permission &middot; common case</div>
       <div class="dock">
-        <div class="head"><span class="t mono">Bash</span>
-          <span class="q">git push origin polish/rate-limit-chip-softer-34</span></div>
-        <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell the agent something else</span></div>
-        </div>
-        <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
-          <span><span class="k">&#9166;</span> confirm</span>
+        <div class="d-head"><span class="tag warn">&#9888; needs approval</span>
+          <span class="q" style="margin-left:auto">Bash</span></div>
+        <div class="d-q">git push origin polish/rate-limit-chip-softer-34</div>
+        <div class="custom"><span class="notes ph">Tell the agent something else</span>
+          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+        <div class="acts"><span class="btn d">Deny</span><span class="btn">Allow once</span>
+          <span class="btn p">Allow always</span></div>
+        <div class="keys"><span><span class="k">tab</span> between the actions</span>
+          <span><span class="k">&#9166;</span> activates</span>
           <span><span class="k">esc</span> reject</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">The subject is drawn exactly as it arrives - prose
+      when Claude sent prose, a command when it did not - and the actions are buttons with the
+      trusting one primary.</p>
     </div>
     <div class="col">
-      <div class="lab">permission &middot; with the CLI's own reason</div>
+      <div class="lab">permission &middot; denying in your own words</div>
       <div class="dock">
-        <div class="head"><span class="t mono">Read</span>
-          <span class="q">/tmp/forge-deny-scenario.txt</span></div>
+        <div class="d-head"><span class="tag warn">&#9888; needs approval</span>
+          <span class="q" style="margin-left:auto">Read</span></div>
+        <div class="d-q">/tmp/forge-deny-scenario.txt</div>
         <div class="reason">Path is outside allowed working directories</div>
-        <div class="desc">Reads the contents of a file outside this project.</div>
-        <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Read &#183; paths matching //tmp/**</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell the agent something else</span></div>
-        </div>
-        <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
-          <span><span class="k">&#9166;</span> confirm</span>
-          <span><span class="k">esc</span> reject</span></div>
+        <div class="custom"><span class="notes">I am not touching files outside the project tonight</span>
+          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+        <div class="acts"><span class="btn d">Deny with these words</span>
+          <span class="btn">Allow once</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">The words become the denial's reason, and the deny
+      says so rather than leaving the reader to guess. The mic dictates them; on a phone it is
+      the only way in, because a touch screen has no push-to-talk key.</p>
     </div>
   </div>
 
   <div class="row">
     <div class="col">
-      <div class="lab">question &middot; multi-select with a notes option</div>
+      <div class="lab">question &middot; multi-select, second of three</div>
       <div class="dock">
-        <div class="head"><span class="qm">?</span><span class="t">Environments</span>
-          <span class="q">Q2 of 3</span></div>
-        <div class="desc">Pick the environments to deploy to.</div>
+        <div class="d-head"><span class="qm">?</span>
+          <span class="d-q">Pick the environments to deploy to.</span>
+          <span class="segs"><i></i><i class="on"></i><i></i></span></div>
+        <div class="desc">Environments</div>
         <div class="opts">
-          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="tx"><span class="lbl">Staging</span><span class="why">The pre-production cluster</span></span></div>
-          <div class="opt"><span class="cur"></span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Production</span></div>
-          <div class="opt"><span class="cur"></span><span class="box2"></span><span class="lbl">Development</span></div>
-          <div class="opt sel"><span class="cur">&#9656;</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span><span class="lbl">Tell the agent something else:</span></div>
+          <div class="opt sel"><span class="n">1</span>
+            <span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="lbl">Staging</span><span class="why">The pre-production cluster</span></span>
+            <span class="kk"><span class="k">&#9166;</span></span></div>
+          <div class="opt"><span class="n">2</span>
+            <span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span>
+            <span class="tx"><span class="lbl">Production</span></span></div>
+          <div class="opt"><span class="n">3</span><span class="box2"></span>
+            <span class="tx"><span class="lbl">Development</span></span></div>
         </div>
-        <div class="notes">Also bump the queue worker concurrency<span class="caret"></span></div>
-        <div class="keys"><span><span class="k">space</span> toggle</span>
-          <span><span class="k">&#8593;&#8595;</span> move</span>
-          <span><span class="k">&#9166;</span> submit</span>
+        <div class="custom"><span class="notes">Also bump the queue worker concurrency<span class="caret"></span></span>
+          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+        <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
+          <span><span class="k">space</span> toggle</span>
+          <span><span class="k">1</span>-<span class="k">9</span> pick</span>
+          <span><span class="k">&#9166;</span> submit 2</span>
           <span><span class="k">esc</span> reject</span></div>
       </div>
+      <p class="note" style="margin:8px 0 0">Rows carry their own number, which is the key that
+      answers them; the submit key says how many will go, so a set is never sent unseen.</p>
     </div>
     <div class="col">
-      <div class="lab">question &middot; queued behind another prompt</div>
+      <div class="lab">question &middot; a take in the words row</div>
       <div class="dock">
-        <div class="queue">&#9660; 2 more pending after this</div>
-        <div class="head"><span class="t mono">Edit</span><span class="q">src/foo.rs</span></div>
+        <div class="d-head"><span class="qm">?</span>
+          <span class="d-q">Which branch should I land on?</span></div>
         <div class="opts">
-          <div class="opt sel"><span class="cur">&#9656;</span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Edit &#183; src/**</span></div>
-          <div class="opt"><span class="cur"></span>
-            <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
+          <div class="opt sel"><span class="n">1</span>
+            <span class="tx"><span class="lbl">main</span></span>
+            <span class="kk"><span class="k">&#9166;</span></span></div>
+          <div class="opt"><span class="n">2</span>
+            <span class="tx"><span class="lbl">release branch</span></span></div>
         </div>
-        <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
-          <span><span class="k">&#9166;</span> confirm</span>
-          <span><span class="k">esc</span> reject</span></div>
+        <div class="custom live">
+          <span class="tc" style="margin:0">
+            <span class="dot"></span><span class="clock">0:07</span>
+            <span class="bars" style="width:80px;height:14px"><i style="height:30%"></i><i class="mid" style="height:55%"></i><i class="hot" style="height:88%"></i><i style="height:40%"></i><i class="mid" style="height:62%"></i><i style="height:28%"></i></span>
+            <span class="ready">2 ready</span>
+            <span class="sep">&#183;</span><span class="pace">32 KB/s</span>
+            <span class="x">&#10005;</span></span>
+          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span>
+        </div>
+        <div class="keys"><span><span class="k">esc</span> cancels the take, then rejects</span></div>
       </div>
-      <p class="note" style="margin:8px 0 0">Prompts queue per session, not per view, so a
-      background session's request waits its turn rather than interrupting you.</p>
+      <p class="note" style="margin:8px 0 0">A take draws on the row its words will land in, in
+      the same card the composer draws - one component, two surfaces - and the mic stays beside
+      it, because pressing it is what put the take there and pressing it again ends it. The
+      escape order is named once rather than left to be discovered.</p>
     </div>
   </div>
 
-  <div class="lab">held slack post &middot; the approval is the message</div>
-  <div class="dock">
-    <div class="head"><span class="t">Reply in Slack</span>
-      <span class="q">Trust Machines &#183; granite-staging-alerts &#183; thread 1758901234.482910</span></div>
-    <div class="sent">Deploy finished on staging. 148 of 148 checks green, rollback not needed.</div>
-    <div class="opts">
-      <div class="opt sel"><span class="cur">&#9656;</span>
-        <svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Send it</span></div>
-      <div class="opt"><span class="cur"></span>
-        <svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Don't send</span></div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">queued &middot; and an answer on its way</div>
+      <div class="dock">
+        <div class="d-head"><span class="qm">?</span>
+          <span class="d-q">Which branch should I land on?</span></div>
+        <div class="opts">
+          <div class="opt sel"><span class="n">1</span>
+            <span class="tx"><span class="lbl">main</span></span>
+            <span class="answering"><span class="ring"></span>sending</span></div>
+          <div class="opt"><span class="n">2</span>
+            <span class="tx"><span class="lbl">release branch</span></span></div>
+        </div>
+        <div class="queue">2 more pending after this</div>
+      </div>
+      <p class="note" style="margin:8px 0 0">The wait rides the row that was answered, the keys
+      line stands down while it is out, and the queue count sits under the list - what comes next
+      rather than a headline.</p>
     </div>
-    <div class="blip"><span class="dot"></span>dictating &#183; the words land in your draft either way</div>
-    <div class="keys"><span><span class="k">&#8593;&#8595;</span> select</span>
-      <span><span class="k">&#9166;</span> confirm</span>
-      <span><span class="k">esc</span> reject</span></div>
+    <div class="col">
+      <div class="lab">refused &middot; a row of its own, in the bad tone</div>
+      <div class="dock">
+        <div class="d-head"><span class="qm">?</span>
+          <span class="d-q">Which branch should I land on?</span></div>
+        <div class="opts">
+          <div class="opt sel"><span class="n">1</span>
+            <span class="tx"><span class="lbl">main</span></span>
+            <span class="kk"><span class="k">&#9166;</span></span></div>
+          <div class="opt"><span class="n">2</span>
+            <span class="tx"><span class="lbl">release branch</span></span></div>
+        </div>
+        <div class="refusal">the prompt was already answered</div>
+        <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
+          <span><span class="k">&#9166;</span> submit</span>
+          <span><span class="k">esc</span> reject</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">A refusal brings the dock back live with the reason
+      in the bad tone: the reader can answer again rather than being left with a dead prompt.</p>
+    </div>
+    <div class="col">
+      <div class="lab">held slack post &middot; the approval is the message</div>
+      <div class="dock">
+        <div class="d-head"><span class="dest">Trust Machines &#183; granite-staging-alerts &#183; thread 1758901234.482910</span>
+          <span class="q" style="margin-left:auto">Reply in Slack</span></div>
+        <div class="sent">Deploy finished on staging. 148 of 148 checks green, rollback not needed.</div>
+        <div class="acts"><span class="btn d">Don't send</span><span class="btn p">Post</span></div>
+      </div>
+      <p class="note" style="margin:8px 0 0">The words being approved are shown in full, because a
+      summary is not what goes out. The destination is a chip and the conversation is Slack's own
+      name for it rather than a <span class="mono">#</span> the panel made up: a DM's label is the
+      partner's user id. No mic here - the text is approved, not composed.</p>
+    </div>
   </div>
-  <p class="note" style="margin:8px 0 0">The words being approved are shown in full, because a
-  summary is not what goes out. The head names Post or Reply, the workspace, the conversation
-  and the thread, and the conversation is Slack's own name for it rather than a
-  <span class="mono">#</span> the panel made up: a DM's label is the partner's user id. A draft
-  that leaves the core without your answer here - another view took it, or it expired - stands
-  this dock down and leaves a line in its place saying which ending it was.</p>
 </div>
 
 </body>

@@ -840,9 +840,37 @@
   .mdhead { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .mdhead .t { font-weight: 500; color: var(--text); font-family: var(--mono); }
   .mdhead .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
+  .mdhead .q.trail { margin-left: auto; }
+  .md-q { font-size: 16px; font-weight: 600; color: var(--text); }
+  .msegs { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+  .msegs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
+  .msegs i.on { background: var(--accent); }
+  .mtag { font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
+    padding: 3px 10px; }
+  .mtag.warn { color: var(--warn); border: 1px solid rgba(201,161,59,.45); }
+  .mdest { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
   .mopts { display: flex; flex-direction: column; gap: 1px; }
   .mopt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); cursor: pointer; }
+  .mopt .n { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    flex: none; width: 10px; margin-top: 1px; }
+  .mopt.sel .n { color: var(--hot); }
+  .mopt .kk { margin-left: auto; flex: none; opacity: .85; }
+  /* The one row that takes words, which is also where a take's words land. */
+  .mcustom { display: flex; align-items: center; gap: 10px;
+    border-top: 1px solid var(--line); padding-top: 10px; }
+  .mnotes { flex: 1; min-width: 0; font-size: var(--fs-base); color: var(--text); }
+  .mnotes.ph { color: var(--dim); font-style: italic; }
+  .mmic { flex: none; width: 26px; height: 26px; border-radius: 8px;
+    border: 1px solid var(--line); color: var(--dim); display: grid; place-items: center; }
+  /* A permission's actions and a post's verbs: buttons, the trusting one
+     primary, the refusal as reachable as the approval. */
+  .macts { display: flex; gap: 8px; justify-content: flex-end; }
+  .mbtn { border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+    font-family: var(--mono); font-size: var(--fs-label); padding: 7px 13px; }
+  .mbtn.p { border-color: rgba(244,118,0,.5); color: var(--hot); background: rgba(244,118,0,.1); }
+  .mbtn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
   /* A question's marks, in the client's own forms: a circle that fills on the
      row being taken, a box with a long thin check for a set, an empty slot so
      the escape row's words line up. */
@@ -2177,57 +2205,54 @@ branch main, nothing to commit</div>
         <!-- the box morphed into a permission prompt -->
         <div class="cst" data-cs="ask">
           <div class="mdock">
-            <div class="mdhead"><span class="t">Bash</span>
-              <span class="q">git push origin polish/rate-limit-chip-softer-34</span></div>
-            <div class="mopts">
-              <div class="mopt sel"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow once</span></div>
-              <div class="mopt"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Allow always for Bash &#183; git push *</span></div>
-              <div class="mopt"><svg class="ic ed"><use href="#i-edit"/></svg><span class="lbl">Allow with edits</span></div>
-              <div class="mopt"><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Deny</span></div>
-              <div class="mopt"><svg class="ic"><use href="#i-dots"/></svg><span class="lbl">Tell the agent something else</span></div>
-            </div>
-            <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
-              <span><span class="mk">&#9166;</span> confirm</span>
+            <div class="mdhead"><span class="mtag warn">&#9888; needs approval</span>
+              <span class="q trail">Bash</span></div>
+            <div class="md-q">git push origin polish/rate-limit-chip-softer-34</div>
+            <div class="mcustom"><span class="mnotes ph">Tell the agent something else</span>
+              <span class="mmic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+            <div class="macts"><span class="mbtn d">Deny</span><span class="mbtn">Allow once</span>
+              <span class="mbtn p">Allow always</span></div>
+            <div class="mkeys"><span><span class="mk">tab</span> between the actions</span>
+              <span><span class="mk">&#9166;</span> activates</span>
               <span><span class="mk">esc</span> reject</span></div>
           </div>
 
           <!-- The slot's other two kinds, as the client draws them: a question
                from the CLI, one answer at a time, and a Slack post held for
-               approval. Same card, same rows, same keys. -->
-          <div class="annot"><span class="dim">a question &#183; the escape row holds the slot its options mark in, and the marked option's preview sits in the panel</span></div>
+               approval. Each says what it is, and the words row is the one row
+               that takes text. -->
+          <div class="annot"><span class="dim">a question &#183; its own words, the batch as marks, numbered rows, and the words row the mic lives on</span></div>
           <div class="mdock">
             <div class="mdhead"><svg class="ic qm"><use href="#i-question"/></svg>
-              <span class="t">Environments</span><span class="q">Q2 of 3</span></div>
+              <span class="md-q">Pick the environments to deploy to.</span>
+              <span class="msegs"><i></i><i class="on"></i><i></i></span></div>
             <div class="mopts">
-              <div class="mopt sel"><span class="radio on"></span>
+              <div class="mopt sel"><span class="n">1</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span>
                 <span class="tx"><span class="lbl">Staging</span>
-                  <span class="why">the pre-production cluster</span></span></div>
-              <div class="mopt"><span class="radio"></span>
+                  <span class="why">the pre-production cluster</span></span>
+                <span class="kk"><span class="mk">&#9166;</span></span></div>
+              <div class="mopt"><span class="n">2</span><span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span>
                 <span class="tx"><span class="lbl">Production</span>
                   <span class="why">live traffic</span></span></div>
-              <div class="mopt"><span class="radio"></span>
+              <div class="mopt"><span class="n">3</span><span class="box2"></span>
                 <span class="tx"><span class="lbl">Development</span></span></div>
-              <div class="mopt"><span class="slot"></span>
-                <span class="tx"><span class="lbl">Tell the agent something else:</span></span></div>
             </div>
             <div class="mpreview"><p><strong>staging</strong> &#183; deploys run the full migration set against the replica first.</p></div>
+            <div class="mcustom"><span class="mnotes ph">Or tell the agent something else&#8230;</span>
+              <span class="mmic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
             <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> move</span>
-              <span><span class="mk">&#9166;</span> submit</span>
+              <span><span class="mk">space</span> toggle</span>
+              <span><span class="mk">1</span>-<span class="mk">9</span> pick</span>
+              <span><span class="mk">&#9166;</span> submit 2</span>
               <span><span class="mk">esc</span> reject</span></div>
           </div>
 
-          <div class="annot"><span class="dim">a held Slack post &#183; the draft reads through the same markdown panel the previews use</span></div>
+          <div class="annot"><span class="dim">a held Slack post &#183; the destination is a chip and the body is the card; no mic, because the text is approved rather than composed</span></div>
           <div class="mdock">
-            <div class="mdhead"><span class="t">Post to Slack</span>
-              <span class="q">Trust Machines &#183; #granite-staging-alerts</span></div>
+            <div class="mdhead"><span class="mdest">Trust Machines &#183; #granite-staging-alerts</span>
+              <span class="q trail">Post to Slack</span></div>
             <div class="mpreview">The staging deploy is green. Rolling to production once the 14:30 window closes.</div>
-            <div class="mopts">
-              <div class="mopt sel"><svg class="ic ok"><use href="#i-check"/></svg><span class="lbl">Send it</span></div>
-              <div class="mopt"><svg class="ic no"><use href="#i-x"/></svg><span class="lbl">Don't send</span></div>
-            </div>
-            <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> select</span>
-              <span><span class="mk">&#9166;</span> confirm</span>
-              <span><span class="mk">esc</span> reject</span></div>
+            <div class="macts"><span class="mbtn d">Don't send</span><span class="mbtn p">Post</span></div>
           </div>
         </div>
       </div>

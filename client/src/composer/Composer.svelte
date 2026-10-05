@@ -484,6 +484,15 @@
         return;
       }
       if (message.what !== 'dispatch') return;
+      // **A take's own refusal is not an answer's.** This composer knows it
+      // dispatched one, and the wire's `what` cannot say which command a
+      // `dispatch` refusal was about - so an outstanding answer would take a
+      // refused take as its own reason and clear the stand-down that stops it
+      // being sent twice.
+      if (opening || untrack(() => take) !== null) {
+        box.dictateLine = { tone: 'bad', text: message.why };
+        return;
+      }
       if (box.answered !== null) {
         box.refusal = message.why;
         return;
@@ -802,6 +811,32 @@
   }
 
   /**
+   * The mic on the dock's words row: press to begin a take, press to end it.
+   *
+   * A divergence from this composer's own "the mic is the door, not the
+   * trigger" rule, and the reason is rule 22's touch door: a phone has no
+   * push-to-talk key, so a row that could only SHOW a take would leave a finger
+   * no way to dictate an answer at all. Ending submits, so the words land in
+   * the row they were spoken into.
+   */
+  function micTake(): void {
+    const live = untrack(() => take);
+    // **A take on ANOTHER seat is not this row's to end.** The microphone is
+    // this client's, but the take belongs to the seat it started on - so the
+    // press is refused by name, which is the spec's own case for a second seat,
+    // rather than silently stopping a take this reader cannot see.
+    if (live !== null && boxKey(live.seat) !== boxKey(slot)) {
+      box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
+      return;
+    }
+    if (opening || live !== null || composer.take !== null) {
+      act('finish');
+      return;
+    }
+    void startTake();
+  }
+
+  /**
    * Remember which prompt this reader answered, while the core still lists it.
    *
    * A new answer supersedes the refusal it followed: the reason belonged to the
@@ -879,11 +914,15 @@
         depth={seat.pendingDepth}
         notice={box.refusal}
         take={composer.take}
+        {wire}
         bind:notes={dockDraft}
         bind:ownOpen={dockOpen}
         land={dockLanded}
         onanswer={remember}
         onabandon={abandon}
+        onmic={micTake}
+        {dictation}
+        takeline={box.dictateLine}
         answered={box.answeredKey !== null &&
           box.answeredKey === ownKeyOf(dockAsk) &&
           box.refusal === null}
