@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -18,6 +19,17 @@ val clientVersionCode: Int = clientVersion.split('.').let { parts ->
         (parts.getOrNull(2)?.toIntOrNull() ?: 0)
 }
 
+// The release keystore, read through the gitignored key.properties the README
+// documents. Absent, a release build is unsigned rather than wrongly signed,
+// and `just client-android-release` is the gate that refuses it.
+val keyProperties = Properties().apply {
+    val propFile = file("key.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+val releaseKeystore = keyProperties.getProperty("storeFile")
+
 android {
     compileSdk = 37
     namespace = "dev.vedhavyas.forge"
@@ -28,6 +40,16 @@ android {
         targetSdk = 37
         versionCode = clientVersionCode
         versionName = clientVersion
+    }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = keyProperties.getProperty("storePassword")
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -52,6 +74,9 @@ android {
                   exclude("build/**")
                 }.files.toTypedArray()
             )
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

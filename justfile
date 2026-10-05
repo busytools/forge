@@ -398,6 +398,165 @@ client-release version:
     rm -rf "$app.old"
     echo "[OK] installed the client: $app is version $got"
 
+# The second half of a client release, and runnable on its own so a release
+# that failed after the desktop swap can retry just this one, the way
+# `client-release` retries alone.
+#
+# Signed with the release keystore the README documents
+# (~/.android/forge-release.keystore, read through the gitignored
+# gen/android/app/key.properties; neither is in the repo). The phone carries the
+# debug-signed build from the target's first pass, so its first release-signed
+# install takes one uninstall; after that it upgrades in place.
+#
+# The toolchain is RESOLVED rather than required: a fresh login shell on this
+# machine exports none of ANDROID_HOME / NDK_HOME / JAVA_HOME, and the CLI's
+# own fallback lands on an empty ~/Library/Android/sdk (which the CLI creates
+# while looking), so the recipe finds what is installed and hands the CLI the
+# one variable it needs. It fails rather than skipping: an APK that never
+# built must not read as a released half.
+#
+# What the build produced is read back, not assumed - the version off the
+# APK, its ABIs and its signer against the keystore - because a stale APK
+# installs exactly as quietly as a fresh one; and the tree must still be
+# clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
+#
+# Build and stage the Android release APK.
+client-android-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # An SDK the CLI can use: one with platforms or an NDK inside it. The
+    # empty ~/Library/Android/sdk the CLI creates while looking must not count.
+    sdk=""
+    for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" /opt/homebrew/share/android-commandlinetools; do
+        [ -n "$candidate" ] || continue
+        if [ -d "$candidate/platforms" ] || [ -d "$candidate/ndk" ]; then
+            sdk="$candidate"
+            break
+        fi
+    done
+    if [ -z "$sdk" ]; then
+        echo "[ERROR] no Android SDK found - set ANDROID_HOME, or install one (client/README.md, The Android target)" >&2
+        exit 1
+    fi
+
+    # The CLI finds the NDK inside the SDK itself on this machine (verified);
+    # NDK_HOME wins when it is set, since that is what the CLI honours first.
+    #
+    # Every read below ends `|| true` so a failure reaches its guard's
+    # message instead of a bare exit under `set -e`.
+    ndk="${NDK_HOME:-$(find "$sdk/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)}"
+    if [ -z "$ndk" ]; then
+        echo "[ERROR] no Android NDK under $sdk/ndk - install one (client/README.md, The Android target)" >&2
+        exit 1
+    fi
+
+    # Gradle takes java from PATH when JAVA_HOME is unset, which is the case
+    # in a fresh shell here; it only has to exist.
+    if ! command -v java >/dev/null 2>&1; then
+        echo "[ERROR] no java on PATH - the Android build needs a JDK 17 or newer (client/README.md, The Android target)" >&2
+        exit 1
+    fi
+
+    keystore="$HOME/.android/forge-release.keystore"
+    keyprops=client/src-tauri/gen/android/app/key.properties
+    if [ ! -e "$keystore" ] || [ ! -e "$keyprops" ]; then
+        echo "[ERROR] the release keystore is not set up - mint it once, then write $keyprops:" >&2
+        echo "        keytool -genkeypair -v -keystore $keystore -alias forge \\" >&2
+        echo "          -keyalg RSA -keysize 4096 -validity 10000 -dname \"CN=forge release\"" >&2
+        echo "        with storeFile, storePassword, keyAlias and keyPassword (client/README.md has the file)" >&2
+        exit 1
+    fi
+
+    # Existence is not enough: a field missing from the file mislabels the
+    # failure as a missing APK later, so each is required by name.
+    keyfile=$(sed -n 's/^storeFile=//p' "$keyprops" || true)
+    password=$(sed -n 's/^storePassword=//p' "$keyprops" || true)
+    keyalias=$(sed -n 's/^keyAlias=//p' "$keyprops" || true)
+    keypassword=$(sed -n 's/^keyPassword=//p' "$keyprops" || true)
+    missing=""
+    [ -n "$keyfile" ] || missing="$missing storeFile"
+    [ -n "$password" ] || missing="$missing storePassword"
+    [ -n "$keyalias" ] || missing="$missing keyAlias"
+    [ -n "$keypassword" ] || missing="$missing keyPassword"
+    if [ -n "$missing" ]; then
+        echo "[ERROR] $keyprops is missing:$missing (client/README.md has the file)" >&2
+        exit 1
+    fi
+
+    # A keystore readable past its owner is worth one line, not a refusal.
+    # GNU stat first (the common case on this machine's PATH), BSD second.
+    mode=$(stat -c '%a' "$keystore" 2>/dev/null || stat -f '%Lp' "$keystore" 2>/dev/null || true)
+    if [ "$mode" != "600" ]; then
+        echo "[WARN] $keystore is readable beyond its owner - chmod 600 it" >&2
+    fi
+
+    echo "[INFO] android release: SDK $sdk, NDK $ndk, java $(command -v java)"
+    export ANDROID_HOME="$sdk"
+
+    # What the build may not do is CHANGE the tree - a Cargo.lock or gen/
+    # rewrite riding out of a release. The state itself is compared before and
+    # after rather than against clean, so a standalone retry works from
+    # whatever the working tree holds; a tree that was already dirty is the
+    # caller's to own, and a dirty-then-reverted path compares equal and
+    # passes, both by design.
+    before=$(git status --porcelain || true)
+    npm --prefix client run tauri -- android build --apk --ci --target aarch64
+
+    built=client/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+    if [ ! -e "$built" ]; then
+        echo "[ERROR] the build produced no APK at $built" >&2
+        exit 1
+    fi
+
+    aapt2=$(find "$sdk/build-tools" -maxdepth 2 -name aapt2 -type f 2>/dev/null | sort -V | tail -1 || true)
+    apksigner=$(find "$sdk/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1 || true)
+    if [ -z "$aapt2" ] || [ -z "$apksigner" ]; then
+        echo "[ERROR] no aapt2/apksigner under $sdk/build-tools - the SDK is incomplete" >&2
+        exit 1
+    fi
+
+    got=$("$aapt2" dump badging "$built" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" || true)
+    if [ "$got" != "{{version}}" ]; then
+        echo "[ERROR] the built APK is version $got, expected {{version}}" >&2
+        exit 1
+    fi
+
+    # The whole field, not its first token: a multi-ABI APK lists several and
+    # a first-token read would stage it under the arm64 name.
+    abi=$("$aapt2" dump badging "$built" | sed -n 's/^native-code: //p' | tr -d "'" || true)
+    if [ "$abi" != "arm64-v8a" ]; then
+        echo "[ERROR] the built APK's native code is '$abi', expected arm64-v8a" >&2
+        exit 1
+    fi
+
+    # keytool prints the digest upper-case with colons and apksigner lower-case
+    # without, so both sides are normalised before they are compared; keytool's
+    # own diagnostics land on stdout and the sed drops them, so the guard below
+    # is what tells a reader what to fix. The password rides argv here, which
+    # the threat model allows: one trusted user on their own machine.
+    want=$(keytool -list -v -keystore "$keystore" -alias "$keyalias" -storepass "$password" 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-Z' 'a-z' || true)
+    if [ -z "$want" ]; then
+        echo "[ERROR] the release keystore could not be read - check key.properties' alias and password" >&2
+        exit 1
+    fi
+    signed=$("$apksigner" verify --print-certs "$built" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':' | tr 'A-Z' 'a-z' || true)
+    if [ "$signed" != "$want" ]; then
+        echo "[ERROR] the APK is not signed by the release keystore (signer ${signed:-none}, expected $want)" >&2
+        exit 1
+    fi
+
+    if [ "$(git status --porcelain)" != "$before" ]; then
+        echo "[ERROR] the Android build changed the tree - commit or undo before releasing" >&2
+        git status --short >&2
+        exit 1
+    fi
+
+    out=client/src-tauri/target/release/bundle/android
+    mkdir -p "$out"
+    cp "$built" "$out/forge-{{version}}-arm64.apk"
+    echo "[OK] staged the Android release: $out/forge-{{version}}-arm64.apk (arm64, release-signed)"
+
 # Run the app: the debug webview over the Vite dev server, with a frontend edit
 # reloading into the open window. Nothing is installed and no disk image is
 # produced - `client-tauri-check` is the one that builds what ships.
@@ -675,9 +834,10 @@ remove-cert:
 #
 # One number names both halves: this bumps the workspace and the client's
 # own manifest to `version`, commits and tags them together, and only then
-# builds and installs the client, through `client-release`.
+# builds and installs the client, through `client-release`, and stages the
+# Android APK, through `client-android-release`.
 #
-# Cut a release: bump the workspace and client versions, commit, tag, install the client.
+# Cut a release: bump the workspace and client versions, commit, tag, install the client, stage the APK.
 release version: check-release check-feature-configs
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
@@ -705,6 +865,7 @@ release version: check-release check-feature-configs
     # "no tag message?" when signing is on.
     git tag -m "v{{version}}" "v{{version}}"
     "{{just_executable()}}" --justfile "{{justfile()}}" client-release {{version}}
+    "{{just_executable()}}" --justfile "{{justfile()}}" client-android-release {{version}}
     @echo
-    @echo "[OK] released v{{version}}: tagged locally, client installed at /Applications/forge.app"
-    @echo "     To publish: git push --follow-tags origin main"
+    @echo "[OK] released v{{version}}: tagged locally, client installed at /Applications/forge.app, APK staged under client/src-tauri/target/release/bundle/android/"
+    @echo "     To publish: git push --follow-tags origin main (attach the APK to the release when cutting it)"
