@@ -48,6 +48,12 @@ export class Microphone {
     private readonly context: AudioContext,
     private readonly node: AudioWorkletNode,
     private readonly chunker: FrameChunker,
+    /**
+     * The input the stream actually opened, which is the only moment the
+     * browser names the system default: a stream asked for WITH a pick is
+     * that device, and one asked for plainly is whatever the OS resolves to.
+     */
+    readonly resolved: { id: string; label: string },
   ) {}
 
   /**
@@ -61,6 +67,12 @@ export class Microphone {
     const audio: MediaTrackConstraints = { channelCount: 1 };
     if (deviceId !== null) audio.deviceId = { exact: deviceId };
     const stream = await navigator.mediaDevices.getUserMedia({ audio });
+    const track = stream.getAudioTracks()[0];
+    const settings = track?.getSettings() ?? {};
+    const resolved = {
+      id: typeof settings.deviceId === 'string' ? settings.deviceId : '',
+      label: track?.label ?? '',
+    };
 
     // The context at the model's own rate, so the browser's resampler is
     // the only one in the path and everything downstream is mono 16 kHz.
@@ -68,7 +80,7 @@ export class Microphone {
     await context.audioWorklet.addModule(new URL('./mic-worklet.js', import.meta.url));
     const node = new AudioWorkletNode(context, 'forge-mic', { numberOfOutputs: 0 });
     const chunker = new FrameChunker();
-    const mic = new Microphone(stream, context, node, chunker);
+    const mic = new Microphone(stream, context, node, chunker, resolved);
     node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (mic.onFrame === null) return;
       for (const frame of chunker.push(event.data)) mic.onFrame(frame);

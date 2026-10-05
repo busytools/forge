@@ -29,6 +29,8 @@ export interface MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null;
   flush(): Uint8Array | null;
   stop(): void;
+  /** The input the stream opened, when the source reports one. */
+  resolved?: { id: string; label: string };
 }
 
 /** What a take needs of the socket. */
@@ -52,6 +54,8 @@ export interface TakeWiring {
 /** One live take. */
 export class LocalTake {
   readonly seat: SessionSlot;
+  /** The input the take's stream opened, when the browser reported one. */
+  readonly resolved: { id: string; label: string } | null;
 
   private started = false;
   private ended = false;
@@ -70,6 +74,7 @@ export class LocalTake {
     private readonly wiring: Omit<TakeWiring, 'connection' | 'options' | 'device'>,
   ) {
     this.seat = wiring.seat;
+    this.resolved = mic.resolved ?? null;
     this.ring = new FrameRing((bytes) => connection.frame(bytes));
     mic.onFrame = (bytes) => this.ring.push(bytes);
     this.unlisten = connection.onStatus((status) => this.statusMoved(status));

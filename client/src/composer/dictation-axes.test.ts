@@ -17,11 +17,13 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_AXES } from '../session/wire';
 import {
   axesFor,
+  defaultDeviceFor,
   DESTINATION,
   keyHint,
   MODES,
   OVERRIDE,
   rememberAxes,
+  rememberDefaultDevice,
   STRUCTURE,
   VOICE,
 } from './dictation';
@@ -86,5 +88,22 @@ describe('the key hint', () => {
     // take is worse than no hint at all.
     expect(keyHint('off', true)).toBeNull();
     expect(keyHint('off', false)).toBeNull();
+  });
+});
+
+describe('the default the system resolved to', () => {
+  it('is remembered once a take has opened it, and forgotten when unnamed', () => {
+    expect(defaultDeviceFor(), 'nothing learned yet').toBeNull();
+
+    rememberDefaultDevice({ id: 'mic-2', label: 'Shure SM7B' });
+    expect(defaultDeviceFor()).toEqual({ id: 'mic-2', label: 'Shure SM7B' });
+
+    // A report with no name is not a name: the row stays plain rather than
+    // drawing brackets around nothing.
+    rememberDefaultDevice({ id: 'mic-2', label: '' });
+    expect(defaultDeviceFor()).toBeNull();
+
+    rememberDefaultDevice(null);
+    expect(defaultDeviceFor()).toBeNull();
   });
 });
