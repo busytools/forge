@@ -161,7 +161,7 @@ impl Tool for AskNoul {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
@@ -234,7 +234,7 @@ impl Tool for AskChoice {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
@@ -302,7 +302,7 @@ impl Tool for AskScore {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
@@ -348,6 +348,42 @@ mod tests {
             model: "test-model".to_owned(),
             answer,
             usage: Some(Usage { input_tokens: 10, output_tokens: 3, cost: None }),
+        }
+    }
+
+    /// The tool text ships to every caller that has the tools, so the two
+    /// sentences that teach the shape a call takes and the budget it must
+    /// fit are pinned here: a silent delete fails instead of shipping.
+    #[test]
+    fn the_tool_text_carries_its_structured_values_and_budget_sentences() {
+        let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() };
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() };
+        let score = AskScore { facade: MockSystemOneFacade::new().into_arc() };
+        for (tool, description, schema) in [
+            ("systemone__ask_noul", noul.description(), noul.input_schema()),
+            ("systemone__ask_choice", choice.description(), choice.input_schema()),
+            ("systemone__ask_score", score.description(), score.input_schema()),
+        ] {
+            assert!(
+                description.contains(
+                    "`instructions` and criteria values may be any JSON - the question in one \
+                     field, referenced data in others, named with backticks"
+                ),
+                "{tool} must teach the structured values it takes: {description}"
+            );
+            let state = schema["properties"]["state"]["description"]
+                .as_str()
+                .expect("the state description is a string");
+            for clause in [
+                "The state carries what the decision needs",
+                "pass the context, not a pointer to it",
+                "must fit the live ~32k-token context; keep the state well inside it",
+            ] {
+                assert!(
+                    state.contains(clause),
+                    "{tool}'s state description owes {clause:?}: {state}"
+                );
+            }
         }
     }
 
