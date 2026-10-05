@@ -128,6 +128,8 @@ impl Tool for AskNoul {
         "Ask the System One decision model a single yes/no question about a state (a string, \
          a JSON object, or an array) and get back the probability that the answer is yes, from \
          0 to 1. The model answers from its predictive distribution and never writes prose. \
+         `instructions` and criteria values may be any JSON - the question in one field, \
+         referenced data in others, named with backticks. \
          When to reach for it: before interrupting the user with a question this session could \
          probably decide itself (put the situation in `state` and the ask in `instructions`; \
          when the answer is decisive and the action reversible, act), or as a second opinion \
@@ -159,7 +161,7 @@ impl Tool for AskNoul {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
@@ -205,7 +207,9 @@ impl Tool for AskChoice {
         "Ask the System One decision model to choose one option from the set you define, for a \
          state (a string, a JSON object, or an array). Returns the winning option, the \
          probability of every option, and a confidence for the distribution. The model never \
-         writes prose. When to reach for it: routing and picking between enumerated \
+         writes prose. `instructions` and criteria values may be any JSON - the question in \
+         one field, referenced data in others, named with backticks. \
+         When to reach for it: routing and picking between enumerated \
          alternatives, or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
@@ -230,7 +234,7 @@ impl Tool for AskChoice {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
@@ -273,7 +277,9 @@ impl Tool for AskScore {
         "Ask the System One decision model to place a state (a string, a JSON object, or an \
          array) on an ordered rubric you define. Returns a fractional score (it can land \
          between levels), the probability of each level, a legend mapping level positions to \
-         your text, and a confidence. The model never writes prose. When to reach for it: \
+         your text, and a confidence. The model never writes prose. `instructions` may be any \
+         JSON - the question in one field, referenced data in others, named with backticks; \
+         the levels stay strings. When to reach for it: \
          severity, quality, priority, or risk judgments where the levels are meaningful to you. \
          Beyond those moments, score a judgment when it matters to the user and is not obvious, \
          and skip it when the position would not change what you do. \
@@ -295,7 +301,7 @@ impl Tool for AskScore {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The endpoint reads up to ~32k tokens of state." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
