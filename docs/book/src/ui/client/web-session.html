@@ -717,7 +717,7 @@
   .strip .ti .st.err { color: var(--bad); }
   /* The agents row: the count at the strip's right, and the way into each
      instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
-  .sg-seg { margin-left: auto; display: inline-flex; }
+  .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
   .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
     border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
     font: inherit; color: var(--muted); }
