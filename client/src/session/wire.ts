@@ -186,6 +186,8 @@ export interface SessionRecord {
    */
   slash_commands: unknown[];
   subagents: unknown[];
+  /** The instances the session dispatched, joined by the core. */
+  subagent_instances: SubagentCard[];
   file_index: unknown;
   /** What this seat's composer is doing. */
   composer: ComposerState;
@@ -384,6 +386,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     background_tasks: list(held['background_tasks']),
     slash_commands: list(held['slash_commands']),
     subagents: list(held['subagents']),
+    subagent_instances: list(held['subagent_instances']).map(subagentCardFrom),
     file_index: held['file_index'] ?? null,
     composer: composerFrom(held['composer']),
     pending_asks: asksFrom(held['pending_asks'], held['pending_ask']),
@@ -466,6 +469,96 @@ function composerFrom(value: unknown): ComposerState {
     notice: held['notice'] ?? null,
     compacting: held['compacting'] === true,
     sign_in: held['sign_in'] ?? null,
+  };
+}
+
+/** How one of an instance's calls ended, as the wire spells it. */
+export type SubagentCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
+
+const SUBAGENT_CALL_STATUSES: SubagentCallStatus[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'killed',
+];
+
+/** One call in an instance's tail. */
+export interface SubagentCall {
+  name: string;
+  title: string;
+  status: SubagentCallStatus;
+}
+
+/** The usage an instance's last progress frame reported. */
+export interface SubagentUsage {
+  total_tokens: number;
+  tool_uses: number;
+  duration_ms: number;
+}
+
+/**
+ * One sub-agent instance, as the core joined it: a `Task`/`Agent` dispatch
+ * with the calls that ran under it.
+ *
+ * **The join is the server's, not this page's.** A page folds the raw frames
+ * for the CHAT, but instances are a join of the frames a dispatch produced
+ * (`task_started`, its calls, `task_notification`), and the core hands the
+ * joined list over rather than every client re-deriving the liveness ladder.
+ */
+export interface SubagentCard {
+  name: string;
+  /** The `tool_use` id of the dispatch that opened it, which joins the card
+   * to the chat row the call itself drew. */
+  dispatch_id: string;
+  agent_type: string | null;
+  running: boolean;
+  failed: boolean;
+  backgrounded: boolean;
+  ended_at: WireTime | null;
+  calls: number;
+  tail: SubagentCall[];
+  usage: SubagentUsage | null;
+}
+
+/** One instance, narrowed where it enters. */
+export function subagentCardFrom(value: unknown): SubagentCard {
+  const held = record(value);
+  const usage = record(held['usage']);
+  // The wire stamps the end as Unix milliseconds; a view's ages read
+  // `WireTime`, so the shape is built here rather than at every draw.
+  const endedMs = number(held['ended_at_ms']);
+  return {
+    name: text(held['name']) ?? '',
+    dispatch_id: text(held['dispatch_id']) ?? '',
+    agent_type: text(held['agent_type']),
+    running: held['running'] === true,
+    failed: held['failed'] === true,
+    backgrounded: held['backgrounded'] === true,
+    ended_at:
+      endedMs === null
+        ? null
+        : {
+            secs_since_epoch: Math.floor(endedMs / 1000),
+            nanos_since_epoch: Math.floor((endedMs % 1000) * 1_000_000),
+          },
+    calls: number(held['calls']) ?? 0,
+    tail: list(held['tail']).map((call) => {
+      const heldCall = record(call);
+      return {
+        name: text(heldCall['name']) ?? '',
+        title: text(heldCall['title']) ?? '',
+        status: narrow(heldCall['status'], SUBAGENT_CALL_STATUSES, 'pending'),
+      };
+    }),
+    usage:
+      held['usage'] === null || held['usage'] === undefined
+        ? null
+        : {
+            total_tokens: number(usage['total_tokens']) ?? 0,
+            tool_uses: number(usage['tool_uses']) ?? 0,
+            duration_ms: number(usage['duration_ms']) ?? 0,
+          },
   };
 }
 

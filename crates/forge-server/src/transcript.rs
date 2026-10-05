@@ -730,7 +730,7 @@ fn with_ending(mut call: ToolLeaf, id: &str, endings: &HashMap<String, TaskEndin
 /// answer gives each of the four mutation tools a row of its own, so
 /// `Edit, Write, Edit` would draw two rows both labelled `edit` and the
 /// second one out of order.
-fn family_row(sdk_tool_name: &str) -> (KindRow, String) {
+pub fn family_row(sdk_tool_name: &str) -> (KindRow, String) {
     if is_edit_tool(sdk_tool_name) {
         return (KindRow::Family(ToolFamily::Own("edit")), "edit".to_owned());
     }

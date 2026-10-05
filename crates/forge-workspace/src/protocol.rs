@@ -1302,6 +1302,19 @@ pub enum SessionUpdate {
         key: SessionSlot,
         has_dispatches: bool,
     },
+    /// The session's sub-agent instances moved, as the whole list the core
+    /// folds from the frames it has seen.
+    ///
+    /// **Pushed rather than read.** The join lives in
+    /// `forge_workspace::subagent_cards` and folds a frame at a time, so a
+    /// live session announces the list it now holds rather than re-walking
+    /// its conversation per frame. A client draws the instances from this -
+    /// the raw frames stay on the conversation for whoever folds something
+    /// else - and a page attaching later reads the same list off the record.
+    SubagentCardsChanged {
+        key: SessionSlot,
+        cards: Vec<forge_primitives::runtime::SubagentCard>,
+    },
     /// The tree's file index moved, as the whole index the core holds.
     ///
     /// **Pushed rather than read, and throttled here rather than by the
@@ -1649,6 +1662,7 @@ impl SessionUpdate {
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
+            | Self::SubagentCardsChanged { key, .. }
             | Self::FileIndexChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
             | Self::MonitorsChanged { key, .. }
@@ -1792,6 +1806,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("DispatchesChanged")
                 .field("key", key)
                 .field("has_dispatches", has_dispatches)
+                .finish(),
+            Self::SubagentCardsChanged { key, cards } => f
+                .debug_struct("SubagentCardsChanged")
+                .field("key", key)
+                .field("count", &cards.len())
                 .finish(),
             Self::FileIndexChanged { key, index } => f
                 .debug_struct("FileIndexChanged")

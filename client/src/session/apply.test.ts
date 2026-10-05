@@ -412,6 +412,44 @@ describe('applyUpdate', () => {
       expect(next.has_dispatches).toBe(true);
     });
 
+    it('carries the joined instances the frame names, ending stamp and all', () => {
+      const next = applyUpdate(empty(), {
+        subagent_cards_changed: {
+          key: SLOT,
+          cards: [
+            {
+              name: 'map the calls',
+              dispatch_id: 'tu-sub',
+              agent_type: 'general-purpose',
+              running: false,
+              failed: false,
+              backgrounded: true,
+              ended_at_ms: 1_750_000_000_123,
+              calls: 2,
+              tail: [{ name: 'Read', title: 'Read src/lib.rs', status: 'completed' }],
+              usage: { total_tokens: 9714, tool_uses: 1, duration_ms: 2716 },
+            },
+          ],
+        },
+      });
+
+      expect(next.subagent_instances).toEqual([
+        {
+          name: 'map the calls',
+          dispatch_id: 'tu-sub',
+          agent_type: 'general-purpose',
+          running: false,
+          failed: false,
+          backgrounded: true,
+          // The wire stamps Unix milliseconds; the record carries WireTime.
+          ended_at: { secs_since_epoch: 1_750_000_000, nanos_since_epoch: 123_000_000 },
+          calls: 2,
+          tail: [{ name: 'Read', title: 'Read src/lib.rs', status: 'completed' }],
+          usage: { total_tokens: 9714, tool_uses: 1, duration_ms: 2716 },
+        },
+      ]);
+    });
+
     it('carries the file index the frame names', () => {
       const index = { entries: { 'src/main.rs': { rel_path: 'src/main.rs', depth: 1 } } };
       const next = applyUpdate(empty(), { file_index_changed: { key: SLOT, index } });
@@ -1016,7 +1054,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 68 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 69 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -1064,6 +1102,7 @@ const EVERY_VARIANT = [
   'slash_commands_changed',
   'subagents_changed',
   'dispatches_changed',
+  'subagent_cards_changed',
   'file_index_changed',
   'processes_changed',
   'sessions_listed',
@@ -1158,9 +1197,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (68 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (69 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(68);
+    ).toBe(69);
   });
 
   it('classifies every variant the core can send', () => {
