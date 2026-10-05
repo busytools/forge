@@ -484,6 +484,116 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
     .await;
 }
 
+/// Decision 3's scenario at the frame level: a second client pressing
+/// dictate on a seat it does not hold has its start refused - and the
+/// microphone frames already on the wire from that attempt (the client
+/// streams what its start held) must NOT land in the holder's take.
+#[tokio::test]
+async fn a_refused_clients_frames_never_land_in_the_holders_take() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut holder = connect(&url).await;
+    send(
+        &mut holder,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut holder).await;
+    send(
+        &mut holder,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut holder, "the holder's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    // The second client: its start refuses, and the frame its already-open
+    // microphone sends next rides the same socket the refusal does.
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
+    )
+    .await;
+    let _ = snapshot_answering(&mut second).await;
+    send(
+        &mut second,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let mut probe = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        probe.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    second.send(Message::Binary(probe.into())).await.expect("the probe frame goes");
+    let refused = update_until(&mut second, "the refusal", |update| {
+        matches!(update, SessionUpdate::DictateEnded { .. })
+    })
+    .await;
+    let SessionUpdate::DictateEnded {
+        outcome: forge_workspace::DictateOutcome::Refused { message },
+        ..
+    } = refused
+    else {
+        panic!("the second start must be refused, got {refused:?}")
+    };
+    assert!(
+        message.contains("already dictating"),
+        "the refusal says the seat is held, got: {message}"
+    );
+
+    // The holder's meter: every window is silence until its OWN frame - a
+    // quarter of full scale, about -12 dB - arrives. The probe was half
+    // scale (-6 dB), so any window between tells whose microphone that was.
+    let mut own = vec![forge_server::transport::frame::Codec::PcmI16.tag()];
+    for _ in 0..320 {
+        own.extend_from_slice(&8192i16.to_le_bytes());
+    }
+    holder.send(Message::Binary(own.into())).await.expect("the holder's frame goes");
+    let mut heard_its_own = false;
+    let mut peaks: Vec<f32> = Vec::new();
+    for _ in 0..48 {
+        match next_server_within(&mut holder, 5_000).await {
+            Some(ServerMessage::Update { update }) => {
+                if let SessionUpdate::DictateLevel { peak_db, .. } = *update {
+                    peaks.push(peak_db);
+                    if (peak_db + 12.04).abs() < 0.5 {
+                        heard_its_own = true;
+                        break;
+                    }
+                }
+            }
+            other => panic!("waited for the holder's own frame, heard {other:?}"),
+        }
+    }
+    assert!(heard_its_own, "the holder's own frame must reach its meter");
+    // Read after the run rather than per window: the probe's window and the
+    // holder's own can share one, and a reading checked one at a time would
+    // depend on the scheduler for which frame it witnesses.
+    assert!(
+        peaks.iter().all(|peak| !peak.is_finite() || (*peak + 12.04).abs() < 0.5),
+        "a refused client's microphone landed in the holder's take: {peaks:?}"
+    );
+}
+
 /// A client-captured take over the socket: the start names the seat, the
 /// binary frames that follow on that same ordered connection feed the take
 /// it registered, and the meter that reads them comes back on that same

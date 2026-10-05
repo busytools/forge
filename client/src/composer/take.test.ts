@@ -189,7 +189,7 @@ describe('a take on a socket that is up', () => {
     });
 
     connection.move('connecting');
-    expect(mic.stopped, 'the server submits on the close, so this side releases').toBe(true);
+    expect(mic.stopped, 'the server drops the take on the close, so this side releases').toBe(true);
     expect(w.ended()).toBe(1);
   });
 });

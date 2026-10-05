@@ -821,10 +821,26 @@ impl DictateRuntime {
             .map(|take| take.stop.clone())
     }
 
-    /// The live take a socket's frame belongs to, if `key` has one that
-    /// is fed by frames rather than a device.
-    pub(crate) fn frame_sink_for(&self, key: &SessionSlot) -> Option<&forge_dictate::FrameSink> {
-        self.recordings.get(key)?.sink.as_ref()
+    /// The live take a socket's frame belongs to, if `key` has one that is
+    /// fed by frames rather than a device AND was started by the same
+    /// connection.
+    ///
+    /// **The take must be the pushing connection's own**, because a seat's
+    /// live take can be another connection's - decision 3's own scenario,
+    /// where a client whose start was refused still has its microphone open
+    /// for the frames already on the wire. Answering `None` for a foreign
+    /// take is what keeps one client's microphone out of another client's
+    /// dictation.
+    pub(crate) fn frame_sink_for(
+        &self,
+        key: &SessionSlot,
+        initiator: Option<u64>,
+    ) -> Option<&forge_dictate::FrameSink> {
+        let live = self.recordings.get(key)?;
+        if live.initiator != initiator {
+            return None;
+        }
+        live.sink.as_ref()
     }
 
     /// Consume `key`'s parked stop, answering whether it still races
@@ -2071,7 +2087,7 @@ mod dictate_lifecycle_tests {
         .expect("dispatch");
 
         assert!(
-            ws.dictate_push(&session, &[0.5; 320]),
+            ws.dictate_push(&session, &[0.5; 320], Some(1)),
             "the first frame after a start must find its take"
         );
 
@@ -2196,7 +2212,7 @@ mod dictate_lifecycle_tests {
             })
             .expect("dispatch");
             assert!(
-                ws.dictate_push(session, &[0.5; 320]),
+                ws.dictate_push(session, &[0.5; 320], Some(at as u64 + 1)),
                 "each seat's own take must accept its frames"
             );
         }
@@ -2251,8 +2267,34 @@ mod dictate_lifecycle_tests {
             }
             other => panic!("expected the refusal, got {other:?}"),
         }
-        assert!(ws.dictate_push(&first, &[0.5; 320]), "the first take keeps its frames");
+        assert!(ws.dictate_push(&first, &[0.5; 320], Some(1)), "the first take keeps its frames");
         assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "nothing else registered");
+    }
+
+    /// A frame belongs to the take its own connection started: a seat whose
+    /// live take is ANOTHER connection's keeps nothing of it, which is
+    /// decision 3's own scenario - a refused start still has its microphone
+    /// open for the frames already on the wire.
+    #[tokio::test]
+    async fn a_frame_from_another_connection_never_lands_in_this_take() {
+        let (ws, _updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("streamer");
+        live_session(&ws, &session);
+
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+
+        assert!(
+            !ws.dictate_push(&session, &[0.5; 320], Some(2)),
+            "another connection's frames must not land in this take"
+        );
+        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)), "its own connection's do");
     }
 
     /// A frame for a seat with no live take is dropped rather than kept:
@@ -2262,7 +2304,7 @@ mod dictate_lifecycle_tests {
     async fn frames_for_a_seat_with_no_live_take_are_dropped() {
         let (ws, _updates) = crate::Workspace::testing_stub();
         assert!(
-            !ws.dictate_push(&key("nobody"), &[0.5; 320]),
+            !ws.dictate_push(&key("nobody"), &[0.5; 320], Some(1)),
             "a frame with no take to hold it must be dropped"
         );
     }
@@ -2331,7 +2373,7 @@ mod dictate_lifecycle_tests {
         }
         assert!(ws.dictate_runtime.lock().recordings.is_empty(), "nothing may be left live");
         assert!(
-            !ws.dictate_push(&session, &[0.5; 320]),
+            !ws.dictate_push(&session, &[0.5; 320], Some(1)),
             "and nothing may accept frames for a seat no take was registered on"
         );
     }
@@ -2360,7 +2402,7 @@ mod dictate_lifecycle_tests {
             initiator: Some(1),
         })
         .expect("dispatch");
-        assert!(ws.dictate_push(&session, &[0.5; 320]), "the take is live");
+        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)), "the take is live");
         let _ = updates.recv().await.expect("the start echoes");
 
         // Nothing else stops it: no release, no drop, no further frame.
@@ -2448,7 +2490,7 @@ mod dictate_lifecycle_tests {
             initiator: Some(1),
         })
         .expect("dispatch");
-        assert!(ws.dictate_push(&session, &[0.5; 320]));
+        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)));
         let _ = updates.recv().await.expect("the start echoes");
 
         assert!(
@@ -2494,7 +2536,7 @@ mod dictate_lifecycle_tests {
         })
         .expect("dispatch");
         assert!(
-            ws.dictate_push(&session, &[0.5; 320]),
+            ws.dictate_push(&session, &[0.5; 320], Some(1)),
             "a take started right after a drop must land"
         );
     }
@@ -2532,7 +2574,10 @@ mod dictate_lifecycle_tests {
             ),
             "a foreign stop parks for its own connection rather than reaching this take"
         );
-        assert!(ws.dictate_push(&session, &[0.5; 320]), "a foreign stop must not end the take");
+        assert!(
+            ws.dictate_push(&session, &[0.5; 320], Some(1)),
+            "a foreign stop must not end the take"
+        );
         assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "and the take is still live");
     }
 

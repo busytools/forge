@@ -295,7 +295,7 @@ async fn handle_client(
         // never answered: a take's audio has no reply channel, and the
         // take's own outcome is what a reader sees either way.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate.as_ref(), &bytes);
+            take_frame(&state.surface, dictate.as_slice(), me, &bytes);
             return Ok(());
         }
         _ => return Ok(()),
@@ -641,9 +641,10 @@ enum FrameRoute {
 ///
 /// **The frame carries no seat of its own**: it belongs to whatever take the
 /// connection that sent it started, and its messages are ordered, so a frame
-/// can only arrive between a start of its own and that take's end. The
-/// workspace holds ONE live take per connection, so a frame offered to every
-/// seat the connection started is kept by exactly the live one.
+/// can only arrive between a start of its own and that take's end. It is
+/// offered to every seat the connection started - a refused start's seat is
+/// among them until the refusal reaches the client - and the push below keeps
+/// it only where the live take is THAT connection's.
 fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
     let decoded = match super::frame::decode(bytes) {
         Ok(decoded) => decoded,
@@ -662,16 +663,17 @@ fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], bytes: &[u8]) {
+fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, bytes: &[u8]) {
     match frame_route(bytes, dictate) {
         FrameRoute::Frame(samples) => {
-            // Offered to each seat the connection started; only a live take
-            // can keep it, which is why one unkept frame is still dropped.
-            let kept = dictate.iter().any(|seat| surface.dictate_push(seat, &samples));
+            // Offered to each seat this connection started, kept only where
+            // the live take is THIS connection's - a seat's take can be
+            // another connection's, and its audio is not this one's to feed.
+            let kept = dictate.iter().any(|seat| surface.dictate_push(seat, &samples, Some(me)));
             if !kept {
                 tracing::debug!(
                     event_name = "dictate_frame_dropped",
-                    "a dictation frame arrived for takes that have stopped or are gone",
+                    "a dictation frame arrived for takes that have stopped or are another connection's",
                 );
             }
         }

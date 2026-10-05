@@ -52,14 +52,16 @@ impl ViewSurface {
     }
 
     /// Push one frame of client-captured audio into a seat's live take,
-    /// answering whether the samples were kept.
+    /// answering whether the samples were kept. The take must belong to
+    /// `initiator`: a seat's live take can be another connection's, and its
+    /// audio is not the pushing connection's to feed.
     ///
     /// A data plane rather than a command: a client sends this ~50 times a
     /// second for as long as it talks, and the command bus's dispatch is
     /// for the actions a view takes on the user's behalf, not for the
     /// audio itself.
-    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
-        self.workspace.dictate_push(key, samples)
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
+        self.workspace.dictate_push(key, samples, initiator)
     }
 
     pub fn dictate(&self) -> DictateView {

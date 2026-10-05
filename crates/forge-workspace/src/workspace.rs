@@ -2393,17 +2393,22 @@ impl Workspace {
         self.config.dictate.axes()
     }
 
-    /// Push one frame of client-captured audio into the seat's live take.
+    /// Push one frame of client-captured audio into the seat's live take,
+    /// answering whether the samples were kept.
     ///
-    /// Answers whether the samples were kept. `false` means there is
-    /// nothing to keep them for: the seat has no live take (never
-    /// started, refused, or already resolved) or the take has stopped
-    /// (the cap, or the speaker let go). A caller drops the frame rather
-    /// than holding it, because the take's own answer is what a reader
-    /// sees either way.
-    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32]) -> bool {
+    /// **The take must be `initiator`'s own.** A frame carries no seat, and
+    /// a seat's live take can be another connection's - decision 3's own
+    /// scenario, where a client whose start was refused still has its
+    /// microphone open for the frames already on the wire - so a push from
+    /// any other connection is dropped rather than landing in someone
+    /// else's dictation. `false` also means the seat has no live take
+    /// (never started, refused, or already resolved) or the take has
+    /// stopped (the cap, or the speaker let go). A caller drops the frame
+    /// rather than holding it, because the take's own answer is what a
+    /// reader sees either way.
+    pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
         let runtime = self.dictate_runtime.lock();
-        runtime.frame_sink_for(key).is_some_and(|sink| sink.push_mono(samples))
+        runtime.frame_sink_for(key, initiator).is_some_and(|sink| sink.push_mono(samples))
     }
 
     /// The device this process records from, once a `/dictate` pick moved it.
