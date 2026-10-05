@@ -1324,7 +1324,6 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .fr, .tc .kb, .tc .pace { color: var(--dim); min-width: 8ch; text-align: right;
   font-variant-numeric: tabular-nums; }
 .tc .pace { color: var(--ok); }
-.tc .held { color: var(--warn); }
 .tc .count { color: var(--blue); }
 .tc .x { color: var(--dim); background: none; border: 0; cursor: pointer;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }

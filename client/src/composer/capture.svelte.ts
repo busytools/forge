@@ -191,10 +191,6 @@ export class FrameRing {
     return (newest.bytes - oldest.bytes) / ((newest.at - oldest.at) / 1000);
   }
 
-  get heldFrames(): number {
-    return this.held.length;
-  }
-
   /** The newest level readings, oldest first, as dBFS off this side's own frames. */
   get dbfs(): number[] {
     return this.heard;

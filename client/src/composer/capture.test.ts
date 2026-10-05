@@ -133,7 +133,6 @@ describe('the ring a take holds while the socket is down', () => {
     const ring = new FrameRing(wire.send);
     ring.push(encodeFrame([0]));
     expect(wire.sent).toHaveLength(1);
-    expect(ring.heldFrames).toBe(0);
   });
 
   it('holds while the socket is away, and flushes in the order spoken', () => {
@@ -141,11 +140,10 @@ describe('the ring a take holds while the socket is down', () => {
     const ring = new FrameRing(wire.send);
     ring.push(encodeFrame([0.1]));
     ring.push(encodeFrame([0.2]));
-    expect(ring.heldFrames, 'both frames are held, not dropped').toBe(2);
+    expect(wire.sent, 'both frames are held, not dropped, while the socket is away').toEqual([]);
 
     wire.open = true;
     expect(ring.flush()).toBe(true);
-    expect(ring.heldFrames).toBe(0);
     expect(wire.sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
   });
 
@@ -153,11 +151,10 @@ describe('the ring a take holds while the socket is down', () => {
     const wire = socket();
     const ring = new FrameRing(wire.send, 2);
     for (const sample of [0.1, 0.2, 0.3]) ring.push(encodeFrame([sample]));
-    expect(ring.heldFrames, 'the bound holds').toBe(2);
 
     wire.open = true;
     ring.flush();
-    expect(wire.sent, 'the newest speech is what survives').toEqual([
+    expect(wire.sent, 'the bound holds, and the newest speech is what survives').toEqual([
       encodeFrame([0.2]),
       encodeFrame([0.3]),
     ]);
@@ -177,12 +174,13 @@ describe('the ring a take holds while the socket is down', () => {
 
     budget = 1;
     expect(ring.flush(), 'the first frame goes, then the socket closes again').toBe(false);
-    expect(ring.heldFrames, 'the frame that did not go is still here').toBe(1);
 
     budget = 2;
-    expect(ring.flush()).toBe(true);
-    expect(ring.heldFrames).toBe(0);
-    expect(sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
+    expect(ring.flush(), 'and the next flush starts where that one stopped').toBe(true);
+    expect(sent, 'the frame that did not go is still here, and it goes once').toEqual([
+      encodeFrame([0.1]),
+      encodeFrame([0.2]),
+    ]);
   });
 
   /**
