@@ -5166,10 +5166,11 @@ impl Workspace {
         }
         let blocked = {
             let guard = domain.lock();
-            // A permission request only exists during a turn, so with no
-            // turn there is nothing to be blocked on - a slot outliving its
-            // turn (busytools/forge#672) is incoherent state rather than a
-            // worker awaiting input, and must not read as `Attention`.
+            // A held interaction only matters while a turn can advance on
+            // it, and this gate is what decides that for drafts too: one
+            // parked on a slot with no turn (busytools/forge#672 - a slot
+            // outliving its turn is incoherent state) reads `Idle` here
+            // rather than as a person's to answer.
             if !guard.turn_in_flight() {
                 return L::Idle;
             }
@@ -5187,17 +5188,19 @@ impl Workspace {
         };
         // **A parked draft is a person's to answer too, and it lives
         // outside the set the arm above reads**: the draft registry is the
-        // workspace's own, so a seat with no domain can still hold one. Read
-        // after the guard comes off, un-nested, the way `pending_asks` reads
-        // it - and without this a held draft leaves the seat `Running`,
-        // which is what kept the client's lifecycle-driven needs mark quiet
-        // while the dock sat unanswered (#1758).
+        // workspace's own (a seat with no domain can hold one, though the
+        // gate above answers such a seat `Sleeping` before either arm
+        // reaches here). Read after the guard comes off, un-nested, the way
+        // `pending_asks` reads it - and without this a held draft leaves
+        // the seat `Running`, which is what kept the client's
+        // lifecycle-driven needs mark quiet while the dock sat unanswered
+        // (#1758).
         if blocked || self.has_slack_draft(slot) { L::Attention } else { L::Running }
     }
 
     /// Whether `slot` is holding a parked Slack draft. The workspace's own
-    /// registry rather than the session's pending set, so a seat with no
-    /// domain answers too.
+    /// registry rather than the session's pending set, which is what keeps a
+    /// draft visible to `session_activity` when the set itself is empty.
     fn has_slack_draft(&self, slot: &SessionSlot) -> bool {
         self.slack_drafts.lock().values().any(|(owner, _, _)| owner == slot)
     }
@@ -11688,6 +11691,17 @@ mod worker_activity_tests {
             ws.session_activity(&seat),
             L::Attention,
             "a held draft is a person's to answer, not a running turn's",
+        );
+
+        // A draft belongs to the seat that asked: another seat holding
+        // nothing of its own stays Running.
+        let bystander = SessionSlot::from_str_for_test("w-bystander");
+        let other = ws.register_domain_session(bystander.clone(), None);
+        other.lock().turn_pending = true;
+        assert_eq!(
+            ws.session_activity(&bystander),
+            L::Running,
+            "another seat's draft is not this seat's news",
         );
     }
 

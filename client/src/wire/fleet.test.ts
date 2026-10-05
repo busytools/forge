@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from '../protocol';
 import type { SessionSlot } from './types';
-import { coversHome, fleetNews } from './fleet';
+import { coversHome, fleetNews, REDRAWS } from './fleet';
 
 /**
  * The variant names the server's own `fleet_news` puts in one of its arms,
@@ -221,8 +221,6 @@ const NOT_NEWS: readonly string[] = [
   'gotify_notification_appended',
   'cron_prompt_appended',
   'slack_message_appended',
-  'slack_post_pending',
-  'slack_draft_resolved',
   'prompt_queued_while_busy',
   // The pile's own three: a seat's queued prompts, which the session page
   // draws above its composer and no home row does.
@@ -481,5 +479,21 @@ describe('the variant census', () => {
       'the not-news list carries a name the enum read does not declare: either the enum dropped ' +
         'the variant or the read missed it',
     ).toEqual([]);
+  });
+
+  /**
+   * The mirror's own census: `REDRAWS` is read by no other check, so a junk
+   * member or one that stranded a name in both buckets would survive tsc and
+   * every suite, and the home would answer a name the core never sends.
+   */
+  it('keeps the redraw mirror to declared names, in one bucket only', () => {
+    const { names } = serverVariantNames();
+    const declared = new Set(names);
+
+    const junk = [...REDRAWS].filter((name) => !declared.has(name));
+    expect(junk, 'a redraw member the enum does not declare').toEqual([]);
+
+    const twice = [...REDRAWS].filter((name) => NOT_NEWS.includes(name));
+    expect(twice, "a name in both the client's redraw mirror and its not-news list").toEqual([]);
   });
 });

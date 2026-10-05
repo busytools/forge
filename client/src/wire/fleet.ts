@@ -53,7 +53,7 @@ const NOTHING: FleetNews = { kind: 'nothing' };
  * version all arrive after a listener binds, so a page opened in those first
  * seconds would otherwise keep the empty answer it painted.
  */
-const REDRAWS = new Set([
+export const REDRAWS = new Set([
   'catalog_loaded',
   'cli_version_changed',
   // The account pool, which the band's own card draws and no row does. It is
