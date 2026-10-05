@@ -4967,13 +4967,6 @@ impl Workspace {
         self.domain_session_for(slot).map_or(0, |domain| domain.lock().pending_interactions.len())
     }
 
-    /// What the session at `slot` is held on, as the core kept it. `None`
-    /// when it is holding nothing.
-    ///
-    /// This is the read a view needs when it attached after the prompt
-    /// landed: the stream is a mirror with no backlog, so the update that
-    /// carried the request is gone, and the request beside the answer's
-    /// oneshot is what is left.
     /// Record a fatal error, so a view that was not attached when it fired
     /// can still read it.
     pub(crate) fn record_fatal_error(&self, error: forge_primitives::error::AppError) {
@@ -5014,36 +5007,38 @@ impl Workspace {
         );
     }
 
-    pub fn pending_ask(&self, slot: &SessionSlot) -> Option<crate::protocol::PendingAsk> {
-        // A parked Slack draft comes first, and before the domain lookup:
-        // it is held in its own registry rather than in the session's
-        // pending set, so a seat with no domain can still be holding one.
-        let drafted = {
+    /// What the seat at `slot` is holding - **a draft leads, then arrival
+    /// order** - empty when it is holding nothing. Every hop keeps that
+    /// order, so a re-read and the live folds cannot disagree about the
+    /// front, with one exception: two drafts held at once come back in the
+    /// registry's own order, because the registry keeps none to offer.
+    ///
+    /// **The list rather than one ask**, because a parallel batch parks
+    /// several at once and a view that attached mid-batch has no other way to
+    /// read the ones behind the front: the stream is a mirror with no backlog,
+    /// and the request beside the answer's oneshot is what is left. A view
+    /// draws the front.
+    ///
+    /// A draft leads because it is parked in its own registry rather than in
+    /// the session's pending set, so a seat with no domain can still hold one.
+    pub fn pending_asks(&self, slot: &SessionSlot) -> Vec<crate::protocol::PendingAsk> {
+        let mut asks = Vec::new();
+        {
             let parked = self.slack_drafts.lock();
-            parked.values().find(|(owner, _, _)| owner == slot).map(|(_, draft, _)| draft.clone())
-        };
-        if let Some(draft) = drafted {
-            return Some(crate::protocol::PendingAsk::SlackDraft(Box::new(draft)));
+            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
+                |(_, draft, _)| crate::protocol::PendingAsk::SlackDraft(Box::new(draft.clone())),
+            ));
         }
-
-        let domain = self.domain_session_for(slot)?;
-        let guard = domain.lock();
-        let question = guard
-            .pending_interactions
-            .values()
-            .find(|pending| {
-                matches!(pending, crate::protocol::PendingInteractionSlot::Question { .. })
-            })
-            .map(crate::protocol::PendingInteractionSlot::ask);
-        question.or_else(|| {
-            guard
-                .pending_interactions
-                .values()
-                .find(|pending| {
-                    matches!(pending, crate::protocol::PendingInteractionSlot::Permission { .. })
-                })
-                .map(crate::protocol::PendingInteractionSlot::ask)
-        })
+        if let Some(domain) = self.domain_session_for(slot) {
+            let guard = domain.lock();
+            asks.extend(
+                guard
+                    .pending_interactions
+                    .values()
+                    .map(crate::protocol::PendingInteractionSlot::ask),
+            );
+        }
+        asks
     }
 
     /// What `entry`'s session is doing right now. The two liveness states
@@ -11293,14 +11288,16 @@ mod worker_activity_tests {
         );
     }
 
-    /// What a view that attached after the prompt landed reads: the request
-    /// the core kept beside the answer's oneshot, which is the only place it
-    /// survives a stream that carries it once. It answers with the same
-    /// precedence the kind does, or the two reads disagree about which
-    /// prompt is on top - one naming a question while the other hands back
-    /// the permission prompt it outranks.
+    /// What a view that attached after the prompt landed reads: the requests
+    /// the core kept beside the answer's oneshots, which is the only place
+    /// they survive a stream that carries each once.
+    ///
+    /// **The list in arrival order**, because a parallel batch parks several
+    /// at once and the read is all a mid-batch attach has - and the dock
+    /// draws the front, which is the oldest, so the order is the read's own
+    /// contract and not a reader's choice.
     #[test]
-    fn pending_ask_reads_the_request_the_core_kept() {
+    fn pending_asks_reads_the_requests_the_core_kept_in_order() {
         let (ws, _rx) = Workspace::testing_stub();
         let held = |name: &str, slots: Vec<PendingInteractionSlot>| {
             let key = SessionSlot::from_str_for_test(name);
@@ -11323,33 +11320,55 @@ mod worker_activity_tests {
         };
 
         assert!(
-            ws.pending_ask(&SessionSlot::from_str_for_test("a-none")).is_none(),
+            ws.pending_asks(&SessionSlot::from_str_for_test("a-none")).is_empty(),
             "a slot holding nothing kept nothing to read back",
         );
 
         let prompted = held("a-permission", vec![permission()]);
-        let ask = ws.pending_ask(&prompted).expect("a held permission prompt reads back");
+        let asks = ws.pending_asks(&prompted);
+        assert_eq!(asks.len(), 1, "a held permission prompt reads back");
         assert!(
-            matches!(ask, crate::protocol::PendingAsk::Permission(_)),
+            matches!(asks[0], crate::protocol::PendingAsk::Permission(_)),
             "and reads back as the kind it is",
         );
         assert_eq!(
-            ask.tool_id(),
+            asks[0].tool_id(),
             Some(testing::TEST_TOOL_ID),
             "naming the call an answer addresses"
         );
 
         let asked = held("a-question", vec![question()]);
-        let ask = ws.pending_ask(&asked).expect("a held question reads back");
         assert!(
-            matches!(ask, crate::protocol::PendingAsk::Question(_)),
-            "and reads back as the kind it is",
+            matches!(ws.pending_asks(&asked)[0], crate::protocol::PendingAsk::Question(_)),
+            "a held question reads back as the kind it is",
         );
 
+        // A parallel batch, in the order the requests parked: the read hands
+        // both back with the permission prompt leading, because it parked
+        // first - the terminal's own queue rule.
         let both = held("a-both", vec![permission(), question()]);
+        let asks = ws.pending_asks(&both);
+        assert_eq!(asks.len(), 2, "both asks of a parallel batch read back");
         assert!(
-            matches!(ws.pending_ask(&both), Some(crate::protocol::PendingAsk::Question(_))),
-            "a question outranks the permission prompt beside it here too",
+            matches!(asks[0], crate::protocol::PendingAsk::Permission(_))
+                && matches!(asks[1], crate::protocol::PendingAsk::Question(_)),
+            "oldest first, which is the front a dock draws",
+        );
+
+        // A repeated call id replaces in place rather than parking twice: the
+        // set is keyed by the call an answer addresses.
+        let repeated = SessionSlot::from_str_for_test("a-repeat");
+        let domain = ws.register_domain_session(repeated.clone(), None);
+        {
+            let mut guard = domain.lock();
+            guard.pending_interactions.insert("a-call".to_owned(), permission());
+            guard.pending_interactions.insert("a-call".to_owned(), question());
+        }
+        let asks = ws.pending_asks(&repeated);
+        assert_eq!(asks.len(), 1, "a repeated call id does not park twice");
+        assert!(
+            matches!(asks[0], crate::protocol::PendingAsk::Question(_)),
+            "and the newer slot is the one held",
         );
     }
 
@@ -11403,7 +11422,9 @@ mod worker_activity_tests {
     /// The record had no room for it, so a view that attached after the
     /// draft landed could not read that one was waiting: a record named
     /// for a category has to carry every member of it, or the name says
-    /// it is complete when it is not.
+    /// it is complete when it is not. A draft leads the list, which is the
+    /// precedence the read has always given it - it is held in its own
+    /// registry rather than in the session's pending set.
     #[test]
     fn a_parked_slack_draft_reads_back_as_the_third_kind() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -11419,19 +11440,29 @@ mod worker_activity_tests {
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
-        let ask = ws.pending_ask(&seat).expect("a parked draft reads back");
-
+        let asks = ws.pending_asks(&seat);
+        assert_eq!(asks.len(), 1, "a parked draft reads back");
         assert!(
-            matches!(ask, crate::protocol::PendingAsk::SlackDraft(_)),
+            matches!(asks[0], crate::protocol::PendingAsk::SlackDraft(_)),
             "and reads back as the kind it is",
         );
         assert!(
-            ask.tool_id().is_none(),
+            asks[0].tool_id().is_none(),
             "a draft is answered by its own id, so it names no tool call",
         );
         assert!(
-            ws.pending_ask(&SessionSlot::from_str_for_test("a-bystander")).is_none(),
+            ws.pending_asks(&SessionSlot::from_str_for_test("a-bystander")).is_empty(),
             "and a seat holding nothing is not handed another seat's draft",
+        );
+
+        // The draft leads a question parked beside it, which is what the
+        // single read did before the list existed.
+        let domain = ws.register_domain_session(seat.clone(), None);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        domain.lock().pending_interactions.insert("a-call".to_owned(), testing::test_question(tx));
+        assert!(
+            matches!(ws.pending_asks(&seat)[0], crate::protocol::PendingAsk::SlackDraft(_)),
+            "a draft answers first, ahead of the question waiting behind it",
         );
     }
 

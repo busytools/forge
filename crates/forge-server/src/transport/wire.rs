@@ -349,7 +349,19 @@ pub struct SessionWire {
     /// behind one.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
+    /// The prompt a one-ask dock draws: the front of `pending_asks`.
+    ///
+    /// **Derived from the same list at serialisation**, so the two cannot
+    /// drift. What a client reading only this draws is the front, which on a
+    /// mixed set is NOT what the single read answered before the list: that
+    /// preferred a question over a permission prompt and took same-kind asks
+    /// in map order, where the front is the oldest ask with a draft leading.
     pub pending_ask: Option<PendingAskWire>,
+    /// Every prompt this seat is holding: **a draft leads, then arrival
+    /// order**. A parallel batch parks several at once, so a client that
+    /// attached mid-batch reads the ones behind the front rather than losing
+    /// all but one.
+    pub pending_asks: Vec<PendingAskWire>,
     /// The newest turns, not the whole conversation. See [`SUBSCRIBE_TURNS`].
     pub conversation: ConversationWire,
     /// Whether this seat's conversation holds a sub-agent dispatch at all.
@@ -405,7 +417,7 @@ pub struct SessionStateWire {
 /// stream announces a take, a notice, a compaction and a sign-in once each and
 /// retains nothing.
 ///
-/// The ASK the composer is answering rides `pending_ask` on this same record
+/// The ASKS the composer is answering ride `pending_asks` on this same record
 /// rather than appearing here, because that is the same thing the session's own
 /// read answers and two copies of it would drift.
 #[derive(Serialize, Deserialize)]
@@ -1064,6 +1076,10 @@ async fn session(
             .unwrap_or_default()
     };
 
+    // One read for both halves of the record: the front is the first of the
+    // list, so the two cannot disagree.
+    let asks = surface.pending_asks(slot);
+
     Ok(SessionWire {
         slot: slot.clone(),
         file_index,
@@ -1073,7 +1089,8 @@ async fn session(
         processes: surface.processes(slot),
         background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
-        pending_ask: surface.pending_ask(slot).as_ref().map(PendingAskWire::from),
+        pending_ask: asks.first().map(PendingAskWire::from),
+        pending_asks: asks.iter().map(PendingAskWire::from).collect(),
         conversation: ConversationWire { turns, compaction_count },
         has_dispatches,
         header: SessionHeaderWire {

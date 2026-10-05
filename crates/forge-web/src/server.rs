@@ -232,10 +232,10 @@ async fn answer_prompt(
     // and the invoke is built from the core's copy of what it offered - the
     // stream's inside the boot window, the core's after it.
     let held = Live::lock(&wiring.state.live).snapshot().composer;
-    let kept = wiring.state.surface.pending_ask(&slot);
+    let kept = wiring.state.surface.pending_asks(&slot);
     let Some(command) = crate::composer::answer(
         &held,
-        kept.as_ref(),
+        &kept,
         &slot,
         &tool_id,
         option_id.as_deref(),

@@ -60,6 +60,62 @@ pub struct ContextUsage {
 /// and one that empties on a word nobody reads is silently wrong.
 const SETTLED_STATES: [&str; 5] = ["started", "completed", "cancelled", "discarded", "refused"];
 
+/// The interactions a seat is parked on, oldest first.
+///
+/// **Ordered because the read answers it, and the dock draws the front.** Two
+/// AskUserQuestion calls in one assistant message run in parallel with
+/// different tool ids, so a seat can hold several at once, and the terminal's
+/// own rule is first-parked-first-drawn. One Vec rather than a map and an
+/// order beside it: a seat holds a handful at most, and there is then no
+/// second structure to keep in step.
+#[derive(Default)]
+pub struct PendingInteractions {
+    held: Vec<(String, PendingInteractionSlot)>,
+}
+
+impl PendingInteractions {
+    /// Park `slot` under `tool_id`. A repeat of an id replaces in place, so a
+    /// frame folded twice does not park the same interaction twice.
+    pub fn insert(&mut self, tool_id: String, slot: PendingInteractionSlot) {
+        if let Some(waiting) = self.held.iter_mut().find(|(id, _)| *id == tool_id) {
+            waiting.1 = slot;
+            return;
+        }
+        self.held.push((tool_id, slot));
+    }
+
+    pub fn get(&self, tool_id: &str) -> Option<&PendingInteractionSlot> {
+        self.held.iter().find(|(id, _)| id == tool_id).map(|(_, slot)| slot)
+    }
+
+    pub fn remove(&mut self, tool_id: &str) -> Option<PendingInteractionSlot> {
+        let at = self.held.iter().position(|(id, _)| id == tool_id)?;
+        Some(self.held.remove(at).1)
+    }
+
+    pub fn contains_key(&self, tool_id: &str) -> bool {
+        self.held.iter().any(|(id, _)| id == tool_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+
+    /// Oldest first.
+    pub fn values(&self) -> impl Iterator<Item = &PendingInteractionSlot> {
+        self.held.iter().map(|(_, slot)| slot)
+    }
+
+    /// Oldest first, together with the ids that key them.
+    pub fn drain(&mut self) -> impl Iterator<Item = (String, PendingInteractionSlot)> {
+        std::mem::take(&mut self.held).into_iter()
+    }
+}
+
 pub struct DomainSession {
     pub key: SessionSlot,
     /// Claude-issued session UUID. `None` until the first `Connected`
@@ -72,9 +128,9 @@ pub struct DomainSession {
     /// domain so the spawn handler can fill it in later).
     pub conn: Option<Arc<AgentHandle>>,
     /// Pending permission/question/elicitation oneshots indexed by the
-    /// wire `tool_id` / `elicitation_id`. `SessionTask` pops on
-    /// `Respond*` commands; bridge inserts on every `*Request` event.
-    pub pending_interactions: HashMap<String, PendingInteractionSlot>,
+    /// wire `tool_id` / `elicitation_id`, oldest first. `SessionTask` pops
+    /// on `Respond*` commands; bridge inserts on every `*Request` event.
+    pub pending_interactions: PendingInteractions,
     /// `--new` boot-wave flag, stamped at spawn time from
     /// `SessionLaunchSettings.force_new`. For a project lead it makes
     /// the Connected-time respawn skip the store lookup
@@ -377,7 +433,7 @@ impl DomainSession {
             key,
             session_id: None,
             conn,
-            pending_interactions: HashMap::new(),
+            pending_interactions: PendingInteractions::default(),
             prompt_queue: Vec::new(),
             lifecycle_frames: None,
             spawned_force_new: false,

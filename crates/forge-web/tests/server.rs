@@ -5799,11 +5799,18 @@ async fn the_notes_field_belongs_to_its_question() {
     );
 
     // The next question is a different field, so what was typed for this one
-    // cannot come back as an answer to it.
+    // cannot come back as an answer to it. It waits behind the one the
+    // reader still holds, and takes the dock when that one settles.
     fleet.emit(SessionUpdate::QuestionRequest {
         key: lead(),
         tool_id: "tu-9".to_owned(),
         request: question_from("tu-9"),
+    });
+    settle().await;
+    fleet.emit(SessionUpdate::PendingInteractionResolved {
+        key: lead(),
+        tool_id: "tu-2".to_owned(),
+        question_index: None,
     });
     settle().await;
     let (_status, next) = composer(&config, "").await;
@@ -5898,6 +5905,26 @@ async fn the_dock_names_the_keys_it_answers_to() {
             tool_id: "tu-2".to_owned(),
             request: question,
         });
+        settle().await;
+        composer(&config, "").await
+    };
+    // A question arriving behind a held prompt waits its turn: the dock draws
+    // the front of the seat's queue, which is the ask that parked first.
+    let keys = page.find("class=\"keys\"").expect("the held permission keeps the dock");
+    let line = &page[keys..];
+    let line = &line[..line.find("</div>").expect("the line closes")];
+    assert!(
+        line.contains("select") && !line.contains("move"),
+        "the first-parked prompt is the one drawn: {line}",
+    );
+
+    // Settled, and the question behind it takes the dock with its own line.
+    fleet.emit(SessionUpdate::PendingInteractionResolved {
+        key: lead(),
+        tool_id: "tu-1".to_owned(),
+        question_index: None,
+    });
+    let (_status, page) = {
         settle().await;
         composer(&config, "").await
     };

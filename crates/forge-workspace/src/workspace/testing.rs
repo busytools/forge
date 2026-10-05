@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use crate::config::LoadedConfig;
+use crate::domain_session::PendingInteractions;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
 use crate::update_fanout::{SubscriberRole, UpdateFanout};
@@ -684,7 +685,7 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn clear_test_pending(&self, slot: &SessionSlot) {
         if let Some(domain) = self.domain_session_for(slot) {
-            domain.lock().pending_interactions.clear();
+            domain.lock().pending_interactions = PendingInteractions::default();
         }
     }
 
