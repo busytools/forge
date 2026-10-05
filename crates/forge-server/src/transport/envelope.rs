@@ -273,6 +273,45 @@ mod tests {
         );
     }
 
+    /// A parked draft is home news on its own: the seat's row moves into the
+    /// needs-you group while the draft is held and back out when it resolves,
+    /// so a home-ONLY subscriber that was never sent the pair reads the fleet
+    /// as it stood before the draft - exactly the symptom #1758 was filed
+    /// for, with no session page open to forward it.
+    #[test]
+    fn the_slack_draft_pair_reaches_home_and_its_seat() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        for update in [
+            SessionUpdate::SlackPostPending {
+                key: seat.clone(),
+                draft: forge_primitives::slack::SlackDraft {
+                    id: uuid::Uuid::new_v4(),
+                    workspace: "acme".to_owned(),
+                    conversation: "C1".to_owned(),
+                    conversation_label: "acme".to_owned(),
+                    thread_ts: None,
+                    text: "hello".to_owned(),
+                    tool: "slack__post".to_owned(),
+                },
+            },
+            SessionUpdate::SlackDraftResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                ending: forge_primitives::slack::SlackDraftEnding::Expired,
+            },
+        ] {
+            assert!(
+                fleet_news(&update).any(),
+                "admitted by the redraw arm, not by the wildcard: {update:?}",
+            );
+            assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
+            assert!(
+                Subject::Session(seat.clone()).covers(&update),
+                "and the seat it routes on is sent it too: {update:?}",
+            );
+        }
+    }
+
     /// A section push reaches the subscribers the section belongs to: home,
     /// which draws the project row, and the seat the update routes on.
     ///

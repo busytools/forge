@@ -195,6 +195,12 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // drops the inspector's pending row, so it redraws a row even though
         // it is the composer that asked for it.
         | SessionUpdate::PendingInteractionResolved { .. }
+        // A held draft is the third kind of ask: its seat moves into the
+        // needs-you group while it waits and back out when it resolves, so a
+        // home-only subscriber has to be sent the pair or its row reads as
+        // it stood before the draft (#1758).
+        | SessionUpdate::SlackPostPending { .. }
+        | SessionUpdate::SlackDraftResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The project's task set, its schedules and its connector
         // subscriptions moved - the three sections the home's project row
