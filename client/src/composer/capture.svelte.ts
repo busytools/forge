@@ -8,8 +8,10 @@
  * take-and-reset peak every 50 ms, so a chunk larger than that would make
  * alternate readings silence and the level bar sawtooth.
  *
- * Pure except for the worklet glue below, so the encoding and the ring are
- * pinned by tests rather than through a mounted component.
+ * Pure except for the worklet glue below and the ring's two counters, which
+ * are signals so a panel draws them as the take moves: the encoding and the
+ * rest of the ring are pinned by tests rather than through a mounted
+ * component.
  */
 
 /** The rate the dictation models read, and every frame carries. */
@@ -89,13 +91,13 @@ export class FrameChunker {
 export class FrameRing {
   private held: Uint8Array[] = [];
   /** Frames the take has PRODUCED, since it began. */
-  frames = 0;
+  frames = $state(0);
   /**
    * Bytes the SOCKET has taken, since it began. A frame produced while the
    * socket is down counts in `frames` and not here, which is the difference
    * the pair exists to show: what was spoken and what has left.
    */
-  bytes = 0;
+  bytes = $state(0);
 
   constructor(
     private readonly send: (bytes: Uint8Array) => boolean,

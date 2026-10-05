@@ -17,7 +17,7 @@ import {
   RING_FRAMES,
   SAMPLE_RATE,
   encodeFrame,
-} from './capture';
+} from './capture.svelte';
 
 describe('the frame the wire carries', () => {
   it('is the codec tag then little-endian i16 at 2^15', () => {

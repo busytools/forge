@@ -34,7 +34,7 @@
 
   /**
    * The wire line: what the capture has produced and what has left. The
-   * frames shown are the ring's own count, read fresh on each repaint.
+   * numbers are the ring's own signals, so this recomputes as the take runs.
    */
   const wireLine = $derived.by(() =>
     wire === null ? null : `${wire.frames} fr \u{b7} ${(wire.bytes / 1024).toFixed(1)} KB`,

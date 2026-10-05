@@ -179,6 +179,8 @@ export interface Wire {
   frames: Uint8Array[];
   /** How many times a panel asked for the device list, which one walk each. */
   asked: number;
+  /** Whether the socket takes frames: `false` holds them, as a socket that is down does. */
+  takes: boolean;
   connection: Pick<
     Connection,
     'dispatch' | 'onMessage' | 'devices' | 'store' | 'status' | 'onStatus' | 'frame' | 'settings'
@@ -210,6 +212,7 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
     sent,
     frames,
     asked: 0,
+    takes: true,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
         sent.push({ command });
@@ -227,6 +230,7 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       // The take's own three: a page that starts one streams frames here,
       // and the fixtures answer as a live socket does.
       frame(bytes: Uint8Array) {
+        if (!held.takes) return false;
         frames.push(bytes);
         return true;
       },

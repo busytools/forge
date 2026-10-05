@@ -18,7 +18,7 @@ import { variantOf } from '../session/apply';
 import type { DictateAxes } from '../session/wire';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { FrameRing } from './capture';
+import { FrameRing } from './capture.svelte';
 import { Microphone } from './mic';
 
 /** How long a release waits for a connection that is not up yet. */
@@ -58,8 +58,8 @@ export class LocalTake {
   readonly resolved: { id: string; label: string } | null;
   /**
    * The take's wire side, read live: frames produced and bytes the socket
-   * has taken. One stable object with getters, so a panel can hold it and
-   * read fresh numbers on each repaint its take state already causes.
+   * has taken. One stable object whose getters read the ring's own signals,
+   * so a panel that holds it repaints as the numbers move.
    */
   readonly wire: { readonly frames: number; readonly bytes: number };
 

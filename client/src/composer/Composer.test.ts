@@ -987,6 +987,43 @@ describe('the key', () => {
     }
   });
 
+  /**
+   * The wire line is a count that moves, not the reading it opened on.
+   *
+   * The row draws it from the ring's own signals, so frames pushed while the
+   * take runs keep moving it; a line stuck at its first draw would show the
+   * first second of a thirty-second take, which is the reading the line
+   * exists to make impossible.
+   */
+  it('moves the wire line as the take produces frames', async () => {
+    const shared = wire();
+    const harness = open({ dictation: true }, shared);
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    // The server's `dictate_started` is what puts the row on the record, and
+    // with it the line this test reads.
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const line = () => document.querySelector('.dict .wire')?.textContent ?? '';
+    const frame = new Uint8Array(641);
+    for (let at = 0; at < 12; at += 1) mic.held.onFrame?.(frame);
+    flushSync();
+    expect(line(), 'the count at the first draw').toContain('12 fr');
+    expect(line(), 'and the bytes the socket took with them').toContain('7.5 KB');
+
+    // The socket stops taking and the take keeps producing: the two halves
+    // move apart, which is the reading the pair exists to draw.
+    shared.takes = false;
+    for (let at = 0; at < 100; at += 1) mic.held.onFrame?.(frame);
+    flushSync();
+    expect(line(), 'the frames produced, a hundred of them later').toContain('112 fr');
+    expect(line(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
+  });
+
   it('learns what the system default is from the first take that opens it', async () => {
     mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
     try {
