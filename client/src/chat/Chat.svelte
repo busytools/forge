@@ -15,6 +15,7 @@
     Chat,
     NOTHING,
     beingWritten,
+    runningAt,
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
@@ -179,15 +180,16 @@
   function retry(): void {
     const held = echoes.of(seat);
     if (held === undefined) return;
-    // The newest turn's own state, which is what says whether this send starts
-    // a turn: one retried into a turn already running is not taken by it, so
-    // the mark holds until the words themselves arrive.
+    // Whether this send starts a turn, read from the CONNECTION's own store
+    // rather than from the turn this page draws - `runningAt`'s own doc has the
+    // mechanism. A retry posted as not-running is taken by the very paint that
+    // carries the turn, where a refusal can no longer reach it.
     //
     // The id is this send's own, freshly minted: the prompt the first attempt
     // sent is dead, so the retry is a new prompt that happens to say the same
     // words - and the pile settles each by id, never by text.
     const id = mintPromptId();
-    echoes.post(seat, held.words, newestTurn?.running === true, id);
+    echoes.post(seat, held.words, runningAt(connection, slot, newestTurn?.running === true), id);
     try {
       // Fire-and-forget like the composer's own send: the outcome rides the
       // subscription rather than a reply, so there is nothing to await.
