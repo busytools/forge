@@ -1297,11 +1297,12 @@ pub enum SessionUpdate {
     /// the core holds.
     ///
     /// **Pushed rather than read.** The `gotify__*` / `slack__*` writes move
-    /// them, a mention's auto-subscribe moves them with no tool call, and a
-    /// worker's teardown takes its own with it - so each write announces the
-    /// pair. One update carries both connectors because they are one section
-    /// of the home's row, and a reader that patches it needs the pair.
-    /// `key` is the project's lead seat.
+    /// them, and so do the doors no tool call reaches: a mention's
+    /// auto-subscribe, a watched conversation's name healing on its first
+    /// message, and a worker's teardown taking its own with it. One update
+    /// carries both connectors because they are one section of the home's
+    /// row, and a reader that patches it needs the pair. `key` is the
+    /// project's lead seat.
     ConnectorSubscriptionsChanged {
         key: SessionSlot,
         gotify: Vec<forge_primitives::GotifySubscription>,

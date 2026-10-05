@@ -114,6 +114,18 @@ impl SlackWorkspaces {
     }
 }
 
+/// The distinct projects a set of subscriptions belongs to, in the order the
+/// subscriptions carry them: one announcement per project a write moved.
+fn projects_of(subscriptions: &[SlackSubscription]) -> Vec<String> {
+    let mut projects: Vec<String> = Vec::new();
+    for sub in subscriptions {
+        if !projects.contains(&sub.project) {
+            projects.push(sub.project.clone());
+        }
+    }
+    projects
+}
+
 impl Workspace {
     /// Register a Slack subscription in the active set. Durable ones also
     /// persist to the redb store; ephemeral ad-hoc-worker ones stay in
@@ -353,6 +365,14 @@ impl Workspace {
         };
         if updated.is_empty() {
             return;
+        }
+        // The name is what the section draws, and a watched conversation
+        // starts unnamed and heals on its first message - so the heal is the
+        // common way a set moves. Announced before the store work, which a
+        // run with no store skips: the set a client draws is the one in
+        // memory, and a project's records may heal in the same sweep.
+        for project in projects_of(&updated) {
+            self.announce_connector_subscriptions_changed(&project);
         }
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
@@ -2593,8 +2613,56 @@ mod tests {
         );
     }
 
+    /// A name heal is the COMMON way a set moves: `watch_slack_conversation`
+    /// writes `name: None` and the pump heals it on the first message, and
+    /// the client draws the name - so a heal that announces nothing leaves the
+    /// row unnamed until some unrelated write.
+    ///
+    /// Mutants: drop the heal's announcement; announce every heal, including
+    /// one that named nothing new.
+    #[test]
+    fn a_name_heal_announces_the_projects_subscriptions() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        ws.seed_test_project("forge", "/tmp/tp-slack-heal");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+
+        let id =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert!(
+            slack.iter().any(|sub| sub.id == id),
+            "precondition: the watch announced the record it created, unnamed: {slack:?}",
+        );
+
+        ws.name_slack_conversation("acme", "C1", "general");
+        let (announced_key, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a heal routes on the project's lead seat");
+        assert!(
+            slack.iter().any(|sub| {
+                sub.id == id
+                    && sub.target
+                        == SlackSubscriptionTarget::Conversation {
+                            id: "C1".to_owned(),
+                            name: Some("general".to_owned()),
+                            mode: SlackWatchMode::All,
+                        }
+            }),
+            "and carries the name the heal wrote: {slack:?}",
+        );
+
+        // A second heal with the same name touches no record - only unnamed
+        // ones are healed - so it announces nothing.
+        ws.name_slack_conversation("acme", "C1", "general");
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a heal that named nothing new announces nothing, and this was: {announced:?}",
+        );
+    }
+
     /// A worker teardown announces the subscriptions it left, which is the
-    /// other door the section moves through.
+    /// other door the section moves through - and one that matched nothing
+    /// announces nothing.
     #[test]
     fn a_slack_teardown_announces_the_survivors() {
         let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
@@ -2615,6 +2683,15 @@ mod tests {
         assert!(
             slack.iter().all(|sub| sub.team_role.is_none()),
             "and announces what the teardown left: {slack:?}",
+        );
+
+        // A teardown matching no subscription of that label is not a write,
+        // so it announces nothing.
+        ws.remove_slack_subscriptions_for_worker(&view_key, "nobody");
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a teardown that took nothing announces nothing, and this was: {announced:?}",
         );
     }
 }
