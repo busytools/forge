@@ -136,6 +136,23 @@ mod tests {
         );
     }
 
+    /// **The cap has a floor, and it is the window's own worst case.** Every
+    /// page a client is handed is the newest twenty turns, so a cap that
+    /// cannot reach back over twenty turns answers a page shorter than the one
+    /// the subscriber promised. The number is the heaviest twenty-turn run
+    /// measured across the eight largest transcripts on the author's machine
+    /// (2026-10-05, see the cap's doc); a re-tune under it is a page that
+    /// silently loses turns, and this is what says so.
+    #[test]
+    fn the_cap_reaches_past_the_heaviest_twenty_turn_run_measured() {
+        const HEAVIEST_MEASURED: usize = 2_799;
+        assert!(
+            CONVERSATION_CAP >= HEAVIEST_MEASURED,
+            "the cap ({CONVERSATION_CAP}) cannot reach back over the heaviest twenty-turn run \
+             measured ({HEAVIEST_MEASURED})",
+        );
+    }
+
     /// A history anywhere near the cap is taken whole, and one over it loses
     /// only its front.
     #[test]
