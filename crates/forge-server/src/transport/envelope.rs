@@ -113,6 +113,12 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Greeting {
         version: u32,
+        /// The build that sent this, in the two forms the terminal's own
+        /// header draws. The greeting is the only thing a client is
+        /// guaranteed to have before it reads or refuses anything, so a skew
+        /// can name both halves from here and nowhere else.
+        forge_version: String,
+        forge_version_short: String,
         settings: ClientSettings,
     },
     Snapshot {
