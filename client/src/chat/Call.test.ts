@@ -306,4 +306,53 @@ describe('the dispatch row, joined to its instance', () => {
     expect(drawn, 'and none of the instance chrome').not.toContain('sg-ty');
     expect(drawn, 'nor figures').not.toContain('sg-fig');
   });
+
+  it('opens onto the instance own timeline, read from the turn own frames', () => {
+    subagents.sync([card({ running: true })]);
+    const messages = [
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_task',
+              name: 'Task',
+              input: { description: 'review the fold', prompt: 'do the thing', subagent_type: 'code-reviewer' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_task',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'Grep', input: { pattern: 'subagent' } }] },
+      },
+      {
+        type: 'user',
+        parent_tool_use_id: 'toolu_task',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '3 matches' }] },
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_task',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'The pane folds its own cards.' }] },
+      },
+    ];
+
+    const drawn = render(Call, {
+      props: { call: dispatch(), k: 'task', open: true, messages },
+    }).body;
+
+    expect(drawn, 'the brief it was given').toContain('do the thing');
+    expect(drawn, 'every call the frames hold, not just the card tail').toContain('subagent');
+    expect(drawn, 'with what it came back with').toContain('3 matches');
+    expect(drawn, 'and the prose the instance wrote between calls').toContain(
+      'The pane folds its own cards.',
+    );
+
+    subagents.sync(null);
+  });
 });

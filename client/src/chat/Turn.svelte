@@ -139,7 +139,7 @@
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
           {:else if unit.kind === 'leaves'}
-            <Leaves rows={unit.rows} />
+            <Leaves rows={unit.rows} messages={turn.messages} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}

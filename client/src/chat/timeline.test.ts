@@ -1,0 +1,169 @@
+import { describe, expect, it } from 'vitest';
+
+import { dispatchFrames } from './timeline';
+
+/** The dispatch itself, as the session's own assistant frame carries it. */
+const dispatch = (over: Record<string, unknown> = {}) => ({
+  type: 'assistant',
+  parent_tool_use_id: null,
+  message: {
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'tu-task',
+        name: 'Task',
+        input: {
+          description: 'review the fold',
+          subagent_type: 'code-reviewer',
+          prompt: 'Read the pane and report two nits.',
+          ...over,
+        },
+      },
+    ],
+  },
+});
+
+/** One call the instance made. */
+const call = (id: string, name: string, input: unknown) => ({
+  type: 'assistant',
+  parent_tool_use_id: 'tu-task',
+  message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+});
+
+/** The frame that answers a call. */
+const answer = (id: string, text: string, isError = false) => ({
+  type: 'user',
+  parent_tool_use_id: 'tu-task',
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }] },
+});
+
+/** What the instance wrote between calls. */
+const said = (text: string) => ({
+  type: 'assistant',
+  parent_tool_use_id: 'tu-task',
+  message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
+describe('a dispatch read into its timeline', () => {
+  it('reads the instance own calls in order, each with what it ran and came back with', () => {
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Grep', { pattern: 'subagent' }),
+        answer('c1', '3 matches'),
+        said('The pane folds its own cards.'),
+        call('c2', 'Bash', { command: 'git log --oneline -3' }),
+        answer('c2', 'a1b2c3 fold the cards'),
+      ],
+      'tu-task',
+    );
+
+    expect(
+      frames.lines.map((line) => (line.kind === 'call' ? line.title : line.text)),
+      'calls and prose in the order they arrived',
+    ).toEqual([
+      'subagent',
+      'The pane folds its own cards.',
+      'git log --oneline -3',
+    ]);
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.input, 'the pattern it searched for').toBe('subagent');
+    expect(first?.kind === 'call' && first.output, 'the matches it came back with').toBe(
+      '3 matches',
+    );
+    expect(first?.kind === 'call' && first.status).toBe('completed');
+  });
+
+  it('marks an errored answer as the failure it is', () => {
+    const frames = dispatchFrames([dispatch(), call('c1', 'Read', { file_path: 'gone.rs' }), answer('c1', 'ENOENT', true)], 'tu-task');
+
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.status).toBe('failed');
+  });
+
+  it('carries the brief, a named model and an isolation request off the dispatch', () => {
+    const frames = dispatchFrames(
+      [dispatch({ model: 'claude-opus-5', isolation: 'worktree' })],
+      'tu-task',
+    );
+
+    expect(frames.brief).toBe('Read the pane and report two nits.');
+    expect(frames.model).toBe('claude-opus-5');
+    expect(frames.isolation).toBe('worktree');
+  });
+
+  it('carries the CLI own outcome line from the task notification', () => {
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          tool_use_id: 'tu-task',
+          task_id: 't1',
+          status: 'completed',
+          summary: 'The review came back with two nits.',
+          output_file: '/tmp/tasks/t1.output',
+        },
+      ],
+      'tu-task',
+    );
+
+    expect(frames.summary).toBe('The review came back with two nits.');
+    expect(frames.outputFile).toBe('/tmp/tasks/t1.output');
+  });
+
+  it('carries the roster own facts: the task handle, the depth and the kind', () => {
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'task_started',
+          tool_use_id: 'tu-task',
+          task_id: 't1',
+          spawn_depth: 1,
+          task_type: 'local_agent',
+        },
+      ],
+      'tu-task',
+    );
+
+    expect(frames.taskId).toBe('t1');
+    expect(frames.depth).toBe(1);
+    expect(frames.taskType).toBe('local_agent');
+  });
+
+  it('beats on the call the heartbeat names', () => {
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'just check' }),
+        { type: 'tool_progress', tool_use_id: 'c1-heartbeat-1', tool_name: 'Bash', parent_tool_use_id: 'c1' },
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.beat, 'the open call carries the pulse').toBe(true);
+  });
+
+  it('keeps another dispatch frames out of this one', () => {
+    const other = { ...call('x1', 'Bash', { command: 'echo other' }), parent_tool_use_id: 'tu-other' };
+    const frames = dispatchFrames([dispatch(), other, call('c1', 'Read', { file_path: 'a.rs' })], 'tu-task');
+
+    expect(frames.lines, 'only this dispatch own frames').toHaveLength(1);
+  });
+
+  it('is empty for a dispatch whose frames did not survive', () => {
+    // The resumed-session bound: the read holds the dispatch and its answer,
+    // and none of what ran under it.
+    const frames = dispatchFrames([dispatch()], 'tu-task');
+
+    expect(frames.lines).toEqual([]);
+    expect(frames.brief, 'the brief still reads off the dispatch itself').toBe(
+      'Read the pane and report two nits.',
+    );
+  });
+});

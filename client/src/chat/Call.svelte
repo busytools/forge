@@ -5,12 +5,13 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
-  import { iconOf } from './families';
+  import { iconOf, rowOf } from './families';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
   import { subagents } from './subagents.svelte';
   import { searchHits } from './text';
+  import { dispatchFrames } from './timeline';
 
   /**
    * One call: what it was, whether it came back, and what it came back with.
@@ -29,9 +30,19 @@
     call,
     open = false,
     k,
+    messages = null,
   }: {
     call: ToolLeaf;
     open?: boolean;
+    /**
+     * The turn's messages, as the wire carried them.
+     *
+     * Read only by a dispatch row that is open: the instance's own frames
+     * (its calls, their results, the prose between them) ride the turn under
+     * the parent id that names the dispatch, and the row's timeline is read
+     * from them here rather than from the card, whose tail caps at four.
+     */
+    messages?: readonly unknown[] | null;
     /**
      * The fold's own name for this row, which the row draws in `data-k`.
      *
@@ -221,6 +232,40 @@
           .filter((part) => part !== null)
           .join(' \u{b7} '),
   );
+
+  /**
+   * The dispatch's own frames, read only while the row is open: a shut row
+   * pays nothing for a timeline nobody is looking at.
+   */
+  const sub = $derived(
+    card !== undefined && opened ? dispatchFrames(messages ?? [], call.id) : null,
+  );
+
+  /**
+   * The one line naming what the instance is doing: the last call it made,
+   * which the card's tail carries. A read with no tail yet (a resumed seat's
+   * instance mid-flight after reattach) says the only true thing left.
+   */
+  const doing = $derived(
+    card === undefined || card.tail.length === 0
+      ? 'working'
+      : (card.tail[card.tail.length - 1]?.title ?? 'working'),
+  );
+
+  /** The meta line's own pairs: what the CLI said about the task itself. */
+  const meta = $derived(
+    sub === null
+      ? []
+      : (
+          [
+            sub.model === null ? null : ['model', sub.model],
+            sub.taskType === null ? null : ['task', sub.taskType],
+            sub.taskId === null ? null : ['agent', sub.taskId],
+            sub.depth === null ? null : ['depth', String(sub.depth)],
+            sub.isolation === null ? null : ['isolation', sub.isolation],
+          ] as ([string, string] | null)[]
+        ).filter((part): part is [string, string] => part !== null),
+  );
 </script>
 
 <details
@@ -247,7 +292,85 @@
     <Chevron />
   </summary>
 
-  {#if call.image !== null}
+  {#if sub !== null}
+    <!-- The instance's own expansion: the brief it was given, what it is
+         doing now, and every call it has made with what each came back with.
+         The frames carry the instance's work in full; the card's tail caps at
+         four, and the record's usage covers the figures. -->
+    <div class="body">
+      {#if sub.brief !== null}
+        <div class="sg-brief"><span class="sg-lb">brief</span>{sub.brief}</div>
+      {/if}
+
+      {#if card !== undefined && card.running}
+        <div class="sg-note">
+          <span class="st"><span class="ring"></span></span>
+          <span class="sg-tx">{doing}</span>
+        </div>
+      {:else if figures !== null}
+        <div class="sg-note">
+          <span class={card?.failed === true ? 'sg-end bad' : 'sg-end'}
+            >{card?.failed === true ? 'stopped' : 'settled'}</span
+          >
+          <span class="sg-tx">{figures}</span>
+        </div>
+      {/if}
+
+      {#if sub.lines.length > 0}
+        <div class="sg-tl">
+          {#each sub.lines as line, at (at)}
+            {#if line.kind === 'prose'}
+              <div class="sg-pr">{line.text}</div>
+            {:else}
+              <details class="sg-cl">
+                <summary>
+                  <span
+                    class={`sg-mk${line.status === 'failed' ? ' err' : line.status === 'completed' ? ' ok' : ''}`}
+                  >
+                    {#if line.status === 'completed'}
+                      <Icon name="check" />
+                    {:else if line.status === 'failed'}
+                      <Icon name="x" />
+                    {:else}
+                      <span class="ring"></span>
+                    {/if}
+                  </span>
+                  <Icon name={iconOf(rowOf(line.name))} />
+                  <span class="sg-tx">{line.title}</span>
+                  <Chevron />
+                </summary>
+                <div class="sg-out">
+                  <div class="sg-cio">{line.input}</div>
+                  {#if line.output !== null}
+                    <div class="sg-cout">{line.output}</div>
+                  {/if}
+                </div>
+              </details>
+              {#if line.beat && line.status === 'in_progress'}
+                <div class="sg-hb"><span class="ring"></span>heartbeat</div>
+              {/if}
+            {/if}
+          {/each}
+        </div>
+      {/if}
+
+      {#if sub.summary !== null}
+        <div class="term sg-sum">{sub.summary}</div>
+      {/if}
+
+      {#if meta.length > 0 || sub.outputFile !== null}
+        <div class="sg-meta">
+          {#each meta as [label, value], at (label)}{#if at > 0} &#183; {/if}<span>{label}</span>
+            {value}{/each}{#if sub.outputFile !== null}<br /><span>output file</span>
+            {sub.outputFile}{/if}
+        </div>
+      {/if}
+
+      {#if call.body.length > 0}
+        {@render pieces(rest)}
+      {/if}
+    </div>
+  {:else if call.image !== null}
     <!-- The picture the call read, drawn only while the row is open: decoding
          a screenshot is real work, and a column of closed rows must not pay
          it. The harness's own line about it rides under as the caption, and

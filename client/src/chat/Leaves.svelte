@@ -29,7 +29,14 @@
    * a peer row's mark says which way the message went, and a thought row reads
    * as the model talking to itself.
    */
-  let { rows }: { rows: WorkRow[] } = $props();
+  let {
+    rows,
+    messages = null,
+  }: {
+    rows: WorkRow[];
+    /** The turn's messages, handed down for a dispatch row's own timeline. */
+    messages?: readonly unknown[] | null;
+  } = $props();
 
   /** What identifies a row: its own key, or a card's id under its own prefix. */
   function rowKey(row: WorkRow): string {
@@ -85,7 +92,7 @@
 <div class="leaves">
   {#each rows as row (rowKey(row))}
     {#if row.tag === 'call'}
-      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} />
+      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {messages} />
     {:else if row.tag === 'hook'}
       <Hook run={row.run} />
     {:else if row.tag === 'inbound'}
