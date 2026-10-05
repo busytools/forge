@@ -27,13 +27,14 @@
   /** A beat of grace on leaving, so crossing the gap into the list lands. */
   let closing: ReturnType<typeof setTimeout> | null = null;
 
-  const all = $derived(subagents.all());
-  const running = $derived(all.filter((card) => card.running));
-  const finished = $derived(all.length - running.length);
-  const listed = $derived(transcribable(all));
+  // The counts and the list are the SAME set - the instances a transcript can
+  // be opened for - so the numbers and the rows can never disagree.
+  const listed = $derived(transcribable(subagents.all()));
+  const running = $derived(listed.filter((card) => card.running));
+  const finished = $derived(listed.length - running.length);
 
   /** What one instance is doing, short enough for a row: one line, capped. */
-  const doing = (card: (typeof all)[number]) => {
+  const doing = (card: (typeof listed)[number]) => {
     const said = firstLine(card.tail[card.tail.length - 1]?.title ?? 'working').trim();
     return said.length > MAX_ACTIVITY ? `${said.slice(0, MAX_ACTIVITY).trimEnd()}\u{2026}` : said;
   };
@@ -52,7 +53,7 @@
   }
 </script>
 
-{#if all.length > 0}
+{#if listed.length > 0}
   <span class="sg-seg" class:open onmouseenter={hold} onmouseleave={release} onfocusout={release}>
     <button type="button" class="sg-tog" aria-expanded={open} onclick={() => (open = !open)}>
       <!-- The subagents glyph leads, so the segment reads as what it is; the

@@ -62,7 +62,10 @@ export function transcribable(cards: readonly SubagentCard[]): SubagentCard[] {
  * row the page does not hold answers false rather than throwing.
  */
 export function reveal(dispatchId: string, root: ParentNode = document): boolean {
-  const row = root.querySelector(`details[data-sg="${dispatchId}"]`) as HTMLDetailsElement | null;
+  // Escaped, because a wire id is interpolated into a selector and one with a
+  // quote or a backslash in it would throw rather than answer.
+  const escaped = dispatchId.replace(/["\\]/g, '\\$&');
+  const row = root.querySelector<HTMLDetailsElement>(`details[data-sg="${escaped}"]`);
   if (row === null) return false;
   row.open = true;
   row.scrollIntoView({ behavior: 'smooth', block: 'center' });

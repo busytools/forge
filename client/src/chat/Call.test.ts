@@ -283,7 +283,11 @@ describe('the dispatch row, joined to its instance', () => {
           type: 'tool_use',
           id: 'toolu_task',
           name: 'Task',
-          input: { description: 'review the fold', prompt: 'do the thing', subagent_type: 'code-reviewer' },
+          input: {
+            description: 'review the fold',
+            prompt: 'do the thing',
+            subagent_type: 'code-reviewer',
+          },
         },
       ],
     },
@@ -346,17 +350,26 @@ describe('the dispatch row, joined to its instance', () => {
       {
         type: 'assistant',
         parent_tool_use_id: 'toolu_task',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'Grep', input: { pattern: 'subagent' } }] },
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'c1', name: 'Grep', input: { pattern: 'subagent' } }],
+        },
       },
       {
         type: 'user',
         parent_tool_use_id: 'toolu_task',
-        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '3 matches' }] },
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'c1', content: '3 matches' }],
+        },
       },
       {
         type: 'assistant',
         parent_tool_use_id: 'toolu_task',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'Report: **two nits** on the fold.' }] },
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Report: **two nits** on the fold.' }],
+        },
       },
     ];
 

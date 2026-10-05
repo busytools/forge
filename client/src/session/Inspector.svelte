@@ -9,7 +9,6 @@
   import ProcessesSection from './sections/ProcessesSection.svelte';
   import SchedulesSection from './sections/SchedulesSection.svelte';
   import SlackSection from './sections/SlackSection.svelte';
-  import SubagentsSection from './sections/SubagentsSection.svelte';
   import TasksSection from './sections/TasksSection.svelte';
   import { gitSection, gotifySection, mcpSection, projectOf, slackSection } from './view';
   import type { SessionRecord } from './wire';
@@ -54,9 +53,6 @@
   const mcp = $derived(record === null ? null : mcpSection(record));
   const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);
-  // The server's answer, not one worked out from the frames this page holds:
-  // a seat may have dispatched in a turn the page never received.
-  const dispatches = $derived(record !== null && record.has_dispatches);
 </script>
 
 <!-- Named for the same reason the rail is: the page carries two `aside`
@@ -83,7 +79,6 @@
     {#if tasks.length > 0}
       <TasksSection {tasks} />
     {/if}
-    <SubagentsSection {dispatches} />
     {#if crons.length > 0}
       <SchedulesSection {crons} {now} />
     {/if}

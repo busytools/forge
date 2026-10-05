@@ -35,7 +35,10 @@ const call = (id: string, name: string, input: unknown) => ({
 const answer = (id: string, text: string, isError = false) => ({
   type: 'user',
   parent_tool_use_id: 'tu-task',
-  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }] },
+  message: {
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }],
+  },
 });
 
 /** What the instance wrote between calls. */
@@ -62,11 +65,7 @@ describe('a dispatch read into its timeline', () => {
     expect(
       frames.lines.map((line) => (line.kind === 'call' ? line.leaf.title : line.text)),
       'calls and prose in the order they arrived',
-    ).toEqual([
-      'subagent',
-      'The pane folds its own cards.',
-      'git log --oneline -3',
-    ]);
+    ).toEqual(['subagent', 'The pane folds its own cards.', 'git log --oneline -3']);
     const first = frames.lines[0];
     expect(
       first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
@@ -76,10 +75,58 @@ describe('a dispatch read into its timeline', () => {
   });
 
   it('marks an errored answer as the failure it is', () => {
-    const frames = dispatchFrames([dispatch(), call('c1', 'Read', { file_path: 'gone.rs' }), answer('c1', 'ENOENT', true)], 'tu-task');
+    const frames = dispatchFrames(
+      [dispatch(), call('c1', 'Read', { file_path: 'gone.rs' }), answer('c1', 'ENOENT', true)],
+      'tu-task',
+    );
 
     const first = frames.lines[0];
     expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
+  });
+
+  it('keeps the instance own thinking, which the session draws as a row', () => {
+    // Measured: thinking blocks arrive inside dispatched frames, and dropping
+    // them whole would be the one frame type with no row at all.
+    const frames = dispatchFrames(
+      [
+        {
+          type: 'assistant',
+          parent_tool_use_id: 'tu-task',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'thinking', thinking: 'Two files, then the diff.' }],
+          },
+        },
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind, 'a thought is a line of its own').toBe('thought');
+    expect(first?.kind === 'thought' && first.text).toBe('Two files, then the diff.');
+  });
+
+  it('keeps a backgrounded child call open rather than settling it on its ack', () => {
+    // The session's own rule: a call whose task outlives its turn draws as
+    // running however clean the launch ack it was answered with.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'sleep 300', run_in_background: true }),
+        answer('c1', 'Command running in background with ID: bg1.'),
+        {
+          type: 'system',
+          subtype: 'task_started',
+          tool_use_id: 'c1',
+          task_id: 'bg1',
+          is_backgrounded: true,
+        },
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.leaf.status, 'still running').toBe('in_progress');
   });
 
   it('carries the brief, a named model and an isolation request off the dispatch', () => {
@@ -141,7 +188,12 @@ describe('a dispatch read into its timeline', () => {
       [
         dispatch(),
         call('c1', 'Bash', { command: 'just check' }),
-        { type: 'tool_progress', tool_use_id: 'c1-heartbeat-1', tool_name: 'Bash', parent_tool_use_id: 'c1' },
+        {
+          type: 'tool_progress',
+          tool_use_id: 'c1-heartbeat-1',
+          tool_name: 'Bash',
+          parent_tool_use_id: 'c1',
+        },
       ],
       'tu-task',
     );
@@ -150,8 +202,14 @@ describe('a dispatch read into its timeline', () => {
   });
 
   it('keeps another dispatch frames out of this one', () => {
-    const other = { ...call('x1', 'Bash', { command: 'echo other' }), parent_tool_use_id: 'tu-other' };
-    const frames = dispatchFrames([dispatch(), other, call('c1', 'Read', { file_path: 'a.rs' })], 'tu-task');
+    const other = {
+      ...call('x1', 'Bash', { command: 'echo other' }),
+      parent_tool_use_id: 'tu-other',
+    };
+    const frames = dispatchFrames(
+      [dispatch(), other, call('c1', 'Read', { file_path: 'a.rs' })],
+      'tu-task',
+    );
 
     expect(frames.lines, 'only this dispatch own frames').toHaveLength(1);
   });

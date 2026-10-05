@@ -50,10 +50,10 @@ describe('the dispatch join', () => {
     const cards = new SubagentCards();
     cards.sync([card(), card({ dispatch_id: 'toolu_other', running: false })]);
 
-    expect(cards.all().map((one) => one.dispatch_id), 'the strip lists them in order').toEqual([
-      'toolu_task',
-      'toolu_other',
-    ]);
+    expect(
+      cards.all().map((one) => one.dispatch_id),
+      'the strip lists them in order',
+    ).toEqual(['toolu_task', 'toolu_other']);
     expect(cards.running(), 'one of the two is still working').toBe(1);
   });
 });

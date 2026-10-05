@@ -120,35 +120,6 @@ describe('the inspector as it draws', () => {
     expect(body).toContain('closes #1215');
   });
 
-  /**
-   * A section that is always there says nothing when it is empty - and the
-   * subagents section is the one carry whose absence would read as "none ran".
-   *
-   * **It is drawn against the record's own answer rather than worked out here.**
-   * The server folds whether a seat dispatched where the conversation is folded,
-   * because these turns are a window of it: a page holding a partly-read
-   * conversation would answer "none ran" for a seat that dispatched an hour ago.
-   */
-  it('draws the subagents gap only when the record says a seat dispatched', () => {
-    expect(sections(draw())).not.toContain('subagents');
-
-    const dispatched: SessionRecord = { ...record, has_dispatches: true };
-
-    expect(sections(draw({ record: dispatched }))).toContain('subagents');
-  });
-
-  /**
-   * The field is read off the wire the socket actually sends, and a test that
-   * builds the narrowed record by hand cannot see that boundary at all: a
-   * reader looking for it anywhere but the record's own level answers `false`
-   * for every seat.
-   */
-  it('sees a dispatch across the record the socket actually sends', () => {
-    const dispatched = sessionFrom({ ...session, has_dispatches: true });
-
-    expect(sections(draw({ record: dispatched }))).toContain('subagents');
-  });
-
   it('draws the monitors section with what a card is watching', () => {
     draw({
       record: {

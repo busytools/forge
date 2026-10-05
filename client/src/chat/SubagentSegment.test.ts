@@ -26,9 +26,7 @@ describe('the strip segment', () => {
     const body = render(SubagentSegment, {}).body;
 
     expect(body, 'the glyph says what the segment is').toContain('i-subagents');
-    expect(body, 'running and finished, session totals').toContain(
-      '2 running \u{b7} 0 finished',
-    );
+    expect(body, 'running and finished, session totals').toContain('2 running \u{b7} 0 finished');
     expect(body, 'a ring while any is working').toContain('class="ring"');
     subagents.sync(null);
   });

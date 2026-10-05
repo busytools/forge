@@ -15,12 +15,14 @@
  * Read lazily, only for a row that is open: a shut row pays nothing.
  */
 
-import { blocksOf, leafOf, type Block, type ToolLeaf } from './leaves';
+import { taskStatus } from './families';
+import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 
 /** One line of the instance's own work. */
 export type SubLine =
   | { kind: 'call'; leaf: ToolLeaf }
-  | { kind: 'prose'; text: string };
+  | { kind: 'prose'; text: string }
+  | { kind: 'thought'; text: string };
 
 /** Everything the row's expansion reads off a dispatch's frames. */
 export interface DispatchFrames {
@@ -55,6 +57,10 @@ interface Frame {
   spawn_depth?: unknown;
   task_type?: unknown;
   output_file?: unknown;
+  is_backgrounded?: unknown;
+  status?: unknown;
+  summary?: unknown;
+  patch?: unknown;
   message?: { content?: unknown };
 }
 
@@ -82,13 +88,14 @@ interface CallDraft {
  * the row's timeline these rather than the units, because the units are the
  * conversation's and a dispatched agent's frames are not in them.
  */
-export function dispatchFrames(
-  messages: readonly unknown[],
-  dispatchId: string,
-): DispatchFrames {
-  const lines: (CallDraft | { kind: 'prose'; text: string })[] = [];
+export function dispatchFrames(messages: readonly unknown[], dispatchId: string): DispatchFrames {
+  const lines: (CallDraft | { kind: 'prose' | 'thought'; text: string })[] = [];
   const at = new Map<string, CallDraft>();
   const beats = new Set<string>();
+  /** The task id the CLI assigned a child call, so its ending can be placed. */
+  const owners = new Map<string, string>();
+  /** What the roster said about each child call, by call id. */
+  const tasks = new Map<string, BackgroundTask>();
   let brief: string | null = null;
   let model: string | null = null;
   let isolation: string | null = null;
@@ -113,12 +120,23 @@ export function dispatchFrames(
           const id = str(block.id);
           const name = str(block.name);
           if (id === null || name === null) continue;
-          const draft: CallDraft = { kind: 'call', id, name, input: block.input, result: undefined };
+          const draft: CallDraft = {
+            kind: 'call',
+            id,
+            name,
+            input: block.input,
+            result: undefined,
+          };
           lines.push(draft);
           at.set(id, draft);
         } else if (frame.type === 'assistant' && block.type === 'text') {
-          const text = String(block.text ?? '').trim();
+          const text = typeof block.text === 'string' ? block.text.trim() : '';
           if (text !== '') lines.push({ kind: 'prose', text });
+        } else if (frame.type === 'assistant' && block.type === 'thinking') {
+          // The instance's reasoning, which the session draws as its own row -
+          // dropped here it would be the one frame type with no row at all.
+          const text = typeof block.thinking === 'string' ? block.thinking.trim() : '';
+          if (text !== '') lines.push({ kind: 'thought', text });
         } else if (frame.type === 'user' && block.type === 'tool_result') {
           const owner = at.get(str(block.tool_use_id) ?? '');
           if (owner === undefined) continue;
@@ -143,15 +161,60 @@ export function dispatchFrames(
       }
     }
     // The roster's own facts about the task the dispatch opened: its handle,
-    // its depth, its kind, and where its transcript is written.
+    // its depth, its kind, and where its transcript is written. `task_updated`
+    // is not read here: it names only the task and never the call.
     if (frame.type === 'system' && str(frame.tool_use_id) === dispatchId) {
       if (frame.subtype === 'task_started') {
         taskId = str(frame.task_id) ?? taskId;
         depth = typeof frame.spawn_depth === 'number' ? frame.spawn_depth : depth;
         taskType = str(frame.task_type) ?? taskType;
       }
-      if (frame.subtype === 'task_notification' || frame.subtype === 'task_updated') {
+      if (frame.subtype === 'task_notification') {
         outputFile = str(frame.output_file) ?? outputFile;
+      }
+    }
+
+    // A CHILD call's own task frames - the same bookkeeping the session's fold
+    // keeps, so a backgrounded call the instance made draws as the work it is
+    // rather than as the settled launch ack it was answered with.
+    if (frame.type === 'system') {
+      const call = str(frame.tool_use_id);
+      const task = str(frame.task_id);
+      if (frame.subtype === 'task_started' && call !== null && at.has(call)) {
+        if (task !== null) owners.set(task, call);
+        tasks.set(call, {
+          status: 'in_progress',
+          note: null,
+          backgrounded: frame.is_backgrounded === true,
+        });
+      } else if (
+        (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') &&
+        task !== null
+      ) {
+        const owner = owners.get(task);
+        if (owner !== undefined) {
+          const held = tasks.get(owner) ?? {
+            status: 'in_progress' as const,
+            note: null,
+            backgrounded: false,
+          };
+          const wire = str(frame.status) ?? str(obj(frame.patch)['status']);
+          const summary = str(frame.summary);
+          tasks.set(owner, {
+            status: taskStatus(wire) ?? held.status,
+            note:
+              frame.subtype === 'task_notification' && summary !== null
+                ? {
+                    text: summary,
+                    tone:
+                      taskStatus(wire) === 'failed' || taskStatus(wire) === 'killed'
+                        ? 'fail'
+                        : 'sum',
+                  }
+                : held.note,
+            backgrounded: held.backgrounded,
+          });
+        }
       }
     }
   }
@@ -167,9 +230,19 @@ export function dispatchFrames(
     // Each call becomes the session's own tool leaf, built by the same
     // builder the conversation fold uses.
     lines: lines.map((line) =>
-      line.kind === 'prose'
-        ? line
-        : { kind: 'call', leaf: leafOf(line.id, line.name, line.input, line.result) },
+      line.kind === 'call'
+        ? {
+            kind: 'call',
+            leaf: leafOf(
+              line.id,
+              line.name,
+              line.input,
+              line.result,
+              undefined,
+              tasks.get(line.id),
+            ),
+          }
+        : line,
     ),
     beats,
   };

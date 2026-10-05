@@ -10,8 +10,9 @@
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
+  import { renderInlineProse } from './prose';
   import { subagents } from './subagents.svelte';
-  import { searchHits } from './text';
+  import { joinedLine, searchHits } from './text';
   import { dispatchFrames } from './timeline';
 
   /**
@@ -216,7 +217,9 @@
   const bright = $derived(card === undefined ? call.status === 'in_progress' : card.running);
 
   /** The kind glyph's tone, off the instance when this row carries one. */
-  const shownTone = $derived(card === undefined ? tone : card.failed ? ' err' : card.running ? '' : ' ok');
+  const shownTone = $derived(
+    card === undefined ? tone : card.failed ? ' err' : card.running ? '' : ' ok',
+  );
 
   /**
    * The figures a settled dispatch draws at the row's right: how many calls
@@ -308,20 +311,30 @@
       {#if sub.lines.length > 0}
         <div class="sg-tl">
           {#each sub.lines as line, at (at)}
-            {#if line.kind === 'prose'}
-              <div class="sg-pr"><Prose text={line.text} /></div>
-            {:else}
+            {#if line.kind === 'call'}
               <!-- The instance's calls are the session's own tool rows: the
                    same component, the same glyph and body, because a second
                    rendering of the same facts is a second thing to keep in
                    step. -->
               <Call call={line.leaf} k={line.leaf.id} />
-              {#if line.leaf.status !== 'completed' &&
-                line.leaf.status !== 'failed' &&
-                line.leaf.status !== 'killed' &&
-                sub.beats.has(line.leaf.id)}
+              {#if line.leaf.status !== 'completed' && line.leaf.status !== 'failed' && line.leaf.status !== 'killed' && sub.beats.has(line.leaf.id)}
                 <div class="sg-hb"><span class="ring"></span>heartbeat</div>
               {/if}
+            {:else if line.kind === 'thought'}
+              <!-- The instance's reasoning, drawn as the session draws a
+                   thought: same glyph, same one-line lead, same markdown body
+                   behind the open. -->
+              <details class="leaf">
+                <summary>
+                  <Icon name="message-circle-more" class="gl" />
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                  <span class="tn">{@html renderInlineProse(joinedLine(line.text))}</span>
+                  <Chevron />
+                </summary>
+                <div class="body"><Prose text={line.text} /></div>
+              </details>
+            {:else}
+              <div class="sg-pr"><Prose text={line.text} /></div>
             {/if}
           {/each}
         </div>
@@ -334,7 +347,9 @@
            transcript landed. -->
       {#if grounded && (meta.length > 0 || sub.outputFile !== null)}
         <div class="sg-meta">
-          {#each meta as [label, value], at (label)}{#if at > 0} &#183; {/if}<span>{label}</span>
+          {#each meta as [label, value], at (label)}{#if at > 0}
+              &#183;
+            {/if}<span>{label}</span>
             {value}{/each}{#if sub.outputFile !== null}<br /><span>output file</span>
             {sub.outputFile}{/if}
         </div>

@@ -12,12 +12,12 @@ export function turnOfDispatch(
 ): number | null {
   for (const [at, turn] of turns.entries()) {
     for (const message of turn.messages) {
-      const frame = message as { message?: { content?: unknown } };
-      const content = frame.message?.content;
+      const frame = message as { message?: { content?: unknown } } | null;
+      const content = frame?.message?.content;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
-        const held = block as { type?: unknown; id?: unknown };
-        if (held.type === 'tool_use' && held.id === dispatchId) return at;
+        const held = block as { type?: unknown; id?: unknown } | null;
+        if (held?.type === 'tool_use' && held.id === dispatchId) return at;
       }
     }
   }
