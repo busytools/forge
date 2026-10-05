@@ -60,7 +60,7 @@ describe('a dispatch read into its timeline', () => {
     );
 
     expect(
-      frames.lines.map((line) => (line.kind === 'call' ? line.title : line.text)),
+      frames.lines.map((line) => (line.kind === 'call' ? line.leaf.title : line.text)),
       'calls and prose in the order they arrived',
     ).toEqual([
       'subagent',
@@ -68,18 +68,18 @@ describe('a dispatch read into its timeline', () => {
       'git log --oneline -3',
     ]);
     const first = frames.lines[0];
-    expect(first?.kind === 'call' && first.input, 'the pattern it searched for').toBe('subagent');
-    expect(first?.kind === 'call' && first.output, 'the matches it came back with').toBe(
-      '3 matches',
-    );
-    expect(first?.kind === 'call' && first.status).toBe('completed');
+    expect(
+      first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
+      'the matches it came back with, on the leaf the session own row draws',
+    ).toContain('3 matches');
+    expect(first?.kind === 'call' && first.leaf.status).toBe('completed');
   });
 
   it('marks an errored answer as the failure it is', () => {
     const frames = dispatchFrames([dispatch(), call('c1', 'Read', { file_path: 'gone.rs' }), answer('c1', 'ENOENT', true)], 'tu-task');
 
     const first = frames.lines[0];
-    expect(first?.kind === 'call' && first.status).toBe('failed');
+    expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
   });
 
   it('carries the brief, a named model and an isolation request off the dispatch', () => {
@@ -146,8 +146,7 @@ describe('a dispatch read into its timeline', () => {
       'tu-task',
     );
 
-    const first = frames.lines[0];
-    expect(first?.kind === 'call' && first.beat, 'the open call carries the pulse').toBe(true);
+    expect(frames.beats.has('c1'), 'the open call carries the pulse').toBe(true);
   });
 
   it('keeps another dispatch frames out of this one', () => {

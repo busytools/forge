@@ -604,6 +604,16 @@
   );
 
   /**
+   * Every message the page holds, across every turn.
+   *
+   * **A dispatch's row reads its instance's frames from here, not from its own
+   * turn.** A backgrounded instance runs on past the turn that dispatched it,
+   * so its calls arrive in LATER turns - looked for in the dispatch row's own
+   * turn alone, a backgrounded instance's timeline reads empty.
+   */
+  const history = $derived(held.turns.flatMap((one) => one.messages));
+
+  /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.
    *
    * **Through the element rather than through the list's handle, and that is
@@ -898,7 +908,12 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn {turn} {slot} carried={turn.key === newest ? (pinned?.key ?? null) : null} />
+        <Turn
+          {turn}
+          {slot}
+          {history}
+          carried={turn.key === newest ? (pinned?.key ?? null) : null}
+        />
         <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or
              joins, so nothing moves when the send is taken. -->

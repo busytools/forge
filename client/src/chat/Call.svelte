@@ -5,7 +5,8 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
-  import { iconOf, rowOf } from './families';
+  import Call from './Call.svelte';
+  import { iconOf } from './families';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
@@ -35,12 +36,14 @@
     call: ToolLeaf;
     open?: boolean;
     /**
-     * The turn's messages, as the wire carried them.
+     * The page's messages, across every turn, as the wire carried them.
      *
      * Read only by a dispatch row that is open: the instance's own frames
-     * (its calls, their results, the prose between them) ride the turn under
-     * the parent id that names the dispatch, and the row's timeline is read
-     * from them here rather than from the card, whose tail caps at four.
+     * (its calls, their results, the prose between them) carry the parent id
+     * that names the dispatch, and the row's timeline is read from them here
+     * rather than from the card, whose tail caps at four. Every turn rather
+     * than the row's own, because a backgrounded instance's frames arrive in
+     * LATER turns than the dispatch that opened it.
      */
     messages?: readonly unknown[] | null;
     /**
@@ -241,17 +244,6 @@
     card !== undefined && opened ? dispatchFrames(messages ?? [], call.id) : null,
   );
 
-  /**
-   * The one line naming what the instance is doing: the last call it made,
-   * which the card's tail carries. A read with no tail yet (a resumed seat's
-   * instance mid-flight after reattach) says the only true thing left.
-   */
-  const doing = $derived(
-    card === undefined || card.tail.length === 0
-      ? 'working'
-      : (card.tail[card.tail.length - 1]?.title ?? 'working'),
-  );
-
   /** Whether this dispatch owns its result text on the row: only a foreground
    * one does. A backgrounded instance's result is the launch ack, so it is not
    * drawn and its task facts (path included) go with it. */
@@ -312,51 +304,21 @@
         </div>
       {/if}
 
-      {#if card !== undefined && card.running}
-        <div class="sg-note">
-          <span class="st"><span class="ring"></span></span>
-          <span class="sg-tx">{doing}</span>
-        </div>
-      {:else if figures !== null}
-        <div class="sg-note">
-          <span class={card?.failed === true ? 'sg-end bad' : 'sg-end'}
-            >{card?.failed === true ? 'stopped' : 'settled'}</span
-          >
-          <span class="sg-tx">{figures}</span>
-        </div>
-      {/if}
-
       {#if sub.lines.length > 0}
         <div class="sg-tl">
           {#each sub.lines as line, at (at)}
             {#if line.kind === 'prose'}
               <div class="sg-pr"><Prose text={line.text} /></div>
             {:else}
-              <details class="sg-cl">
-                <summary>
-                  <span
-                    class={`sg-mk${line.status === 'failed' ? ' err' : line.status === 'completed' ? ' ok' : ''}`}
-                  >
-                    {#if line.status === 'completed'}
-                      <Icon name="check" />
-                    {:else if line.status === 'failed'}
-                      <Icon name="x" />
-                    {:else}
-                      <span class="ring"></span>
-                    {/if}
-                  </span>
-                  <Icon name={iconOf(rowOf(line.name))} />
-                  <span class="sg-tx">{line.title}</span>
-                  <Chevron />
-                </summary>
-                <div class="sg-out">
-                  <div class="sg-cio">{line.input}</div>
-                  {#if line.output !== null}
-                    <div class="sg-cout">{line.output}</div>
-                  {/if}
-                </div>
-              </details>
-              {#if line.beat && line.status === 'in_progress'}
+              <!-- The instance's calls are the session's own tool rows: the
+                   same component, the same glyph and body, because a second
+                   rendering of the same facts is a second thing to keep in
+                   step. -->
+              <Call call={line.leaf} k={line.leaf.id} />
+              {#if line.leaf.status !== 'completed' &&
+                line.leaf.status !== 'failed' &&
+                line.leaf.status !== 'killed' &&
+                sub.beats.has(line.leaf.id)}
                 <div class="sg-hb"><span class="ring"></span>heartbeat</div>
               {/if}
             {/if}

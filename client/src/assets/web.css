@@ -841,29 +841,9 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-brief .sg-lb { color: var(--warn); font-family: var(--mono);
   font-size: var(--fs-label); text-transform: uppercase; letter-spacing: .08em;
   margin-right: 7px; }
-.sg-note { display: flex; align-items: center; gap: 8px;
-  font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 3px 0 5px; }
-.sg-note .sg-end { color: var(--ok); }
-.sg-note .sg-end.bad { color: var(--bad); }
 .sg-tl { padding-top: 4px; }
 .sg-pr { color: var(--muted); font-size: var(--fs-base); padding: 3px 0;
   max-width: 72ch; }
-details.sg-cl { border: 0; }
-details.sg-cl > summary { list-style: none; display: flex; gap: 7px; align-items: center;
-  cursor: pointer; font-family: var(--mono); font-size: var(--fs-data); padding: 2px 0; }
-details.sg-cl > summary::-webkit-details-marker { display: none; }
-details.sg-cl > summary .sg-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; color: var(--muted); }
-details.sg-cl > summary:hover .sg-tx { color: var(--text); }
-details.sg-cl > summary .arw { margin-left: auto; }
-details.sg-cl > summary .sg-mk { display: inline-flex; flex: none; }
-details.sg-cl > summary .sg-mk.ok { color: var(--ok); }
-details.sg-cl > summary .sg-mk.err { color: var(--bad); }
-details.sg-cl .sg-out { padding: 3px 0 5px 22px; }
-details.sg-cl .sg-cio { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
-  padding-bottom: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
-details.sg-cl .sg-cout { color: var(--muted); font-family: var(--mono); font-size: var(--fs-data);
-  white-space: pre-wrap; overflow-wrap: anywhere; }
 .sg-hb { display: flex; gap: 7px; align-items: center; color: var(--dim);
   font-family: var(--mono); font-size: var(--fs-label); padding: 1px 0 4px 22px; }
 .sg-hb .ring { width: 7px; height: 7px; }
