@@ -136,12 +136,14 @@ impl Conversation {
         // connect and the replay that reseeds a seat both end at the
         // conversation's newest frame, so the messages a client holds keep the
         // indices its cursors name: the offset moves by however much further
-        // back the new history reaches, and no further than zero allows. A
-        // reseed that is not that - a `/new`, a resume onto another occupant -
-        // ends elsewhere, and restarting the numbering is what a replaced
-        // conversation is.
-        let carried =
-            self.dropped.saturating_sub(messages.len().saturating_sub(self.messages.len()));
+        // back - or shorter - the new history reaches from the same end, and
+        // no further than zero allows. A reseed that is not that - a `/new`, a
+        // resume onto another occupant - ends elsewhere, and restarting the
+        // numbering is what a replaced conversation is.
+        let carried = self
+            .dropped
+            .saturating_sub(messages.len().saturating_sub(self.messages.len()))
+            .saturating_add(self.messages.len().saturating_sub(messages.len()));
         let reseeded_same =
             self.messages.last().is_some() && self.messages.last() == messages.last();
         self.messages = as_blocks(messages);
@@ -1097,6 +1099,33 @@ mod tests {
             held.lock().dropped(),
             dropped,
             "and the numbering did not move under the client holding it",
+        );
+
+        // The other direction: the same conversation reseeded as a window that
+        // reaches LESS far back. The offset moves with it, so the turn a
+        // cursor names still resolves to the turn it named rather than to
+        // whatever sits where it used to.
+        let short_by = 1_000;
+        let shorter = held.lock().messages()[short_by..].to_vec();
+        held.lock().seed(shorter, 0);
+        assert_eq!(
+            held.lock().dropped(),
+            dropped + short_by,
+            "a shorter window of the same conversation renumbers its front, not its tail",
+        );
+        let shorter_above = held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                Some(&cursor),
+                2,
+            )
+        });
+        assert_eq!(
+            turn_texts(&shorter_above),
+            turn_texts(&carried)[..2].to_vec(),
+            "and the page above the cursor is still that page",
         );
     }
 
