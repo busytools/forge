@@ -226,8 +226,8 @@
 
   /**
    * The draft this box is drawing, remembered so a stand-down can tell THIS
-   * draft from the next one: the record has already lost `pending_ask` by the
-   * time the update is read.
+   * draft from the next one: the record has already dropped it from
+   * `pending_asks` by the time the update is read.
    */
   $effect(() => {
     const held = ask;
@@ -240,10 +240,10 @@
   /**
    * A held draft leaving the core, which no record field carries.
    *
-   * Applying the update clears `pending_ask`; the ENDING rides the update
-   * alone, and it is what tells this reader what happened to a dock they did
-   * not answer. The update is read here for the same reason the conversation
-   * reads its own frames: nothing else draws it.
+   * Applying the update drops the draft from `pending_asks`; the ENDING rides
+   * the update alone, and it is what tells this reader what happened to a dock
+   * they did not answer. The update is read here for the same reason the
+   * conversation reads its own frames: nothing else draws it.
    *
    * It is recorded into the box for the update's OWN seat rather than the one
    * on screen: a reader looking elsewhere still meets the line when they come

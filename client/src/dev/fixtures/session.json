@@ -80,6 +80,39 @@
       "display": null
     }
   },
+  "pending_asks": [
+    {
+      "kind": "permission",
+      "request": {
+        "tool_call": {
+          "tool_call_id": "test-tool",
+          "title": "Bash",
+          "kind": "execute",
+          "status": "pending",
+          "content": [],
+          "raw_input": {
+            "command": "ls"
+          },
+          "raw_output": null,
+          "output_metadata": null,
+          "task_metadata": null,
+          "locations": [],
+          "meta": null
+        },
+        "options": [
+          {
+            "option_id": "allow_once",
+            "name": "Allow once",
+            "kind": "allow",
+            "action": {
+              "kind": "allow"
+            }
+          }
+        ],
+        "display": null
+      }
+    }
+  ],
   "conversation": {
     "turns": [
       {

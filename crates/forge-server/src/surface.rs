@@ -78,9 +78,6 @@ impl ViewSurface {
         self.workspace.dispatch_from_view(command)
     }
 
-    /// What the seat at `slot` is held on, as the core kept it, so a view
-    /// that attached after a prompt landed still draws what it offers.
-    /// `None` when the seat is holding nothing.
     /// The last fatal error, or `None` when nothing has failed fatally.
     ///
     /// App-level rather than the seat's: it names a startup that could not
@@ -100,8 +97,11 @@ impl ViewSurface {
         self.workspace.service_status()
     }
 
-    pub fn pending_ask(&self, slot: &SessionSlot) -> Option<PendingAsk> {
-        self.workspace.pending_ask(slot)
+    /// What the seat at `slot` is holding, with a draft leading and the rest
+    /// oldest first, so a view that attached after a prompt landed still
+    /// draws what it offers. Empty when the seat is holding nothing.
+    pub fn pending_asks(&self, slot: &SessionSlot) -> Vec<PendingAsk> {
+        self.workspace.pending_asks(slot)
     }
 
     /// The core's own update stream. Every caller gets a receiver of its

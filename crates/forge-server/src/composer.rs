@@ -192,7 +192,9 @@ pub struct Composer {
     takes: HashMap<SessionSlot, Take>,
     notices: HashMap<SessionSlot, Notice>,
     compacting: HashSet<SessionSlot>,
-    asks: HashMap<SessionSlot, Ask>,
+    /// The prompts each seat is holding: a draft leads, then arrival order.
+    /// A parallel batch parks several at once, and the dock draws the front.
+    asks: HashMap<SessionSlot, Vec<Ask>>,
     sign_ins: HashMap<SessionSlot, SignIn>,
 }
 
@@ -293,33 +295,52 @@ impl Composer {
                 true
             }
             SessionUpdate::PermissionRequest { key, request, .. } => {
-                self.asks.insert(key.clone(), Ask::Permission(Box::new(request.clone())));
+                let ask = Ask::Permission(Box::new(request.clone()));
+                self.park(key, ask);
                 true
             }
             SessionUpdate::QuestionRequest { key, request, .. } => {
-                self.asks.insert(key.clone(), Ask::Question(Box::new(request.clone())));
+                let ask = Ask::Question(Box::new(request.clone()));
+                self.park(key, ask);
                 true
             }
-            // The prompt is settled, so the dock goes. This is the only
+            SessionUpdate::SlackPostPending { key, draft } => {
+                let ask = Ask::SlackDraft(Box::new(draft.clone()));
+                self.park(key, ask);
+                true
+            }
+            // The draft left the core's registry - answered in whichever
+            // view, expired, or its asking session gone - so this copy goes
+            // with it, or a page keeps drawing a decision no answer can
+            // reach.
+            SessionUpdate::SlackDraftResolved { key, id, .. } => {
+                let emptied = match self.asks.get_mut(key) {
+                    Some(queue) => {
+                        queue.retain(|ask| !matches!(ask, Ask::SlackDraft(held) if held.id == *id));
+                        queue.is_empty()
+                    }
+                    None => false,
+                };
+                if emptied {
+                    self.asks.remove(key);
+                }
+                // True whatever this view held, for the same reason the arm
+                // below is: the draft is gone from the core.
+                true
+            }
+            // The prompt is settled, so its dock goes. This is the only
             // thing on the stream that says so: answering leaves the core's
             // pending set either way, and a view that answered from another
             // seat's page would otherwise keep drawing it.
             SessionUpdate::PendingInteractionResolved { key, tool_id, question_index } => {
-                let held = match self.asks.get(key) {
-                    Some(Ask::Permission(request)) => &request.tool_call.tool_call_id == tool_id,
-                    // **The round as well as the call**: a batch reuses one
-                    // tool id and advances the index, and the next round's
-                    // request can land before this round's resolution, so a
-                    // clear on the id alone drops the ask that just parked.
-                    Some(Ask::Question(request)) => {
-                        &request.tool_call.tool_call_id == tool_id
-                            && question_index.is_none_or(|index| index == request.question_index)
+                let emptied = match self.asks.get_mut(key) {
+                    Some(queue) => {
+                        queue.retain(|ask| !resolved(ask, tool_id, *question_index));
+                        queue.is_empty()
                     }
-                    // A draft is answered by its own id rather than by a tool
-                    // call, so a resolved interaction never names one.
-                    Some(Ask::SlackDraft(_)) | None => false,
+                    None => false,
                 };
-                if held {
+                if emptied {
                     self.asks.remove(key);
                 }
                 // True whatever this view held: the prompt is gone from the
@@ -363,8 +384,41 @@ impl Composer {
         self.notices.get(slot)
     }
 
+    /// Park one prompt by the rule every hop keeps: **a draft leads the
+    /// queue**, and everything else waits oldest first.
+    ///
+    /// The draft's precedence is the read's own - it is held in the core's
+    /// registry rather than in the session's pending set - so a fold that
+    /// appended one would disagree with the read about the front.
+    ///
+    /// A frame this fold sees twice must not park the same prompt twice: the
+    /// boot's fold and the page's stream both apply every update.
+    fn park(&mut self, key: &SessionSlot, ask: Ask) {
+        let held = ask_key(&ask);
+        let queue = self.asks.entry(key.clone()).or_default();
+        if queue.iter().any(|waiting| ask_key(waiting) == held) {
+            return;
+        }
+        let at = if matches!(ask, Ask::SlackDraft(_)) {
+            queue
+                .iter()
+                .position(|waiting| !matches!(waiting, Ask::SlackDraft(_)))
+                .unwrap_or(queue.len())
+        } else {
+            queue.len()
+        };
+        queue.insert(at, ask);
+    }
+
+    /// The prompt a dock draws: the front of the seat's queue, which is the
+    /// oldest - a seat parks a parallel batch one behind the other.
     pub fn ask(&self, slot: &SessionSlot) -> Option<&Ask> {
-        self.asks.get(slot)
+        self.asks.get(slot)?.first()
+    }
+
+    /// Every prompt the seat is holding, oldest first.
+    pub fn asks(&self, slot: &SessionSlot) -> &[Ask] {
+        self.asks.get(slot).map_or(&[], Vec::as_slice)
     }
 
     pub fn compacting(&self, slot: &SessionSlot) -> bool {
@@ -376,10 +430,92 @@ impl Composer {
     }
 }
 
+/// The key an ask is held under: its call, and the round for a question - one
+/// tool call carries a whole batch and advances the index. A draft is answered
+/// by its own id and names no call.
+fn ask_key(ask: &Ask) -> (String, Option<u64>) {
+    match ask {
+        Ask::Permission(request) => (request.tool_call.tool_call_id.clone(), None),
+        Ask::Question(request) => {
+            (request.tool_call.tool_call_id.clone(), Some(request.question_index))
+        }
+        Ask::SlackDraft(draft) => (draft.id.to_string(), None),
+    }
+}
+
+/// Whether a resolution names this ask: its call, and its round when the
+/// frame carries one. A frame naming no round is an older core's, and the id
+/// is all it can mean there.
+///
+/// **The round as well as the call**: a batch reuses one tool id and advances
+/// the index, and the next round's request can land before this round's
+/// resolution, so a clear on the id alone drops the ask that just parked
+/// (#1717).
+fn resolved(ask: &Ask, tool_id: &str, round: Option<u64>) -> bool {
+    match ask {
+        Ask::Permission(request) => request.tool_call.tool_call_id == tool_id,
+        Ask::Question(request) => {
+            request.tool_call.tool_call_id == tool_id
+                && round.is_none_or(|index| index == request.question_index)
+        }
+        // A draft is answered by its own id rather than by a tool call, so a
+        // resolved interaction never names one.
+        Ask::SlackDraft(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use forge_primitives::permission_interaction::PermissionRequest;
+    use forge_primitives::question::QuestionRequest;
+
+    /// A question as the core emits one, with the call and the round a
+    /// parallel batch and a batch's rounds are told apart by.
+    fn question(tool_id: &str, index: u64) -> QuestionRequest {
+        serde_json::from_value(serde_json::json!({
+            "tool_call": {
+                "tool_call_id": tool_id,
+                "title": "AskUserQuestion",
+                "kind": "other",
+                "status": "pending",
+                "content": [],
+                "raw_input": {},
+                "locations": [],
+            },
+            "prompt": {
+                "question": "which?",
+                "header": "Envs",
+                "multi_select": false,
+                "options": [],
+            },
+            "question_index": index,
+            "total_questions": 2,
+        }))
+        .expect("a question request off the wire")
+    }
+
+    fn asked(slot: &SessionSlot, request: QuestionRequest) -> SessionUpdate {
+        SessionUpdate::QuestionRequest {
+            key: slot.clone(),
+            tool_id: request.tool_call.tool_call_id.clone(),
+            request,
+        }
+    }
+
+    fn settled(slot: &SessionSlot, tool_id: &str, round: Option<u64>) -> SessionUpdate {
+        SessionUpdate::PendingInteractionResolved {
+            key: slot.clone(),
+            tool_id: tool_id.to_owned(),
+            question_index: round,
+        }
+    }
+
+    /// The (call, round) the front ask is held under, which is what tells one
+    /// of a parallel pair or a batch's rounds from the next.
+    fn front(composer: &Composer, slot: &SessionSlot) -> (String, Option<u64>) {
+        ask_key(composer.ask(slot).expect("a front ask"))
+    }
 
     /// The copy it did hold goes with it, or the view keeps drawing an ask
     /// the core has settled.
@@ -400,7 +536,7 @@ mod tests {
             "options": [],
         }))
         .expect("a permission request off the wire");
-        composer.asks.insert(slot.clone(), Ask::Permission(Box::new(request)));
+        composer.park(&slot, Ask::Permission(Box::new(request)));
 
         assert!(
             composer.apply(&SessionUpdate::PendingInteractionResolved {
@@ -420,6 +556,132 @@ mod tests {
             }),
             "the box redraws for a settled prompt this view never folded too",
         );
+    }
+
+    /// **The loss #1717 was filed for.** Two AskUserQuestion calls in ONE
+    /// assistant message run in parallel with different tool ids, and the
+    /// dock's single slot dropped A the moment B parked: resolution(A) then
+    /// id-mismatched and was ignored, and A's next round replaced B before B
+    /// ever drew. A queue keeps both, and a resolution frees its own.
+    #[test]
+    fn a_parallel_batch_keeps_both_asks_and_frees_its_own() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        composer.apply(&asked(&slot, question("toolu_a", 0)));
+        composer.apply(&asked(&slot, question("toolu_b", 0)));
+        assert_eq!(composer.asks(&slot).len(), 2, "both parallel asks are held");
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_a".to_owned(), Some(0)),
+            "and the oldest is the front a dock draws",
+        );
+
+        composer.apply(&settled(&slot, "toolu_a", Some(0)));
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_b".to_owned(), Some(0)),
+            "the resolution frees its own ask and the front falls to the next",
+        );
+
+        composer.apply(&asked(&slot, question("toolu_a", 1)));
+        assert_eq!(composer.asks(&slot).len(), 2, "and A's next round parks beside B, not over it");
+        let b = ("toolu_b".to_owned(), Some(0));
+        assert_eq!(front(&composer, &slot), b, "which B still leads");
+    }
+
+    /// A batch reuses one tool call id and advances the round, so the clear
+    /// has to read the round as well as the call: a resolution for round 0
+    /// must not take round 1's ask with it.
+    #[test]
+    fn a_round_of_one_call_dequeues_only_its_own_round() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        composer.apply(&asked(&slot, question("toolu_q", 1)));
+        composer.apply(&settled(&slot, "toolu_q", Some(0)));
+        assert_eq!(
+            composer.asks(&slot).len(),
+            1,
+            "an earlier round's resolution leaves it standing"
+        );
+
+        composer.apply(&settled(&slot, "toolu_q", Some(1)));
+        assert!(composer.asks(&slot).is_empty(), "and its own round settles it");
+    }
+
+    /// One tool call carries a whole batch and advances the round, so its two
+    /// rounds share a call id: the round is what tells them apart, and a key
+    /// that dropped it would fold round 1 into round 0.
+    #[test]
+    fn a_batchs_rounds_park_side_by_side_oldest_first() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+
+        composer.apply(&asked(&slot, question("toolu_q", 0)));
+        composer.apply(&asked(&slot, question("toolu_q", 1)));
+
+        assert_eq!(composer.asks(&slot).len(), 2, "both rounds of the call are held");
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_q".to_owned(), Some(0)),
+            "and the oldest is the front",
+        );
+    }
+
+    /// The rule every hop keeps: a draft leads the queue, then arrival order.
+    /// The draft's registry carries no arrival order to offer and the read
+    /// has always answered a draft first, so a fold that appended one would
+    /// disagree with the read about the front.
+    #[test]
+    fn a_draft_leads_the_queue_and_its_resolution_falls_back() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let draft = forge_primitives::slack::SlackDraft {
+            id: uuid::Uuid::parse_str("0192e1c0-0000-7000-8000-000000000000").expect("a uuid"),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "acme".to_owned(),
+            thread_ts: None,
+            text: "hello".to_owned(),
+            tool: "slack__post".to_owned(),
+        };
+
+        composer.apply(&asked(&slot, question("toolu_q", 0)));
+        composer
+            .apply(&SessionUpdate::SlackPostPending { key: slot.clone(), draft: draft.clone() });
+
+        assert_eq!(
+            ask_key(composer.ask(&slot).expect("a front ask")),
+            (draft.id.to_string(), None),
+            "the draft leads the question that was already waiting",
+        );
+
+        composer.apply(&SessionUpdate::SlackDraftResolved {
+            key: slot.clone(),
+            id: draft.id,
+            ending: forge_primitives::slack::SlackDraftEnding::Expired,
+        });
+
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_q".to_owned(), Some(0)),
+            "and its resolution falls back to the question",
+        );
+    }
+
+    /// The fold applies every update twice - once on the boot's fold, once on
+    /// the page's stream - so a request must not park the same ask twice.
+    #[test]
+    fn a_request_folded_twice_parks_one_ask() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let update = asked(&slot, question("toolu_q", 0));
+
+        composer.apply(&update);
+        composer.apply(&update);
+
+        assert_eq!(composer.asks(&slot).len(), 1, "a repeat is not a second ask");
     }
 
     /// A take's readings are the composer's news only for the seat holding

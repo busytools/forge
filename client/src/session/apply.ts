@@ -253,7 +253,7 @@ export const HANDLERS: Record<string, Apply> = {
     // thing on the stream that says so, and a view that never held the ask
     // still has one to drop.
     const toolId = text(payload['tool_id']);
-    if (toolId === null || askToolId(held.pending_ask) !== toolId) return held;
+    if (toolId === null) return held;
     // **The round as well as the call.** A batch reuses one tool id and
     // advances the question index, and the next round's request can land
     // before this round's resolution - clearing on the id alone dropped the
@@ -262,9 +262,14 @@ export const HANDLERS: Record<string, Apply> = {
     // an older core, and the id is all it can mean there; a permission's
     // frames never name one.
     const index = numberOrNull(payload['question_index']);
-    const parked = askIndex(held.pending_ask);
-    if (index !== null && parked !== null && parked !== index) return held;
-    return { ...held, pending_ask: null };
+    const named = (ask: unknown): boolean => {
+      if (askToolId(ask) !== toolId) return false;
+      const parked = askIndex(ask);
+      return !(index !== null && parked !== null && parked !== index);
+    };
+    const pending_asks = held.pending_asks.filter((ask) => !named(ask));
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
   },
 
   slack_post_pending: (held, payload) => parked(held, 'slack_draft', payload['draft']),
@@ -274,9 +279,10 @@ export const HANDLERS: Record<string, Apply> = {
     // or its session gone. A draft is answered by its own id, so this is the
     // only thing on the stream that clears a parked one this view never sent.
     const id = text(payload['id']);
-    const heldDraft = record(record(held.pending_ask)['request'])['id'];
-    if (id === null || heldDraft !== id) return held;
-    return { ...held, pending_ask: null };
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `slack:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
   },
 
   auth_required: (held, payload) => {
@@ -493,10 +499,54 @@ function narrow<T extends string>(value: unknown, known: T[], fallback: T): T {
   return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : fallback;
 }
 
-/** The prompt a seat is parked on, keyed the way the record's own reader keys it. */
+/**
+ * The prompt a seat is parked on, placed by the rule every hop keeps: **a
+ * draft leads the queue**, and everything else waits oldest first.
+ *
+ * The draft's precedence is the read's own - it is held in the core's own
+ * registry rather than in the session's pending set, and the single read
+ * always answered it first - so a fold that appended one would let a re-read
+ * flip the front against what the fold holds.
+ *
+ * **A parallel batch parks two at once**, and a frame carrying one the record
+ * already holds is not a second ask: the single slot was idempotent under a
+ * re-delivered frame, and the queue stays idempotent the same way.
+ */
 function parked(held: SessionRecord, kind: string, request: unknown): SessionRecord {
   if (request === undefined) return held;
-  return { ...held, pending_ask: { kind, request } };
+  const ask = { kind, request };
+  const key = askKey(ask);
+  if (key !== null && held.pending_asks.some((waiting) => askKey(waiting) === key)) return held;
+  if (kind !== 'slack_draft') {
+    return { ...held, pending_asks: [...held.pending_asks, ask] };
+  }
+  // Behind the drafts already there, ahead of everything else.
+  const firstOther = held.pending_asks.findIndex(
+    (waiting) => record(waiting)['kind'] !== 'slack_draft',
+  );
+  const at = firstOther === -1 ? held.pending_asks.length : firstOther;
+  return {
+    ...held,
+    pending_asks: [...held.pending_asks.slice(0, at), ask, ...held.pending_asks.slice(at)],
+  };
+}
+
+/**
+ * The key an ask is held under: the call, and the round for a question - one
+ * tool call carries a whole batch and advances the index, so the id alone
+ * would fold two rounds of it into one. A draft is answered by its own id and
+ * names no call. `null` for an ask with nothing either could be read from.
+ */
+function askKey(ask: unknown): string | null {
+  const kind = record(ask)['kind'];
+  const request = record(record(ask)['request']);
+  if (kind === 'slack_draft') {
+    const id = text(request['id']);
+    return id === null ? null : `slack:${id}`;
+  }
+  const id = text(record(request['tool_call'])['tool_call_id']);
+  if (id === null) return null;
+  return kind === 'question' ? `question:${id}:${String(askIndex(ask))}` : `permission:${id}`;
 }
 
 /** The tool call a parked ask waits on, which is what a resolution names. */

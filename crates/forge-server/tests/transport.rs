@@ -291,8 +291,8 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
 
 /// What a composer is doing is announced once and retained nowhere, so a
 /// client attaching to a running session cannot rebuild it: a take in flight,
-/// the line a finished one left, a compaction, a sign-in, and the ask it is
-/// answering - which rides `pending_ask` rather than being copied here.
+/// the line a finished one left, a compaction, a sign-in, and the asks it is
+/// answering - which ride `pending_asks` rather than being copied here.
 #[tokio::test]
 async fn a_running_take_is_on_the_seat_a_client_attaches_to() {
     let (url, fleet) = a_server().await;

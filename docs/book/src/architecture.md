@@ -97,7 +97,7 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `has_dispatches`,
 `file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
-`processes`, `work`, `background_tasks`, `monitors`, `pending_ask`,
+`processes`, `work`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
@@ -111,9 +111,9 @@ account pool, the worker registry, connector subscriptions and dictation
 state through those, the claude version through the tenth, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
 `file_index` and `respect_gitignore`, and the conversation,
-header, inspector and the prompt it answers through
+header, inspector and the asks it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
-`pending_ask`, and dispatches its composer's send, its prompt answers and
+`pending_asks`, and dispatches its composer's send, its prompt answers and
 its take's controls. `walk_file_index` is the one walk left on the
 surface: a page that holds no seat has no loop behind it. `subagents` is the
 CLI's catalogue of the agent types that exist, not a record of the ones

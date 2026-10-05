@@ -282,11 +282,12 @@ conversation, and what the composer is doing.
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat somebody is showing is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it. |
 | `background_tasks` | The CLI's background-task registry: what it reports running, each entry with the line the row leads with and the command its own call carried. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself. |
 | `monitors` | The watches the session has running. |
-| `pending_ask` | The prompt the seat is waiting on, `null` when there is none. |
+| `pending_asks` | Every prompt the seat is holding, oldest first, drafts leading. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads. |
+| `pending_ask` | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them. |
 | `state` | The seat's scan cwd, what it dictates with where it has overridden the defaults, and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it. |
-| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The ask it is answering rides `pending_ask` rather than being copied here. |
+| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The asks it is answering ride `pending_asks` rather than being copied here. |
 
 **`usage`** is the token/cost pool behind a `/usage` view, scanned on the
 ask.

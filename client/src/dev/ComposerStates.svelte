@@ -54,7 +54,7 @@
     return {
       slot: { org: 'Busytools', project: 'forge', label: 'lead' },
       composer: { take: null, notice: null, compacting: false, sign_in: null },
-      pending_ask: null,
+      pending_asks: [],
       header: { turn_in_flight: false },
       slash_commands: [
         { name: '/clear', description: 'Clear chat history' },
@@ -396,34 +396,37 @@
         seat: seat({ waking: true, reason: 'this seat has no session behind it' }),
       },
     },
-    { label: 'dock · permission', props: { record: { ...blank(), pending_ask: permission } } },
+    { label: 'dock · permission', props: { record: { ...blank(), pending_asks: [permission] } } },
     {
       label: 'dock · with a take still running behind it',
       props: {
         record: {
           ...blank(),
-          pending_ask: permission,
+          pending_asks: [permission],
           composer: { take: take(), notice: null, compacting: false, sign_in: null },
         },
       },
     },
     {
       label: "dock · with the CLI's own reason",
-      props: { record: { ...blank(), pending_ask: readOutside } },
+      props: { record: { ...blank(), pending_asks: [readOutside] } },
     },
-    { label: 'dock · slack draft', props: { record: { ...blank(), pending_ask: slackDraft } } },
-    { label: 'dock · slack reply', props: { record: { ...blank(), pending_ask: slackReply } } },
+    { label: 'dock · slack draft', props: { record: { ...blank(), pending_asks: [slackDraft] } } },
+    { label: 'dock · slack reply', props: { record: { ...blank(), pending_asks: [slackReply] } } },
     {
       label: 'dock · question · one answer',
-      props: { record: { ...blank(), pending_ask: questionSingle } },
+      props: { record: { ...blank(), pending_asks: [questionSingle] } },
     },
     {
       label: 'dock · question · several answers',
-      props: { record: { ...blank(), pending_ask: question } },
+      props: { record: { ...blank(), pending_asks: [question] } },
     },
     {
       label: 'dock · queued behind another',
-      props: { seat: seat({ pendingDepth: 3 }), record: { ...blank(), pending_ask: permission } },
+      props: {
+        seat: seat({ pendingDepth: 3 }),
+        record: { ...blank(), pending_asks: [permission] },
+      },
     },
   ];
 

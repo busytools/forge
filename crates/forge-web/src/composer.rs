@@ -79,16 +79,20 @@ pub(crate) fn field(raw: &str, name: &str) -> Option<String> {
 /// never offered.
 pub(crate) fn answer(
     held: &Composer,
-    kept: Option<&Ask>,
+    kept: &[Ask],
     slot: &SessionSlot,
     tool_id: &str,
     option_id: Option<&str>,
     notes: Option<&str>,
 ) -> Option<forge_server::Command> {
     // Resolved the way the render resolves it, and for the same reason: a
-    // view that attached after the prompt landed, or one holding two
-    // prompts, has only the core's copy of this one.
-    let ask = held.ask(slot).filter(|ask| ask.tool_id() == Some(tool_id)).or(kept)?;
+    // view that attached after the prompt landed, or one holding several
+    // prompts, has only the core's copy of the one this form names.
+    let ask = held
+        .asks(slot)
+        .iter()
+        .find(|ask| ask.tool_id() == Some(tool_id))
+        .or_else(|| kept.iter().find(|ask| ask.tool_id() == Some(tool_id)))?;
     match ask {
         Ask::Permission(request) if request.tool_call.tool_call_id == tool_id => {
             // The option is looked up in the core's own list, never taken
@@ -190,7 +194,7 @@ pub fn render(
     // The stream's copy is the newest. The core's is the one a view that
     // attached after the prompt landed has at all: the wire carried it once
     // and kept it nowhere else.
-    let kept = home.surface.pending_ask(slot);
+    let kept = home.surface.pending_asks(slot);
 
     html! {
         form #comp .comp hx-get=(region) hx-target="#comp" hx-swap="outerHTML"
@@ -198,7 +202,7 @@ pub fn render(
             @if let Some(blocked) = blocked(state, row, slot, held) {
                 (blocked_box(&blocked, draft_state))
             } @else if let Some(pending) = row.and_then(|row| row.pending) {
-                (dock(row, pending, held.ask(slot).or(kept.as_ref()), &seat, draft_state))
+                (dock(row, pending, held.ask(slot).or_else(|| kept.first()), &seat, draft_state))
             } @else {
                 (hint(row, held.sign_in(slot)))
                 (popover(home, slot, roster, draft))
@@ -669,7 +673,7 @@ fn dock(
             @match ask {
                 Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
                 Some(Ask::Question(request)) => (question_dock(request, endpoint)),
-                // A draft reads back through `pending_ask` now, and this
+                // A draft reads back through `pending_asks` now, and this
                 // page has no dock for one - it drew the unknown line for a
                 // seat holding a draft before, and it still does. The dock
                 // is the client's, and this crate stops being started.

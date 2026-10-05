@@ -197,8 +197,12 @@ export interface SessionRecord {
    * waiting, and this is what this view watched leave.
    */
   queue_ended: QueueEnding | null;
-  /** The prompt this seat is waiting on, which the composer's dock draws. */
-  pending_ask: unknown;
+  /**
+   * The prompts this seat is holding: a draft leads, then arrival order. The
+   * composer's dock draws the front; a parallel batch parks two at once, so
+   * the record keeps every ask it is told to park rather than a single slot.
+   */
+  pending_asks: unknown[];
   conversation: Conversation;
   /**
    * Whether this seat's conversation holds a sub-agent dispatch at all.
@@ -382,7 +386,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     subagents: list(held['subagents']),
     file_index: held['file_index'] ?? null,
     composer: composerFrom(held['composer']),
-    pending_ask: held['pending_ask'] ?? null,
+    pending_asks: asksFrom(held['pending_asks'], held['pending_ask']),
     conversation: {
       turns: list(record(held['conversation'])['turns']).map(turnFrom),
       compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
@@ -392,6 +396,19 @@ export function sessionFrom(data: unknown): SessionRecord {
     pr: prFrom(held['pr']),
     closes: issuesFrom(held['closes']),
   };
+}
+
+/**
+ * What the seat is holding: the list the socket serves, or the single prompt
+ * an older core carried, as a list of one. `[]` when nothing is held.
+ *
+ * The list wins when both are there, which is what keeps the derived front
+ * from being counted twice - a newer core serves the front beside the list it
+ * is the first of.
+ */
+function asksFrom(served: unknown, single: unknown): unknown[] {
+  if (Array.isArray(served)) return served;
+  return single === null || single === undefined ? [] : [single];
 }
 
 /** The pile as the seat read writes it; an entry missing its id or words is not a row. */
