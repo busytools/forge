@@ -104,11 +104,10 @@ impl Conversation {
     /// [`Held::fold`], which runs on a blocking task; folding here would run
     /// an 18 ms render on whatever task built this, and that task is the
     /// socket's single stream folder.
-    pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
+    pub fn new(mut messages: Vec<Message>, compaction_count: u32) -> Self {
         // **The drop runs before the conversion**, so a resume's transient
         // cost is the history it handed over plus a window, rather than two
         // transcripts.
-        let mut messages = messages;
         let dropped = drop_past_cap(&mut messages);
         Self {
             messages: as_blocks(messages),
@@ -131,9 +130,20 @@ impl Conversation {
     /// **It marks the fold rather than running it**, for the reason
     /// [`Conversation::new`] gives: this is reached from the stream fold, and
     /// a render there stalls every seat rather than this one.
-    pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
-        let mut messages = messages;
-        let dropped = drop_past_cap(&mut messages);
+    pub fn seed(&mut self, mut messages: Vec<Message>, compaction_count: u32) {
+        let seeded = drop_past_cap(&mut messages);
+        // **A reseed of the SAME conversation carries the numbering over.** A
+        // connect and the replay that reseeds a seat both end at the
+        // conversation's newest frame, so the messages a client holds keep the
+        // indices its cursors name: the offset moves by however much further
+        // back the new history reaches, and no further than zero allows. A
+        // reseed that is not that - a `/new`, a resume onto another occupant -
+        // ends elsewhere, and restarting the numbering is what a replaced
+        // conversation is.
+        let carried =
+            self.dropped.saturating_sub(messages.len().saturating_sub(self.messages.len()));
+        let reseeded_same =
+            self.messages.last().is_some() && self.messages.last() == messages.last();
         self.messages = as_blocks(messages);
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
@@ -142,10 +152,7 @@ impl Conversation {
         // fold rebuilds them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
-        // **The numbering restarts with the conversation.** A cursor from
-        // before the seed names a list that is gone, and counting from here
-        // leaves it exactly as unplaceable as it was before the cap existed.
-        self.dropped = dropped;
+        self.dropped = if reseeded_same { carried } else { seeded };
         self.compaction_count = compaction_count;
         self.dirty = true;
     }
@@ -1045,6 +1052,51 @@ mod tests {
             capped.cursor, unbounded.cursor,
             "and the cursor above it names the same message: a drop renumbers the held list, \
              not the conversation",
+        );
+    }
+
+    /// **A replay reseed of a seat already held keeps the numbering.** The
+    /// transport asks for a replay on a seat it believes nothing holds, and a
+    /// connect can land first - so one seat is seeded twice with the same
+    /// conversation, from two histories of different lengths. The window does
+    /// not move, so the numbering may not either: a client's cursor taken
+    /// before the reseed still names the turn it named.
+    #[test]
+    fn a_reseed_of_the_same_conversation_carries_the_numbering_over() {
+        let held =
+            Held::new(Conversation::new(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0));
+        let dropped = held.lock().dropped();
+        assert!(dropped > 0, "precondition: the connect was over the cap");
+
+        let cursor = newest_page(&held, 2).cursor.expect("a page above the newest one");
+
+        // The replay: the same conversation, ending at the same frame, handed
+        // over as the window the session task keeps rather than the transcript
+        // the connect carried.
+        let window = held.lock().messages().to_vec();
+        held.lock().seed(window, 0);
+
+        let above = held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                Some(&cursor),
+                2,
+            )
+        });
+        let carried = held.read(|held| {
+            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
+        });
+        assert_eq!(
+            turn_texts(&above),
+            turn_texts(&carried)[..2].to_vec(),
+            "the page above a cursor is the page above the turn it named, reseed or no reseed",
+        );
+        assert_eq!(
+            held.lock().dropped(),
+            dropped,
+            "and the numbering did not move under the client holding it",
         );
     }
 
