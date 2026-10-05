@@ -24,6 +24,16 @@ use forge_primitives::Message;
 /// two structures, and one held in a cap-sized window cannot reach one.
 pub const CONVERSATION_CAP: usize = 4_000;
 
+/// A cap under the window it serves cannot reach back over it: 2,799 messages
+/// is the heaviest twenty-turn run measured across the eight largest
+/// transcripts on the author's machine (2026-10-05), and every subscribe
+/// carries twenty turns. Checked at compile time, so a re-tune under it is a
+/// build that never runs rather than a page that quietly loses turns.
+const _: () = assert!(
+    CONVERSATION_CAP >= 2_799,
+    "the cap cannot reach back over the heaviest twenty-turn run measured",
+);
+
 /// How far past the cap a copy may grow before the drop runs.
 ///
 /// The drop rebuilds what it keeps into an allocation of its own, so running
@@ -138,23 +148,6 @@ mod tests {
              messages over a history of {}",
             messages.capacity(),
             CONVERSATION_CAP * 4,
-        );
-    }
-
-    /// **The cap has a floor, and it is the window's own worst case.** Every
-    /// page a client is handed is the newest twenty turns, so a cap that
-    /// cannot reach back over twenty turns answers a page shorter than the one
-    /// the subscriber promised. The number is the heaviest twenty-turn run
-    /// measured across the eight largest transcripts on the author's machine
-    /// (2026-10-05, see the cap's doc); a re-tune under it is a page that
-    /// silently loses turns, and this is what says so.
-    #[test]
-    fn the_cap_reaches_past_the_heaviest_twenty_turn_run_measured() {
-        const HEAVIEST_MEASURED: usize = 2_799;
-        assert!(
-            CONVERSATION_CAP >= HEAVIEST_MEASURED,
-            "the cap ({CONVERSATION_CAP}) cannot reach back over the heaviest twenty-turn run \
-             measured ({HEAVIEST_MEASURED})",
         );
     }
 
