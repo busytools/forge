@@ -1123,7 +1123,7 @@ mod tests {
         });
 
         // Frames until the appends spend the slack and a second drop runs.
-        for at in 0..CONVERSATION_SLACK + 1 {
+        for at in 0..=CONVERSATION_SLACK {
             held.lock().append(a_frame(&format!("later {at}")));
         }
         assert!(
