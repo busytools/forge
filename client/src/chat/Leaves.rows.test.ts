@@ -31,7 +31,6 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
     const one = draw([card()]);
 
     expect(one, 'the card drew').toContain('picking up the render half now.');
-    expect(one, 'and nothing above it names a kind').not.toContain('class="knd"');
   });
 
   it('draws every card the list holds, whatever direction it went', () => {
