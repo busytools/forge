@@ -651,6 +651,7 @@ function drivable(refused = false): Driveable {
     },
     store: () => undefined,
     settings: () => null,
+    skew: () => null,
     status: () => 'open',
     close: () => {},
     land: (message) => {

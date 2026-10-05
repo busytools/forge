@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { connect, type Connection } from './socket';
 import {
+  MIN_PROTOCOL,
   PROTOCOL_VERSION,
   slotOf,
   type ClientMessage,
@@ -204,6 +205,82 @@ describe('the connection', () => {
     });
 
     await until(() => conn.status() === 'mismatched', 'the mismatch to be reported');
+  });
+
+  /**
+   * The floor: a server one step back is read rather than refused, because
+   * a client with no way to draw is worse than one drawing against a shape
+   * whose read is proven - and refusing one is what leaves a person with no
+   * channel to their own forge at all.
+   */
+  it('keeps reading a server one step back, and says so', async () => {
+    const { server, conn } = await connected();
+
+    server.send({ kind: 'greeting', version: MIN_PROTOCOL, settings: DEFAULT_SETTINGS });
+
+    await until(() => conn.skew() !== null, 'the skew to be recorded');
+    expect(conn.status(), 'a server in range was refused').toBe('open');
+    expect(conn.skew()).toEqual({ serverProtocol: MIN_PROTOCOL, serverVersion: null });
+
+    // And the socket is genuinely still working, not merely not closed.
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to reach the server');
+  });
+
+  /**
+   * A server below the floor is refused, and the refusal has to name the two
+   * halves and the command: the numbers alone name no build and no way out.
+   */
+  it('refuses a server below the floor, naming the halves and the command', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { server, conn } = await connected();
+
+    server.send({ kind: 'greeting', version: MIN_PROTOCOL - 1, settings: DEFAULT_SETTINGS });
+
+    await until(() => conn.status() === 'mismatched', 'the refusal');
+    const said = warned.mock.calls.flat().join(' ');
+    expect(said).toContain(`protocol ${MIN_PROTOCOL - 1}`);
+    expect(said).toContain(`protocol ${PROTOCOL_VERSION}`);
+    expect(said, 'the refusal named no way out').toContain('just install');
+    // And it does not retry into the same answer.
+    await settle();
+    expect(conn.status()).toBe('mismatched');
+  });
+
+  /**
+   * The release identity the greeting carries is what lets a skew name a
+   * build rather than a number, so the socket hands it on rather than
+   * keeping it to itself - including on a refusal, which is the case with a
+   * release to name today.
+   */
+  it('carries the release a refused greeting named', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { server, conn } = await connected();
+
+    server.send({
+      kind: 'greeting',
+      version: PROTOCOL_VERSION + 1,
+      forge_version: '1.0.116+abc1234',
+      forge_version_short: '1.0.116+abc1234',
+      settings: DEFAULT_SETTINGS,
+    });
+
+    await until(() => conn.status() === 'mismatched', 'the refusal');
+    expect(conn.skew(), 'the refusal kept the build it was named').toEqual({
+      serverProtocol: PROTOCOL_VERSION + 1,
+      serverVersion: '1.0.116+abc1234',
+    });
+    expect(warned.mock.calls.flat().join(' ')).toContain('1.0.116+abc1234');
+  });
+
+  /** This client's own protocol is not a skew, and says nothing. */
+  it('shows no skew for a greeting that agrees', async () => {
+    const { server, conn } = await connected();
+
+    server.send({ kind: 'greeting', version: PROTOCOL_VERSION, settings: DEFAULT_SETTINGS });
+
+    await until(() => conn.settings() !== null, 'the greeting to land');
+    expect(conn.skew()).toBeNull();
   });
 
   /**

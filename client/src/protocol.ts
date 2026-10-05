@@ -71,9 +71,35 @@ function releaseOf(version: string): string {
  * Both refusal sites and every notice read from here, so the halves and the
  * command cannot be named at one of them and forgotten at another.
  */
+/** Whether this client reads a server speaking `version`. */
+export function readableProtocol(version: number): boolean {
+  return version >= MIN_PROTOCOL && version <= PROTOCOL_VERSION;
+}
+
+/** The greeting's skew: the build it named, and the protocol it speaks. */
+export function skewOf(greeting: Extract<ServerMessage, { kind: 'greeting' }>): Skew | null {
+  if (greeting.version === PROTOCOL_VERSION) return null;
+  return {
+    serverProtocol: greeting.version,
+    serverVersion: greeting.forge_version_short ?? greeting.forge_version ?? null,
+  };
+}
+
 export function skewMessage(skew: Skew): string {
   const command = 'In the forge checkout run `just install` and restart forge.';
   const mine = `this client is v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION})`;
+  // A server ahead of this client is the half this client cannot fix by
+  // rebuilding the server: the half to update is this one.
+  if (skew.serverProtocol > PROTOCOL_VERSION) {
+    const theirs =
+      skew.serverVersion === null || skew.serverVersion === ''
+        ? `this forge server speaks protocol ${skew.serverProtocol}`
+        : `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol})`;
+    return (
+      `${theirs}; ${mine}. This client is the half that is behind, so reinstall it from the ` +
+      'checkout that built the server.'
+    );
+  }
   if (skew.serverVersion === null || skew.serverVersion === '') {
     return `this forge server speaks protocol ${skew.serverProtocol}; ${mine}. ${command}`;
   }
@@ -209,7 +235,19 @@ export type ClientMessage =
 
 /** What the server sends. */
 export type ServerMessage =
-  | { kind: 'greeting'; version: number; settings: ClientSettings }
+  | {
+      kind: 'greeting';
+      version: number;
+      /**
+       * The build the server is, in the greeting because that is the only
+       * channel both halves have before a client refuses anything. Absent
+       * from a server that predates the fields, which is every server a
+       * skew is against today.
+       */
+      forge_version?: string;
+      forge_version_short?: string;
+      settings: ClientSettings;
+    }
   | { kind: 'snapshot'; subject: Subject; data: unknown }
   | { kind: 'update'; update: SessionUpdate }
   /**

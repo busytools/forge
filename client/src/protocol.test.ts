@@ -113,6 +113,21 @@ describe('what a skew says', () => {
   });
 
   /**
+   * A server ahead of this client is the other direction, and the half to
+   * fix is this one: sending the reader to rebuild the server would be
+   * advice that changes nothing.
+   */
+  it('names this client as the half behind when the server is ahead', () => {
+    expect(
+      skewMessage({ serverProtocol: PROTOCOL_VERSION + 1, serverVersion: '1.0.116+abc1234' }),
+    ).toBe(
+      `this forge server is v1.0.116+abc1234 (protocol ${PROTOCOL_VERSION + 1}); this client is ` +
+        `v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION}). This client is the half that is ` +
+        'behind, so reinstall it from the checkout that built the server.',
+    );
+  });
+
+  /**
    * One release with two protocols is one build installed twice, and the
    * fix is both halves rather than the server alone.
    */

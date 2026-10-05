@@ -47,6 +47,7 @@ function untouched(): Connection {
     onStatus: refuse,
     store: refuse,
     settings: refuse,
+    skew: refuse,
     status: refuse,
     close: refuse,
   };

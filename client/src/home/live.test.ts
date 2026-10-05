@@ -57,6 +57,7 @@ function fakeConnection() {
     frame: () => false,
     store: () => undefined,
     settings: () => null,
+    skew: () => null,
     status: () => 'open',
     close: () => {},
   };

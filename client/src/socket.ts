@@ -12,13 +12,16 @@
 
 import {
   MORE_TURNS,
-  PROTOCOL_VERSION,
+  readableProtocol,
+  skewMessage,
+  skewOf,
   slotOf,
   subjectKey,
   type ClientMessage,
   type Command,
   type ServerMessage,
   type SessionUpdate,
+  type Skew,
   type Subject,
 } from './protocol';
 import { Stores, type Store } from './stores';
@@ -32,10 +35,11 @@ export type ConnectionStatus =
   | 'open'
   | 'closed'
   /**
-   * The server greeted with a protocol this client does not speak. It is not
-   * a connection failure and retrying cannot fix it: the two halves have to
-   * match, so the connection stops rather than reconnecting into the same
-   * answer and drawing against a shape it cannot read.
+   * The server greeted with a protocol outside the range this client reads.
+   * It is not a connection failure and retrying cannot fix it, so the
+   * connection stops rather than reconnecting into the same answer and
+   * drawing against a shape it cannot read. What the greeting said is on
+   * `skew()`, so the refusal can name both builds.
    */
   | 'mismatched';
 
@@ -136,6 +140,16 @@ export interface Connection {
   store(what: Subject): Store | undefined;
   /** The client's mark, theme and font, from the greeting - the only place a client gets them. */
   settings(): ClientSettings | null;
+  /**
+   * What the last greeting said that this client's own protocol does not
+   * agree with, or `null` when they agree.
+   *
+   * Set for a server one step back, which is read with the skew drawn as a
+   * notice, and for one outside the range, where the status says the
+   * connection stopped. Either way the surfaces name the two builds from
+   * here rather than from a number they have no build for.
+   */
+  skew(): Skew | null;
   status(): ConnectionStatus;
   close(): void;
 }
@@ -213,6 +227,7 @@ export function connect(url: string): Connection {
   let socket: WebSocket | null = null;
   let status: ConnectionStatus = 'connecting';
   let settings: ClientSettings | null = null;
+  let protocolSkew: Skew | null = null;
   let nextReplyId = 1;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
@@ -289,21 +304,25 @@ export function connect(url: string): Connection {
 
   function handle(message: ServerMessage): void {
     switch (message.kind) {
-      case 'greeting':
+      case 'greeting': {
         settings = settingsFrom(message.settings);
         // Checked on every greeting rather than only the first: a page left
         // open across a forge upgrade reconnects to a protocol it cannot
         // read, and drawing against it silently is what this arm exists to
-        // prevent.
-        if (message.version !== PROTOCOL_VERSION) {
-          report(
-            `the server speaks protocol ${message.version} and this client speaks ${PROTOCOL_VERSION}`,
-            message,
-          );
-          move('mismatched');
-          socket?.close();
-        }
+        // prevent. Recorded either way, because a refusal has to name the
+        // server it is refusing.
+        protocolSkew = skewOf(message);
+        if (protocolSkew === null) return;
+        // One step back is READ rather than refused, because a floor whose
+        // read is pinned by `wire/floor.test.ts` beats a client that cannot
+        // draw at all; outside the range there is no read to stand on, and
+        // the connection stops.
+        if (readableProtocol(message.version)) return;
+        report(skewMessage(protocolSkew), message);
+        move('mismatched');
+        socket?.close();
         return;
+      }
       case 'snapshot':
         answered(message.subject);
         stores.get(message.subject)?.set(message.data);
@@ -545,6 +564,9 @@ export function connect(url: string): Connection {
     },
     settings() {
       return settings;
+    },
+    skew() {
+      return protocolSkew;
     },
     status() {
       return status;
