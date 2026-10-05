@@ -267,11 +267,20 @@ describe('a dispatch read into its timeline', () => {
       'tu-task',
     );
 
+    // The record's patch, not the two-sided fallback: without the record the
+    // fold still draws a diff from old_string/new_string, so only the hunk
+    // KIND discriminates - the CLI's own hunks carry their header and line
+    // numbers, and the fallback has neither.
     const first = frames.lines[0];
+    const body = first?.kind === 'call' ? first.leaf.body : [];
     expect(
-      first?.kind === 'call' && first.leaf.mutation !== null,
-      'the record reached the leaf',
-    ).toBe(true);
+      body.map((piece) => piece.kind),
+      'the CLI own hunk, not the fallback two-sided diff',
+    ).toEqual(['hunk']);
+    const piece = body[0];
+    expect(piece?.kind === 'hunk' ? piece.header : '', 'with its line numbers').toBe(
+      '@@ -1,1 +1,1 @@',
+    );
   });
 
   it('keeps another dispatch frames out of this one', () => {

@@ -70,6 +70,50 @@ describe("the segment's interaction state machine", () => {
     expect(list(), 'the first tap leaves the list open').not.toBeNull();
   });
 
+  it('reads a tap as open when the press itself focuses the toggle first', () => {
+    // Chromium's measured tap order: pointerdown and pointerup complete
+    // first, then the compat mousedown, the focus it causes, and the click.
+    // The focus a press puts there must not open the list for the click to
+    // shut - an open the reader never saw.
+    draw();
+    window.dispatchEvent(pointer('pointerdown', 'touch'));
+    window.dispatchEvent(pointer('pointerup', 'touch'));
+    toggle()?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    toggle()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    toggle()?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    toggle()?.click();
+    flushSync();
+
+    expect(list(), 'the tap opens and stays open').not.toBeNull();
+  });
+
+  it('opens on a keyboard focus after a press that focused nothing', () => {
+    // A press on the already-focused toggle: no focusin consumes the press,
+    // so the mouseup is what lets go - without it the next Tab would find
+    // the door shut.
+    draw();
+    toggle()?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    toggle()?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    flushSync();
+    toggle()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+
+    expect(list(), 'the keyboard focus still opens it').not.toBeNull();
+  });
+
+  it('reads Enter on a list the focus opened as the toggle it visibly is', () => {
+    // Tab opened the list; the reader sees it. Enter then toggles the same
+    // seen state a mouse click does, rather than acting on an unseen flip.
+    draw();
+    toggle()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+    expect(list(), 'focus opened it, visibly').not.toBeNull();
+
+    toggle()?.click();
+    flushSync();
+    expect(list(), 'the activation closes what the reader saw open').toBeNull();
+  });
+
   it('opens on hover and closes after the grace when the pointer leaves', () => {
     draw();
     toggle()?.dispatchEvent(pointer('pointerenter', 'mouse'));

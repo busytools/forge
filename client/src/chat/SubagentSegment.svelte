@@ -97,6 +97,44 @@
   const hovering = (event: PointerEvent) => event.pointerType === 'mouse';
 
   /**
+   * A compatibility press is in flight.
+   *
+   * **A tap focuses the toggle through its compat `mousedown`**, and the
+   * compat sequence is what a pointer-based guard must key on: measured in
+   * chromium, pointerdown and pointerup both complete BEFORE mousedown, the
+   * focus and the click. Opening the list from that focus is an open the
+   * tap's own click toggles shut a heartbeat later, unseen - so every tap
+   * whose finger was elsewhere read as nothing. Focus opens the list only
+   * while a press is in flight; `mouseup` ends every quiet press, so one
+   * that focused nothing cannot shut out the next keyboard focus.
+   */
+  let pointed = false;
+
+  $effect(() => {
+    const press = () => (pointed = true);
+    const release = () => (pointed = false);
+    window.addEventListener('mousedown', press);
+    window.addEventListener('mouseup', release);
+    window.addEventListener('click', release);
+    window.addEventListener('pointercancel', release);
+    return () => {
+      window.removeEventListener('mousedown', press);
+      window.removeEventListener('mouseup', release);
+      window.removeEventListener('click', release);
+      window.removeEventListener('pointercancel', release);
+    };
+  });
+
+  /** The toggle took focus: opening from it, unless a press put it there. */
+  function focusIn() {
+    if (pointed) {
+      pointed = false;
+      return;
+    }
+    hold();
+  }
+
+  /**
    * The list opens at its foot: the instances read oldest first, the way the
    * chat reads, so the one just started is the newest and the one a reader
    * came for. A new instance landing while the list is open is followed only
@@ -164,7 +202,7 @@
       onpointerleave={(event) => {
         if (hovering(event)) release();
       }}
-      onfocusin={hold}
+      onfocusin={focusIn}
       onfocusout={release}
       onkeydown={(event) => {
         if (event.key !== 'Escape') return;
