@@ -688,7 +688,15 @@
           requestAnimationFrame(chase);
         };
         requestAnimationFrame(chase);
-      } else if (!loadOlder()) asking = false;
+      } else if (held.cursor === null) {
+        // The real top: the dispatch is not in this conversation at all.
+        asking = false;
+      } else {
+        // Keep asking while pages land: `older()` answers false for a fetch
+        // already in flight as well as for the top, and treating that as the
+        // top is what made an older dispatch's click do nothing at all.
+        loadOlder();
+      }
       return;
     }
     const at = latestCompaction(held.turns);
