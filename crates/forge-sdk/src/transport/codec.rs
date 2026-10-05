@@ -1,41 +1,28 @@
 //! Stream-json line encode / decode.
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Error;
 use crate::control::ControlRequest;
 use forge_primitives::Message;
 
-/// The CLI's heartbeat for a long-running tool call, emitted every 30
-/// seconds (`elapsed_time_seconds` counting up) until the tool returns.
-/// Informational: forge's own tool lifecycle rendering covers it, so
-/// the reader drops the frame rather than surfacing it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ToolProgress {
-    /// The tool use in flight. The CLI appends `-heartbeat-<n>` with a
-    /// per-call counter to the original tool's id.
-    pub tool_use_id: String,
-    pub tool_name: String,
-    /// Seconds since the tool call started.
-    pub elapsed_time_seconds: f64,
-    /// True on the 30-second cadence heartbeats. Defaults to false so
-    /// a progress frame without the flag still decodes.
-    #[serde(default)]
-    pub heartbeat: bool,
-    /// The parent tool use when this call runs inside a subagent.
-    #[serde(default)]
-    pub parent_tool_use_id: Option<String>,
-}
-
 /// A single stream-json line from the subprocess - either a regular message
 /// or a control request.
 #[derive(Debug, Clone)]
 pub enum DecodedLine {
     /// An assistant/user/system/result message.
-    Message(Message),
+    ///
+    /// Boxed: a `Message` is 536 bytes and every other variant here is a
+    /// fraction of that (clippy::large_enum_variant). The value is decoded
+    /// once per line and moved straight into the reader, so the
+    /// indirection costs one allocation and saves the enum being 536
+    /// bytes wherever a line is passed around.
+    Message(Box<Message>),
     /// A control request (e.g. permission check, MCP message, hook callback).
-    Control(ControlRequest),
+    ///
+    /// Boxed for the same reason as [`Self::Message`]: it is 312 bytes of
+    /// its own and is dispatched once and dropped.
+    Control(Box<ControlRequest>),
     /// The CLI has withdrawn a previously-issued `control_request` - the
     /// handler matching `request_id` should be cancelled if still in flight.
     /// Wire shape `{"type":"control_cancel_request","request_id":"..."}`
@@ -58,11 +45,6 @@ pub enum DecodedLine {
         /// Full JSON payload - useful for inspection and replay.
         raw: Value,
     },
-    /// The CLI's 30-second heartbeat for a tool call in flight
-    /// (`tool_progress`). Typed rather than `Unknown` so the
-    /// conformance replay classifies it as decoded, but never surfaced
-    /// as an event - see [`ToolProgress`].
-    ToolProgress(ToolProgress),
     /// Forward-compat fallback: the CLI emitted a frame with an unrecognised
     /// top-level `type` field. Forge-sdk doesn't crash on these - it logs
     /// a warning via `tracing::warn!` in the dispatch path and lets the
@@ -139,7 +121,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> DecodedLine {
     };
     match ty {
         "control_request" => match serde_json::from_value::<ControlRequest>(value) {
-            Ok(req) => DecodedLine::Control(req),
+            Ok(req) => DecodedLine::Control(Box::new(req)),
             Err(e) => DecodedLine::Malformed { line: line_number, reason: e.to_string() },
         },
         "control_cancel_request" => {
@@ -172,15 +154,15 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> DecodedLine {
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
         | "command_lifecycle" | "error" => match serde_json::from_value::<Message>(value) {
-            Ok(msg) => DecodedLine::Message(msg),
+            Ok(msg) => DecodedLine::Message(Box::new(msg)),
             Err(e) => DecodedLine::Malformed { line: line_number, reason: e.to_string() },
         },
         "tool_progress" => {
             // A heartbeat that fails to fit is an unrecognised shape,
             // not a corrupt line: degrade to `Unknown` so the harness
             // counts it there.
-            match serde_json::from_value::<ToolProgress>(value.clone()) {
-                Ok(progress) => DecodedLine::ToolProgress(progress),
+            match serde_json::from_value::<Message>(value.clone()) {
+                Ok(msg) => DecodedLine::Message(Box::new(msg)),
                 Err(_) => DecodedLine::Unknown {
                     type_str: "tool_progress (unparseable payload)".to_string(),
                     raw: value,

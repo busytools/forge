@@ -171,7 +171,7 @@ async fn handle_line(
     let outcome = match decode_dispatch(line, line_number) {
         DecodedLine::Message(msg) => {
             dispatch.capture_session_id_from(&msg);
-            if events_tx.send(Ok(msg)).is_ok() { LineOutcome::Continue } else { LineOutcome::Stop }
+            if events_tx.send(Ok(*msg)).is_ok() { LineOutcome::Continue } else { LineOutcome::Stop }
         }
         DecodedLine::Malformed { line: line_no, reason } => {
             counters.consecutive += 1;
@@ -214,6 +214,7 @@ async fn handle_line(
         DecodedLine::Control(req) => {
             let dispatch_clone = dispatch.clone();
             let inflight_clone = Arc::clone(inflight);
+            let req = *req;
             let request_id = req.request_id.clone();
             let request_id_for_task = request_id.clone();
             // Park the task on a oneshot before doing work so the
@@ -305,20 +306,6 @@ async fn handle_line(
                 LineOutcome::Stop
             }
         }
-        DecodedLine::ToolProgress(progress) => {
-            // Dropped on purpose: informational only, forge's own tool
-            // lifecycle rendering covers it. Debug, not warn - a 30s
-            // cadence at warn is 10MB of log rotation per session-hour.
-            tracing::debug!(
-                target: crate::logging::targets::SDK_READER,
-                tool_name = %progress.tool_name,
-                elapsed_time_seconds = progress.elapsed_time_seconds,
-                heartbeat = progress.heartbeat,
-                line = line_number,
-                "tool_progress heartbeat dropped",
-            );
-            LineOutcome::Continue
-        }
     };
     // Only a skip keeps the run alive; anything else resets it.
     if outcome != LineOutcome::Skipped {
@@ -379,12 +366,14 @@ mod tests {
     use super::*;
     use crate::transport::process::SharedWriter;
 
-    /// A heartbeat is dropped: the read loop continues and nothing
-    /// reaches the events channel. Mutating the arm to `return false`
-    /// would end the session on every 30-second tick - the blast
-    /// radius this test exists to pin.
+    /// A heartbeat is delivered as its own frame: the read loop continues
+    /// and the message reaches the events channel, so it can cross to a
+    /// client. The 30-second tick used to be dropped right here, which is
+    /// a message the CLI sent that nothing downstream could see. Mutating
+    /// the arm to `return false` would end the session on every tick - the
+    /// blast radius this test still pins.
     #[tokio::test]
-    async fn a_tool_progress_heartbeat_is_dropped_without_ending_the_stream() {
+    async fn a_tool_progress_heartbeat_is_delivered_as_a_message() {
         let (writer, _lines) = SharedWriter::test_stub();
         let dispatch = ControlDispatchHandle::new(
             Arc::new(writer),
@@ -404,10 +393,26 @@ mod tests {
             handle_line(&dispatch, &pending, &inflight, &events_tx, 40, line, &mut counters).await;
 
         assert_eq!(outcome, LineOutcome::Continue, "a heartbeat must not end the read loop");
-        assert!(
-            events_rx.try_recv().is_err(),
-            "a heartbeat must not surface an event to the agent"
-        );
+        let delivered = events_rx
+            .try_recv()
+            .expect("a heartbeat must surface an event")
+            .expect("a heartbeat decodes");
+        let forge_primitives::Message::ToolProgress {
+            tool_use_id,
+            tool_name,
+            parent_tool_use_id,
+            elapsed_time_seconds,
+            heartbeat,
+            ..
+        } = delivered
+        else {
+            panic!("expected ToolProgress, got {delivered:?}");
+        };
+        assert_eq!(tool_use_id, "toolu_01QhFqNDEgKeskhhiYpzeHnL-heartbeat-0");
+        assert_eq!(tool_name, "Bash");
+        assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_01QhFqNDEgKeskhhiYpzeHnL"));
+        assert_eq!(elapsed_time_seconds, 30.0);
+        assert!(heartbeat);
     }
 
     /// A line that fails to decode is skipped: the read loop continues

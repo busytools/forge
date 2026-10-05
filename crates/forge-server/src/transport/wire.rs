@@ -630,6 +630,7 @@ fn forged_ending(ending: &TaskEnding) -> Message {
         message: UserEnvelope {
             role: "user".to_owned(),
             content: vec![crate::transcript::notice_block(&ending.text)],
+            extras: serde_json::Map::new(),
         },
         session_id: String::new(),
         parent_tool_use_id: None,
@@ -637,6 +638,7 @@ fn forged_ending(ending: &TaskEnding) -> Message {
         tool_use_result: None,
         timestamp: None,
         synthetic: false,
+        extras: serde_json::Map::new(),
     }
 }
 

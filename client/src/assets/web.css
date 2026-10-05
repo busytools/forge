@@ -828,10 +828,13 @@ details.leaf.running > summary { color: var(--text); }
    summary half, and a task that ended badly is the same line in the bad tone. */
 .term .sum { color: var(--ok); }
 .term .fail { color: var(--bad); }
-/* A systemone decision's block: the answer, its distribution, and what it
-   cost. The winner's fill is the shipped teal, which no other rule uses. */
+/* A systemone decision's block: the question it answered, the answer, its
+   distribution with each option's own description under it, and what it cost.
+   The winner's fill is the shipped teal, which no other rule uses. */
 .dec { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
   background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
+/* The question the call asked, which the row's own title cuts to one line. */
+.dec .q { padding: 10px 14px 0; font-size: var(--fs-label); color: var(--dim); }
 .dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
 .dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
 .dec .num.sure { color: var(--ok); }
@@ -839,9 +842,13 @@ details.leaf.running > summary { color: var(--text); }
 .dec .read { font-size: var(--fs-label); color: var(--muted); }
 .dec .read b { color: var(--text); font-weight: 500; }
 .dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
-.dec .opt { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
-  gap: 10px; align-items: center; font-size: var(--fs-label); }
-.dec .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dec .opt { display: block; font-size: var(--fs-label); }
+.dec .oline { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
+  gap: 10px; align-items: center; }
+/* A score level's name IS its description, so it wraps in full rather than
+   eliding; a choice's short name and its description line under it. */
+.dec .name { color: var(--muted); }
+.dec .crit { color: var(--dim); padding-top: 1px; }
 .dec .opt.win .name { color: var(--text); }
 .dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
 .dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
@@ -1099,16 +1106,45 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      spans and labels they were ported from. The rule above is for a control
      whose own height IS the target; these two are not. */
   .rail-tog { width: 44px; height: 44px; }
-  /* A row's chip is not the target - the row is, and has been since the mock
-     drew `.pr` as the pointer - so it gives its height back rather than
-     stretching every row it sits in. It is disabled today in any case. */
-  .pr .x, .wk .x { min-height: 0; }
+  /* The row's close chip is a live control, and its own box is ~26px wide, so
+     it takes the height the rule above gives it and a width to match. */
+  .pr .x, .wk .x { min-width: 44px; }
   /* The banner's is the exception, and it is the one control that must stay a
      target: it is the way out of a covering rail, the header's handle is
      underneath it at this width, and it is drawn ~23px wide by its padding -
      under the 24px floor as well as the house bar. So it takes the height the
      rule above gives it and a width to match. */
   .banner .close { min-width: 44px; }
+}
+
+/* The same reach, keyed on the POINTER rather than the width: the step above
+   fires only at a phone's width, and an Android tablet is wide and still
+   finger-driven. A control whose own height is its target takes the 44 here
+   too. */
+@media (pointer: coarse) {
+  button, input, select, textarea, details > summary { min-height: 44px; }
+  .rail-tog { width: 44px; height: 44px; }
+  .banner .close { min-width: 44px; }
+  /* A row's own link is the finger's target: its box carries the 44, and the
+     row grows with it. The rail's rows also stretch the link over the whole
+     row - the way the home rows' own rule already stretches theirs - so the
+     middle of a row is the link rather than dead space. */
+  .pr .nm a, .wk .nm a, .row .name a { display: inline-flex; align-items: center; min-height: 44px; }
+  .pr, .wk { position: relative; }
+  .pr .nm a::after, .wk .nm a::after { content: ""; position: absolute; inset: 0; }
+  /* The row's chip is a live control and sits above the stretch, so its own
+     presses are the chip's and its box is a finger's to hit. */
+  .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
+  /* An artifact link inside a home row is its own control, above that row's
+     stretch, and takes the 44 the same way - the width too, since a short
+     label draws one narrower than a finger. Block rather than flex, and the
+     height in the line, so a long label still ellipsises. */
+  .row .what a { display: inline-block; min-width: 44px; min-height: 44px;
+    line-height: 44px; }
+  /* The header's brand is a way home, and the session's more disclosure is a
+     chevron: neither is 44 by its own box. */
+  .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+  .sess > .more > summary { min-width: 44px; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second

@@ -324,6 +324,105 @@ fn a_pipelined_take_gate_transcribes_while_recording() {
     assert_eq!(text, one_pass, "the landed text must be exactly one normalizer pass over the join");
 }
 
+/// The stream-fed gate: the same pipelined take, fed through
+/// `capture_stream` as the socket will feed it. Everything the device
+/// gate proves must hold over this path too - a segment settling while
+/// the take is still open, every paragraph across the join, and the
+/// landed text exactly one normalizer pass over the recorded join -
+/// because a take the client streams must be the same take.
+#[test]
+#[ignore = "needs the ASR weights; generates a ~90 s `say` clip on first run"]
+fn a_streamed_take_gate_matches_the_device_path() {
+    shipped_weights_on_disk();
+    let pcm = read_clip("pipeline", PIPELINE_SCRIPT);
+    let audio_seconds = pcm.len() / crate::SAMPLE_RATE as usize;
+    eprintln!("gate clip: {audio_seconds}s");
+    assert!(audio_seconds > 70, "the clip must cross the window ceiling, got {audio_seconds}s");
+
+    let diagnostics = tempfile::tempdir().unwrap();
+    let cfg = ConfigBuilder::new().diagnostics_dir(diagnostics.path()).build();
+    let engine = Engine::new(cfg).expect("engine must start");
+    engine.wait_ready().expect("the weights must load");
+    let mut stream = engine.capture_stream().expect("the engine must take a stream");
+    let progress = stream.capture.take_progress().expect("the capture carries a progress stream");
+
+    // The whole clip, pushed at ten times real time (the device gate's
+    // own pace), polling progress as it goes. A segment settling before
+    // the last push is the overlap proof: recognition ran while the
+    // stream was still open, not after it closed.
+    let mut steps = Vec::new();
+    let mut settled_early = false;
+    for chunk in pcm.chunks(crate::SAMPLE_RATE as usize) {
+        assert!(stream.sink.push_mono(chunk), "every frame below the cap must be kept");
+        while let Ok(step) = progress.try_recv() {
+            steps.push(step);
+        }
+        settled_early |= steps.iter().any(|step| step.done >= 1);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(settled_early, "a segment must settle while the stream is still open: {steps:?}");
+    assert!(
+        steps.iter().all(|step| step.total.is_none()),
+        "a live take cannot know its total, got {steps:?}"
+    );
+    eprintln!("gate: segment settled during the stream after {steps:?}");
+
+    let ticket = stream.capture.finish().expect("the take must finish");
+    let outcome = ticket.recv().expect("the take must be answered");
+    let Outcome::Transcript(transcript) = outcome else {
+        panic!("a spoken take must not read as silence: {outcome:?}");
+    };
+    assert!(!transcript.truncated, "no segment may outrun its decode budget");
+
+    // Completeness across the join, the same probes the device gate uses.
+    let asr_lower = transcript.asr.to_lowercase();
+    let text_lower = transcript.text.to_lowercase();
+    for opener in PIPELINE_OPENERS {
+        assert!(
+            asr_lower.contains(opener),
+            "the recognition must carry the paragraph at {opener:?} - the join lost words"
+        );
+        assert!(
+            text_lower.contains(opener),
+            "the normalized text must carry the paragraph at {opener:?}"
+        );
+    }
+
+    while let Ok(step) = progress.try_recv() {
+        steps.push(step);
+    }
+    let Some(last) = steps.last() else { panic!("the take must report its progress: {steps:?}") };
+    assert_eq!(
+        last.done,
+        last.total.expect("the stop must make the total known"),
+        "the final step is the completed take, got {steps:?}"
+    );
+
+    // Normalize once, over the join: the diagnostics store holds the
+    // exact normalizer input for this streamed take, and the landed text
+    // must be one pass over it - not a per-segment rewrite.
+    let take_dir = std::fs::read_dir(diagnostics.path())
+        .expect("the diagnostics store must exist")
+        .find_map(|entry| Some(entry.ok()?.path()))
+        .expect("one take record");
+    let joined =
+        std::fs::read_to_string(take_dir.join("joined.txt")).expect("the join is recorded");
+    let text = std::fs::read_to_string(take_dir.join("text.txt")).expect("the text is recorded");
+    let normalizer_path = dirs::cache_dir()
+        .map(|d| d.join("forge-dictate").join(Config::default().normalizer.expect("shipped").file))
+        .expect("cache");
+    let normalizer =
+        crate::normalize::Normalizer::load(&normalizer_path).expect("the normalizer must load");
+    let one_pass = normalizer
+        .normalize_with(&joined, Config::default().normalize_options)
+        .expect("the recorded join must normalize");
+    assert_eq!(
+        text, one_pass,
+        "a streamed take's landed text must be exactly one normalizer pass over its join"
+    );
+    assert_eq!(transcript.text, text, "the take's answer must be the text the store recorded");
+}
+
 /// Cancelling a pipelined take mid-flight must END it: the abandoned
 /// take's own answer is what discriminates. With working cancellation
 /// every outstanding job aborts and the take answers `Cancelled`; with

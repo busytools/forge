@@ -54,6 +54,7 @@ function fakeConnection() {
     dispatch: () => null,
     more: () => false,
     devices: () => false,
+    frame: () => false,
     store: () => undefined,
     settings: () => null,
     status: () => 'open',

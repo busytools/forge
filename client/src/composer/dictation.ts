@@ -9,12 +9,8 @@
  */
 
 import type { Mode } from './dictate-key';
-import type {
-  DictateContext,
-  DictateOverrides,
-  DictateStructure,
-  DictateStyling,
-} from '../session/wire';
+import { axesFrom, type DictateAxes } from '../session/wire';
+import type { DictateContext, DictateStructure, DictateStyling } from '../session/wire';
 
 /** One value an axis offers, with the label the panel draws for it. */
 export interface Option<T extends string> {
@@ -59,32 +55,59 @@ export const OVERRIDE: Readonly<Record<Axis, string>> = {
   destination: 'context',
 };
 
-/** The value in force per axis, which is the crate's default where the session set none. */
-export interface Force {
-  styling: DictateStyling;
-  structure: DictateStructure;
-  context: DictateContext;
-}
-
 /**
- * What a take would actually use: the session's overrides over the crate's
- * defaults.
+ * Where this client keeps what the reader chose on a seat: the axes its panel
+ * is showing and the input it picked.
  *
- * The defaults are the normalizer's own (`forge-dictate`'s `#[default]`), so a
- * panel drawing them as the unset state draws what a take would do rather than
- * what the panel happens to prefer.
+ * Per seat, in the browser's own storage. The values are the CLIENT's now -
+ * the greeting carries the defaults, and each take carries the values in
+ * force - so a reload or a reconnect returns them from here rather than from
+ * the server, and the panel's marks keep their meaning against the config
+ * value as the default.
  */
-export function inForce(overrides: DictateOverrides): Force {
-  return {
-    styling: overrides.styling ?? 'semi_formal',
-    structure: overrides.structure ?? 'prose',
-    context: overrides.context ?? 'general',
-  };
+function stored(key: string): unknown {
+  try {
+    const raw = globalThis.localStorage?.getItem(key);
+    return raw === null || raw === undefined ? null : JSON.parse(raw);
+  } catch {
+    // Storage refused (private mode, a hardened browser): the defaults stand
+    // for this session rather than the panel failing to draw.
+    return null;
+  }
 }
 
-/** The update one chip sends, as `DictateOverrideUpdate` serialises. */
-export function pickUpdate(axis: Axis, value: string): Record<string, unknown> {
-  return { [OVERRIDE[axis]]: value };
+function keep(key: string, value: unknown): void {
+  try {
+    if (value === null) globalThis.localStorage?.removeItem(key);
+    else globalThis.localStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // The choice stands for the session; nothing else can be done about it.
+  }
+}
+
+const axesKey = (seat: string): string => `forge.dictate.axes.${seat}`;
+const deviceKey = (seat: string): string => `forge.dictate.device.${seat}`;
+
+/** What this seat dictates with: its own edits over the greeting's defaults. */
+export function axesFor(seat: string, defaults: DictateAxes): DictateAxes {
+  const held = stored(axesKey(seat));
+  return held === null ? defaults : axesFrom(held);
+}
+
+/** Remember this seat's axes, or forget them (reset). */
+export function rememberAxes(seat: string, axes: DictateAxes | null): void {
+  keep(axesKey(seat), axes);
+}
+
+/** The input this seat records from, or `null` for the system default. */
+export function deviceFor(seat: string): string | null {
+  const held = stored(deviceKey(seat));
+  return typeof held === 'string' ? held : null;
+}
+
+/** Remember this seat's input, or forget it (back to the system default). */
+export function rememberDevice(seat: string, device: string | null): void {
+  keep(deviceKey(seat), device);
 }
 
 /**
@@ -97,25 +120,4 @@ export function keyHint(bind: string, mac: boolean): string | null {
   if (bind === 'off') return null;
   const side = bind === 'left_cmd' ? 'left' : 'right';
   return `${mac ? '\u{2318}' : 'Ctrl'} ${side} to talk`;
-}
-
-/** The input a pick moved the process to. */
-export type DevicePick = { device: string } | 'system' | null;
-
-/**
- * The pick the home snapshot carries, narrowed where the composer reads it.
- *
- * `null` means the `forge.toml` pin stands, which is a state rather than an
- * absence: the panel draws the config's own device for it. A shape nothing here
- * knows reads as `null` too, which is the same least-alarming reading the wire
- * takes everywhere else - the row then draws the pin, which is true and merely
- * not current.
- */
-export function devicePick(value: unknown): DevicePick {
-  if (value === 'system') return 'system';
-  if (value !== null && typeof value === 'object') {
-    const held = value as Record<string, unknown>;
-    if (typeof held['device'] === 'string') return { device: held['device'] };
-  }
-  return null;
 }

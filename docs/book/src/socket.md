@@ -22,7 +22,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 3, "settings": {"mark": null, "theme": null, "font": null}}
+{"kind": "greeting", "version": 4, "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -38,6 +38,12 @@ a client sends carries the version it speaks.
 arrive on connect so a client is configured before it draws anything and
 never reads `forge.toml` itself, which keeps the file the one source of
 truth. A `null` is not a failure: it means the built-in.
+
+`settings.dictate` is `[dictate]`'s three prompt axes, and it is a
+DEFAULT rather than a state: a client that captures its own audio holds
+the values in force per seat, so this is what its panel draws as unset
+and what its reset row returns to. Each take carries the values it
+normalized by.
 
 ## Subjects
 
@@ -63,7 +69,7 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 36
+A command's variant is its name around its field bag - `Command` has 37
 variants and every one is a struct variant. An update is the same shape one
 level in, `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
 and 63 of `SessionUpdate`'s 68 variants are struct variants too. The other
@@ -146,11 +152,39 @@ and what it is made of is the server's business. `null` means there is
 nothing above the page it came with, and that is where a walk backwards
 ends.
 
-**`devices`** - the inputs forge can record from, and the `[dictate] device`
-pin, for a picker that offers them. **Asked on demand rather than
-subscribed**: the walk opens the microphone stack, and a subscription is
-re-read on every reconnect, so watching this would be a permission check per
-connection instead of one per picker.
+**`devices`** - the inputs FORGE's machine can record from, and the
+`[dictate] device` pin, for the terminal's own picker. **Asked on demand
+rather than subscribed**: the walk opens the microphone stack, and a
+subscription is re-read on every reconnect, so watching this would be a
+permission check per connection instead of one per picker. A client that
+captures its own audio does not ask: the inputs that matter are its
+machine's, and it lists them itself, which also means their names are the
+browser's own - blank until the origin has been allowed the microphone
+once.
+
+**Binary messages are dictation audio, and nothing else.** A client that
+captures sends one per 20 ms of speech:
+
+| bytes | field | value |
+|---|---|---|
+| 1 | codec | `0` = `pcm_i16`; other values reserved |
+| rest | samples | i16 little-endian, mono, 16 kHz |
+
+A frame carries no seat. It addresses the take its own CONNECTION started:
+one connection streams one take at a time and its messages are ordered, so
+a frame can only arrive between its own take's start and its stop. A frame
+this server cannot decode - a short header, an unknown codec, a payload
+past 16 KiB - or one that arrives with no take to hold it is dropped with a
+debug record and no answer, because a take's audio has no reply channel and
+the take's own outcome is what a reader sees either way.
+
+**`dictate_stream {key, options}`** - begin a take the CLIENT captures.
+The connection that sends it feeds the audio as the binary frames above,
+so nothing is opened on the server; the take registers as the message is
+dispatched, so the frame that follows on the same ordered connection
+always finds it. `options` is the axes that client's panel was showing.
+The terminal's own `dictate_start` is unchanged: it records from forge's
+machine, and its axes are the session's stored overrides.
 
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
@@ -348,17 +382,18 @@ than facts about a session.
   CLI draws in a terminal; the name crosses and the surface does not, so a
   client that offers one is offering a command whose UI it cannot show.
 - **The dictation device catalog as carried state.** What a record carries
-  is the input a pick has already moved this process to. The list of devices
-  to pick FROM is asked for on demand, one request for one answer
-  (`devices`), because enumerating them is a blocking walk that trips a
-  microphone check - and a record is encoded per request and re-sent on
-  every reconnect, so a field would be a permission check per frame and per
-  connection.
+  is the input a pick has already moved FORGE's process to, which is the
+  terminal's own capture. The list of devices to pick FROM is asked for on
+  demand, one request for one answer (`devices`), because enumerating them
+  is a blocking walk that trips a microphone check - and a record is encoded
+  per request and re-sent on every reconnect, so a field would be a
+  permission check per frame and per connection. A client that captures its
+  own audio lists its own machine's inputs and asks for none of this.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is
   DRAWN.
-- **A shipped client.** The desktop client under `client/` speaks this
+- **A shipped client.** The client under `client/` speaks this
   socket, and it is what this page is for. It is a client rather than an
   instrument, and it runs from `just client-dev` rather than from an
   installed bundle, so what is missing is a released one rather than a
@@ -377,4 +412,4 @@ than facts about a session.
 
 The terminal starts the server and binds the socket, so a running forge
 serves one. The web view that used to serve pages on this port is parked,
-and the desktop client under `client/` is what reads the socket now.
+and the client under `client/` is what reads the socket now.

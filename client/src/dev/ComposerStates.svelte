@@ -17,7 +17,14 @@
   import Composer from '../composer/Composer.svelte';
   import Queue from '../chat/Queue.svelte';
   import Driven from './Driven.svelte';
-  import type { ComposerProps, ComposerRecord, SeatRead } from '../composer/view';
+  import type {
+    ComposerConnection,
+    ComposerProps,
+    ComposerRecord,
+    SeatRead,
+  } from '../composer/view';
+  // The Queue specimen's own prop is the socket-shaped one, and the stand-in
+  // above is the composer's narrower view of it.
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
@@ -41,13 +48,12 @@
     devices: () => true,
     onMessage: () => () => {},
     store: () => undefined,
-  } as unknown as Pick<Connection, 'dispatch' | 'onMessage' | 'devices' | 'store'>;
+  } as unknown as ComposerConnection;
 
   function blank(): ComposerRecord {
     return {
       slot: { org: 'Busytools', project: 'forge', label: 'lead' },
       composer: { take: null, notice: null, compacting: false, sign_in: null },
-      dictate_overrides: { styling: null, structure: null, context: null },
       pending_ask: null,
       header: { turn_in_flight: false },
       slash_commands: [

@@ -74,6 +74,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                     error: None,
                     uuid: uuid.clone(),
                     timestamp,
+                    extras: forge_primitives::messages::Extras::new(),
                 });
             }
             "user" => {
@@ -102,6 +103,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                         .get("synthetic")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    extras: forge_primitives::messages::Extras::new(),
                 });
             }
             // A system frame has no inner envelope: the scan hands the row
@@ -137,7 +139,10 @@ fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
         .into_iter()
         .filter_map(|block| match block {
             ContentBlock::Thinking { .. } => None,
-            ContentBlock::Image { .. } => Some(ContentBlock::Text { text: "[image]".to_owned() }),
+            ContentBlock::Image { .. } => Some(ContentBlock::Text {
+                text: "[image]".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            }),
             other => Some(other),
         })
         .collect()
@@ -175,7 +180,7 @@ mod tests {
         };
         assert!(session_id.is_empty(), "session_id must be left empty for the caller to stamp");
         assert_eq!(message.content.len(), 1);
-        assert!(matches!(&message.content[0], ContentBlock::Text { text } if text == "hi"));
+        assert!(matches!(&message.content[0], ContentBlock::Text { text, .. } if text == "hi"));
         let Message::Assistant { message, session_id, .. } = &synthesized[1] else {
             panic!("expected second synthesized message to be Message::Assistant");
         };
@@ -183,7 +188,7 @@ mod tests {
         assert_eq!(message.id, "msg_01");
         assert_eq!(message.model, "claude-opus-4-5");
         assert_eq!(message.content.len(), 1);
-        assert!(matches!(&message.content[0], ContentBlock::Text { text } if text == "hello"));
+        assert!(matches!(&message.content[0], ContentBlock::Text { text, .. } if text == "hello"));
     }
 
     #[test]
@@ -207,7 +212,7 @@ mod tests {
         };
         assert_eq!(message.content.len(), 1, "thinking block must be filtered out");
         assert!(
-            matches!(&message.content[0], ContentBlock::Text { text } if text == "after thought"),
+            matches!(&message.content[0], ContentBlock::Text { text, .. } if text == "after thought"),
             "only the text block should survive",
         );
     }
@@ -227,7 +232,7 @@ mod tests {
             panic!("expected Message::User");
         };
         assert_eq!(message.content.len(), 1);
-        let ContentBlock::Text { text } = &message.content[0] else {
+        let ContentBlock::Text { text, .. } = &message.content[0] else {
             panic!("expected image block to become a Text content block");
         };
         assert_eq!(text, "[image]");
@@ -249,6 +254,6 @@ mod tests {
         let Message::User { message, .. } = &synthesized[0] else {
             panic!("surviving entry must be the user one");
         };
-        assert!(matches!(&message.content[0], ContentBlock::Text { text } if text == "valid"));
+        assert!(matches!(&message.content[0], ContentBlock::Text { text, .. } if text == "valid"));
     }
 }

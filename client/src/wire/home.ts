@@ -182,7 +182,6 @@ export interface DictateWire {
   enabled: boolean;
   snapshot: { models: DictateModel[]; failure: DictateFailure | null };
   models_dir: string | null;
-  device: unknown;
 }
 
 export interface HomeWire {

@@ -46,7 +46,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // Route it through the turn-error path so the session leaves
         // the pinned-spinner state, in-flight tool calls finalize as
         // Failed, and the CLI's error string surfaces.
-        Message::Error { error } => {
+        Message::Error { error, .. } => {
             if let Some(key) = app.active_session_key.clone() {
                 super::turn::handle_turn_error_event(app, &key, &error, None, None);
             } else {
@@ -81,9 +81,13 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   (queued/started/...). The queued-prompt pile that reads it is
         //   the client's; the terminal's own queued row is unchanged, so
         //   the frame is a no-op here.
+        // - `tool_progress`: the CLI's heartbeat for a running tool call.
+        //   A known gap in THIS view, not a drop at the core - the frame
+        //   crosses whole, and no terminal surface draws elapsed time.
         Message::StreamEvent { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
+        | Message::ToolProgress { .. }
         | Message::HookStarted { .. }
         | Message::HookProgress { .. }
         | Message::HookResponse { .. }
@@ -276,7 +280,7 @@ fn walk_assistant_content(
 
     for block in content {
         match block {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text, .. } => {
                 if is_subagent || text.is_empty() {
                     continue;
                 }
@@ -299,14 +303,14 @@ fn walk_assistant_content(
                 );
                 app.status = crate::app::AppStatus::Thinking;
             }
-            ContentBlock::ToolUse { id, name, input }
-            | ContentBlock::ServerToolUse { id, name, input } => {
+            ContentBlock::ToolUse { id, name, input, .. }
+            | ContentBlock::ServerToolUse { id, name, input, .. } => {
                 if id.is_empty() {
                     continue;
                 }
                 apply_tool_use_block(app, id, name, input, parent_tool_use_id);
             }
-            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlock::ToolResult { tool_use_id, content, is_error, .. } => {
                 if tool_use_id.is_empty() {
                     continue;
                 }
@@ -319,7 +323,7 @@ fn walk_assistant_content(
                     raw_block.as_ref(),
                 );
             }
-            ContentBlock::ServerToolResult { tool_use_id, content } => {
+            ContentBlock::ServerToolResult { tool_use_id, content, .. } => {
                 // `advisor_tool_result` lands as the typed enum
                 // variant (per `ContentBlock::from_raw_block`'s match).
                 // Without an arm here it gets dropped; the server-tool
@@ -437,7 +441,7 @@ fn handle_user(app: &mut App, msg: Message) {
 /// command echoes back, so the stamped draw and the resume render agree.
 fn draw_harness_user_turn(app: &mut App, content: &[forge_primitives::ContentBlock]) {
     for block in content {
-        let forge_primitives::ContentBlock::Text { text } = block else {
+        let forge_primitives::ContentBlock::Text { text, .. } = block else {
             continue;
         };
         if text.is_empty() || super::session_reset::is_suppressed_user_scaffolding(text) {
@@ -562,7 +566,7 @@ fn push_peer_envelope_user_turn_if_present(
     use forge_primitives::ContentBlock;
 
     for block in content {
-        let ContentBlock::Text { text } = block else {
+        let ContentBlock::Text { text, .. } = block else {
             continue;
         };
         let Some(kind) = forge_server::envelope::detect_inbound(text) else {
@@ -652,7 +656,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
 
     for block in content {
         match block {
-            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlock::ToolResult { tool_use_id, content, is_error, .. } => {
                 if tool_use_id.is_empty() {
                     continue;
                 }
@@ -1879,7 +1883,7 @@ fn stamp_turn_info_on_latest_assistant(
         }
     };
     let model = app.observed_assistant_model().map(ToOwned::to_owned);
-    let usage = usage.filter(|u| !is_unattributed_usage(*u));
+    let usage = usage.filter(|u| !is_unattributed_usage(u));
     let thinking_tokens = app.latest_thinking_tokens();
     if let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) {
         let info = &mut msg.turn_info;
@@ -1914,13 +1918,14 @@ fn stamp_turn_info_on_latest_assistant(
 /// the whole block counts, an individual zero being a real
 /// measurement. Destructured so a counter added to `Usage` fails to
 /// build here.
-fn is_unattributed_usage(usage: forge_primitives::Usage) -> bool {
+fn is_unattributed_usage(usage: &forge_primitives::Usage) -> bool {
     let forge_primitives::Usage {
         input_tokens,
         output_tokens,
         cache_read_input_tokens,
         cache_creation_input_tokens,
-    } = usage;
+        ..
+    } = *usage;
     input_tokens == 0
         && output_tokens == 0
         && cache_read_input_tokens == 0
@@ -1952,7 +1957,7 @@ fn record_live_turn_usage(
     if app.replay_in_progress || forge_server::transcript::names_a_dispatch(parent_tool_use_id) {
         return;
     }
-    let Some(usage) = message.usage else {
+    let Some(usage) = message.usage.as_ref() else {
         return;
     };
     let (started_at, totals) = app.record_live_turn_usage(
@@ -2208,6 +2213,7 @@ mod stamp_turn_info_tests {
             output_tokens: output,
             cache_read_input_tokens: read,
             cache_creation_input_tokens: written,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2229,6 +2235,7 @@ mod stamp_turn_info_tests {
             stop_reason: None,
             stop_sequence: None,
             usage: Some(usage(4, 1, 93_262, 62_840)),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2240,7 +2247,9 @@ mod stamp_turn_info_tests {
                 role: "user".to_owned(),
                 content: vec![forge_primitives::ContentBlock::Text {
                     text: "next prompt".to_owned(),
+                    extras: serde_json::Map::new(),
                 }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -2248,6 +2257,7 @@ mod stamp_turn_info_tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2352,6 +2362,7 @@ mod stamp_turn_info_tests {
                 estimated_tokens_delta: 50,
                 uuid: "uuid_t".to_owned(),
                 session_id: String::new(),
+                extras: serde_json::Map::new(),
             },
         );
         assert_eq!(
@@ -2731,6 +2742,7 @@ mod stamp_turn_info_tests {
             parent_tool_use_id: parent.map(str::to_owned),
             session_id: "s".to_owned(),
             uuid: "hooks-1".to_owned(),
+            extras: serde_json::Map::new(),
         };
 
         let mut app = app_with_assistant();
@@ -2776,16 +2788,21 @@ mod assistant_lifecycle_gate_tests {
                 id: "msg_test".to_owned(),
                 role: "assistant".to_owned(),
                 model: "claude-test".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2867,9 +2884,14 @@ mod task_updated_section_routing_tests {
     fn task_updated(task_id: &str, status: &str) -> Message {
         Message::TaskUpdated {
             task_id: task_id.to_owned(),
-            patch: TaskUpdatePatch { status: Some(status.to_owned()), end_time: None },
+            patch: TaskUpdatePatch {
+                status: Some(status.to_owned()),
+                end_time: None,
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -2960,9 +2982,14 @@ mod task_updated_section_routing_tests {
         push_monitor(&mut app, "task_partial");
         let msg = Message::TaskUpdated {
             task_id: "task_partial".to_owned(),
-            patch: TaskUpdatePatch { status: None, end_time: Some(42) },
+            patch: TaskUpdatePatch {
+                status: None,
+                end_time: Some(42),
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         };
         handle_task_updated(&mut app, msg);
         assert_eq!(app.monitors().len(), 1);
@@ -3022,6 +3049,7 @@ mod monitor_output_file_wiring_tests {
             session_id: String::new(),
             tool_use_id: None,
             usage: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -3110,12 +3138,18 @@ mod monitor_output_file_wiring_tests {
         let progress = Message::TaskProgress {
             task_id: "task_grow".to_owned(),
             description: String::new(),
-            usage: TaskUsage { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+            usage: TaskUsage {
+                total_tokens: 0,
+                tool_uses: 0,
+                duration_ms: 0,
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
             tool_use_id: None,
             last_tool_name: None,
             workflow_progress: Vec::new(),
+            extras: serde_json::Map::new(),
         };
         handle_task_progress(&mut app, progress);
         let tail_after: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
@@ -3144,9 +3178,14 @@ mod monitor_output_file_wiring_tests {
         // entry persists (Bug 5a deferred the auto-clear).
         let task_updated_msg = Message::TaskUpdated {
             task_id: "task_wire".to_owned(),
-            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            patch: TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         };
         super::handle_task_updated(&mut app, task_updated_msg);
         assert_eq!(
@@ -3186,9 +3225,14 @@ mod monitor_output_file_wiring_tests {
         push_monitor(&mut app, "task_run");
         let task_updated_msg = Message::TaskUpdated {
             task_id: "task_done".to_owned(),
-            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            patch: TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         };
         super::handle_task_updated(&mut app, task_updated_msg);
         handle_task_notification(
@@ -3229,7 +3273,11 @@ mod thinking_tokens_clear_on_user_tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -3237,6 +3285,7 @@ mod thinking_tokens_clear_on_user_tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -3244,7 +3293,11 @@ mod thinking_tokens_clear_on_user_tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -3252,12 +3305,17 @@ mod thinking_tokens_clear_on_user_tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: true,
+            extras: serde_json::Map::new(),
         }
     }
 
     fn tool_result_echo() -> Message {
         Message::User {
-            message: UserEnvelope { role: "user".to_owned(), content: Vec::new() },
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: Vec::new(),
+                extras: serde_json::Map::new(),
+            },
             session_id: String::new(),
             parent_tool_use_id: Some("toolu_test".to_owned()),
             uuid: None,
@@ -3265,6 +3323,7 @@ mod thinking_tokens_clear_on_user_tests {
             // tool-result echo, NOT a genuine user prompt.
             tool_use_result: Some(serde_json::json!({})),
             timestamp: None,
+            extras: serde_json::Map::new(),
             synthetic: false,
         }
     }
@@ -3328,7 +3387,10 @@ mod inbound_message_surfacing_tests {
     use super::*;
 
     fn envelope(text: &str) -> forge_primitives::ContentBlock {
-        forge_primitives::ContentBlock::Text { text: text.to_owned() }
+        forge_primitives::ContentBlock::Text {
+            text: text.to_owned(),
+            extras: serde_json::Map::new(),
+        }
     }
 
     const FIRST: &str = "[Message id=t-1 from agent 'steward' (org 'forge')]\n\nthe window is lost";
@@ -3556,7 +3618,11 @@ mod inbound_message_surfacing_tests {
         Message::User {
             message: UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -3564,6 +3630,7 @@ mod inbound_message_surfacing_tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4082,7 +4149,12 @@ mod background_tasks_changed_tests {
     use serde_json::json;
 
     fn background_event(tasks: Vec<serde_json::Value>) -> Message {
-        Message::BackgroundTasksChanged { tasks, uuid: String::new(), session_id: String::new() }
+        Message::BackgroundTasksChanged {
+            tasks,
+            uuid: String::new(),
+            session_id: String::new(),
+            extras: serde_json::Map::new(),
+        }
     }
 
     fn background_tasks(app: &App) -> &[crate::app::state::types::BackgroundTask] {
@@ -4301,6 +4373,7 @@ mod subagent_sentinel_tests {
                 session_id: String::new(),
                 tool_use_id: Some(root_id.to_owned()),
                 task_type: Some("local_agent".to_owned()),
+                extras: serde_json::Map::new(),
             },
         );
     }
@@ -4308,9 +4381,14 @@ mod subagent_sentinel_tests {
     fn terminal_task_updated(task_id: &str) -> Message {
         Message::TaskUpdated {
             task_id: task_id.to_owned(),
-            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            patch: TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+                extras: serde_json::Map::new(),
+            },
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4324,6 +4402,7 @@ mod subagent_sentinel_tests {
             session_id: String::new(),
             tool_use_id: Some(root_id.to_owned()),
             usage: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4341,6 +4420,7 @@ mod subagent_sentinel_tests {
                 .collect(),
             uuid: String::new(),
             session_id: String::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4489,7 +4569,12 @@ mod commands_changed_tests {
     use serde_json::json;
 
     fn commands_event(commands: Vec<serde_json::Value>) -> Message {
-        Message::CommandsChanged { commands, uuid: String::new(), session_id: String::new() }
+        Message::CommandsChanged {
+            commands,
+            uuid: String::new(),
+            session_id: String::new(),
+            extras: serde_json::Map::new(),
+        }
     }
 
     #[test]
@@ -4585,7 +4670,10 @@ mod error_message_tests {
             .expect("active session")
             .push(ChatMessage::new(MessageRole::Assistant, Vec::new()));
 
-        handle_sdk_message(&mut app, Message::Error { error: "read loop died".to_owned() });
+        handle_sdk_message(
+            &mut app,
+            Message::Error { error: "read loop died".to_owned(), extras: serde_json::Map::new() },
+        );
 
         // The empty tail assistant is replaced by a surfaced system
         // error - proof the frame took the turn-error path, not the
@@ -4633,6 +4721,7 @@ mod turn_end_context_usage_tests {
             errors: None,
             uuid: None,
             terminal_reason: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4704,6 +4793,7 @@ mod submit_result_race_tests {
             output_tokens: output,
             cache_read_input_tokens: read,
             cache_creation_input_tokens: written,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4713,16 +4803,21 @@ mod submit_result_race_tests {
                 id: id.to_owned(),
                 role: "assistant".to_owned(),
                 model: "claude-opus-5".to_owned(),
-                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: Some(usage),
+                extras: serde_json::Map::new(),
             },
             session_id: "session-1".to_owned(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -4749,6 +4844,7 @@ mod submit_result_race_tests {
             errors: None,
             uuid: None,
             terminal_reason: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -5013,6 +5109,7 @@ mod monitor_chat_block_tests {
             session_id: String::new(),
             tool_use_id: Some(TOOL_USE_ID.to_owned()),
             task_type: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -5028,8 +5125,10 @@ mod monitor_chat_block_tests {
                 total_tokens: 0,
                 tool_uses: 0,
                 duration_ms: 0,
+                extras: serde_json::Map::new(),
             },
             workflow_progress: Vec::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -5043,6 +5142,7 @@ mod monitor_chat_block_tests {
             session_id: String::new(),
             tool_use_id: Some(TOOL_USE_ID.to_owned()),
             usage: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -5474,9 +5574,11 @@ mod monitor_chat_block_tests {
                 patch: forge_primitives::messages::TaskUpdatePatch {
                     status: Some("killed".to_owned()),
                     end_time: None,
+                    extras: serde_json::Map::new(),
                 },
                 uuid: String::new(),
                 session_id: String::new(),
+                extras: serde_json::Map::new(),
             },
         );
         assert_block_still_renders(&mut app, "after terminal task_updated");

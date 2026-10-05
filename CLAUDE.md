@@ -815,7 +815,7 @@ inspected.
     check` runs the client's steps too - Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
     --noEmit`, then vitest - so one command decides both stacks and its
-    verdict line names the first failing step. **The desktop shell under
+    verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so `just check`'s
     Rust steps and CI's cargo jobs do not reach it; the Unicode
     punctuation gate, which CI runs too, and the client's Prettier step
@@ -844,7 +844,15 @@ inspected.
     of a state, and axe over the rendered markup as a page test
     (`client/src/a11y.test.ts`) - contrast is not covered there, because
     jsdom performs no layout, so it stays a rule checked where the token
-    set is. **The design skills are picked up when the work is something
+    set is. **Touch is a hard requirement, not a fallback.** The client
+    runs on Android as well as the desktop. Every control a finger
+    reaches takes a 44px target under `@media (pointer: coarse)` - keyed
+    on the POINTER, not the width, because an Android tablet is wide and
+    still finger-driven. No affordance may exist only on hover. Anything
+    opened by a keyboard gesture needs a visible door for touch, and
+    every overlay is pushed onto history so the hardware Back closes
+    what it opened. **The design skills are picked up when the work is
+    something
     a person will look at** - a page, a component, a layout, a theme, a
     mark, a drawing, a chart - **and before the code is written, never at
     review time.** `frontend-design` originates a look that has no

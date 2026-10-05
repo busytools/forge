@@ -11,6 +11,11 @@ rust-version = "1.90"
 # `just client-tauri-check` builds and bundles it.
 [workspace]
 
+[lib]
+# The Android target links the app as a native library; a binary-only crate
+# gives `tauri android build` no library target to build.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

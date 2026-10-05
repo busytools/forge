@@ -96,8 +96,59 @@ describe('where a close lands the reader', () => {
     expect(closeLanding(home(LEAD, W1), W1, NOW)).toEqual({ name: 'session', slot: LEAD });
   });
 
-  it('lands a lead close on the next row the rail draws', () => {
-    expect(closeLanding(home(LEAD, W1, W2), LEAD, NOW)).toEqual({ name: 'session', slot: W1 });
+  /**
+   * **A lead's close takes its whole project with it** (#1703): the core
+   * cascades `close_session` to the project's live workers, so every seat
+   * this roster still names there is closing - offering one landed the
+   * reader on a session-less seat and drew the refusal before anything else
+   * happened (Ved's live find). The close marks the project's seats, and the
+   * landing reads the rail's own order from the top: the first live row
+   * outside the closing project, not the adjacent walk's pick.
+   */
+  it("lands a lead's close on the first live row outside its project", () => {
+    const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD, OTHER_W1);
+    const { open, dispatch } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/lead');
+    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(dispatch).toHaveBeenCalledWith({ close_session: { session_key: LEAD } });
+    expect(location.pathname, 'the landing offered a seat of the closing project').toBe(
+      '/session/TestOrg/other/lead',
+    );
+  });
+
+  it('reads the rail from the top, not the walk from the closed row', () => {
+    // The closed lead sits LAST: adjacent walking from it would wrap onto the
+    // second project, and the landing must be the rail's first live row.
+    const a: SessionSlot = { org: 'TestOrg', project: 'a', label: 'lead' };
+    const b: SessionSlot = { org: 'TestOrg', project: 'b', label: 'lead' };
+    const held = ground(['a', 'b', 'proj'], a, b, LEAD, W1);
+    const { open } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/lead');
+    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(
+      location.pathname,
+      "the landing was the walk's adjacent pick, not the rail's first live row",
+    ).toBe('/session/TestOrg/a/lead');
+  });
+
+  /**
+   * The reader stands on another seat of the project being closed (#1703):
+   * the marks must be in force wherever the close was clicked, because the
+   * cascade's removals arrive whatever seat the reader is on - and a removal
+   * that moves them must not land them on another seat of that same cascade.
+   */
+  it('never lands a cascade removal on the project that is closing', () => {
+    const held = ground(['proj', 'other'], LEAD, W1, W2, OTHER_LEAD, OTHER_W1);
+    const { open } = connection();
+    history.replaceState(null, '', '/session/TestOrg/proj/w1');
+    expect(closeSeat(open, held, LEAD, W1, NOW)).toBe(true);
+    expect(location.pathname, 'a close elsewhere moved the reader').toBe(
+      '/session/TestOrg/proj/w1',
+    );
+    expect(
+      removedLanding(held, W1, LEAD, NOW),
+      'the removal landed the reader on a seat of the closing project',
+    ).toEqual({ name: 'session', slot: OTHER_LEAD });
   });
 
   /**
@@ -180,6 +231,7 @@ describe('closing a seat', () => {
 
 const OTHER_LEAD: SessionSlot = { org: 'TestOrg', project: 'other', label: 'lead' };
 const OTHER_W1: SessionSlot = { org: 'TestOrg', project: 'other', label: 'w1' };
+const OTHER_W2: SessionSlot = { org: 'TestOrg', project: 'other', label: 'w2' };
 
 describe('the walk is over seats with something behind them', () => {
   /**
@@ -205,12 +257,14 @@ describe('the walk is over seats with something behind them', () => {
 
   /**
    * The direction, which only a middle row can tell: closing the second
-   * project's lead has a live row after it (its own worker) and a live row
-   * before it (the first project's), and the walk goes FORWARD first.
+   * project's worker - a project with no live lead, so the walk answers -
+   * has a live row after it and rows before it, and the walk goes FORWARD
+   * first. (A lead close would land on the rail's first live row, which is
+   * the other describe's rule, not the walk's.)
    */
   it('walks forward from a middle row rather than back', () => {
-    const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD, OTHER_W1);
-    expect(closeLanding(held, OTHER_LEAD, NOW)).toEqual({ name: 'session', slot: OTHER_W1 });
+    const held = ground(['proj', 'other'], W1, OTHER_W1, OTHER_W2);
+    expect(closeLanding(held, OTHER_W1, NOW)).toEqual({ name: 'session', slot: OTHER_W2 });
   });
 });
 

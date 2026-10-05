@@ -8,54 +8,57 @@
    * click, and nothing is hidden behind a submenu. The in-force chip is filled
    * AND outlined as well as coloured, so the state is not carried by hue alone.
    *
-   * Two things it states rather than offers, because the code has nothing to
-   * honour a click with: the MODE, which the terminal keeps in `forge.toml`
-   * too, and the DEVICE, whose pick lives on the home snapshot and outlives
-   * this page. Both say where they come from, which is what the device's own
-   * caveat asks for.
+   * The axes and the input are the CLIENT's since capture moved here: they are
+   * held by the page that owns them (per seat, remembered on this machine),
+   * and the panel is handed the values in force plus the two setters. The
+   * defaults the greeting carried are what a deviation is marked against and
+   * what the reset row returns to.
+   *
+   * The MODE is stated rather than offered, because the code has nothing to
+   * honour a click with: it is `forge.toml`'s, and a mode chip would be a
+   * control nothing reads.
    */
   import Icon from '../components/Icon.svelte';
-  import type { Connection } from '../socket';
-  import type { DictateDevice } from '../protocol';
-  import type { DictateOverrides } from '../session/wire';
-  import type { SessionSlot } from '../wire/types';
+  import type { DictateAxes } from '../session/wire';
   import type { Bind, Mode } from './dictate-key';
   import {
     DESTINATION,
-    inForce,
     keyHint,
     MODES,
     OVERRIDE,
-    pickUpdate,
     STRUCTURE,
     VOICE,
     type Axis,
     type Option,
   } from './dictation';
+  import { inputLine, inputs, type Input } from './mic';
 
   let {
-    overrides,
+    axes,
+    defaults,
     bind,
     mode,
-    slot,
-    connection,
     device = null,
+    onaxes,
+    ondevice,
   }: {
-    overrides: DictateOverrides;
+    /** The axes in force for this seat, which this client holds. */
+    axes: DictateAxes;
+    /** What `forge.toml` set, which a deviation is marked against. */
+    defaults: DictateAxes;
     /** The push-to-talk key, whose hint the header carries. */
     bind: Bind;
     /** How a press maps onto a take, which is stated rather than offered. */
     mode: Mode;
-    slot: SessionSlot;
-    connection: Pick<Connection, 'dispatch' | 'onMessage' | 'devices'>;
-    /** The input a pick moved the process to, or `null` while the pin stands. */
-    device?: { device: string } | 'system' | null;
+    /** The input this seat records from, or `null` for the system default. */
+    device?: string | null;
+    onaxes: (axes: DictateAxes) => void;
+    ondevice: (device: string | null) => void;
   } = $props();
 
   /** Whether this platform delivers Cmd, which is what the hint names. */
   const mac = navigator.platform.toLowerCase().includes('mac');
   const hint = $derived(keyHint(bind, mac));
-  const force = $derived(inForce(overrides));
 
   /** The value under the take's own rule, per mode, which the row prints. */
   const RULES: Readonly<Record<Mode, string>> = {
@@ -76,117 +79,81 @@
     return OVERRIDE[axis] as 'styling' | 'structure' | 'context';
   }
 
-  /** What the session itself set on an axis, which is what the tag marks. */
+  /** What this client set on an axis, which is what the tag marks. */
   function sessionSet(axis: Axis): boolean {
-    return overrides[field(axis)] !== null;
+    return axes[field(axis)] !== defaults[field(axis)];
   }
 
   /** The value in force on an axis, which is what its chips compare against. */
   function inForceOn(axis: Axis): string {
-    return force[field(axis)];
+    return axes[field(axis)];
   }
 
   function set(axis: Axis, value: string): void {
-    void connection.dispatch({
-      set_dictate_override: { key: slot, update: pickUpdate(axis, value) },
-    });
+    onaxes({ ...axes, [field(axis)]: value });
   }
 
   function reset(): void {
-    void connection.dispatch({ reset_dictate_overrides: { key: slot } });
+    onaxes(defaults);
+    ondevice(null);
   }
 
   /**
-   * The inputs forge can record from, asked for when the list is opened.
+   * The inputs this machine offers, asked for when the list is opened.
    *
-   * On demand rather than with the record: the walk opens the microphone stack,
-   * so a page that never opens the list never trips it.
+   * On demand rather than on mount: the walk asks the browser for its devices,
+   * so a page that never opens the list never asks. The browser's LABELS need
+   * the microphone granted once in this origin, so a fresh install lists
+   * unnamed rows until a take has been allowed.
    */
-  let devices = $state<DictateDevice[] | null>(null);
-  let configured = $state<string | null>(null);
+  let devices = $state<Input[] | null>(null);
   let listOpen = $state(false);
-  let walked = $state(false);
   /** Whether a walk is in flight, so the row says it is looking. */
   let walking = $state(false);
   /** Why a walk failed, which the list region draws where the list would be. */
   let refused = $state<string | null>(null);
 
-  $effect(() => {
-    return connection.onMessage((message) => {
-      if (message.kind === 'devices') {
-        devices = message.devices;
-        configured = message.configured;
-        walked = true;
-        walking = false;
-        refused = null;
-        listOpen = true;
-        return;
-      }
-      // The socket's contract is explicit: a walk that could not enumerate
-      // comes back as an error naming `devices`, and a client renders it where
-      // the list would have been. Drawing nothing would make a failed walk read
-      // exactly like a walk that found no inputs.
-      if (message.kind === 'error' && message.what === 'devices') {
-        refused = message.why;
-        walking = false;
-        listOpen = true;
-      }
-    });
-  });
-
   /**
    * Show the list, or put it away again.
    *
-   * The walk is asked for ONCE: it opens the microphone stack, so a click while
-   * one is in flight must not start another, and a list already walked is not
-   * walked again. That is what makes clicking the row a toggle rather than a
-   * queue of walks.
+   * The walk runs ONCE: a click while one is in flight must not start another,
+   * and a list already walked is not walked again. That is what makes clicking
+   * the row a toggle rather than a queue of walks.
    */
-  function openList(): void {
+  async function openList(): Promise<void> {
     listOpen = !listOpen;
-    if (!listOpen || walked || walking) return;
+    if (!listOpen || devices !== null || walking) return;
     walking = true;
     refused = null;
-    // A socket that is not open answers `false`, and the row then keeps drawing
-    // what it already knows rather than promising a list that is not coming.
-    if (!connection.devices()) walking = false;
+    try {
+      devices = await inputs();
+    } catch (why) {
+      refused = inputLine(why);
+    } finally {
+      walking = false;
+    }
   }
 
-  /** The device in force: the process pick, else the pin, else the system's own. */
+  /** The input in force, as the row names it. */
   const inForceDevice = $derived.by(() => {
-    if (device === 'system') return 'System default';
-    const picked = typeof device === 'object' && device !== null ? device.device : null;
-    const wanted = picked ?? configured;
-    if (wanted === null) return 'System default';
-    return devices?.find((held) => held.id === wanted)?.name ?? wanted;
+    if (device === null) return 'System default';
+    return devices?.find((held) => held.id === device)?.label || 'System default';
   });
 
-  /** The device a pick moved the process to, or `null` while the pin stands. */
-  const picked = $derived(typeof device === 'object' && device !== null ? device.device : null);
-  /** Whether the reader picked the system default, which overrides the pin. */
-  const onSystem = $derived(device === 'system');
-  /** Whether the walk found every id it was given. */
-  const found = (id: string | null): boolean =>
-    id === null || (devices ?? []).some((held) => held.id === id);
-
   /**
-   * Whether the input in force is one the walk could not find - a PICK or the
-   * config's own PIN, which the terminal words differently.
+   * Whether the input in force is one the walk could not find.
    *
-   * A pin can name a device that is not plugged in, and the terminal tags that
-   * row rather than only failing at record time - so the id is named and marked
-   * instead of reading as an input that is present. A pick that is gone is the
-   * reader's own doing and reads as `not present`; the pin is the config's, so
-   * it says where it came from.
+   * A device can be unplugged between takes, and the row tags that rather than
+   * only failing at record time - the id is named and marked instead of reading
+   * as an input that is present.
    */
-  const missingPick = $derived(devices !== null && picked !== null && !found(picked));
-  const missingPin = $derived(
-    devices !== null && !onSystem && picked === null && configured !== null && !found(configured),
+  const missingPick = $derived(
+    device !== null && devices !== null && !devices.some((held) => held.id === device),
   );
 
-  function choose(pick: 'system' | { device: string }): void {
+  function choose(pick: string | null): void {
     listOpen = false;
-    void connection.dispatch({ set_dictate_device: { key: slot, pick } });
+    ondevice(pick);
   }
 
   /** The panel's own box, whose top edge the cap is measured from. */
@@ -247,7 +214,7 @@
       <span class="k"><b>{hint}</b></span>
     {/if}
   </div>
-  <div class="scope">axes this session &#183; device until restart</div>
+  <div class="scope">axes this session &#183; input on this machine</div>
 
   {#each AXES as axis (axis.key)}
     <div class="ax">
@@ -287,16 +254,14 @@
     <div class="lbl">INPUT DEVICE</div>
     <button
       class="dev"
-      class:missing={missingPick || missingPin}
+      class:missing={missingPick}
       type="button"
       aria-expanded={listOpen}
       onclick={openList}
     >
       <Icon name="mic" />
       <span class="nm">{inForceDevice}</span>
-      {#if missingPin}
-        <span class="tag">not present &#183; pinned in forge.toml</span>
-      {:else if missingPick}
+      {#if missingPick}
         <span class="tag">not present</span>
       {/if}
       <span class="chev">&#9656;</span>
@@ -308,24 +273,22 @@
         {:else if refused !== null}
           <div class="note bad">{refused}</div>
         {:else}
-          <button class="row" type="button" onclick={() => choose('system')}>
+          <button class="row" type="button" onclick={() => choose(null)}>
             <span class="nm">System default</span>
           </button>
-          {#each devices ?? [] as held (held.id)}
-            <button class="row" type="button" onclick={() => choose({ device: held.id })}>
-              <span class="nm">{held.name}</span>
-              {#if held.is_default}<span class="def">system picks it</span>{/if}
+          {#each devices ?? [] as held, at (held.id)}
+            <button class="row" type="button" onclick={() => choose(held.id)}>
+              <span class="nm">{held.label || `Microphone ${at + 1}`}</span>
             </button>
           {/each}
-          {#if walked && (devices ?? []).length === 0}
+          {#if devices !== null && devices.length === 0}
             <div class="note">No input devices found.</div>
           {/if}
         {/if}
       </div>
     {/if}
     <div class="note">
-      from <span class="mono">forge.toml</span> &#183; a pick here reverts on restart, and the config's
-      own device comes back
+      the browser's own list &#183; names appear once this page has been allowed the microphone
     </div>
   </div>
 

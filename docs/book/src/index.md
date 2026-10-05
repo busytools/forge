@@ -20,7 +20,7 @@ three things sharing a repository:
   the updates that change it (`usage` is the exception: it is a scan, and
   is answered once per subscribe), and acts through the same command bus the
   terminal uses. The [socket page](./socket.md) is the protocol, and the
-  client is the desktop app under `client/`; `forge-web`, which served
+  client is the app under `client/`; `forge-web`, which served
   pages on that port until the socket took it, is parked.
 
 forge never calls the Anthropic API itself. It spawns `claude` and

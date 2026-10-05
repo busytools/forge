@@ -11,6 +11,7 @@
   import SessionId from './SessionId.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
+  import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
@@ -172,6 +173,67 @@
   const leftShown = $derived(leftChosen ?? !narrow);
   const rightShown = $derived(rightChosen ?? !inspectorNarrow);
 
+  /**
+   * A covering rail opens onto history, so Back closes what it opened; a rail
+   * shown as a column takes no entry. The push and the pop's meaning are
+   * `rail-history.ts`'s, so a click is not what they rest on.
+   */
+  let lastRail: RailSide | null = hasDom ? railOnTop(history.state) : null;
+  let closedUnder: RailSide | null = null;
+
+  function openRail(side: RailSide) {
+    if (side === 'left' ? narrow : inspectorNarrow) {
+      // One entry covers the open state: a second rail opened over the first
+      // joins it rather than stacking a step of its own.
+      if (lastRail === null) {
+        history.pushState(railEntry(history.state, side), '', location.href);
+        lastRail = side;
+      }
+    }
+    closedUnder = null;
+    if (side === 'left') leftChosen = true;
+    else rightChosen = true;
+  }
+
+  function closeRail(side: RailSide) {
+    if (side === 'left') leftChosen = false;
+    else rightChosen = false;
+    // A covering rail still open keeps the entry earned: the press closes the
+    // side it names, and the step stays for the Back that closes the last one.
+    const stillCovering = side === 'left' ? inspectorNarrow && rightShown : narrow && leftShown;
+    if (stillCovering) return;
+    if (railOnTop(history.state) === side) {
+      history.back();
+      return;
+    }
+    // The entry sits beneath another navigation's, where no pop can reach it
+    // without leaving that page: it is stepped down instead, and the Back
+    // that walks past it drops it without re-opening anything.
+    closedUnder = side;
+  }
+
+  $effect(() => {
+    const restore = () => {
+      const landed = railOnTop(history.state);
+      if (landed !== null && landed === closedUnder) {
+        // The inert entry a close stepped down: dropped here, so it is
+        // consumed rather than left as a step that shows nothing.
+        closedUnder = null;
+        lastRail = null;
+        history.back();
+        return;
+      }
+      const chosen = chosenAfterPop(history.state, narrow, lastRail, closedUnder);
+      lastRail = landed;
+      closedUnder = null;
+      if (chosen === null) return;
+      leftChosen = chosen.left;
+      rightChosen = chosen.right;
+    };
+    addEventListener('popstate', restore);
+    return () => removeEventListener('popstate', restore);
+  });
+
   // One clock for the page: every age and every countdown reads against the
   // same now, so two rows a second apart cannot draw the same age differently.
   // Age is a function of time rather than of data, so a re-read needs an
@@ -200,7 +262,7 @@
   class:right-shown={rightShown}
   class:right-hidden={!rightShown}
 >
-  <Rail home={wire} current={slot} {now} {connection} onclose={() => (leftChosen = false)} />
+  <Rail home={wire} current={slot} {now} {connection} onclose={() => closeRail('left')} />
 
   <main class="chat">
     <div class="sess">
@@ -221,7 +283,7 @@
         title="projects"
         aria-label="projects"
         aria-expanded={leftShown}
-        onclick={() => (leftChosen = !leftShown)}
+        onclick={() => (leftShown ? closeRail('left') : openRail('left'))}
       >
         <svg
           viewBox="0 0 24 24"
@@ -237,7 +299,7 @@
         title="inspector"
         aria-label="inspector"
         aria-expanded={rightShown}
-        onclick={() => (rightChosen = !rightShown)}
+        onclick={() => (rightShown ? closeRail('right') : openRail('right'))}
       >
         <svg
           viewBox="0 0 24 24"
@@ -374,7 +436,7 @@
     {/if}
   </main>
 
-  <Inspector {wire} {record} {slot} {now} onclose={() => (rightChosen = false)} />
+  <Inspector {wire} {record} {slot} {now} onclose={() => closeRail('right')} />
 
   {#if composer !== null && record !== null}
     <div class="composer">

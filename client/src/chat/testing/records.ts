@@ -35,9 +35,20 @@ export function pinned(): Pin[] {
   return pins;
 }
 
+/**
+ * The element's own getting and setting, counted.
+ *
+ * jsdom measures no layout, so the only way the column's READ cost is
+ * observable here is by counting the reads themselves - which is what
+ * issue #1710's echo half is: a layout read the column does not make for its
+ * own pin's event. `reads` counts `scrollHeight` hits on the stub's element.
+ */
+export const layout = { reads: 0 };
+
 export function clear(): void {
   records.length = 0;
   pins.length = 0;
+  layout.reads = 0;
 }
 
 /** The last pair the list was handed. */

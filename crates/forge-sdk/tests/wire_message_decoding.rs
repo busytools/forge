@@ -21,7 +21,7 @@ mod tests_rate_limit_frames {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"uuid":"evt-1","session_id":"sess"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
+            Message::RateLimitEvent { rate_limit_info, uuid, session_id, .. } => {
                 assert_eq!(rate_limit_info.status, RateLimitStatus::Allowed);
                 assert_eq!(uuid, "evt-1");
                 assert_eq!(session_id, "sess");
@@ -83,7 +83,7 @@ mod tests_rate_limit_frames {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"},"uuid":"evt","session_id":"s"}"#;
         let decoded = decode_dispatch(line, 1);
         match decoded {
-            DecodedLine::Message(Message::RateLimitEvent { .. }) => {}
+            DecodedLine::Message(msg) if matches!(*msg, Message::RateLimitEvent { .. }) => {}
             other => panic!("expected RateLimitEvent message, got: {other:?}"),
         }
     }
@@ -108,6 +108,7 @@ mod tests_task_lifecycle_frames {
                 session_id,
                 tool_use_id,
                 task_type,
+                ..
             } => {
                 assert_eq!(task_id, "t-1");
                 assert_eq!(description, "do the thing");
@@ -146,7 +147,7 @@ mod tests_task_lifecycle_frames {
                 session_id,
                 tool_use_id,
                 last_tool_name,
-                workflow_progress: _,
+                ..
             } => {
                 assert_eq!(task_id, "t-2");
                 assert_eq!(description, "halfway");
@@ -176,6 +177,7 @@ mod tests_task_lifecycle_frames {
                 session_id,
                 tool_use_id,
                 usage,
+                ..
             } => {
                 assert_eq!(task_id, "t-3");
                 assert_eq!(status, TaskNotificationStatus::Completed);
@@ -220,8 +222,13 @@ mod tests_task_lifecycle_frames {
 
     #[test]
     fn task_usage_roundtrip() {
-        let u = TaskUsage { total_tokens: 10, tool_uses: 2, duration_ms: 500 };
-        let v = serde_json::to_value(u).expect("ser");
+        let u = TaskUsage {
+            total_tokens: 10,
+            tool_uses: 2,
+            duration_ms: 500,
+            extras: serde_json::Map::new(),
+        };
+        let v = serde_json::to_value(&u).expect("ser");
         let back: TaskUsage = serde_json::from_value(v).expect("de");
         assert_eq!(u, back);
     }
@@ -231,7 +238,7 @@ mod tests_task_lifecycle_frames {
         let line = r#"{"type":"system","subtype":"task_started","task_id":"t","description":"d","uuid":"u","session_id":"s"}"#;
         let decoded = decode_dispatch(line, 1);
         match decoded {
-            DecodedLine::Message(Message::TaskStarted { .. }) => {}
+            DecodedLine::Message(msg) if matches!(*msg, Message::TaskStarted { .. }) => {}
             other => panic!("expected TaskStarted, got: {other:?}"),
         }
     }
@@ -241,7 +248,7 @@ mod tests_task_lifecycle_frames {
         let line = r#"{"type":"system","subtype":"task_progress","task_id":"t","description":"d","usage":{"total_tokens":1,"tool_uses":1,"duration_ms":1},"uuid":"u","session_id":"s"}"#;
         let decoded = decode_dispatch(line, 1);
         match decoded {
-            DecodedLine::Message(Message::TaskProgress { .. }) => {}
+            DecodedLine::Message(msg) if matches!(*msg, Message::TaskProgress { .. }) => {}
             other => panic!("expected TaskProgress, got: {other:?}"),
         }
     }
@@ -251,7 +258,7 @@ mod tests_task_lifecycle_frames {
         let line = r#"{"type":"system","subtype":"task_notification","task_id":"t","status":"stopped","output_file":"/x","summary":"s","uuid":"u","session_id":"s"}"#;
         let decoded = decode_dispatch(line, 1);
         match decoded {
-            DecodedLine::Message(Message::TaskNotification { .. }) => {}
+            DecodedLine::Message(msg) if matches!(*msg, Message::TaskNotification { .. }) => {}
             other => panic!("expected TaskNotification, got: {other:?}"),
         }
     }
@@ -300,7 +307,7 @@ mod tests_stream_event_and_error_frames {
         let line = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
+            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id, .. } => {
                 assert_eq!(uuid, "evt-1");
                 assert_eq!(session_id, "sess-1");
                 assert_eq!(event, json!({"type": "message_start"}));
@@ -332,7 +339,7 @@ mod tests_stream_event_and_error_frames {
         let line = r#"{"type":"error","error":"connection closed unexpectedly"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::Error { error } => {
+            Message::Error { error, .. } => {
                 assert_eq!(error, "connection closed unexpectedly");
             }
             other => panic!("expected Error, got {other:?}"),
@@ -343,7 +350,10 @@ mod tests_stream_event_and_error_frames {
     fn dispatch_surfaces_stream_event_as_message() {
         let line = r#"{"type":"stream_event","uuid":"evt-3","session_id":"sess-3","event":{"type":"message_stop"}}"#;
         match decode_dispatch(line, 1) {
-            DecodedLine::Message(Message::StreamEvent { uuid, .. }) => {
+            DecodedLine::Message(msg) => {
+                let Message::StreamEvent { uuid, .. } = *msg else {
+                    panic!("expected Message(StreamEvent), got {msg:?}");
+                };
                 assert_eq!(uuid, "evt-3");
             }
             other => panic!("expected Message(StreamEvent), got {other:?}"),
@@ -354,7 +364,10 @@ mod tests_stream_event_and_error_frames {
     fn dispatch_surfaces_error_frame_as_message() {
         let line = r#"{"type":"error","error":"boom"}"#;
         match decode_dispatch(line, 1) {
-            DecodedLine::Message(Message::Error { error }) => {
+            DecodedLine::Message(msg) => {
+                let Message::Error { error, .. } = *msg else {
+                    panic!("expected Message(Error), got {msg:?}");
+                };
                 assert_eq!(error, "boom");
             }
             other => panic!("expected Message(Error), got {other:?}"),
@@ -368,6 +381,7 @@ mod tests_stream_event_and_error_frames {
             session_id: "sess-rt".into(),
             event: json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
             parent_tool_use_id: None,
+            extras: serde_json::Map::new(),
         };
         let wire = serde_json::to_string(&original).expect("serialize");
         let decoded: Message = serde_json::from_str(&wire).expect("decode");
@@ -376,7 +390,8 @@ mod tests_stream_event_and_error_frames {
 
     #[test]
     fn error_frame_roundtrips_through_serde() {
-        let original = Message::Error { error: "pipe broken".into() };
+        let original =
+            Message::Error { error: "pipe broken".into(), extras: serde_json::Map::new() };
         let wire = serde_json::to_string(&original).expect("serialize");
         let decoded: Message = serde_json::from_str(&wire).expect("decode");
         assert_eq!(decoded, original);

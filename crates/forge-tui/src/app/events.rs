@@ -1030,7 +1030,11 @@ mod tests {
         forge_primitives::Message::User {
             message: forge_primitives::UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
@@ -1038,6 +1042,7 @@ mod tests {
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1047,16 +1052,21 @@ mod tests {
                 id: "msg_test".to_owned(),
                 role: "assistant".to_owned(),
                 model: "claude-test".to_owned(),
-                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1074,16 +1084,19 @@ mod tests {
                     id: tool_use_id.to_owned(),
                     name: name.to_owned(),
                     input,
+                    extras: serde_json::Map::new(),
                 }],
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: String::new(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1111,12 +1124,14 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: None,
                 usage: None,
+                extras: serde_json::Map::new(),
             },
             session_id: "test-session".to_owned(),
             parent_tool_use_id: None,
             error: None,
             uuid: None,
             timestamp: None,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1134,13 +1149,18 @@ mod tests {
 
     fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
         forge_primitives::Message::User {
-            message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content,
+                extras: serde_json::Map::new(),
+            },
             session_id: "test-session".to_owned(),
             parent_tool_use_id: None,
             uuid: None,
             tool_use_result: None,
             timestamp: None,
             synthetic: false,
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1154,6 +1174,8 @@ mod tests {
             post_tokens: 9_149,
             uuid: "cb-uuid".to_owned(),
             session_id: "test-session".to_owned(),
+            metadata_extras: serde_json::Map::new(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1172,6 +1194,7 @@ mod tests {
             rate_limit_info,
             uuid: "rl_test".to_owned(),
             session_id: "test-session".to_owned(),
+            extras: serde_json::Map::new(),
         }
     }
 
@@ -1220,11 +1243,19 @@ mod tests {
         name: &str,
         input: serde_json::Value,
     ) -> forge_primitives::ContentBlock {
-        forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
+        forge_primitives::ContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            input,
+            extras: serde_json::Map::new(),
+        }
     }
 
     fn text_block(text: &str) -> forge_primitives::ContentBlock {
-        forge_primitives::ContentBlock::Text { text: text.to_owned() }
+        forge_primitives::ContentBlock::Text {
+            text: text.to_owned(),
+            extras: serde_json::Map::new(),
+        }
     }
 
     fn tool_result_block(
@@ -1235,6 +1266,7 @@ mod tests {
             tool_use_id: tool_use_id.to_owned(),
             content,
             is_error: false,
+            extras: serde_json::Map::new(),
         }
     }
 

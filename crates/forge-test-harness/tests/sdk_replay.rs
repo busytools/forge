@@ -150,7 +150,7 @@ fn the_compact_baseline_carries_a_real_compaction() {
         .filter(|line| {
             matches!(
                 decode_dispatch(line, 1),
-                DecodedLine::Message(Message::CompactBoundary { .. })
+                DecodedLine::Message(msg) if matches!(*msg, Message::CompactBoundary { .. })
             )
         })
         .count();
@@ -191,8 +191,8 @@ fn the_stop_hook_error_baseline_carries_the_notification_frame() {
         .filter(|line| {
             matches!(
                 decode_dispatch(line, 1),
-                DecodedLine::Message(Message::Notification { key: Some(key), .. })
-                    if key == "stop-hook-error"
+                DecodedLine::Message(msg)
+                    if matches!(&*msg, Message::Notification { key: Some(key), .. } if key == "stop-hook-error")
             )
         })
         .count();
@@ -214,7 +214,10 @@ fn committed_baselines_carry_hook_progress_frames_to_the_typed_variant() {
         .inbound()
         .iter()
         .filter(|line| {
-            matches!(decode_dispatch(line, 1), DecodedLine::Message(Message::HookProgress { .. }))
+            matches!(
+                decode_dispatch(line, 1),
+                DecodedLine::Message(msg) if matches!(*msg, Message::HookProgress { .. })
+            )
         })
         .count();
 
@@ -242,7 +245,7 @@ fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
                 .filter(|line| {
                     matches!(
                         decode_dispatch(line, 1),
-                        DecodedLine::Message(Message::PermissionDenied { .. })
+                        DecodedLine::Message(msg) if matches!(*msg, Message::PermissionDenied { .. })
                     )
                 })
                 .count();
@@ -253,6 +256,34 @@ fn committed_baselines_carry_permission_denied_frames_to_the_typed_variant() {
         denials >= 1,
         "no baseline carries a permission_denied frame reaching the typed variant - the frame \
          arrives incidentally, so a recapture can drop it while every other gate stays green",
+    );
+}
+
+/// `tool_progress` is the frame this upgrade un-dropped: the reader used to
+/// swallow it, and it reaches the stream as a `Message` now. Pinned by name
+/// through the decoder, so a drift back to `Unknown` is attributed to THIS
+/// frame by name: the corpus gates also fail on that drift - the clean-decode
+/// assertion reports the type as unknown, and the socket record loses
+/// `elapsed_time_seconds` and `heartbeat` - but they say "a type drifted",
+/// while this says which one, which is what the fix is written against.
+#[test]
+fn committed_baselines_carry_tool_progress_frames_to_the_typed_variant() {
+    let log = load_baseline("tool_progress");
+    let heartbeats = log
+        .inbound()
+        .iter()
+        .filter(|line| {
+            matches!(
+                decode_dispatch(line, 1),
+                DecodedLine::Message(msg) if matches!(*msg, Message::ToolProgress { .. })
+            )
+        })
+        .count();
+
+    assert!(
+        heartbeats >= 1,
+        "the tool_progress baseline carries no heartbeat reaching the typed variant - a drift \
+         back to Message::Unknown would replay clean while covering nothing",
     );
 }
 
