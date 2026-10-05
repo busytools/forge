@@ -1298,11 +1298,12 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 kbd { font-family: inherit; font-size: inherit; color: inherit;
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
 
-/* The take's card: it rides the box's top-right corner rather than taking a row
-   inside it, so a running take never moves the draft and the box keeps its own
-   single-line height. Its lower half sits in the box's own top padding. */
-.tc { position: absolute; top: -16px; right: 12px; display: flex;
-  align-items: center; gap: 10px; padding: 5px 10px; border-radius: 999px;
+/* The take's card: one pill inside the box, at its top left, with the draft
+   below it. It is a row rather than a floating reading, so the height it takes
+   is the height it uses. */
+.tc { align-self: flex-start; display: flex; max-width: 100%;
+  align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
+  border-radius: 999px;
   font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: linear-gradient(180deg, #1b1622, #12161f);
@@ -1359,15 +1360,15 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    and the state's colour are what remain. Items are removed, never reordered.
    Each step is the measured fit point in the real engine, against the
    container's own measure (the box's content width): the card is 483px with
-   every reading and 25px of inset, 442 without the clock, 316 without the
-   graph, 252 without the tally, 188 without the frames, 117 without the bytes,
-   and 53 alone with the dot. */
-@container (max-width: 481px) { .tc .clock { display: none; } }
-@container (max-width: 440px) { .tc .bars { display: none; } }
-@container (max-width: 314px) { .tc .ready { display: none; } }
-@container (max-width: 250px) { .tc .fr { display: none; } }
-@container (max-width: 186px) { .tc .kb { display: none; } }
-@container (max-width: 115px) { .tc .pace { display: none; } }
+   every reading, 442 without the clock, 316 without the graph, 252 without the
+   tally, 188 without the frames, 117 without the bytes, and 53 alone with the
+   dot. */
+@container (max-width: 483px) { .tc .clock { display: none; } }
+@container (max-width: 442px) { .tc .bars { display: none; } }
+@container (max-width: 316px) { .tc .ready { display: none; } }
+@container (max-width: 252px) { .tc .fr { display: none; } }
+@container (max-width: 188px) { .tc .kb { display: none; } }
+@container (max-width: 117px) { .tc .pace { display: none; } }
 /* The way out keeps a finger's target wherever the card ends up. */
 @media (pointer: coarse) { .tc .x { display: grid; place-items: center;
   min-width: 44px; min-height: 44px; margin: -14px -8px -14px 0; } }

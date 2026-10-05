@@ -98,11 +98,11 @@
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
-  /* the take's card: it rides the box's top-right corner rather than taking a
-     row inside it. */
-  .box.rec, .box.tr { padding-top: 20px; }
-  .tc { position: absolute; top: -14px; right: 12px; display: flex;
-    align-items: center; gap: 10px; padding: 5px 10px; border-radius: 999px;
+  /* the take's card: one pill inside the box, at its top left, the draft
+     below it. */
+  .tc { align-self: flex-start; display: flex; max-width: 100%;
+    align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
+    border-radius: 999px;
     font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
     border: 1px solid rgba(244,118,0,.45);
     background: linear-gradient(180deg, #1b1622, #12161f);
