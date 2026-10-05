@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AXES } from '../session/wire';
 import type { ServerMessage } from '../protocol';
 import type { ConnectionStatus } from '../socket';
-import { encodeFrame } from './capture';
+import { encodeFrame } from './capture.svelte';
 import { LocalTake, RELEASE_WAIT_MS, WENT_UNSENT, type MicSource } from './take';
 
 type Sent = Record<string, unknown>;
@@ -117,6 +117,25 @@ describe('a take on a socket that is up', () => {
     expect(connection.sent[1]).toEqual({ dictate_stop: { key: SEAT, submit: true } });
     expect(mic.stopped).toBe(true);
     expect(w.ended(), 'and the take is over on this side').toBe(1);
+  });
+
+  it('counts its wire live, rather than freezing at the first read', () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    const take = new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    const first = encodeFrame([0.5]);
+    mic.onFrame?.(first);
+    expect(take.wire.frames, 'one frame in').toBe(1);
+    expect(take.wire.bytes, 'and the socket took it').toBe(first.length);
+
+    mic.onFrame?.(encodeFrame([0.25]));
+    expect(take.wire.frames, 'a second frame, read after the first read').toBe(2);
   });
 
   it('abandons without sending anything, tail included', () => {

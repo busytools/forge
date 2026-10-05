@@ -5,7 +5,7 @@
  * stay testable with no audio stack in the test run.
  */
 
-import { FrameChunker, SAMPLE_RATE } from './capture';
+import { FrameChunker, SAMPLE_RATE } from './capture.svelte';
 
 /** An input this client can record from. */
 export interface Input {

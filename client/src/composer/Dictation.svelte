@@ -8,10 +8,20 @@
     take,
     slot,
     connection,
+    wire,
   }: {
     take: Take;
     slot: SessionSlot;
     connection: Pick<Connection, 'dispatch'>;
+    /**
+     * The take's wire side, when this page owns the capture: frames produced,
+     * bytes the socket has taken, and the pace it is taking them at. `null`
+     * for a take this page did not start, since the count is the producer's
+     * own fact. Required rather than defaulted, so a page that forgets it
+     * fails the type check instead of drawing a row with no count and nothing
+     * else wrong.
+     */
+    wire: { frames: number; bytes: number; rate: number | null } | null;
   } = $props();
 
   const transcribing = $derived(take.phase === 'transcribing');
@@ -24,6 +34,18 @@
 
   /** The live level, which holds its last reading once the audio has stopped. */
   const level = $derived(`${Math.round(take.peakDb)} dB`);
+
+  /**
+   * The wire line: what the capture has produced, what has left, and the pace
+   * it is leaving at. The numbers are the ring's own signals, so this
+   * recomputes as the take runs. The pace is a live reading only: a take past
+   * its release has nothing moving, so it draws none.
+   */
+  const wireLine = $derived.by(() => {
+    if (wire === null) return null;
+    const pace = wire.rate === null ? '' : ` \u{b7} ${String(Math.round(wire.rate / 1024))} KB/s`;
+    return `${wire.frames} fr \u{b7} ${(wire.bytes / 1024).toFixed(1)} KB${pace}`;
+  });
 
   /**
    * What the row says it is doing, in the terminal's own words.
@@ -58,6 +80,9 @@
     </span>
   </span>
   <span class="lbl">{label}</span>
+  {#if wireLine !== null}
+    <span class="wire">{wireLine}</span>
+  {/if}
   <button class="esc" type="button" title="abandon the take" onclick={cancel}>
     <kbd aria-hidden="true">Esc</kbd> cancel
   </button>

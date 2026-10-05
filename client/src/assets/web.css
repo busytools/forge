@@ -1303,9 +1303,10 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    gutter - measured at 25.00px right of the field, at both widths. */
 .dict { display: flex; align-items: center; gap: 11px;
   font-family: var(--mono); font-size: var(--fs-data); }
-/* The row's own readings never wrap: the meter is the part that gives way, and
-   a clock broken across two lines reads as two figures rather than a time. */
-.dict .t, .dict .db, .dict .lbl, .dict .esc { white-space: nowrap; }
+/* The row's own readings never wrap: the meter and the wire line are the parts
+   that give way, a clock broken across two lines reads as two figures rather
+   than a time, and the count is the reading the row can do without. */
+.dict .t, .dict .db, .dict .lbl, .dict .wire, .dict .esc { white-space: nowrap; }
 .dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dict .dot.tr { background: var(--blue); animation: none; }
@@ -1314,6 +1315,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .dict .db { color: var(--hot); }
 .dict .db.tr { color: var(--dim); }
 .dict .lbl { color: var(--dim); }
+/* The one reading with room to yield: at phone widths the row cannot hold it
+   whole, and a count clipped reads as a count where a pushed-out hint does
+   not. */
+.dict .wire { color: var(--dim); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; }
 .dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
   font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
 /* The meter is a history of levels, not bars pulsing in place: each cell is

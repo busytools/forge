@@ -37,10 +37,13 @@ function narrowed(over: Record<string, unknown> = {}): Take {
   return held;
 }
 
-function open(over: Record<string, unknown> = {}) {
+function open(
+  over: Record<string, unknown> = {},
+  wire: { frames: number; bytes: number; rate: number | null } | null = null,
+) {
   app = mount(Dictation, {
     target: document.body,
-    props: { take: narrowed(over), slot: SLOT, connection },
+    props: { take: narrowed(over), slot: SLOT, connection, wire },
   });
   flushSync();
 }
@@ -53,6 +56,27 @@ const drawn = () => document.body.textContent ?? '';
  * handoff.
  */
 describe('the dictation row', () => {
+  /**
+   * The wire line is the producer's own count, drawn only for a take this
+   * page started: it is the one reading that shows the audio leaving, and a
+   * take another connection started has no producer on this side to count.
+   */
+  it('draws the wire count while this page owns the capture', () => {
+    open({}, { frames: 412, bytes: 257_512, rate: 32_768 });
+    expect(drawn(), 'the frames produced and the bytes the socket took').toContain(
+      '412 fr \u{b7} 251.5 KB \u{b7} 32 KB/s',
+    );
+
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    open();
+    expect(
+      document.querySelector('.wire'),
+      'a take this page did not start has no count here',
+    ).toBeNull();
+  });
+
   it('draws the take: its dot, its clock, its level, the meter and the label', () => {
     open();
 

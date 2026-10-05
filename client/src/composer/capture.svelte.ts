@@ -8,8 +8,10 @@
  * take-and-reset peak every 50 ms, so a chunk larger than that would make
  * alternate readings silence and the level bar sawtooth.
  *
- * Pure except for the worklet glue below, so the encoding and the ring are
- * pinned by tests rather than through a mounted component.
+ * Pure except for the worklet glue below and the ring's two counters, which
+ * are signals so a panel draws them as the take moves: the encoding and the
+ * rest of the ring are pinned by tests rather than through a mounted
+ * component.
  */
 
 /** The rate the dictation models read, and every frame carries. */
@@ -23,6 +25,9 @@ export const CODEC_PCM_I16 = 0;
 
 /** How many frames a take holds while the socket is down: about 30 s. */
 export const RING_FRAMES = 1500;
+
+/** The window the socket's pace is read over. */
+export const RATE_WINDOW_MS = 1000;
 
 /**
  * Encode `samples` as one frame: the codec tag, then little-endian i16.
@@ -88,6 +93,20 @@ export class FrameChunker {
  */
 export class FrameRing {
   private held: Uint8Array[] = [];
+  /** What the socket had taken, and when, over the last second. */
+  private readonly taken: { at: number; bytes: number }[] = [];
+  /** Frames the take has PRODUCED, since it began. */
+  frames = $state(0);
+  /**
+   * Bytes the SOCKET has taken, since it began. A frame produced while the
+   * socket is down counts in `frames` and not here, which is the difference
+   * the pair exists to show: what was spoken and what has left.
+   *
+   * A frame the ring drops past its cap reads the same way - produced, never
+   * taken - so a gap that keeps growing past ~30 s is a socket taking
+   * nothing, not one catching up.
+   */
+  bytes = $state(0);
 
   constructor(
     private readonly send: (bytes: Uint8Array) => boolean,
@@ -96,7 +115,8 @@ export class FrameRing {
 
   /** Send if nothing is held and the socket takes it, else hold. */
   push(bytes: Uint8Array): void {
-    if (this.held.length === 0 && this.send(bytes)) return;
+    this.frames += 1;
+    if (this.held.length === 0 && this.sendNow(bytes)) return;
     this.held.push(bytes);
     if (this.held.length > this.limit) this.held.shift();
   }
@@ -108,10 +128,38 @@ export class FrameRing {
   flush(): boolean {
     while (this.held.length > 0) {
       const next = this.held[0];
-      if (next === undefined || !this.send(next)) return false;
+      if (next === undefined || !this.sendNow(next)) return false;
       this.held.shift();
     }
     return true;
+  }
+
+  /** Send one frame, counting its bytes only when the wire takes it. */
+  private sendNow(bytes: Uint8Array): boolean {
+    if (!this.send(bytes)) return false;
+    const at = Date.now();
+    this.bytes += bytes.length;
+    this.taken.push({ at, bytes: this.bytes });
+    // The read filters by now as well, so this is only the array's own bound.
+    while (this.taken.length > 2 && at - (this.taken[0]?.at ?? at) > RATE_WINDOW_MS)
+      this.taken.shift();
+    return true;
+  }
+
+  /**
+   * Bytes per second the socket is taking, over the newest window it has.
+   *
+   * A live pace rather than the take's average: a socket that has stopped
+   * falls to zero as its window ages out, which the average would hide by
+   * remembering the pace it once had. `0` until two sends span a moment.
+   */
+  get rate(): number {
+    const at = Date.now();
+    const recent = this.taken.filter((sample) => at - sample.at <= RATE_WINDOW_MS);
+    const newest = recent.at(-1);
+    const oldest = recent[0];
+    if (newest === undefined || oldest === undefined || newest === oldest) return 0;
+    return (newest.bytes - oldest.bytes) / ((newest.at - oldest.at) / 1000);
   }
 
   get heldFrames(): number {

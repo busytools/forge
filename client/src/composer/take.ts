@@ -18,7 +18,7 @@ import { variantOf } from '../session/apply';
 import type { DictateAxes } from '../session/wire';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { FrameRing } from './capture';
+import { FrameRing } from './capture.svelte';
 import { Microphone } from './mic';
 
 /** How long a release waits for a connection that is not up yet. */
@@ -56,6 +56,13 @@ export class LocalTake {
   readonly seat: SessionSlot;
   /** The input the take's stream opened, when the browser reported one. */
   readonly resolved: { id: string; label: string } | null;
+  /**
+   * The take's wire side, read live: frames produced, bytes the socket has
+   * taken, and the pace it is taking them at. One stable object whose getters
+   * read the ring's own signals, so a panel that holds it repaints as the
+   * numbers move.
+   */
+  readonly wire: { readonly frames: number; readonly bytes: number; readonly rate: number };
 
   private started = false;
   private ended = false;
@@ -76,6 +83,18 @@ export class LocalTake {
     this.seat = wiring.seat;
     this.resolved = mic.resolved ?? null;
     this.ring = new FrameRing((bytes) => connection.frame(bytes));
+    const ring = this.ring;
+    this.wire = {
+      get frames(): number {
+        return ring.frames;
+      },
+      get bytes(): number {
+        return ring.bytes;
+      },
+      get rate(): number {
+        return ring.rate;
+      },
+    };
     mic.onFrame = (bytes) => this.ring.push(bytes);
     this.unlisten = connection.onStatus((status) => this.statusMoved(status));
     // The server's word ends the take: `dictate_ended` is what says the

@@ -437,6 +437,18 @@ describe('the box', () => {
     expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
   });
 
+  it('draws no wire line for a take this page did not start', () => {
+    const harness = open();
+    harness.page.record = withNotice(null, take());
+    flushSync();
+
+    expect(document.querySelector('.dict'), 'the record still draws the take').not.toBeNull();
+    expect(
+      document.querySelector('.dict .wire'),
+      'a take this page did not capture has no count here',
+    ).toBeNull();
+  });
+
   it("lands a take's words at the caret and takes one green beat before easing back", () => {
     vi.useFakeTimers();
     try {
@@ -982,6 +994,85 @@ describe('the key', () => {
       expect(harness.sent.at(-1)?.command, 'a hold released transcribes what was said').toEqual({
         dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The wire line is a count that moves, not the reading it opened on.
+   *
+   * The row draws it from the ring's own signals, so frames pushed while the
+   * take runs keep moving it; a line stuck at its first draw would show the
+   * first second of a thirty-second take, which is the reading the line
+   * exists to make impossible.
+   */
+  it('moves the wire line as the take produces frames', async () => {
+    const shared = wire();
+    const harness = open({ dictation: true }, shared);
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    // The server's `dictate_started` is what puts the row on the record, and
+    // with it the line this test reads.
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const line = () => document.querySelector('.dict .wire')?.textContent ?? '';
+    const frame = new Uint8Array(641);
+    for (let at = 0; at < 12; at += 1) mic.held.onFrame?.(frame);
+    flushSync();
+    expect(line(), 'the count at the first draw').toContain('12 fr');
+    expect(line(), 'and the bytes the socket took with them').toContain('7.5 KB');
+
+    // The socket stops taking and the take keeps producing: the two halves
+    // move apart, which is the reading the pair exists to draw.
+    shared.takes = false;
+    for (let at = 0; at < 100; at += 1) mic.held.onFrame?.(frame);
+    flushSync();
+    expect(line(), 'the frames produced, a hundred of them later').toContain('112 fr');
+    expect(line(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
+  });
+
+  /**
+   * The line outlives the capture, because the take does.
+   *
+   * A local take lets go of the microphone at the release, while the record
+   * keeps drawing the same take through transcription - so the counts the
+   * page produced are kept until the row that draws them goes.
+   */
+  it('keeps the wire line while the take transcribes, after the release', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      harness.page.record = bound('right_cmd', 'auto', take());
+      flushSync();
+
+      for (let at = 0; at < 12; at += 1) mic.held.onFrame?.(new Uint8Array(641));
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+
+      // The server moves the same take to transcribing, which is the row the
+      // reader is looking at now; the page's own capture is already gone.
+      harness.page.record = bound(
+        'right_cmd',
+        'auto',
+        take({ phase: 'transcribing', progress: [2, 6] }),
+      );
+      flushSync();
+
+      expect(drawn(), 'the row draws the take transcribing').toContain('transcribing 2/6');
+      expect(drawn(), 'with the counts it sent still beside it').toContain('12 fr');
+      expect(drawn(), 'and no pace, which is a reading of a take still producing').not.toContain(
+        'KB/s',
+      );
     } finally {
       vi.useRealTimers();
     }

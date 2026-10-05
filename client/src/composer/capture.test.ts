@@ -7,7 +7,7 @@
  * so the two halves of the contract are the same vector read two ways.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CODEC_PCM_I16,
@@ -17,7 +17,7 @@ import {
   RING_FRAMES,
   SAMPLE_RATE,
   encodeFrame,
-} from './capture';
+} from './capture.svelte';
 
 describe('the frame the wire carries', () => {
   it('is the codec tag then little-endian i16 at 2^15', () => {
@@ -163,6 +163,60 @@ describe('the ring a take holds while the socket is down', () => {
     expect(ring.flush()).toBe(true);
     expect(ring.heldFrames).toBe(0);
     expect(sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
+  });
+
+  /**
+   * The pace, which is the one reading that falls: it is the newest second of
+   * sends rather than the take's average, so a socket that has stopped taking
+   * reads as stopped rather than as fast as it once was.
+   */
+  it('reads the pace of the newest second the socket took', () => {
+    vi.useFakeTimers();
+    try {
+      const wire = socket();
+      wire.open = true;
+      const ring = new FrameRing(wire.send);
+      // One real frame's worth of bytes - 20 ms of i16 samples behind the tag.
+      const frame = new Uint8Array(641);
+
+      for (let at = 0; at < 50; at += 1) {
+        vi.advanceTimersByTime(20);
+        ring.push(frame);
+      }
+      expect(Math.round(ring.rate), 'fifty frames a second at 641 bytes each').toBe(32_050);
+
+      wire.open = false;
+      for (let at = 0; at < 60; at += 1) {
+        vi.advanceTimersByTime(20);
+        ring.push(frame);
+      }
+      expect(ring.rate, 'a second with nothing taken').toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The pair the row's wire line draws: frames PRODUCED and bytes the wire
+   * TOOK. A frame held while the socket is down is the difference between
+   * them, which is the whole diagnostic value of the two numbers.
+   */
+  it('counts what it produced and what the wire took', () => {
+    let open = true;
+    const ring = new FrameRing(() => open);
+    ring.push(encodeFrame([0.1]));
+    ring.push(encodeFrame([0.2]));
+    expect(ring.frames, 'both frames were produced').toBe(2);
+    expect(ring.bytes, 'and both went while the socket was up').toBe(6);
+
+    open = false;
+    ring.push(encodeFrame([0.3]));
+    expect(ring.frames, 'the held frame is still produced').toBe(3);
+    expect(ring.bytes, 'but the wire has not taken it').toBe(6);
+
+    open = true;
+    expect(ring.flush(), 'the flush carries it out').toBe(true);
+    expect(ring.bytes, 'and then it counts').toBe(9);
   });
 
   it('bounds a take at about thirty seconds', () => {
