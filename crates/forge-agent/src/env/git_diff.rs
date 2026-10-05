@@ -43,6 +43,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::time::timeout;
 
+pub mod content;
 pub mod hunks;
 pub mod resolver;
 

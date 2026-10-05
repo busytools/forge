@@ -8,6 +8,7 @@
 //! [`crate::git`].
 
 use crate::git::{GitBranch, GitIssueRef, GitPrInfo};
+use serde::{Deserialize, Serialize};
 
 /// Per-layer scan state. Replaces the earlier parallel-bool encoding
 /// (`Option<T>` paired with a `*_scan_ok: bool`) so the three legal
@@ -22,7 +23,11 @@ use crate::git::{GitBranch, GitIssueRef, GitPrInfo};
 ///   exceeded the stdout cap. The renderer surfaces a "(scan failed)"
 ///   stub so the user sees the failure rather than a silent
 ///   clean-tree render.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialised as the socket's record shape for the bounded content read,
+/// whose layers answer in the same three states the scanner's do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayerState<T> {
     Clean,
     Populated(T),

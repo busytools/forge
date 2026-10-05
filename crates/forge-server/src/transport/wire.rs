@@ -21,6 +21,7 @@ use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
+use forge_workspace::env::git_diff::content::{DiffContent, scan as scan_content};
 use forge_workspace::env::processes::ProcessSnapshot;
 use forge_workspace::{
     AccountLoadingRow, Command, GatewayOrgView, McpServers, ProjectView, WorkerEntry,
@@ -379,8 +380,9 @@ pub struct SessionWire {
     /// itself.
     pub file_index: Arc<FileIndex>,
     pub reviews: ReviewsWire,
-    /// The working tree behind the git section. The diff itself is a second,
-    /// heavier read and is deliberately out of scope.
+    /// The working tree behind the git section: the branch, how much has
+    /// changed, and the gate. The changed files themselves ride `diff`
+    /// below.
     pub work: WorkState,
     /// The open pull request this seat's branch is on, and the issues it
     /// closes.
@@ -392,6 +394,17 @@ pub struct SessionWire {
     /// without the `PR #N -> closes #M` row the terminal leads it with.
     pub pr: Option<forge_primitives::git::GitPrInfo>,
     pub closes: Vec<forge_primitives::git::GitIssueRef>,
+    /// The changed files with their raw hunks, bounded and flagged: what a
+    /// review surface draws a branch from, as data and never as a
+    /// rendering.
+    ///
+    /// Read beside `work` rather than pushed with it: the row above moves
+    /// with the tree, while this is taken once per read that encodes a
+    /// record - a cold load, a reconnect, a seat swap - the way the
+    /// terminal's `/diff` scans once on open. Its caps and flags live in
+    /// forge-agent's `git_diff::content`, which is where the read's shape
+    /// is decided.
+    pub diff: DiffContent,
 }
 
 /// Where a session's reads find their own working tree.
@@ -1055,6 +1068,10 @@ async fn session(
     // does not name.
     let held = surface.work(slot, cwd).await;
     let work = work_from_scan(&held.diff, &held.cwd);
+    // The content read, beside the stats one: bounded, and taken here
+    // rather than stored with the row because a record read is a cold load,
+    // a reconnect or a seat swap - not a frame a moving tree pushes.
+    let diff = scan_content(&held.cwd, &held.diff).await;
     let branch = work.branch.clone().unwrap_or_default();
     let reviews = surface.reviews(slot.project(), &branch);
     let state_at = surface.session(slot, cwd);
@@ -1141,6 +1158,7 @@ async fn session(
         work,
         pr: held.diff.pr,
         closes: held.diff.closes,
+        diff,
     })
 }
 
@@ -1558,6 +1576,46 @@ mod tests {
     /// fixture does not pin one machine's temp directory.
     const FIXTURE_ROOT: &str = "/tmp/forge-wire-fixture";
 
+    /// The fixture's own repository at `path`: `main` with one commit, a
+    /// `worktree-pr` branch one commit ahead of it, and uncommitted work -
+    /// so the record's content read carries a worktree layer and a
+    /// branch-ahead layer, both populated.
+    ///
+    /// Deterministic on purpose: the fixture pins the hunks this builds,
+    /// word for word.
+    fn fixture_repo(path: &Path) {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .arg("-C")
+                .arg(path)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::fs::create_dir_all(path).expect("the fixture's directory");
+        git(&["init", "-q"]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(&["config", "user.email", "fixture@example.test"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("kept.txt"), "one\ntwo\n").expect("write kept.txt");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-q", "-b", "worktree-pr"]);
+        std::fs::write(path.join("branch.txt"), "committed on the branch\n").expect("write");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "branch"]);
+        // Uncommitted: a modification, and an addition staged so it is a
+        // tracked change against HEAD.
+        std::fs::write(path.join("kept.txt"), "one\ntwo\nthree\n").expect("write kept.txt");
+        std::fs::write(path.join("added.txt"), "added one\n").expect("write added.txt");
+        git(&["add", "added.txt"]);
+    }
+
     /// The surface the fixtures are produced from, and both halves of the
     /// reason are deliberate.
     ///
@@ -1566,7 +1624,7 @@ mod tests {
     /// shape. POPULATED, because an empty fleet pins almost nothing: most of
     /// a session's fields would be `null`, and a field renamed to `null`
     /// would still pass.
-    fn fixture_state() -> TransportState {
+    async fn fixture_state() -> TransportState {
         let root = Path::new(FIXTURE_ROOT);
         let _ = std::fs::remove_dir_all(root);
         let fleet =
@@ -1614,19 +1672,35 @@ mod tests {
                 ..ViewFacts::default()
             },
         );
-        // A scan the fixture pins the working tree and the PR row from: the
-        // fleet's own directory is not a git repository, so without it both
-        // fields would be pinned as null and a read that answered nothing at
-        // all would round-trip. It goes in the seat's own store, which is
-        // where the record's read answers it from.
+        // A scan the fixture pins the working tree, the PR row and the
+        // diff content from. It is taken of a repository of its own beside
+        // the fleet rather than of the seat's project directory: building
+        // one AT that path would also make the path exist, and the home
+        // fixture's rows - pinned with that directory gone - would move
+        // with it. The scan is real, so the record's content read has both
+        // layers to carry rather than pinning a failed layer; the PR row
+        // is stamped on top, since a temp repo has no remote for `gh` to
+        // find one through.
         let surface = fleet.surface();
         let work = Arc::new(WorkCache::new());
-        let cwd = surface.roster().cwd_for(&fixture_seat()).expect("the fixture seat's directory");
+        let repo = Path::new(FIXTURE_ROOT).join("diff-repo");
+        fixture_repo(&repo);
+        let mut diff = forge_workspace::env::git_diff::scan(&repo, None).await;
+        diff.pr = Some(forge_primitives::git::GitPrInfo {
+            number: 1249,
+            url: "https://example.test/pull/1249".to_owned(),
+        });
+        diff.closes = vec![forge_primitives::git::GitIssueRef {
+            number: 1215,
+            url: "https://example.test/issues/1215".to_owned(),
+        }];
+        diff.pushed_sha = Some("abc123".to_owned());
+        diff.pr_fetched_at = None;
         surface.store_work_snapshot(
             &fixture_seat(),
             forge_workspace::work::WorkSnapshot {
-                diff: scanned(),
-                cwd: std::path::PathBuf::from(&cwd),
+                diff,
+                cwd: repo,
                 read_at: std::time::Instant::now(),
             },
         );
@@ -1722,7 +1796,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "writes the fixtures; run deliberately"]
     async fn write_the_fixtures() {
-        let state = fixture_state();
+        let state = fixture_state().await;
         let forms = volatile(Path::new(FIXTURE_ROOT));
         std::fs::create_dir_all(fixtures()[0].1.parent().expect("a directory")).expect("mkdir");
         for (subject, fixture) in fixtures() {
@@ -1955,6 +2029,60 @@ mod tests {
         );
     }
 
+    /// The record carries the changed files' hunks, bounded and flagged: a
+    /// review surface has no other read of them.
+    ///
+    /// Its own fleet and its own repository rather than `fixture_state`'s
+    /// shared root: that root is one fixed path, and two tests calling it
+    /// in one binary's parallel run unlink it under each other.
+    #[tokio::test]
+    async fn the_record_carries_the_changed_files_with_their_hunks() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let surface = fleet.surface();
+        let repo = tempfile::tempdir().expect("a repository directory");
+        fixture_repo(repo.path());
+        let diff = forge_workspace::env::git_diff::scan(repo.path(), None).await;
+        surface.store_work_snapshot(
+            &seat,
+            forge_workspace::work::WorkSnapshot {
+                diff,
+                cwd: repo.path().to_owned(),
+                read_at: std::time::Instant::now(),
+            },
+        );
+        let state = TransportState {
+            surface,
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
+
+        let files = encoded["diff"]["worktree"]["populated"]
+            .as_array()
+            .expect("the worktree layer is populated");
+        let added = files.iter().find(|file| file["path"] == "added.txt").expect("added.txt");
+        assert_eq!(added["status"], "added", "the status crosses: {encoded}");
+        let lines = added["hunks"][0]["lines"].as_array().expect("hunks carry their lines");
+        assert!(
+            lines.iter().any(|line| line["kind"] == "added" && line["text"] == "added one"),
+            "the hunk's own lines cross: {encoded}",
+        );
+        assert_eq!(encoded["diff"]["truncated"], false, "nothing was withheld");
+        let ahead = encoded["diff"]["branch_ahead"]["populated"]
+            .as_array()
+            .expect("the branch layer is populated too");
+        assert!(
+            ahead.iter().any(|file| file["path"] == "branch.txt"),
+            "and the branch's own commit is there: {encoded}",
+        );
+    }
+
     /// A POPULATED PR row, from a seeded scan rather than from `gh`.
     ///
     /// The key's presence is not enough on its own: a regression that answers
@@ -2169,7 +2297,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_subject_round_trips_through_its_fixture() {
-        let state = fixture_state();
+        let state = fixture_state().await;
         let forms = volatile(Path::new(FIXTURE_ROOT));
         let mut keys = 0usize;
         let mut nulls = 0usize;
