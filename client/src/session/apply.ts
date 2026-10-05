@@ -15,6 +15,7 @@
  */
 
 import { fold } from '../chat/units';
+import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
@@ -735,12 +736,6 @@ function compactingOf(held: ComposerState, message: unknown): ComposerState {
   return held;
 }
 
-/** The top of the meter's scale in dBFS, which a reading is measured against. */
-const METER_CEILING_DB = 0;
-
-/** The floor a take with none of its own is measured against, as the server's fold falls back. */
-const FALLBACK_FLOOR_DB = -50;
-
 /** A take as it begins, as this page's own state holds it. */
 function newTake(floorDb: number, generation: unknown): Record<string, unknown> {
   return {
@@ -798,8 +793,7 @@ function ofThisTake(take: Record<string, unknown>, payload: Record<string, unkno
 /** One reading, as a fraction of the take's own range, keeping the newest cells. */
 function push(take: Record<string, unknown>, peakDb: number): Record<string, unknown> {
   const floor = number(take['floor_db']) ?? FALLBACK_FLOOR_DB;
-  const span = Math.max(METER_CEILING_DB - floor, 1);
-  const fraction = Math.min(Math.max((peakDb - floor) / span, 0), 1);
+  const fraction = fractionOf(peakDb, floor);
   const levels = list(take['levels']);
   const grown =
     levels.length >= METER_CELLS ? [...levels.slice(1), fraction] : [...levels, fraction];

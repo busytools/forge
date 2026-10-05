@@ -25,6 +25,24 @@ const HEADROOM_PERCENT = 4;
 const HOT = 0.7;
 const MID = 0.4;
 
+/** The top of the meter's scale in dBFS, which a reading is measured against. */
+export const METER_CEILING_DB = 0;
+
+/** The floor a take with none of its own is measured against, as the server's fold falls back. */
+export const FALLBACK_FLOOR_DB = -50;
+
+/**
+ * One reading as a fraction of the take's own range.
+ *
+ * The one scale the meter and the card's graph both draw, whether the reading
+ * came off the wire (`peak_db` from the core's meter) or off this side's own
+ * frames: two normalisations would be two scales for the same audio.
+ */
+export function fractionOf(peakDb: number, floorDb = FALLBACK_FLOOR_DB): number {
+  const span = Math.max(METER_CEILING_DB - floorDb, 1);
+  return Math.min(Math.max((peakDb - floorDb) / span, 0), 1);
+}
+
 /** One cell per reading, newest last, which is the order the meter reads in. */
 export function meterCells(levels: number[]): Cell[] {
   return levels.map((level) => ({

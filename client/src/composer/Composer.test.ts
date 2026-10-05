@@ -54,6 +54,7 @@ vi.mock('./mic', () => ({
 }));
 
 import Harness from './Harness.svelte';
+import { encodeFrame } from './capture.svelte';
 import { echoes, type Echo } from '../chat/echoes.svelte';
 import { boxKey } from './box.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
@@ -1079,6 +1080,41 @@ describe('the key', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The graph reads this side's own audio, so a socket that stops taking does
+   * not stop the graph.
+   *
+   * The card is holding frames for exactly as long as the socket is behind,
+   * and while it holds them the record's levels are stale or absent: a graph
+   * fed by them would freeze precisely when the reader most needs to see that
+   * they are still speaking.
+   */
+  it('keeps the graph moving while the socket is down', async () => {
+    const shared = wire();
+    const harness = open({ dictation: true }, shared);
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const newest = () => document.querySelector('.tc .bars i:last-child')?.getAttribute('style');
+    mic.held.onFrame?.(encodeFrame([0.9]));
+    flushSync();
+    expect(newest(), 'a loud frame, which the socket took').toBe('height: 94%;');
+
+    // The socket stops taking: the frame is held, and the graph still reads it.
+    shared.takes = false;
+    mic.held.onFrame?.(encodeFrame([0.4]));
+    flushSync();
+    expect(drawn(), 'the hold is named while it lasts').toContain('holding 1 fr');
+    expect(newest(), 'and the graph moved with the audio, not with the socket').toBe(
+      'height: 83%;',
+    );
   });
 
   /**

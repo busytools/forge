@@ -29,6 +29,31 @@ export const RING_FRAMES = 1500;
 /** The window the socket's pace is read over. */
 export const RATE_WINDOW_MS = 1000;
 
+/** How many level readings the ring keeps for a view to draw. */
+export const LEVEL_CELLS = 120;
+
+/**
+ * The loudest sample in one frame, in dBFS.
+ *
+ * This is the core's own reading over the same bytes it decodes: i16
+ * little-endian over 2^15 (`forge-server/src/transport/frame.rs`), then peak
+ * to dBFS by `20 * log10` with silence at negative infinity
+ * (`forge-dictate/src/capture.rs`, `peak_dbfs`). The one difference is the
+ * window: the core polls a 50 ms take-and-reset over whatever frames have
+ * arrived, and this side reads each 20 ms frame it produces - the same
+ * measure at a finer grain, not a second scale.
+ */
+export function frameDbfs(bytes: Uint8Array): number {
+  let peak = 0;
+  for (let at = 1; at + 1 < bytes.length; at += 2) {
+    const lo = bytes[at] ?? 0;
+    const hi = bytes[at + 1] ?? 0;
+    const size = Math.abs(((lo | (hi << 8)) << 16) >> 16);
+    if (size > peak) peak = size;
+  }
+  return peak === 0 ? Number.NEGATIVE_INFINITY : 20 * Math.log10(peak / 32768);
+}
+
 /**
  * Encode `samples` as one frame: the codec tag, then little-endian i16.
  *
@@ -95,6 +120,8 @@ export class FrameRing {
   private held: Uint8Array[] = [];
   /** What the socket had taken, and when, over the last second. */
   private readonly taken: { at: number; bytes: number }[] = [];
+  /** The newest level readings, one per frame produced. */
+  private readonly heard: number[] = [];
   /** Frames the take has PRODUCED, since it began. */
   frames = $state(0);
   /**
@@ -116,6 +143,8 @@ export class FrameRing {
   /** Send if nothing is held and the socket takes it, else hold. */
   push(bytes: Uint8Array): void {
     this.frames += 1;
+    this.heard.push(frameDbfs(bytes));
+    if (this.heard.length > LEVEL_CELLS) this.heard.shift();
     if (this.held.length === 0 && this.sendNow(bytes)) return;
     this.held.push(bytes);
     if (this.held.length > this.limit) this.held.shift();
@@ -164,5 +193,10 @@ export class FrameRing {
 
   get heldFrames(): number {
     return this.held.length;
+  }
+
+  /** The newest level readings, oldest first, as dBFS off this side's own frames. */
+  get dbfs(): number[] {
+    return this.heard;
   }
 }

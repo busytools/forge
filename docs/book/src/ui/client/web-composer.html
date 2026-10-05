@@ -455,8 +455,11 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       </div>
       <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
       is still running: the segments already transcribed, with no total, because a live take
-      cannot know how many it will produce. The graph, the frames, the bytes and the pace are
-      the page's own - only the producer can know them.</p>
+      cannot know how many it will produce. The graph, the clock, the frames, the bytes and the
+      pace are the page's own reading of the audio it captured - the same measure the core takes
+      over the same frames, read here so it keeps moving while the socket is holding them. A take
+      this page did not capture falls back to the record's readings, which is the only source
+      there is for it.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>

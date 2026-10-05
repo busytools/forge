@@ -58,18 +58,31 @@ export class LocalTake {
   readonly resolved: { id: string; label: string } | null;
   /**
    * The take's wire side, read live: frames produced, bytes the socket has
-   * taken, the pace it is taking them at, and how many frames the ring is
-   * holding while the socket is down. One stable object whose getters read the
-   * ring's own signals, so a panel that holds it repaints as the numbers move.
+   * taken, the pace it is taking them at, how many frames the ring is holding
+   * while the socket is down, and the levels of the frames this side produced.
+   * One stable object whose getters read the ring's own signals, so a panel
+   * that holds it repaints as the numbers move.
+   *
+   * The levels and the clock are this side's own reading of its own take: the
+   * core meters the frames it receives and echoes them back, but a graph that
+   * waits on that freezes the moment the socket stops taking, which is exactly
+   * when the page is holding frames. Same audio, same measure, one fewer trip.
    */
   readonly wire: {
     readonly frames: number;
     readonly bytes: number;
     readonly rate: number;
     readonly held: number;
+    readonly dbfs: number[];
+    readonly elapsedMs: number;
   };
 
   private started = false;
+  /**
+   * When this side started the take, which is its own clock's zero - held as
+   * one object so the wire's getter can read it without aliasing `this`.
+   */
+  private readonly began: { at: number | null } = { at: null };
   private ended = false;
   /** Whether the microphone has been let go of, so it happens exactly once. */
   private micStopped = false;
@@ -89,6 +102,7 @@ export class LocalTake {
     this.resolved = mic.resolved ?? null;
     this.ring = new FrameRing((bytes) => connection.frame(bytes));
     const ring = this.ring;
+    const began = this.began;
     this.wire = {
       get frames(): number {
         return ring.frames;
@@ -101,6 +115,12 @@ export class LocalTake {
       },
       get held(): number {
         return ring.heldFrames;
+      },
+      get dbfs(): number[] {
+        return ring.dbfs;
+      },
+      get elapsedMs(): number {
+        return began.at === null ? 0 : Date.now() - began.at;
       },
     };
     mic.onFrame = (bytes) => this.ring.push(bytes);
@@ -225,6 +245,7 @@ export class LocalTake {
       return;
     }
     this.started = true;
+    this.began.at = Date.now();
     this.ring.flush();
     if (this.pendingStop !== null) {
       this.pendingStop = null;

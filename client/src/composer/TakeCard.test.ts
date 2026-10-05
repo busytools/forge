@@ -27,14 +27,31 @@ function narrowed(over: Record<string, unknown> = {}): Take {
   return held;
 }
 
-/** The wire side this page produces for a take it owns. */
+/**
+ * The wire side this page produces for a take it owns.
+ *
+ * The levels are dBFS off this side's own frames, and the clock is its own:
+ * both move here rather than riding the record, so the card draws the audio it
+ * captured even while the socket is holding frames.
+ */
 const produced = (
-  over: Partial<{ frames: number; bytes: number; rate: number | null; held: number }> = {},
+  over: Partial<{
+    frames: number;
+    bytes: number;
+    rate: number | null;
+    held: number;
+    dbfs: number[];
+    elapsedMs: number;
+  }> = {},
 ) => ({
   frames: 412,
   bytes: 257_512,
   rate: 32_768,
   held: 0,
+  dbfs: [-30, -12, 0],
+  // Deliberately unlike the record's own 7 s, so a card that read the record's
+  // clock instead of this side's would show the wrong figure rather than pass.
+  elapsedMs: 9000,
   ...over,
 });
 
@@ -60,22 +77,36 @@ describe('the take card', () => {
     open();
 
     expect(document.querySelector('.tc .dot'), 'recording pulses its own colour').not.toBeNull();
-    expect(drawn(), "the clock runs off the take's own length").toContain('0:07');
+    expect(drawn(), "the clock is this side's own, not the record's").toContain('0:09');
     expect(drawn(), 'what the capture has produced').toContain('412 fr');
     expect(drawn(), 'what the socket has taken').toContain('251.5 KB');
     expect(drawn(), 'and the pace it is leaving at').toContain('32 KB/s');
 
     // The graph is a fixed window of past readings, newest last, drawn at a
-    // pitch the next reading cannot move.
+    // pitch the next reading cannot move - and for a take this page captured,
+    // the readings are its own frames'.
     const bars = [...document.querySelectorAll('.tc .bars i')];
     expect(bars, 'the window is drawn at its own length').toHaveLength(40);
     expect(
       bars.slice(-3).map((bar) => bar.getAttribute('style')),
-      "the take's readings sit at the newest end, in order",
-    ).toEqual(['height: 29%;', 'height: 54%;', 'height: 96%;']);
+      "this side's own readings sit at the newest end, in order",
+    ).toEqual(['height: 46%;', 'height: 76%;', 'height: 96%;']);
     expect(bars.at(-1)?.classList.contains('hot'), 'the loudest reading is the hot tone').toBe(
       true,
     );
+  });
+
+  it("draws the record's levels and clock for a take this page did not capture", () => {
+    open({}, null);
+
+    // The one case the wire's readings are all there is: another page's take,
+    // which this side has no audio for.
+    const bars = [...document.querySelectorAll('.tc .bars i')];
+    expect(
+      bars.slice(-3).map((bar) => bar.getAttribute('style')),
+      "the record's readings are the newest three here",
+    ).toEqual(['height: 29%;', 'height: 54%;', 'height: 96%;']);
+    expect(drawn(), "and the record's clock is what the card reads").toContain('0:07');
   });
 
   it('counts the segments ready, and draws nothing for none', () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { meterWindow } from './meter';
+  import { fractionOf, meterWindow } from './meter';
   import type { Take } from './wire';
 
   let {
@@ -19,6 +19,8 @@
       bytes: number;
       rate: number | null;
       held: number;
+      dbfs: number[];
+      elapsedMs: number;
     } | null;
     oncancel: () => void;
   } = $props();
@@ -36,25 +38,16 @@
   const transcribing = $derived(take.phase === 'transcribing');
   const done = $derived(take.progress.done);
   const total = $derived(take.progress.total);
-  const cells = $derived(meterWindow(take.levels, CARD_CELLS));
-
-  /** How long the take has run, as a reader reads it. */
-  const clock = $derived(
-    `${Math.floor(take.elapsedMs / 60_000)}:${String(Math.floor((take.elapsedMs % 60_000) / 1000)).padStart(2, '0')}`,
-  );
-
-  /** How far the sections have got, as the fill bar's own width. */
-  const filled = $derived(total === null || total === 0 ? 0 : Math.round((done / total) * 100));
 
   /**
-   * Every wire reading, read together.
+   * Every reading this side produced, read together.
    *
    * The frame count is the one counter the ring makes a signal; the bytes, the
-   * pace and the hold are its plain readings beside it. They are read in one
-   * derivation so a change in ANY of them lands here: the pace and the hold
-   * are computed when the card repaints, so a socket going down or catching up
-   * has to bring a repaint with it, and the counter that moves every frame is
-   * that repaint's cause.
+   * pace, the hold, the levels and the clock are its plain readings beside it.
+   * They are read in one derivation so a change in ANY of them lands here: the
+   * pace and the hold are computed when the card repaints, so a socket going
+   * down or catching up has to bring a repaint with it, and the counter that
+   * moves every frame is that repaint's cause.
    *
    * The card is a reading, not a live region: these move about fifty times a
    * second, and an `aria-live` on any of them would read a take out loud frame
@@ -68,8 +61,33 @@
       bytes: `${(wire.bytes / 1024).toFixed(1)} KB`,
       pace: wire.rate === null ? null : `${String(Math.round(wire.rate / 1024))} KB/s`,
       held: wire.held,
+      dbfs: wire.dbfs,
+      elapsedMs: wire.elapsedMs,
     };
   });
+
+  /**
+   * The levels the graph draws: this side's own reading of the frames it
+   * produced when it owns the capture, and the record's when the take belongs
+   * to a page that did not capture it - the one case where the wire's `peak_db`
+   * is the only source there is.
+   */
+  const levels = $derived(
+    live === null ? take.levels : live.dbfs.map((peakDb) => fractionOf(peakDb, take.floorDb)),
+  );
+  const cells = $derived(meterWindow(levels, CARD_CELLS));
+
+  /**
+   * How long the take has run, as a reader reads it - this side's own clock
+   * for a take it started, the record's for one it did not.
+   */
+  const elapsed = $derived(live === null ? take.elapsedMs : live.elapsedMs);
+  const clock = $derived(
+    `${Math.floor(elapsed / 60_000)}:${String(Math.floor((elapsed % 60_000) / 1000)).padStart(2, '0')}`,
+  );
+
+  /** How far the sections have got, as the fill bar's own width. */
+  const filled = $derived(total === null || total === 0 ? 0 : Math.round((done / total) * 100));
 </script>
 
 <div class="tc" class:tr={transcribing}>

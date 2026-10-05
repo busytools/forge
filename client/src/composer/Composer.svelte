@@ -127,7 +127,9 @@
    * with it - but the record's take stays on screen through transcription,
    * and the line that says what it sent belongs there for as long as it does.
    */
-  let wireDone = $state<{ seat: string; frames: number; bytes: number } | null>(null);
+  let wireDone = $state<{ seat: string; frames: number; bytes: number; elapsedMs: number } | null>(
+    null,
+  );
   /** Whether a start is waiting on the browser's permission round trip. */
   let opening = false;
   /**
@@ -188,8 +190,16 @@
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
     // that is still producing, and nothing is held once the socket's side is
-    // done with it.
-    return { frames: wireDone.frames, bytes: wireDone.bytes, rate: null, held: 0 };
+    // done with it. The levels go with them - the section bar holds the
+    // graph's slot while a take transcribes.
+    return {
+      frames: wireDone.frames,
+      bytes: wireDone.bytes,
+      rate: null,
+      held: 0,
+      dbfs: [],
+      elapsedMs: wireDone.elapsedMs,
+    };
   });
 
   /**
@@ -652,6 +662,9 @@
               seat: boxKey(finished.seat),
               frames: finished.wire.frames,
               bytes: finished.wire.bytes,
+              // The clock freezes with the counts: the take is over, and a
+              // duration that kept counting would be reading the wait instead.
+              elapsedMs: finished.wire.elapsedMs,
             };
           }
           take = null;

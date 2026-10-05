@@ -14,9 +14,11 @@ import {
   FRAME_SAMPLES,
   FrameChunker,
   FrameRing,
+  LEVEL_CELLS,
   RING_FRAMES,
   SAMPLE_RATE,
   encodeFrame,
+  frameDbfs,
 } from './capture.svelte';
 
 describe('the frame the wire carries', () => {
@@ -53,6 +55,24 @@ describe('the frame the wire carries', () => {
       const signed = value > 32767 ? value - 65536 : value;
       expect(Math.abs(signed / 32768 - sample)).toBeLessThan(1 / 32768);
     }
+  });
+});
+
+describe('the level a frame reads', () => {
+  it("is the core's own: i16 over 2^15, peak to dBFS, silence at negative infinity", () => {
+    // The core's own readings, from its own tests: half scale is about
+    // -6 dBFS (`forge-dictate/src/capture.rs`), and full scale is 0.
+    expect(frameDbfs(encodeFrame([0.5]))).toBeCloseTo(-6.02, 1);
+    expect(frameDbfs(encodeFrame([1, -1]))).toBeCloseTo(0, 5);
+    expect(frameDbfs(encodeFrame([0, 0])), 'an untouched frame reads as no signal').toBe(
+      Number.NEGATIVE_INFINITY,
+    );
+  });
+
+  it('keeps only the newest readings, which is the window a view draws', () => {
+    const ring = new FrameRing(() => true);
+    for (let at = 0; at < LEVEL_CELLS + 10; at += 1) ring.push(encodeFrame([0.5]));
+    expect(ring.dbfs, 'the history is bounded at the window').toHaveLength(LEVEL_CELLS);
   });
 });
 
