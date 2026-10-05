@@ -252,6 +252,11 @@
       : (card.tail[card.tail.length - 1]?.title ?? 'working'),
   );
 
+  /** Whether this dispatch owns its result text on the row: only a foreground
+   * one does. A backgrounded instance's result is the launch ack, so it is not
+   * drawn and its task facts (path included) go with it. */
+  const grounded = $derived(card !== undefined && !card.backgrounded);
+
   /** The meta line's own pairs: what the CLI said about the task itself. */
   const meta = $derived(
     sub === null
@@ -359,7 +364,12 @@
         </div>
       {/if}
 
-      {#if meta.length > 0 || sub.outputFile !== null}
+      <!-- A backgrounded instance stops at its own report: its result text is
+           the launch ack, which says nothing a reader acts on, and its task
+           facts live in the CLI's own transcript file. A foreground one keeps
+           both - the hand-back IS its result, and the path is where the
+           transcript landed. -->
+      {#if grounded && (meta.length > 0 || sub.outputFile !== null)}
         <div class="sg-meta">
           {#each meta as [label, value], at (label)}{#if at > 0} &#183; {/if}<span>{label}</span>
             {value}{/each}{#if sub.outputFile !== null}<br /><span>output file</span>
@@ -367,7 +377,7 @@
         </div>
       {/if}
 
-      {#if call.body.length > 0}
+      {#if grounded && call.body.length > 0}
         <!-- A dispatch's own result text - the launch ack, the hand-back, the
              notification's report - is prose, so it renders as markdown here
              rather than as a terminal box: the report is a list and its

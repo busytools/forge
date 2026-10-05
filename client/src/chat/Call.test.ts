@@ -272,6 +272,23 @@ describe('the dispatch row, joined to its instance', () => {
     ...over,
   });
 
+  /** The dispatch itself, as the session's own assistant frame carries it. */
+  const dispatchFrame = () => ({
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_task',
+          name: 'Task',
+          input: { description: 'review the fold', prompt: 'do the thing', subagent_type: 'code-reviewer' },
+        },
+      ],
+    },
+  });
+
   it('draws the instance running while the settled call would have said done', () => {
     subagents.sync([card({ backgrounded: true })]);
     const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
@@ -296,6 +313,21 @@ describe('the dispatch row, joined to its instance', () => {
     subagents.sync(null);
   });
 
+  it('stops a backgrounded instance at its own report', () => {
+    // Its result text is the launch ack, which says nothing a reader acts on,
+    // and its task facts live in the CLI's own transcript file: neither the
+    // output block nor the meta line is drawn for a backgrounded instance.
+    subagents.sync([card({ backgrounded: true, running: false })]);
+    const drawn = render(Call, {
+      props: { call: dispatch(), k: 'task', open: true, messages: [dispatchFrame()] },
+    }).body;
+
+    expect(drawn, 'no output block').not.toContain('sg-result');
+    expect(drawn, 'and no task facts either').not.toContain('sg-meta');
+
+    subagents.sync(null);
+  });
+
   it('leaves a call that opened no instance exactly as it was', () => {
     // No card in the store: a plain call row, whose liveness is its own
     // status - which is what a pre-resume dispatch draws.
@@ -310,21 +342,7 @@ describe('the dispatch row, joined to its instance', () => {
   it('opens onto the instance own timeline, read from the turn own frames', () => {
     subagents.sync([card({ running: true })]);
     const messages = [
-      {
-        type: 'assistant',
-        parent_tool_use_id: null,
-        message: {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool_use',
-              id: 'toolu_task',
-              name: 'Task',
-              input: { description: 'review the fold', prompt: 'do the thing', subagent_type: 'code-reviewer' },
-            },
-          ],
-        },
-      },
+      dispatchFrame(),
       {
         type: 'assistant',
         parent_tool_use_id: 'toolu_task',
