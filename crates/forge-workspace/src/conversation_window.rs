@@ -82,6 +82,16 @@ pub fn tail_of(history: &[Message]) -> Vec<Message> {
     kept
 }
 
+/// How many messages [`drop_past_cap`] takes off `messages`' front, without
+/// taking them.
+///
+/// A caller that has to know what it is losing - the frames a transcript
+/// carries no row for, which a numbering below the floor has to account for -
+/// asks this before the drop and reads the front it names.
+pub fn frames_dropped(messages: &[Message]) -> usize {
+    front_of(messages)
+}
+
 /// Where the window's front moves to in `messages`: the first frame of the
 /// oldest turn it keeps.
 ///

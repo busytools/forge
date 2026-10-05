@@ -116,6 +116,28 @@ pub struct Conversation {
     /// end of an empty list. Two requests on one seat is the ordinary case
     /// for that, not an exotic one.
     folding: bool,
+    /// The indices, in this conversation's own numbering, of the frames the
+    /// drops have carried off that a transcript row does not carry.
+    ///
+    /// **Why a page below the floor needs them: the two numberings count
+    /// different things.** A conversation counts every frame the live stream
+    /// emits - a turn's `Result`, its thinking-token frames, a `system`
+    /// subtype the CLI never wrote, a delivery row forge forged - and a
+    /// transcript counts only its rows. The frames *above* the floor are
+    /// still held and can be counted; the ones below it are gone, so the seat
+    /// records their positions as it lets them go. Without them, a page below
+    /// the floor would be numbered as if every frame had a row and would skip
+    /// one row for each rowless frame in between.
+    ///
+    /// Sorted, ascending: every drop takes a front.
+    without_rows: Vec<usize>,
+    /// The uuids of the delivery rows this transport forged.
+    ///
+    /// **A forged row is a frame no transcript has**, and nothing about its
+    /// shape says so - it is a user row like the prompt it draws. Only the
+    /// site that forged it knows, which is why the set lives here rather than
+    /// in the row rule.
+    forged: std::collections::HashSet<String>,
 }
 
 impl Conversation {
@@ -129,7 +151,11 @@ impl Conversation {
     pub fn new(mut messages: Vec<Message>, compaction_count: u32) -> Self {
         // **The drop runs before the conversion**, so a resume's transient
         // cost is the history it handed over plus a window, rather than two
-        // transcripts.
+        // transcripts. What the drop takes is read first, because a frame it
+        // takes and no transcript row carries is one the numbering has to
+        // keep counting.
+        let cut = forge_workspace::conversation_window::frames_dropped(&messages);
+        let without_rows = rowless(&messages[..cut], 0, &std::collections::HashSet::new());
         let dropped = drop_past_cap(&mut messages);
         Self {
             messages: as_blocks(messages),
@@ -138,6 +164,8 @@ impl Conversation {
             dropped,
             dirty: true,
             folding: false,
+            without_rows,
+            forged: std::collections::HashSet::new(),
         }
     }
 
@@ -156,6 +184,13 @@ impl Conversation {
     /// `route` decides whether the numbering may be carried over the reseed:
     /// see [`Reseed`].
     pub fn seed(&mut self, mut messages: Vec<Message>, compaction_count: u32, route: Reseed) {
+        // What the seed's own drop takes, and what a shorter window drops off
+        // this seat's front, are frames the numbering keeps counting only if
+        // nothing but a row carries them.
+        let cut = forge_workspace::conversation_window::frames_dropped(&messages);
+        let incoming = rowless(&messages[..cut], 0, &self.forged);
+        let lost = self.messages.len().saturating_sub(messages.len());
+        let leaving = rowless(&self.messages[..lost], self.dropped, &self.forged);
         let seeded = drop_past_cap(&mut messages);
         // **Converted before the comparison.** The copy a seat already holds
         // went through `as_blocks` at its own seed, so a `<task-notification>`
@@ -190,12 +225,50 @@ impl Conversation {
         self.rendered.turns.clear();
         self.rendered.endings.clear();
         self.dropped = if carried { shifted } else { seeded };
+        // **What the numbering counts below the floor.** A connect restarts
+        // it, so nothing above the new floor is needed; a carried replay keeps
+        // the seat's own positions and adds the frames this seed took off its
+        // front, which the floor has just passed.
+        // **The seat's own positions are what a carried replay keeps.** The
+        // frames below the new floor are the ones it already knew - its list
+        // covers them or the frames this seed took off its front - so a
+        // window that reaches deeper brings no new below-floor frames and
+        // none are read off the incoming list, which is numbered for a
+        // different copy.
+        self.without_rows = if carried {
+            let mut kept = std::mem::take(&mut self.without_rows);
+            kept.retain(|at| *at < self.dropped);
+            kept.extend(leaving);
+            kept
+        } else {
+            incoming
+        };
+        // A frame whose id is no longer held cannot be met again, so the set
+        // that answers "did forge forge this" holds only what the seat keeps.
+        self.forged.retain(|id| self.messages.iter().any(|m| frame_id(m) == Some(id)));
         self.compaction_count = compaction_count;
         self.dirty = true;
     }
 
     /// One frame the session emitted.
     pub fn append(&mut self, message: Message) {
+        self.push(message);
+    }
+
+    /// One row this transport forged for display, which no transcript holds.
+    ///
+    /// **Forged rows are frames the file counts no row for**, and nothing
+    /// about their shape says so - a delivery row is a user row like the
+    /// prompt it draws. So the seat keeps their ids, and a page below the
+    /// floor counts the frames they were in.
+    pub fn append_forged(&mut self, message: Message) {
+        if let Some(id) = frame_id(&message) {
+            self.forged.insert(id.to_owned());
+        }
+        self.push(message);
+    }
+
+    fn push(&mut self, message: Message) {
         // **A boundary that arrives moves the count**, the same way the
         // session task's own retain does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
@@ -216,12 +289,28 @@ impl Conversation {
     /// Drop the oldest messages once the held list has outgrown the cap's
     /// slack, and leave the seat due a fold.
     fn drop_to_cap(&mut self) {
+        // **Read what is going before it goes**: a frame no transcript row
+        // carries is one the numbering keeps counting, and after the drop its
+        // place is the only thing that said where it was.
+        let cut = forge_workspace::conversation_window::frames_dropped(&self.messages);
+        self.without_rows.extend(rowless(&self.messages[..cut], self.dropped, &self.forged));
         self.dropped = self.dropped.saturating_add(drop_past_cap(&mut self.messages));
+        // A forged row the seat no longer holds cannot be met again, so the
+        // set that answers "did forge forge this" keeps only what it keeps.
+        let held: std::collections::HashSet<&str> =
+            self.messages.iter().filter_map(frame_id).collect();
+        self.forged.retain(|id| held.contains(id.as_str()));
         // The same reason a seed clears them: the boundaries name message
         // indices, and the drop has just moved every one of them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
         self.dirty = true;
+    }
+
+    /// The frames the drops have taken that no transcript row carries, sorted:
+    /// the basis a paging read below the floor is numbered on.
+    pub fn without_rows(&self) -> &[usize] {
+        &self.without_rows
     }
 
     /// The messages if the fold is behind them, taken in O(1).
@@ -270,6 +359,37 @@ impl Conversation {
     /// turns a held index into the one a page's cursor carries.
     pub fn dropped(&self) -> usize {
         self.dropped
+    }
+}
+
+/// The absolute indices of the frames in `frames` - which start at `from` in
+/// the conversation's numbering - that no transcript row carries.
+fn rowless(
+    frames: &[Message],
+    from: usize,
+    forged: &std::collections::HashSet<String>,
+) -> Vec<usize> {
+    frames
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| !carries_a_row(message, forged))
+        .map(|(at, _)| from + at)
+        .collect()
+}
+
+/// Whether a transcript row carries `message`: the kinds the row rule reads,
+/// and nothing this transport forged for display.
+fn carries_a_row(message: &Message, forged: &std::collections::HashSet<String>) -> bool {
+    forge_workspace::has_a_transcript_row(message)
+        && !frame_id(message).is_some_and(|id| forged.contains(id))
+}
+
+/// The id a frame carries, for the frames that carry one.
+pub(crate) fn frame_id(message: &Message) -> Option<&str> {
+    match message {
+        Message::User { uuid, .. } | Message::Assistant { uuid, .. } => uuid.as_deref(),
+        Message::StopHookSummary { uuid, .. } | Message::CompactBoundary { uuid, .. } => Some(uuid),
+        _ => None,
     }
 }
 
@@ -442,6 +562,14 @@ pub struct Conversations {
     /// Fires when a seat is first held, so a request that had to ask for a
     /// replay knows when its answer has landed.
     seeded: tokio::sync::Notify,
+    /// Where each seat's last transcript page stopped, so the page below it is
+    /// a seek rather than a read that locates the anchor again.
+    ///
+    /// **Per seat, and never process-wide**: a transcript position belongs to
+    /// the session it was read from, and two seats can hold two sessions. A
+    /// position the file has outgrown is caught where it is used - the read
+    /// verifies the row it names before trusting it - rather than here.
+    transcript_at: Mutex<HashMap<SessionSlot, forge_primitives::TranscriptAnchor>>,
 }
 
 impl Conversations {
@@ -520,7 +648,10 @@ impl Conversations {
                 if let Some(msg) = crate::delivery::delivery_turn(update, slot)
                     && let Some(held) = self.get(slot)
                 {
-                    held.lock().append(msg);
+                    // Forged for display, and in no transcript: the seat has
+                    // to know, because a page below the floor numbers the
+                    // frames the file never wrote.
+                    held.lock().append_forged(msg);
                 }
             }
         }
@@ -545,6 +676,28 @@ impl Conversations {
                 self.insert(slot, Conversation::new(history.to_vec(), compaction_count));
             }
         }
+    }
+
+    /// The anchor the next page below `before` reads from, when the seat's
+    /// walk has already been there: the row its last page stopped at, with the
+    /// byte that row starts at.
+    ///
+    /// `None` when the seat has no such position, or when the request is above
+    /// it - a client asking from the floor again - and the read then locates
+    /// the caller's own anchor instead.
+    pub fn anchor_below(
+        &self,
+        slot: &SessionSlot,
+        before: usize,
+    ) -> Option<forge_primitives::TranscriptAnchor> {
+        let at =
+            self.transcript_at.lock().unwrap_or_else(PoisonError::into_inner).get(slot).cloned()?;
+        (at.index >= before && at.offset.is_some()).then_some(at)
+    }
+
+    /// Remember where a page's read stopped, for the page below it.
+    pub fn remember_anchor(&self, slot: &SessionSlot, at: forge_primitives::TranscriptAnchor) {
+        self.transcript_at.lock().unwrap_or_else(PoisonError::into_inner).insert(slot.clone(), at);
     }
 
     /// How many seats are held.
@@ -1364,6 +1517,59 @@ mod tests {
         assert!(
             floor.cursor.is_none(),
             "and with no page above it to ask for: the turn it named is not held any more",
+        );
+    }
+
+    /// **A carried replay that reaches less far back records what it lost.**
+    ///
+    /// The frames this seed takes off the seat's own front are below the new
+    /// floor as soon as it lands, and nothing else can count them afterwards:
+    /// the copy that held them is what says which of them carry no transcript
+    /// row, and a page below the floor is numbered through that count.
+    #[test]
+    fn a_shorter_carried_seed_records_the_frames_it_took() {
+        // A live-shaped copy: every turn's row, then the result frame the CLI
+        // sent and never wrote, so the drops take frames with no row.
+        let mut frames = Vec::new();
+        for at in 0..2_600 {
+            frames.push(a_frame(&format!("turn {at}")));
+            frames.push(
+                serde_json::from_value(serde_json::json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "uuid": format!("r{at}"),
+                    "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                    "is_error": false,
+                    "num_turns": at + 1,
+                    "duration_ms": 12,
+                    "duration_api_ms": 9,
+                }))
+                .expect("a result frame"),
+            );
+        }
+        let held = Held::new(Conversation::new(frames, 0));
+        let before = held.lock().without_rows().len();
+        let dropped = held.lock().dropped();
+        assert!(before > 0, "precondition: the first drop counted the frames with no row");
+
+        // The same conversation, ending at the same frame, reaching four
+        // hundred frames less far back.
+        let window = held.lock().messages()[400..].to_vec();
+        held.lock().seed(window, 0, Reseed::Replay);
+
+        assert_eq!(
+            held.lock().dropped(),
+            dropped + 400,
+            "precondition: the shorter window moved the floor up by what it took",
+        );
+        let after = held.lock().without_rows().len();
+        assert!(
+            after > before,
+            "and the frames it took off the front are counted: {before} before, {after} after",
+        );
+        assert!(
+            held.lock().without_rows().windows(2).all(|pair| pair[0] < pair[1]),
+            "the positions stay sorted, which is what a page's numbering searches in",
         );
     }
 }

@@ -56,3 +56,28 @@ pub fn session_history(
 ) -> forge_primitives::ConversationHistory {
     forge_sdk_worker::load_history_messages(config_dir, session_id, cwd, session_id)
 }
+
+/// Whether a transcript row carries a frame, which is what tells a copy's
+/// numbering from the file's when the frames the CLI never wrote are in it.
+pub use userdata::catalog::scan::has_a_transcript_row;
+
+/// The span of a session's transcript that ends below `ends_before`, for a
+/// paging read that has walked below the window a conversation is kept in.
+///
+/// [`session_history`] is the whole file and answers what a session IS;
+/// this is a window of it and answers what a page needs. `anchors` are rows
+/// the caller's held conversation still carries together with the indices
+/// the session gives them, which is what lets the read find the span without
+/// walking the file from its start.
+pub fn transcript_span(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    cwd: &str,
+    anchors: &[forge_primitives::TranscriptAnchor],
+    cursor: usize,
+    rowless: &[usize],
+    rows: usize,
+) -> Option<forge_primitives::TranscriptSpan> {
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
+    userdata::catalog::scan::read_span(config_dir, session_id, dir, anchors, cursor, rowless, rows)
+}
