@@ -111,7 +111,8 @@
   .dict .db { color: var(--hot); }
   .dict .db.tr { color: var(--dim); }
   .dict .lbl { color: var(--dim); }
-  .dict .wire { color: var(--dim); }
+  .dict .wire { color: var(--dim); min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; }
   .dict .esc { margin-left: auto; color: var(--dim); }
   /* The meter is a scrolling history, not bars pulsing in place: each cell
      is one past sample, newest at the right, flowing left. Two copies of
