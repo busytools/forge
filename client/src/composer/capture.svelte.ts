@@ -96,6 +96,10 @@ export class FrameRing {
    * Bytes the SOCKET has taken, since it began. A frame produced while the
    * socket is down counts in `frames` and not here, which is the difference
    * the pair exists to show: what was spoken and what has left.
+   *
+   * A frame the ring drops past its cap reads the same way - produced, never
+   * taken - so a gap that keeps growing past ~30 s is a socket taking
+   * nothing, not one catching up.
    */
   bytes = $state(0);
 
