@@ -55,6 +55,15 @@ export function transcribable(cards: readonly SubagentCard[]): SubagentCard[] {
 }
 
 /**
+ * A list read newest first: the instance a reader just watched start is the
+ * one they came to the list for, and oldest-first buries it below the fold of
+ * a long session.
+ */
+export function latestFirst(cards: readonly SubagentCard[]): SubagentCard[] {
+  return [...cards].reverse();
+}
+
+/**
  * Reveal the chat row a dispatch drew: open it, bring it into view, and give
  * it one flash so the eye lands on it.
  *

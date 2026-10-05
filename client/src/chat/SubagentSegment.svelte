@@ -2,7 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import { askReveal } from '../session/scroll-ask';
   import { duration } from './numbers';
-  import { subagents, transcribable } from './subagents.svelte';
+  import { latestFirst, subagents, transcribable } from './subagents.svelte';
   import { firstLine } from './text';
 
   /**
@@ -32,6 +32,9 @@
   const listed = $derived(transcribable(subagents.all()));
   const running = $derived(listed.filter((card) => card.running));
   const finished = $derived(listed.length - running.length);
+  // Read newest first: the instance a reader just watched start is the one
+  // they came to the list for.
+  const latest = $derived(latestFirst(listed));
 
   /** What one instance is doing, short enough for a row: one line, capped. */
   const doing = (card: (typeof listed)[number]) => {
@@ -69,7 +72,7 @@
 
     {#if open}
       <div class="sg-list">
-        {#each listed as card (card.dispatch_id)}
+        {#each latest as card (card.dispatch_id)}
           <button
             type="button"
             class="sg-it"

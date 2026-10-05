@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
-import { SubagentCards, reveal, transcribable } from './subagents.svelte';
+import { SubagentCards, latestFirst, reveal, transcribable } from './subagents.svelte';
 
 /** One instance, as the record holds it. */
 const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
@@ -55,6 +55,14 @@ describe('the dispatch join', () => {
       'the strip lists them in order',
     ).toEqual(['toolu_task', 'toolu_other']);
     expect(cards.running(), 'one of the two is still working').toBe(1);
+  });
+});
+
+describe('the order a list is read in', () => {
+  it('reads newest first, so the instance just started is not below the fold', () => {
+    const read = latestFirst([card({ dispatch_id: 'first' }), card({ dispatch_id: 'second' })]);
+
+    expect(read.map((one) => one.dispatch_id)).toEqual(['second', 'first']);
   });
 });
 
