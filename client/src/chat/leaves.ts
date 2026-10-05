@@ -12,7 +12,7 @@
 
 import { languageOf } from './code';
 import { decisionOf, decisionWord, type Decision } from './decisions';
-import { isEdit, type CallStatus, type KindRow, rowOf } from './families';
+import { isEdit, mcpParts, type CallStatus, type KindRow, rowOf } from './families';
 import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
@@ -519,7 +519,11 @@ export function titleOf(name: string, input: unknown): string {
     return first === '' ? word : `${word} - ${first}`;
   }
   const said = headline(name, input);
-  return said === name ? toolName(name) : said;
+  const named = said === name ? toolName(name) : said;
+  // **A server's row says which server**: the lane whose label carried it is
+  // gone, and `list` from two servers is one word for two things.
+  const mcp = mcpParts(name);
+  return mcp === null ? named : `${mcp.server}: ${named}`;
 }
 
 /**

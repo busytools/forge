@@ -363,6 +363,26 @@ describe('a systemone decision on its row', () => {
   });
 });
 
+describe('a server-side call on its row', () => {
+  it('carries the server, which the lane header used to say', () => {
+    // #1733's read: the flatten deleted the lane whose label was the server
+    // (the old `labelOf` named mcp rows by it), so a bare tool name left two
+    // servers' calls drawn as the same word.
+    const bare = leafOf('t1', 'mcp__playwright__browser_navigate', {}, undefined);
+    expect(bare.title, 'the server leads the title').toBe('playwright: browser_navigate');
+
+    const subject = leafOf(
+      't1',
+      'mcp__playwright__browser_navigate',
+      { url: 'https://example.org' },
+      undefined,
+    );
+    expect(subject.title, 'and rides a call named by its subject').toBe(
+      'playwright: https://example.org',
+    );
+  });
+});
+
 /**
  * How many times anything walked a string through its character iterator while
  * `fn` ran.
