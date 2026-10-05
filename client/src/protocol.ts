@@ -124,10 +124,14 @@ export function skewMessage(skew: Skew): string {
     return `this forge server speaks protocol ${skew.serverProtocol}; ${mine}. ${command}`;
   }
   if (releaseOf(skew.serverVersion) === releaseOf(CLIENT_VERSION)) {
+    const release = releaseOf(CLIENT_VERSION);
+    // "Reinstall both" is two commands, and this is the one branch where the
+    // release to hand the client's installer is known: both halves are it.
     return (
-      `this forge server and this client are both v${releaseOf(CLIENT_VERSION)}, but they speak ` +
-      `protocols ${skew.serverProtocol} and ${PROTOCOL_VERSION}: a mixed install of one build. ` +
-      `Reinstall both. ${command}`
+      `this forge server and this client are both v${release}, but they speak protocols ` +
+      `${skew.serverProtocol} and ${PROTOCOL_VERSION}: a mixed install of one build. Reinstall ` +
+      `both: in the forge checkout run \`just install\` and \`just client-release ${release}\`, ` +
+      'then restart.'
     );
   }
   return `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol}); ${mine}. ${command}`;

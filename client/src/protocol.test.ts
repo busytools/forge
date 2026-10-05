@@ -199,13 +199,16 @@ describe('what a skew says', () => {
 
   /**
    * One release with two protocols is one build installed twice, and the
-   * fix is both halves rather than the server alone.
+   * fix is both halves rather than the server alone: "both" is two commands,
+   * and this is the one branch where the release to hand `client-release` is
+   * known.
    */
-  it('calls one release speaking two protocols a mixed install', () => {
+  it('calls one release speaking two protocols a mixed install, with both commands', () => {
     expect(skewMessage({ serverProtocol: 4, serverVersion: `${CLIENT_VERSION}+abc1234` })).toBe(
       `this forge server and this client are both v${CLIENT_VERSION}, but they speak protocols ` +
-        `4 and ${PROTOCOL_VERSION}: a mixed install of one build. Reinstall both. In the forge ` +
-        'checkout run `just install` and restart forge.',
+        `4 and ${PROTOCOL_VERSION}: a mixed install of one build. Reinstall both: in the forge ` +
+        `checkout run \`just install\` and \`just client-release ${CLIENT_VERSION}\`, then ` +
+        'restart.',
     );
   });
 });
