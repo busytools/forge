@@ -1048,6 +1048,53 @@ mod tests {
         );
     }
 
+    /// **A cursor keeps its numbering across a drop the APPENDS ran too.**
+    ///
+    /// The two tests beside this one seed their drops through a constructor,
+    /// where the offset is set once; a seat a frame at a time past its slack
+    /// is the ordinary case, and the numbering has to accumulate there -
+    /// a drop that overwrote the count instead of adding to it would resolve
+    /// the cursor that many messages high and answer a client the newest
+    /// window rather than the page it asked for.
+    #[test]
+    fn a_cursor_keeps_its_numbering_across_an_append_driven_drop() {
+        let held =
+            Held::new(Conversation::new(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0));
+        let dropped_at_seed = held.lock().dropped();
+        assert!(dropped_at_seed > 0, "precondition: the seed was over the cap");
+
+        // The page above the newest one, taken while the seat holds what the
+        // seed left it.
+        let cursor = newest_page(&held, 2).cursor.expect("a page above the newest one");
+        let above_before = held.read(|held| {
+            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
+        });
+
+        // Frames until the appends spend the slack and a second drop runs.
+        for at in 0..CONVERSATION_SLACK + 1 {
+            held.lock().append(a_frame(&format!("later {at}")));
+        }
+        assert!(
+            held.lock().dropped() > dropped_at_seed,
+            "precondition: the appends outgrew the cap's slack and a drop ran",
+        );
+
+        let above = held.read(|held| {
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                Some(&cursor),
+                2,
+            )
+        });
+        assert_eq!(
+            turn_texts(&above),
+            turn_texts(&above_before)[..2].to_vec(),
+            "the page above a cursor is the page above the turn it named, drop or no drop",
+        );
+    }
+
     /// **A cursor outlives the drop it was written before.** It names a
     /// message in the conversation's own numbering, so the page above it is
     /// still the page above it - and a cursor the drop has passed is answered
