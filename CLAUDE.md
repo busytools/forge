@@ -60,8 +60,8 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   tool family table, forge's own slash commands, the policy that folds a
   run of blocks, the transcript
   fold that turns a conversation's messages into the units a view draws,
-  the fold that turns a session's dispatches into the sub-agent instances
-  a view draws, a Monitor's watched-command output tail, and the socket
+  the sub-agent instance list the session task's own fold keeps and
+  pushes, a Monitor's watched-command output tail, and the socket
   that carries all of it to whatever is drawing.
   Sits between `forge-workspace` and the clients, so a second client
   attaches beside the TUI rather than duplicating it. Nothing here may
