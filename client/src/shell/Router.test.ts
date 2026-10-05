@@ -57,6 +57,7 @@ function draw(): string {
       failure: null,
       connected: true,
       connection: untouched(),
+      notice: null,
       onconnect: () => {},
     },
   }).body;

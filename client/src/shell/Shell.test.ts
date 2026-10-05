@@ -127,8 +127,16 @@ async function stubForge(
     live: () => server.clients.size,
     attached,
     /** Let the greeting go, which is what lands a held launch. */
-    greet() {
-      for (const socket of server.clients) greet(socket);
+    greet(again: number = version) {
+      for (const socket of server.clients) {
+        socket.send(
+          JSON.stringify({
+            kind: 'greeting',
+            version: again,
+            settings: { ...DEFAULT_SETTINGS, ...settings },
+          }),
+        );
+      }
     },
     /** Remove a seat, as a lead's cascade or another view's despawn does. */
     remove(seat: SessionSlot, spawnedBy: SessionSlot) {
@@ -318,6 +326,37 @@ describe('a forge that is not the protocol this client speaks', () => {
     const said = drawn();
     expect(said).toContain('just install');
     expect(said.split('just install').length - 1, 'the skew was drawn twice on one screen').toBe(1);
+  });
+
+  /**
+   * A connection that STOPS while the door is up is still a refusal, and the
+   * door must not turn it into the milder notice: the socket is not coming
+   * back, so a reconnect line under it would be a claim nothing is keeping.
+   */
+  it('keeps a refusal a refusal when the door is the page', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await crossed();
+    expect(location.pathname, 'the floor did not land on the home').toBe('/');
+
+    // A later greeting from outside the range stops the connection, as a
+    // forge swapped underneath a running client does.
+    forge.greet(PROTOCOL_VERSION + 1);
+    await crossed();
+
+    history.replaceState(null, '', '/connect');
+    dispatchEvent(new PopStateEvent('popstate'));
+    await crossed();
+
+    const said = drawn();
+    expect(said, 'the refusal was not named on the door').toContain(
+      `protocol ${PROTOCOL_VERSION + 1}`,
+    );
+    expect(said, 'the door claimed a reconnect that nothing is doing').not.toContain(
+      'Reconnecting',
+    );
+    expect(said.split('reinstall').length - 1, 'the refusal was drawn twice').toBe(1);
   });
 
   /**

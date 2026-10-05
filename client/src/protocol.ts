@@ -20,8 +20,9 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * The protocol this client speaks, which the greeting must agree with.
  *
  * Fixed rather than negotiated, because the server changes far more slowly
- * than a client's visuals do: either a client speaks this version or it does
- * not, and a mismatch fails plainly instead of silently.
+ * than a client's visuals do: either a client speaks a version or it does
+ * not, and a mismatch fails plainly instead of silently. What is tolerated
+ * below this one is `MIN_PROTOCOL`, and nothing above it is.
  */
 export const PROTOCOL_VERSION = 5;
 

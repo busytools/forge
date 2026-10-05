@@ -3,7 +3,6 @@
 
   import Brand from '../components/Brand.svelte';
   import Field from '../composer/Field.svelte';
-  import { skewMessage, type Skew } from '../protocol';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
@@ -11,7 +10,7 @@
     settings,
     initialAddress = DEFAULT_ADDRESS,
     launchFailure = null,
-    skew = null,
+    notice = null,
     onconnect,
   }: {
     settings: ClientSettings;
@@ -20,11 +19,12 @@
     /** Why a launch did not open the home, drawn on the door as it lands. */
     launchFailure?: Extract<Attempt, { ok: false }> | null;
     /**
-     * The live protocol skew, when the forge this client is connected to
-     * speaks a protocol one step back. The shell stands down on this route,
-     * so this is the one place the door learns it.
+     * The protocol-skew notice, already worded: the forge this client is
+     * connected to speaks a protocol a step back and the connection is live.
+     * `null` when there is no skew, and when the connection was refused -
+     * the shell draws a refusal itself, on every route.
      */
-    skew?: Skew | null;
+    notice?: string | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
@@ -73,11 +73,11 @@
       projects, the seats and their conversations.
     </p>
 
-    {#if skew}
+    {#if notice}
       <!-- The connection is live and a step back is read, so this is a notice
            rather than a failure: which half is behind, and what to run. -->
       <div class="note" role="status">
-        <p class="r">{skewMessage(skew)}</p>
+        <p class="r">{notice}</p>
       </div>
     {/if}
 

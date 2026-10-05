@@ -297,6 +297,7 @@ describe('the session page over a socket', () => {
         failure: null,
         connected: true,
         connection,
+        notice: null,
         onconnect: () => {},
       },
     });

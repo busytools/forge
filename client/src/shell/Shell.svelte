@@ -188,12 +188,22 @@
    * The one line a protocol skew draws here, or `null` when this surface
    * draws none.
    *
-   * A refused connection and a tolerated one read the same sentence - which
-   * half is behind and what to run - because the sentence is the point. The
-   * door draws its own copy in its own column, so the shell stands down on
-   * that route rather than stacking a second identical strip above it.
+   * A REFUSED connection is drawn on every route: the connection stopped,
+   * and falling through to the reconnect line under it would claim a retry
+   * that nothing is making. The notice a tolerated skew draws stands down on
+   * the door, which draws its own copy in its own column rather than having
+   * a second identical strip stacked above it.
    */
-  const skewLine = $derived(skew === null || route.name === 'connect' ? null : skewMessage(skew));
+  const skewLine = $derived(
+    skew === null || (connectionStatus !== 'mismatched' && route.name === 'connect')
+      ? null
+      : skewMessage(skew),
+  );
+
+  /** The notice the door draws for itself: a skew being read, never a refusal. */
+  const doorNotice = $derived(
+    skew === null || connectionStatus === 'mismatched' ? null : skewMessage(skew),
+  );
 
   function go(next: Route) {
     route = next;
@@ -277,7 +287,7 @@
     {home}
     {failure}
     {connection}
-    {skew}
+    notice={doorNotice}
     connected={connection !== null}
     onconnect={connect}
   />

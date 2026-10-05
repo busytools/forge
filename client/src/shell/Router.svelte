@@ -7,7 +7,6 @@
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
-  import type { Skew } from '../protocol';
   import type { Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
@@ -21,7 +20,7 @@
     failure,
     connected,
     connection,
-    skew,
+    notice,
     onconnect,
   }: {
     route: Route;
@@ -34,8 +33,14 @@
     connected: boolean;
     /** The connection the pages read through, which a session page subscribes on. */
     connection: Connection | null;
-    /** The live protocol skew, which only the door draws: the shell stands down there. */
-    skew: Skew | null;
+    /**
+     * The protocol-skew line the door draws, already worded: the shell hands
+     * it down because only the shell watches a skew appear and clear, and
+     * the shell stands down on this route so this is the door's own copy.
+     * `null` when there is no skew, and when the connection was REFUSED -
+     * a stopped connection is the shell's line on every route, not a notice.
+     */
+    notice: string | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
@@ -47,7 +52,7 @@
 </script>
 
 {#if route.name === 'connect'}
-  <Connect {settings} initialAddress={address} launchFailure={failure} {skew} {onconnect} />
+  <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
     <Home wire={home.wire} {address} mark={settings.mark} />
@@ -67,7 +72,7 @@
     <!-- No server has answered, and the app's only input is its URL: the
          connect screen stays rather than a page falling back to bundled
          data. -->
-    <Connect {settings} initialAddress={address} launchFailure={failure} {skew} {onconnect} />
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
 {:else if route.name === 'fixture' && import.meta.env.DEV}
   <!-- Behind the same guard as the loader: the connect screen stays the front
@@ -98,7 +103,7 @@
   {:else}
     <!-- No server has answered, so there is no seat to draw and the app's
          only input is its URL. -->
-    <Connect {settings} initialAddress={address} launchFailure={failure} {skew} {onconnect} />
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
 {:else}
   <main class="wrap">
