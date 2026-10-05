@@ -1729,6 +1729,44 @@ mod tests {
         );
     }
 
+    /// A resume walk appends a whole transcript with no enforcement between
+    /// messages, so a session whose history is larger than its cap is held in
+    /// full until the single trim at the end of the walk. That is what makes
+    /// the boot that replays every session at once a multi-gigabyte peak.
+    ///
+    /// The observable is the last enforcement's before-bytes: a walk that
+    /// binds per message leaves it near the cap, while one that trims only at
+    /// the end leaves it at the whole transcript's size.
+    #[test]
+    fn a_resume_walk_binds_the_cap_while_it_appends() {
+        const CAP: usize = 256 * 1024;
+        const TURNS: usize = 200;
+        let mut app = App::test_default();
+        app.history_retention_mut().expect("active session").max_bytes = CAP;
+        let history: Vec<Message> = (0..TURNS)
+            .flat_map(|i| {
+                [
+                    historical_user_text(&format!("prompt {i}")),
+                    historical_assistant(&format!("{i} {}", "x".repeat(8 * 1024))),
+                ]
+            })
+            .collect();
+
+        load_resume_history(&mut app, &history);
+
+        let stats = app.history_retention_stats().expect("active session");
+        assert!(
+            stats.total_before_bytes <= 2 * CAP,
+            "the last enforcement saw {} bytes; a walk that trims only at its end sees the whole \
+             transcript, so the bucket is held unboundedly while it replays",
+            stats.total_before_bytes,
+        );
+        assert!(
+            app.retained_history_bytes().expect("active session") <= CAP,
+            "the bucket must end the walk under its cap",
+        );
+    }
+
     /// Both halves on one rule: a user turn the CLI stamped as synthetic is
     /// the harness speaking, so a view draws it, and never as the reader's
     /// own words.

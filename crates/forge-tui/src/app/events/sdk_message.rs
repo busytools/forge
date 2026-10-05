@@ -105,6 +105,11 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
             handle_compact_boundary(app, &trigger, pre_tokens);
         }
     }
+    // Every applied sdk message converges here, live and replay alike, and
+    // the streamed and tool-result handlers reach no enforcement call of
+    // their own: without this the bucket a background worker grows all day
+    // is never trimmed.
+    app.enforce_history_retention_if_over_cap();
 }
 
 /// #273: Accumulate the turn's estimated thinking tokens and mirror

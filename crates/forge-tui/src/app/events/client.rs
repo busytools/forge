@@ -906,13 +906,16 @@ fn apply_session_update_spawning(
     let mut bucket = crate::app::session::UiSession::new(key.clone(), project);
     bucket.cwd = shorten_cwd_display_path(cwd);
     cwd.clone_into(&mut bucket.cwd_raw);
-    bucket.messages.push(crate::app::ChatMessage::new(
+    let placeholder = crate::app::ChatMessage::new(
         crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
         vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
             "Waking {display_name}…"
         )))],
-    ));
-    bucket.message_retained_bytes.push(0);
+    );
+    let placeholder_bytes = App::measure_message_bytes(&app.render_caches, &placeholder);
+    bucket.messages.push(placeholder);
+    bucket.message_retained_bytes.push(placeholder_bytes);
+    bucket.retained_history_bytes = placeholder_bytes;
     app.sessions.insert(key.clone(), bucket);
     super::set_bucket_lifecycle_state(
         app,
@@ -3049,6 +3052,173 @@ mod tests {
         assert!(
             !app.sessions.get(&active).expect("bucket").unseen_turn_completion,
             "a turn completing on the watched session must not arm the flag",
+        );
+    }
+
+    /// A streamed assistant frame carrying `text`.
+    fn assistant_frame_with_text(session_id: &str, text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_1".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-opus-5".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+                extras: serde_json::Map::new(),
+            },
+            session_id: session_id.to_owned(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+            timestamp: None,
+            extras: serde_json::Map::new(),
+        }
+    }
+
+    /// One streamed assistant frame into `key`, through the production
+    /// dispatch path.
+    fn stream_background_frame(app: &mut App, key: &SessionSlot, payload: &str) {
+        apply_session_update(
+            app,
+            SessionUpdate::ChatAppended {
+                key: key.clone(),
+                msg: assistant_frame_with_text(&key.display(), payload),
+                origin: None,
+            },
+        );
+    }
+
+    /// Settle `key`'s open turn, which is what unbinds the turn's assistant
+    /// message and leaves it droppable.
+    fn end_background_turn(app: &mut App, key: &SessionSlot) {
+        apply_session_update(
+            app,
+            SessionUpdate::ChatAppended {
+                key: key.clone(),
+                msg: result_frame(&key.display(), false),
+                origin: None,
+            },
+        );
+    }
+
+    /// A bucket's live retained-byte total.
+    fn retained(app: &App, key: &SessionSlot) -> usize {
+        app.sessions.get(key).expect("bg bucket").retained_history_bytes
+    }
+
+    /// A bucket's cumulative dropped-message count.
+    fn dropped(app: &App, key: &SessionSlot) -> usize {
+        app.sessions.get(key).expect("bg bucket").history_retention_stats.total_dropped_messages
+    }
+
+    /// The streamed sdk frames are the traffic a background worker emits all
+    /// day, and none of them reached an enforcement call: the bucket grew
+    /// with the append rate, unbounded.
+    #[test]
+    fn a_streamed_background_bucket_stays_bounded_by_the_cap() {
+        const CAP: usize = 256 * 1024;
+        const TURNS: usize = 100;
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_background = workspace.install_testing_stub(&background);
+        app.sessions.get_mut(&background).expect("bg bucket").history_retention.max_bytes = CAP;
+        let payload = "x".repeat(8 * 1024);
+
+        for turn in 0..TURNS {
+            stream_background_frame(&mut app, &background, &payload);
+            let bytes = retained(&app, &background);
+            assert!(
+                bytes <= CAP,
+                "after {turn} streamed turns the bucket holds {bytes} bytes, over its \
+                 {CAP}-byte cap",
+            );
+            end_background_turn(&mut app, &background);
+        }
+        assert!(dropped(&app, &background) > 0, "the stream must have been trimmed at least once");
+    }
+
+    /// One trim must buy a long quiet stretch: the check runs on every
+    /// appended frame, so a trim landing on the cap itself would rebuild the
+    /// message vec on nearly every frame at steady state.
+    #[test]
+    fn a_trim_buys_a_stretch_of_appends_before_the_next_one() {
+        const CAP: usize = 256 * 1024;
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_background = workspace.install_testing_stub(&background);
+        app.sessions.get_mut(&background).expect("bg bucket").history_retention.max_bytes = CAP;
+        let payload = "x".repeat(1024);
+
+        let mut turns = 0;
+        while dropped(&app, &background) == 0 {
+            stream_background_frame(&mut app, &background, &payload);
+            end_background_turn(&mut app, &background);
+            turns += 1;
+            assert!(turns < 4_000, "the cap was never crossed in {turns} turns");
+        }
+
+        let bytes_after_trim = retained(&app, &background);
+        let dropped_at_trim = dropped(&app, &background);
+        assert!(
+            bytes_after_trim <= CAP * 3 / 4 + 4096,
+            "a trim must land at the low-water mark rather than on the cap: {bytes_after_trim} \
+             bytes against a {CAP}-byte cap leaves no room for the appends that follow",
+        );
+
+        // Half the headroom the low-water target buys, sized from a real
+        // turn so the stretch sits inside it by construction.
+        let before = bytes_after_trim;
+        stream_background_frame(&mut app, &background, &payload);
+        let per_turn = retained(&app, &background) - before;
+        end_background_turn(&mut app, &background);
+        for _ in 0..((CAP - before) / (2 * per_turn)) {
+            stream_background_frame(&mut app, &background, &payload);
+            end_background_turn(&mut app, &background);
+        }
+
+        assert_eq!(
+            dropped(&app, &background),
+            dropped_at_trim,
+            "appends inside the low-water headroom must not re-trim",
+        );
+    }
+
+    /// Under the cap there is nothing to trim: no drops, and no marker
+    /// inserted behind them.
+    #[test]
+    fn appends_under_the_cap_never_drop() {
+        const CAP: usize = 256 * 1024;
+        const TURNS: usize = 20;
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_background = workspace.install_testing_stub(&background);
+        app.sessions.get_mut(&background).expect("bg bucket").history_retention.max_bytes = CAP;
+        let payload = "x".repeat(1024);
+
+        for _ in 0..TURNS {
+            stream_background_frame(&mut app, &background, &payload);
+            end_background_turn(&mut app, &background);
+        }
+
+        let bucket = app.sessions.get(&background).expect("bg bucket");
+        assert_eq!(dropped(&app, &background), 0, "nothing is over the cap, so nothing is dropped");
+        assert_eq!(
+            bucket.messages.len(),
+            TURNS,
+            "one message per turn and no hidden marker: a marker insert would add one",
+        );
+        assert_eq!(
+            bucket.history_retention_stats.total_before_bytes, 0,
+            "no enforcement runs at all under the cap: the O(1) comparison is what keeps the \
+             full trim off the append path",
         );
     }
 
