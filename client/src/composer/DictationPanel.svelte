@@ -31,6 +31,7 @@
     type Axis,
     type Option,
   } from './dictation';
+  import { defaultDeviceFor } from './dictation';
   import { inputLine, inputs, type Input } from './mic';
 
   let {
@@ -134,11 +135,23 @@
     }
   }
 
+  /**
+   * What the system default IS, once a take has opened it: the browser
+   * reports the input a plain stream resolved to, and nothing else names it.
+   * `null` before the first default take, when the row stays plain.
+   */
+  const defaultName = defaultDeviceFor()?.label ?? null;
+
   /** The input in force, as the row names it. */
   const inForceDevice = $derived.by(() => {
-    if (device === null) return 'System default';
+    if (device === null) return defaultRow();
     return devices?.find((held) => held.id === device)?.label || 'System default';
   });
+
+  /** The system-default row's own words: the name, when one was learned. */
+  function defaultRow(): string {
+    return defaultName === null ? 'System default' : `${defaultName} (system default)`;
+  }
 
   /**
    * Whether the input in force is one the walk could not find.
@@ -274,7 +287,7 @@
           <div class="note bad">{refused}</div>
         {:else}
           <button class="row" type="button" onclick={() => choose(null)}>
-            <span class="nm">System default</span>
+            <span class="nm">{defaultRow()}</span>
           </button>
           {#each devices ?? [] as held, at (held.id)}
             <button class="row" type="button" onclick={() => choose(held.id)}>
@@ -287,9 +300,11 @@
         {/if}
       </div>
     {/if}
-    <div class="note">
-      the browser's own list &#183; names appear once this page has been allowed the microphone
-    </div>
+    {#if (devices ?? []).some((held) => held.label === '')}
+      <div class="note">
+        the browser's own list &#183; names appear once this page has been allowed the microphone
+      </div>
+    {/if}
   </div>
 
   <div class="ft">

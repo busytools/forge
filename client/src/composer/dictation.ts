@@ -111,6 +111,32 @@ export function rememberDevice(seat: string, device: string | null): void {
 }
 
 /**
+ * The name the system default resolved to, learned the one way the browser
+ * gives it: the first take that records WITHOUT a pick reports the input the
+ * stream actually opened (an `enumerateDevices` list carries no default mark).
+ *
+ * Machine-level rather than per seat, because the default is the machine's:
+ * every seat records from the same one, and a pick on any seat leaves it
+ * standing.
+ */
+const defaultKey = 'forge.dictate.default';
+
+/** The default's own name, or `null` before any default take has run. */
+export function defaultDeviceFor(): { id: string; label: string } | null {
+  const held = stored(defaultKey);
+  if (held === null || typeof held !== 'object') return null;
+  const record = held as Record<string, unknown>;
+  const label = record['label'];
+  if (typeof label !== 'string' || label === '') return null;
+  return { id: typeof record['id'] === 'string' ? record['id'] : '', label };
+}
+
+/** Remember what the system default resolved to. */
+export function rememberDefaultDevice(held: { id: string; label: string } | null): void {
+  keep(defaultKey, held);
+}
+
+/**
  * The key the panel advertises, or `null` when no key is bound.
  *
  * `null` is the whole point: `forge.toml` allows the binding to be `off`, and a

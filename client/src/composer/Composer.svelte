@@ -24,7 +24,13 @@
     type Action,
     type Held,
   } from './dictate-key';
-  import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
+  import {
+    axesFor,
+    deviceFor,
+    rememberAxes,
+    rememberDefaultDevice,
+    rememberDevice,
+  } from './dictation';
   import { focusOf, type Where } from './editors';
   import { busyLine, LocalTake } from './take';
   import { FORGE_COMMANDS } from './forge-commands';
@@ -613,6 +619,13 @@
       if (started === null) {
         pending = null;
         return;
+      }
+      // A take with no pick records from the system default, and opening it
+      // is the one moment the browser names what that default IS - the list
+      // it offers carries no default mark. The panel's row says the name
+      // from then on.
+      if (deviceFor(at) === null && started.resolved !== null && started.resolved.label !== '') {
+        rememberDefaultDevice(started.resolved);
       }
       take = started;
       if (pending !== null) {

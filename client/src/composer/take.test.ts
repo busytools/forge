@@ -192,6 +192,30 @@ describe('a take on a socket that is up', () => {
     expect(mic.stopped, 'the server drops the take on the close, so this side releases').toBe(true);
     expect(w.ended()).toBe(1);
   });
+
+  it('carries the input the stream resolved to, when the source reports one', () => {
+    const connection = fakeConnection();
+    const w = wiring(connection);
+    const heard = {
+      seat: SEAT,
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    };
+
+    const named = new LocalTake(
+      { ...fakeMic(), resolved: { id: 'mic-2', label: 'Shure SM7B' } },
+      connection,
+      DEFAULT_AXES,
+      heard,
+    );
+    expect(named.resolved, 'the panel learns the default from this').toEqual({
+      id: 'mic-2',
+      label: 'Shure SM7B',
+    });
+
+    const bare = new LocalTake(fakeMic(), connection, DEFAULT_AXES, heard);
+    expect(bare.resolved, 'a source that reports none leaves it unknown').toBeNull();
+  });
 });
 
 describe('a take whose socket is down', () => {

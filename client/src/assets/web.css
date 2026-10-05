@@ -1400,7 +1400,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .dev.missing .nm { color: var(--bad); }
 .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
   padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
-  background: var(--s2); cursor: pointer; }
+  background: var(--s2); cursor: pointer; color: var(--dim); }
 .pop .dev:hover { border-color: var(--ctl); }
 .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
 .pop .dev .chev { margin-left: auto; color: var(--dim); }

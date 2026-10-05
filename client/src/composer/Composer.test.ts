@@ -17,13 +17,17 @@ const mic = vi.hoisted(() => {
     stops: number;
     gated: boolean;
     release: (() => void) | null;
-  } = { onFrame: null, stops: 0, gated: false, release: null };
+    resolved: { id: string; label: string } | null;
+  } = { onFrame: null, stops: 0, gated: false, release: null, resolved: null };
   const source = {
     get onFrame(): ((bytes: Uint8Array) => void) | null {
       return held.onFrame;
     },
     set onFrame(fn: ((bytes: Uint8Array) => void) | null) {
       held.onFrame = fn;
+    },
+    get resolved(): { id: string; label: string } | undefined {
+      return held.resolved ?? undefined;
     },
     flush: (): Uint8Array | null => null,
     stop: (): void => {
@@ -977,6 +981,28 @@ describe('the key', () => {
       });
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('learns what the system default is from the first take that opens it', async () => {
+    mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
+    try {
+      localStorage.removeItem('forge.dictate.default');
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      key('ControlRight', 'keyup');
+
+      expect(
+        localStorage.getItem('forge.dictate.default'),
+        'the panel names the default from then on',
+      ).toBe(JSON.stringify({ id: 'mic-2', label: 'Shure SM7B' }));
+    } finally {
+      mic.held.resolved = null;
+      localStorage.removeItem('forge.dictate.default');
     }
   });
 
@@ -3689,6 +3715,55 @@ describe('the dictation panel', () => {
     expect(harness.sent, "the input is this machine's: nothing crosses the socket for it").toEqual(
       [],
     );
+  });
+
+  it('names the system default once a take has opened it, and keeps the list quiet', async () => {
+    const walk = vi.mocked(inputs);
+    walk.mockResolvedValueOnce([
+      { id: 'mic-2', label: 'Shure SM7B' },
+      { id: 'mic-9', label: 'MacBook Pro Microphone' },
+    ]);
+    localStorage.setItem(
+      'forge.dictate.default',
+      JSON.stringify({ id: 'mic-2', label: 'Shure SM7B' }),
+    );
+    try {
+      opened();
+      expect(
+        document.querySelector('.pop .dev')?.textContent,
+        'the row names what the default resolved to',
+      ).toContain('Shure SM7B (system default)');
+
+      const door = document.querySelector('.pop .dev');
+      if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+      door.click();
+      await settled();
+
+      const device = [...document.querySelectorAll('.pop .ax')].find(
+        (group) => group.querySelector('.lbl')?.textContent === 'INPUT DEVICE',
+      );
+      expect(device?.querySelector('.note'), 'a named list owes no explanation').toBeNull();
+    } finally {
+      localStorage.removeItem('forge.dictate.default');
+    }
+  });
+
+  it('explains unnamed rows only while the list has any', async () => {
+    const walk = vi.mocked(inputs);
+    walk.mockResolvedValueOnce([{ id: 'mic-2', label: '' }]);
+    opened();
+    const door = document.querySelector('.pop .dev');
+    if (!(door instanceof HTMLElement)) throw new Error('the panel drew no device row');
+    door.click();
+    await settled();
+
+    const device = [...document.querySelectorAll('.pop .ax')].find(
+      (group) => group.querySelector('.lbl')?.textContent === 'INPUT DEVICE',
+    );
+    expect(
+      device?.querySelector('.note')?.textContent ?? '',
+      'a list the browser would not name says why',
+    ).toContain('names appear once this page has been allowed the microphone');
   });
 
   it('resets every axis and the input back to what the config set', () => {
