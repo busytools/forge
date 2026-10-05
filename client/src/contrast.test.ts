@@ -122,8 +122,8 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * here takes the 3:1 large-text floor, since the sheet's largest is
  * `.brand .word` at 22px and weight 650, neither 24px nor bold.
  *
- * Every pair but `--violet`'s comes from a rule, in `assets/web.css` or in a
- * component's own style block, and names the token that rule paints. Where a
+ * Every pair comes from a rule, in `assets/web.css` or in a component's own
+ * style block, and names the token that rule paints. Where a
  * rule paints over a gradient or an alpha layer the row still has to name a
  * token, so its number reads higher than the ground's: `--blue` is
  * `.opt .ic.ed` in the dock's gradient, at 6.80-7.08 rather than 7.38;
@@ -132,9 +132,9 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * 3.50, and 3.10 on the selected row's own ground. Each clears its floor
  * where it lands.
  *
- * `--violet` is drawn by nothing - no rule in the sheet reads it - and is
- * pinned against the page so the token cannot sit in the palette with no
- * answer for where a surface would put it.
+ * `--violet`'s rule is the pile card's own: `.m .src.forge` in `Queue.svelte`
+ * paints it on the card's raised ground, and it is paired there so the token
+ * cannot sit in the palette with no answer for where a surface would put it.
  *
  * The one ceiling is on the row the prose is read from: every other row that
  * draws `--text` is the same token on a raised ground, and always measures
@@ -170,7 +170,8 @@ const DRAWN: readonly Pair[] = [
   ['--blue', '--bg', TEXT],
   ['--teal', '--bg', TEXT],
   ['--teal', '--s2', TEXT],
-  ['--violet', '--bg', TEXT],
+  // The pile card's own source chip: `.m .src.forge`, on the card's ground.
+  ['--violet', '--s2', TEXT],
   ['--hot', '--bg', TEXT],
 ];
 
