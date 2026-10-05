@@ -10,7 +10,7 @@
   import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
-  import Dictation from './Dictation.svelte';
+  import TakeCard from './TakeCard.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -187,8 +187,9 @@
     if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
-    // that is still producing.
-    return { frames: wireDone.frames, bytes: wireDone.bytes, rate: null };
+    // that is still producing, and nothing is held once the socket's side is
+    // done with it.
+    return { frames: wireDone.frames, bytes: wireDone.bytes, rate: null, held: 0 };
   });
 
   /**
@@ -894,7 +895,7 @@
       class:done={ring === 'done'}
     >
       {#if composer.take !== null}
-        <Dictation take={composer.take} {slot} {connection} {wire} />
+        <TakeCard take={composer.take} {wire} oncancel={abandon} />
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}

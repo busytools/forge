@@ -44,8 +44,8 @@ export function meterCells(levels: number[]): Cell[] {
  * the only thing that moves. `forge-tui`'s own meter is the same shape, a
  * vector of `METER_WIDTH` zeros that fills as readings arrive.
  */
-export function meterWindow(levels: number[]): Cell[] {
-  const readings = levels.slice(-METER_CELLS);
-  const floor = Array.from({ length: METER_CELLS - readings.length }, () => 0);
+export function meterWindow(levels: number[], cells = METER_CELLS): Cell[] {
+  const readings = levels.slice(-cells);
+  const floor = Array.from({ length: cells - readings.length }, () => 0);
   return meterCells([...floor, ...readings]);
 }
