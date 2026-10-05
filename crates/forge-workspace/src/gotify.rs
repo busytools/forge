@@ -941,6 +941,24 @@ mod tests {
         let view_key = ws.project_key_for_name("forge").expect("seeded project");
         let lead = SessionSlot::lead("TestOrg", "forge");
 
+        // The sibling connector carries a set of its own, so an announcer
+        // that sent a hardcoded empty beside the moved set cannot pass: the
+        // frame carries the pair, and a later "send only what moved" would
+        // clear the client's slack rows on every gotify write.
+        ws.add_slack_subscription(
+            forge_primitives::slack::SlackSubscription {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                project: "forge".to_owned(),
+                team_role: None,
+                target: forge_primitives::slack::SlackSubscriptionTarget::DirectMessages,
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            },
+            true,
+        );
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(slack.len(), 1, "precondition: the sibling set is seeded and announced");
+
         let subscription = gotify_sub("forge", &["alerts"], Some(5));
         ws.add_gotify_subscription(subscription.clone(), true);
         let (key, gotify, slack) = next_connectors_changed(&mut rx);
@@ -950,14 +968,15 @@ mod tests {
             [subscription.id],
             "and carries the set the core now holds",
         );
-        assert!(slack.is_empty(), "beside the sibling connector's own set");
+        assert_eq!(slack.len(), 1, "beside the sibling connector's own set: {slack:?}");
 
         assert!(
             ws.remove_gotify_subscription_owned_by("forge", subscription.id, None),
             "precondition: the lead removes its own subscription",
         );
-        let (_, gotify, _) = next_connectors_changed(&mut rx);
+        let (_, gotify, slack) = next_connectors_changed(&mut rx);
         assert!(gotify.is_empty(), "an unsubscribe announces the set it left behind");
+        assert_eq!(slack.len(), 1, "and still carries the sibling's set: {slack:?}");
 
         // A worker's teardown announces the survivors.
         let mut worker_subscription = gotify_sub("forge", &[], None);

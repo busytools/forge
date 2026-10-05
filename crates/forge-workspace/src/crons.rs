@@ -581,13 +581,15 @@ mod tests {
         );
     }
 
-    /// The two writes the scheduler owns announce as well - a fire that
-    /// advances or removes an entry, and a worker teardown that takes its
-    /// schedules with it - because the section draws `next_fire` and the set
-    /// itself, not only what the tools edit.
+    /// The writes no tool call reaches announce as well - a fire that
+    /// advances or removes an entry, the fire router's dead-slot removal, and
+    /// a worker teardown that takes its schedules with it - because the
+    /// section draws `next_fire` and the set itself, not only what the tools
+    /// edit.
     ///
     /// Mutant: wire only the tool-driven writes, where a fired schedule's
-    /// countdown and a despawned worker's schedules stop moving.
+    /// countdown, a vanished owner's cron and a despawned worker's schedules
+    /// all stop moving.
     #[test]
     fn a_fired_schedule_and_a_teardown_announce_what_they_left() {
         use forge_primitives::cron::{CronId, CronKind};
@@ -620,6 +622,21 @@ mod tests {
         assert!(
             crons.iter().all(|cron| cron.id != CronId::from("o")),
             "the fired run-once is announced as gone",
+        );
+
+        // The fire router's dead-slot removal - the cron whose owner left
+        // forge.toml - takes the entry and announces the set it left, or a
+        // cron the section no longer holds keeps its row.
+        ws.seed_test_cron(schedule("orphan", "proj", "no owner", None));
+        assert!(
+            ws.remove_cron("proj", &CronId::from("orphan")),
+            "precondition: the router's removal finds the entry",
+        );
+        let (announced_key, crons) = next_crons_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a dead-slot removal routes the same way");
+        assert!(
+            crons.iter().all(|cron| cron.id != CronId::from("orphan")),
+            "and announces the set it left: {crons:?}",
         );
 
         // A worker's teardown announces the schedules it left behind.
