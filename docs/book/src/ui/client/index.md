@@ -58,3 +58,14 @@ for it instead of an indent. Where it is proposed to go, per surface:
 The connect screen's rejected direction uses it too, as the state spine,
 and that is the same idea applied to a sequence rather than a
 containment.
+
+## Touch
+
+**Touch is a hard requirement, not a fallback.** The client runs on
+Android as well as the desktop, so every control a finger reaches takes a
+44px target under `@media (pointer: coarse)` - keyed on the pointer, not
+the width, because an Android tablet is wide and still finger-driven. A
+rail row or a home row carries its link across the row's own height rather
+than the height of its text, so the whole row is the target. No affordance
+lives on hover alone: hover recolours a control rather than uncovering
+one, and the chevron the home row fades in is decoration, not a way in.

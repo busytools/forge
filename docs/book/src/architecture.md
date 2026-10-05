@@ -316,7 +316,7 @@ type-checked configs, `svelte-check`, `tsc --noEmit` and then vitest,
 so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
-The desktop shell under `client/src-tauri/` is its own workspace root, so
+The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s fmt, clippy and nextest never reach it, and neither do CI's
 cargo jobs; the Unicode punctuation gate, which CI runs too, and the
 client's Prettier step do. `just client-tauri-check` builds it in the

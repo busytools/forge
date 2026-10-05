@@ -356,6 +356,11 @@
   @media (max-width: 760px) {
     .tokens { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
+  /* A row's artifact link is its own control and takes a finger's height,
+     keyed on the pointer; the app's sheet carries the same rule. */
+  @media (pointer: coarse) {
+    .row .what a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; }
+  }
 </style>
 </head>
 <body>

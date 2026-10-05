@@ -128,6 +128,11 @@
      window; a specimen beside a label must not. */
   .stage { max-width: 30rem; margin-top: 18px; }
   .stage .door { margin-top: 0; }
+  /* The door's controls take a finger's height, keyed on the pointer; the
+     app's sheet carries the same rule. */
+  @media (pointer: coarse) {
+    button, input, select, textarea, details > summary { min-height: 44px; }
+  }
 </style>
 </head>
 <body>

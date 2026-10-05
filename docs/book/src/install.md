@@ -15,11 +15,13 @@
   verifies a UI change with `mdbook serve docs/book`.
 - **`just`**, if you want the task recipes. Most wrap a cargo
   invocation you can also type out.
-- **Node and npm, for the desktop client.** `just check` runs the client's
+- **Node and npm, for the client.** `just check` runs the client's
   Prettier, ESLint, `svelte-check`, `tsc` and vitest steps, and
   `just client-tauri-check` builds the shell in its shipping configuration;
   `just release` builds and installs it. CI uses Node 24, and
-  `npm --prefix client ci` fetches the client's dependencies.
+  `npm --prefix client ci` fetches the client's dependencies. The client
+  also builds for Android, which additionally wants the Android SDK, its
+  NDK and a JDK 17 or newer; the recipe is in `client/README.md`.
 - **A C and C++ toolchain, `cmake`, and `libclang`.** `forge-workspace`
   depends on `forge-dictate`, which builds two native model runtimes
   (`transcribe-cpp-sys`, `llama-cpp-sys-2`) - so these are needed to
@@ -85,7 +87,7 @@ of which `just check` deliberately leaves out. The client's steps are in
 here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
-The desktop shell under `client/src-tauri/` is its own workspace root, so
+The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
 punctuation gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-check` builds it in the shipping configuration and

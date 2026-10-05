@@ -1105,16 +1105,45 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      spans and labels they were ported from. The rule above is for a control
      whose own height IS the target; these two are not. */
   .rail-tog { width: 44px; height: 44px; }
-  /* A row's chip is not the target - the row is, and has been since the mock
-     drew `.pr` as the pointer - so it gives its height back rather than
-     stretching every row it sits in. It is disabled today in any case. */
-  .pr .x, .wk .x { min-height: 0; }
+  /* The row's close chip is a live control, and its own box is ~26px wide, so
+     it takes the height the rule above gives it and a width to match. */
+  .pr .x, .wk .x { min-width: 44px; }
   /* The banner's is the exception, and it is the one control that must stay a
      target: it is the way out of a covering rail, the header's handle is
      underneath it at this width, and it is drawn ~23px wide by its padding -
      under the 24px floor as well as the house bar. So it takes the height the
      rule above gives it and a width to match. */
   .banner .close { min-width: 44px; }
+}
+
+/* The same reach, keyed on the POINTER rather than the width: the step above
+   fires only at a phone's width, and an Android tablet is wide and still
+   finger-driven. A control whose own height is its target takes the 44 here
+   too. */
+@media (pointer: coarse) {
+  button, input, select, textarea, details > summary { min-height: 44px; }
+  .rail-tog { width: 44px; height: 44px; }
+  .banner .close { min-width: 44px; }
+  /* A row's own link is the finger's target: its box carries the 44, and the
+     row grows with it. The rail's rows also stretch the link over the whole
+     row - the way the home rows' own rule already stretches theirs - so the
+     middle of a row is the link rather than dead space. */
+  .pr .nm a, .wk .nm a, .row .name a { display: inline-flex; align-items: center; min-height: 44px; }
+  .pr, .wk { position: relative; }
+  .pr .nm a::after, .wk .nm a::after { content: ""; position: absolute; inset: 0; }
+  /* The row's chip is a live control and sits above the stretch, so its own
+     presses are the chip's and its box is a finger's to hit. */
+  .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
+  /* An artifact link inside a home row is its own control, above that row's
+     stretch, and takes the 44 the same way - the width too, since a short
+     label draws one narrower than a finger. Block rather than flex, and the
+     height in the line, so a long label still ellipsises. */
+  .row .what a { display: inline-block; min-width: 44px; min-height: 44px;
+    line-height: 44px; }
+  /* The header's brand is a way home, and the session's more disclosure is a
+     chevron: neither is 44 by its own box. */
+  .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+  .sess > .more > summary { min-width: 44px; }
 }
 
 /* A delivery keeps the lines it arrived with: its body is often a second
