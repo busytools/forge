@@ -61,7 +61,7 @@
     // A blur whose related target is nothing (a click on the panel's own
     // padding) leaves focus wherever the browser put it: read the live one.
     const next = event?.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next !== null && segEl.contains(next)) return;
+    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
     // A leave arms nothing while the segment still holds the reader - the
     // pointer may be crossing back in, and a row may hold the keyboard.
     if (event === undefined && segEl !== null && segEl.matches(':hover')) return;
@@ -83,6 +83,11 @@
   let seated = false;
   /** The list's height as of the previous run, so a follow judges the foot it saw. */
   let seen = 0;
+
+  /** Put focus back on the toggle, which is where a dismissal leaves a reader. */
+  function toToggle(): void {
+    segEl?.querySelector('button')?.focus();
+  }
 
   /** Put the list's scroll at its foot. */
   function toFoot(el: HTMLElement): void {
@@ -121,23 +126,28 @@
 </script>
 
 {#if listed.length > 0}
-  <span
-    class="sg-seg"
-    class:open
-    bind:this={segEl}
-    onmouseenter={hold}
-    onmouseleave={() => release()}
-    onfocusin={hold}
-    onfocusout={release}
-    onkeydown={(event) => {
-      if (event.key !== 'Escape') return;
-      // Focus first: the focusin that follows sets `open` back, so closing
-      // after it is the close that sticks.
-      segEl?.querySelector('button')?.focus();
-      open = false;
-    }}
-  >
-    <button type="button" class="sg-tog" aria-expanded={open} onclick={() => (open = !open)}>
+  <!-- The listeners live on the buttons themselves: the wrapper is a plain
+       span, and a span wearing mouse or key handlers is a non-interactive
+       element pretending to be a control. The guards in `release` are what
+       keep the list open while the pointer or the keyboard is still on it. -->
+  <span class="sg-seg" class:open bind:this={segEl}>
+    <button
+      type="button"
+      class="sg-tog"
+      aria-expanded={open}
+      onclick={() => (open = !open)}
+      onmouseenter={hold}
+      onmouseleave={() => release()}
+      onfocusin={hold}
+      onfocusout={release}
+      onkeydown={(event) => {
+        if (event.key !== 'Escape') return;
+        // Focus first: the focusin that follows sets `open` back, so closing
+        // after it is the close that sticks.
+        toToggle();
+        open = false;
+      }}
+    >
       <!-- The subagents glyph leads, so the segment reads as what it is; the
            mark after it is the state. -->
       <Icon name="subagents" />
@@ -157,6 +167,14 @@
             class="sg-it"
             onclick={() => {
               askReveal(card.dispatch_id);
+              open = false;
+            }}
+            onmouseenter={hold}
+            onmouseleave={() => release()}
+            onfocusout={release}
+            onkeydown={(event) => {
+              if (event.key !== 'Escape') return;
+              toToggle();
               open = false;
             }}
           >
