@@ -7,7 +7,7 @@
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
-  import type { Route } from '../routes';
+  import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
@@ -49,6 +49,15 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
+
+  // The tab's name follows what is on screen: forge at the home, the seat's
+  // project on a session, and its label too when it is a worker's.
+  $effect(() => {
+    document.title = titleFor(
+      route,
+      (home.wire?.projects ?? []).map((row) => row.project),
+    );
+  });
 </script>
 
 {#if route.name === 'connect'}

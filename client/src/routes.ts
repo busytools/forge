@@ -60,6 +60,27 @@ export function hrefForSlot(slot: SessionSlot): string {
   return `/session/${encode(slot.org)}/${encode(slot.project)}/${encode(slot.label)}`;
 }
 
+/** One project row's own naming, as the home carries it. */
+export interface NameableProject {
+  key: string;
+  name: string;
+}
+
+/**
+ * The tab's title: the project of the seat being shown, then a worker's own
+ * label. The home's name for the project is preferred where the roster has
+ * one, so the title reads as the page does - the slot's own string stands in
+ * when the roster has not arrived or does not name it. Everywhere else
+ * keeps the plain `forge`.
+ */
+export function titleFor(route: Route, projects: readonly NameableProject[] = []): string {
+  if (route.name !== 'session') return 'forge';
+  const { project, label } = route.slot;
+  const named =
+    projects.find((row) => row.key === project || row.name === project)?.name ?? project;
+  return label === 'lead' ? named : `${named} \u{b7} ${label}`;
+}
+
 /**
  * Move the app to `route` in place.
  *
