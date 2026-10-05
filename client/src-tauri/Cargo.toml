@@ -1,6 +1,6 @@
 [package]
 name = "forge-client"
-version = "1.0.113"
+version = "1.0.114"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
