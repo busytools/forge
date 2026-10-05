@@ -395,6 +395,9 @@
   function reject(): void {
     // Same door as `submit`: a prompt already answered takes no refusal.
     if (answered) return;
+    // The wait a refused answer left names a row this refusal is not about, so
+    // the mark it would draw belongs to the answer that is gone.
+    answeredRow = null;
     if (ask.kind === 'question') {
       onanswer(ask.request.toolId);
       answer({
@@ -483,7 +486,7 @@
    */
   function toggle(): void {
     const row = rows[marked];
-    if (!multi || row === undefined || row.optionId === null) return;
+    if (!multi || answered || row === undefined || row.optionId === null) return;
     toggled = toggled.includes(row.optionId)
       ? toggled.filter((id) => id !== row.optionId)
       : [...toggled, row.optionId];
@@ -648,10 +651,11 @@
             type="button"
             aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
             onclick={() => {
-              // **Pressing the mic is being in the row.** It moves no focus, and
-              // without this the words a take lands would go to the composer's
-              // draft - which is not drawn while a prompt holds the slot - so the
-              // phone's only way to dictate an answer would lose the answer.
+              // **Pressing the mic is being in the row.** It counts as use
+              // whether or not the caret follows it - without it the words a
+              // take lands would go to the composer's draft, which is not
+              // drawn while a prompt holds the slot, so the phone's only way
+              // to dictate an answer would lose the answer.
               visited = true;
               onmic();
             }}
@@ -792,45 +796,44 @@
     <!-- The one row that takes words, which is also the row a take's words
          land in. It is always drawn rather than revealed by a mark: it is the
          answer for every kind of prompt, not an escape hatch for one. -->
-    {#if ask.kind === 'question'}
-      <div class="custom" class:live={take !== null}>
-        {#if take !== null}
-          <TakeCard {take} {wire} oncancel={onabandon} />
-        {:else}
-          <Field
-            editor="dock"
-            class="notes"
-            bind:value={notes}
-            rows={1}
-            placeholder="Or tell the agent something else&#8230;"
-            onkeydown={(event: KeyboardEvent) => {
-              event.stopPropagation();
-              onkey(event);
-            }}
-            field={(el: HTMLElement | null) => {
-              field = el;
-            }}
-          />
-        {/if}
-        {#if dictation}
-          <button
-            class="micb"
-            type="button"
-            aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
-            onclick={() => {
-              // **Pressing the mic is being in the row.** It moves no focus, and
-              // without this the words a take lands would go to the composer's
-              // draft - which is not drawn while a prompt holds the slot - so the
-              // phone's only way to dictate an answer would lose the answer.
-              visited = true;
-              onmic();
-            }}
-          >
-            <Icon name="mic" />
-          </button>
-        {/if}
-      </div>
-    {/if}
+    <div class="custom" class:live={take !== null}>
+      {#if take !== null}
+        <TakeCard {take} {wire} oncancel={onabandon} />
+      {:else}
+        <Field
+          editor="dock"
+          class="notes"
+          bind:value={notes}
+          rows={1}
+          placeholder="Or tell the agent something else&#8230;"
+          onkeydown={(event: KeyboardEvent) => {
+            event.stopPropagation();
+            onkey(event);
+          }}
+          field={(el: HTMLElement | null) => {
+            field = el;
+          }}
+        />
+      {/if}
+      {#if dictation}
+        <button
+          class="micb"
+          type="button"
+          aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
+          onclick={() => {
+            // **Pressing the mic is being in the row.** It counts as use
+            // whether or not the caret follows it - without it the words a take
+            // lands would go to the composer's draft, which is not drawn while
+            // a prompt holds the slot, so the phone's only way to dictate an
+            // answer would lose the answer.
+            visited = true;
+            onmic();
+          }}
+        >
+          <Icon name="mic" />
+        </button>
+      {/if}
+    </div>
   {/if}
 
   {#if ask.kind === 'slack_draft'}

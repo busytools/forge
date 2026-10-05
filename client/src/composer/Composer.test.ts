@@ -3663,7 +3663,15 @@ describe('the dock', () => {
    *
    * The wire's `dispatch` refusal cannot say which command it was about, and
    * taking it as the outstanding answer's own reason clears the stand-down -
-   * which is the door the answer goes out of a second time.
+   * which is the door the answer goes out of a second time. The door is tested
+   * by a ROW CLICK rather than by Enter: the take's press puts the caret in the
+   * words row, where Enter carries no words and answers nothing under either
+   * shape, so a key there cannot tell a dock that has re-armed from one that
+   * has not.
+   *
+   * The other direction is accepted rather than fixed: an answer's own refusal
+   * arriving while a take is live draws on the take's line and does not clear
+   * the stand-down, and the prompt clears both when it resolves.
    */
   it("does not take a refused take for the answer's own refusal", async () => {
     const harness = open({
@@ -3682,9 +3690,17 @@ describe('the dock', () => {
     harness.say({ kind: 'error', what: 'dispatch', why: 'dictation is not ready' });
     flushSync();
 
-    press('Enter');
+    options()[0]?.click();
+    flushSync();
 
-    expect(answers(), 'and the refused take does not send it again').toHaveLength(1);
+    expect(
+      answers(),
+      'and the refused take does not re-arm the row it was answered with',
+    ).toHaveLength(1);
+    expect(
+      document.querySelector('.dock .answering'),
+      'the stand-down is still standing while the answer is out',
+    ).not.toBeNull();
   });
 
   /** Press the dock's mic and let the take it starts settle. */
@@ -3696,22 +3712,33 @@ describe('the dock', () => {
     flushSync();
   }
 
-  /**
-   * The mic, which is the spec's own AUQ case: this surface's door to a take,
-   * and the words it produces land in the row it was pressed on.
-   */
-  it('draws the mic only where this install can dictate', () => {
-    open({ record: record({ pending_asks: [questionAsk()] }), dictation: false });
-    expect(
-      document.querySelector('.dock .micb'),
-      'a control this install cannot honour is worse than none',
-    ).toBeNull();
-
+  /** Swap the dock drawn for another, which is one kind after another. */
+  function again(held: unknown, dictation: boolean): void {
     if (app !== null) void unmount(app);
     app = null;
     document.body.innerHTML = '';
-    open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
-    expect(document.querySelector('.dock .micb'), 'and the door where it can').not.toBeNull();
+    open({ record: record({ pending_asks: [held] }), dictation });
+  }
+
+  /**
+   * The mic, which is the spec's own AUQ case: this surface's door to a take,
+   * and the words it produces land in the row it was pressed on.
+   *
+   * Both kinds with a words row, because the gate and the landing are each a
+   * line of the same markup: a pin driving only a question says nothing about
+   * the permission that draws the same mic.
+   */
+  it('draws the mic only where this install can dictate', () => {
+    for (const held of [questionAsk(), permissionAsk()]) {
+      again(held, false);
+      expect(
+        document.querySelector('.dock .micb'),
+        'a control this install cannot honour is worse than none',
+      ).toBeNull();
+
+      again(held, true);
+      expect(document.querySelector('.dock .micb'), 'and the door where it can').not.toBeNull();
+    }
   });
 
   it('draws no mic on a held post, whose text is approved rather than composed', () => {
@@ -3740,35 +3767,41 @@ describe('the dock', () => {
     });
   });
 
-  it("lands a take's words in the words row, which the prompt is holding", async () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+  it("lands a take's words in the words row, whichever kind holds the slot", async () => {
+    for (const held of [questionAsk(), permissionAsk()]) {
+      const harness = open({ record: record({ pending_asks: [held] }), dictation: true });
 
-    await micPress();
-    await micPress();
+      await micPress();
+      await micPress();
 
-    // The server says the take is running, then that it landed: the box has to
-    // have watched it for the landing to be its own.
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: {
-        take: null,
-        notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
-        compacting: false,
-        sign_in: null,
-      },
-    });
-    flushSync();
+      // The server says the take is running, then that it landed: the box has to
+      // have watched it for the landing to be its own.
+      harness.page.record = record({
+        pending_asks: [held],
+        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      });
+      flushSync();
+      harness.page.record = record({
+        pending_asks: [held],
+        composer: {
+          take: null,
+          notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
+          compacting: false,
+          sign_in: null,
+        },
+      });
+      flushSync();
 
-    const field = document.querySelector('.dock textarea.notes');
-    expect(
-      field instanceof HTMLTextAreaElement ? field.value : null,
-      'the words land in the row the mic started them from, not in a box this slot is not drawing',
-    ).toBe('the dictated answer');
+      const field = document.querySelector('.dock textarea.notes');
+      expect(
+        field instanceof HTMLTextAreaElement ? field.value : null,
+        'the words land in the row the mic started them from, not in a box this slot is not drawing',
+      ).toBe('the dictated answer');
+
+      if (app !== null) void unmount(app);
+      app = null;
+      document.body.innerHTML = '';
+    }
   });
 
   it('refuses a mic press on a seat whose take belongs to another', async () => {
@@ -3810,6 +3843,182 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
+
+  it('draws the wait on the row that was answered, not under the list', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    options()[1]?.click();
+    flushSync();
+    expect(commands(harness), 'the answer went').toHaveLength(1);
+
+    expect(
+      document.querySelector('.dock .opt .answering'),
+      'the wait rides the row it came from',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .keys .answering'),
+      'and the line under the list stays for the answers with no row',
+    ).toBeNull();
+  });
+
+  it('draws the wait under the list for an answer that came from the words', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
+    field.focus();
+    field.value = 'neither, wait for the release';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    press('Enter');
+
+    expect(commands(harness), 'the words went').toHaveLength(1);
+    expect(
+      document.querySelector('.dock .keys .answering'),
+      'an answer with no row has no row to ride',
+    ).not.toBeNull();
+    expect(document.querySelector('.dock .opt .answering')).toBeNull();
+  });
+
+  it('holds the mark and the toggles while an answer is on its way', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const list = document.querySelector('.dock [role="listbox"]');
+    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
+
+    press(' ');
+    flushSync();
+    const boxes = () =>
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on'));
+    expect(boxes(), 'the first row is on').toEqual([true, false]);
+
+    // The answer goes, and the dock stands down: the rows are a record of it
+    // now, not a list to keep working.
+    press('Enter');
+    flushSync();
+
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    flushSync();
+
+    expect(
+      document.querySelector('.dock .opt.sel')?.textContent,
+      'the mark does not move on an answered prompt',
+    ).toContain('Staging');
+    expect(boxes(), 'and space flips nothing behind it').toEqual([true, false]);
+  });
+
+  it('draws one primary action, the trusting last one', () => {
+    // The wire's common prompt carries two allows: marking both is no
+    // hierarchy, so the last one - the most trusting - is the primary.
+    open({
+      record: record({
+        pending_asks: [
+          {
+            kind: 'permission',
+            request: {
+              tool_call: {
+                tool_call_id: 'tu-2',
+                title: 'Bash',
+                kind: 'execute',
+                status: 'pending',
+                content: [],
+                locations: [],
+                raw_input: { command: 'git push origin main' },
+              },
+              display: {
+                title: 'Bash',
+                display_name: null,
+                description: null,
+                decision_reason: null,
+              },
+              options: [
+                {
+                  option_id: 'opt-once',
+                  name: 'Allow once',
+                  kind: 'allow',
+                  action: { kind: 'allow' },
+                },
+                {
+                  option_id: 'opt-always',
+                  name: 'Allow always',
+                  kind: 'allow',
+                  action: { kind: 'allow' },
+                },
+                { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const primaries = [...document.querySelectorAll('.dock .acts .btn.p')];
+    expect(primaries, 'exactly one action is primary').toHaveLength(1);
+    expect(primaries[0]?.textContent, 'and it is the trusting one').toContain('Allow always');
+  });
+
+  it('prefers the description over the command when the wire carries both', () => {
+    open({
+      record: record({
+        pending_asks: [
+          {
+            kind: 'permission',
+            request: {
+              tool_call: {
+                tool_call_id: 'tu-3',
+                title: 'Bash',
+                kind: 'execute',
+                status: 'pending',
+                content: [],
+                locations: [],
+                raw_input: {
+                  description: 'Push the release tag once the wave lands',
+                  command: 'git push origin v1.0.115',
+                },
+              },
+              display: {
+                title: 'Bash',
+                display_name: null,
+                description: null,
+                decision_reason: null,
+              },
+              options: [
+                {
+                  option_id: 'opt-once',
+                  name: 'Allow once',
+                  kind: 'allow',
+                  action: { kind: 'allow' },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    expect(
+      document.querySelector('.dock .d-q')?.textContent,
+      "the description is the server's own pick, and the command is its fallback",
+    ).toBe('Push the release tag once the wave lands');
+  });
+
+  it('keeps a take visible behind a held post, which draws no words row', () => {
+    open({
+      record: record({
+        pending_asks: [slackDraftAsk()],
+        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      }),
+    });
+
+    expect(
+      document.querySelector('.dock .blip'),
+      'a post cannot swallow a recording that is still going',
+    ).not.toBeNull();
+    expect(drawn()).toContain('dictating');
   });
 
   it('says on the submit key how many rows will go', () => {
