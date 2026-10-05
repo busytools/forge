@@ -300,9 +300,9 @@ client-tauri-bundle:
     npm --prefix client run tauri -- build --ci -- --locked
 
 # Bundle the client as an app and install it over /Applications/forge.app.
-# This is `release`'s last step and does not bump anything, so it can be
-# re-run after a failed build - while no source has changed since the tag,
-# which is what records the tree being shipped.
+# It does not bump anything, so it can be re-run after a failed build -
+# while no source has changed since the tag, which is what records the
+# tree being shipped.
 #
 # `--bundles app` overrides the config's `bundle.targets`, so the dmg target -
 # the one that mounts the image and opens a Finder window - is never invoked.
@@ -834,10 +834,20 @@ remove-cert:
 #
 # One number names both halves: this bumps the workspace and the client's
 # own manifest to `version`, commits and tags them together, and only then
-# builds and installs the client, through `client-release`, and stages the
-# Android APK, through `client-android-release`.
+# installs the server binary, through `install`, and the client, through
+# `client-release`, and stages the Android APK, through
+# `client-android-release`.
 #
-# Cut a release: bump the workspace and client versions, commit, tag, install the client, stage the APK.
+# The server install goes first, so the client's refusal - the one that
+# names `just client-release` as its recovery - cannot leave the binary
+# behind. The install is unconditional and fails rather than skipping: a
+# build that cannot produce the binary aborts the recipe with the tag cut
+# and no OK line, so the server cannot be left behind silently. Each half
+# re-runs alone (`just install`, `just client-release <version>`,
+# `just client-android-release <version>`), while re-running
+# `just release` refuses on the existing tag.
+#
+# Cut a release: bump the workspace and client versions, commit, tag, install the server binary and the client, stage the APK.
 release version: check-release check-feature-configs
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
@@ -864,8 +874,9 @@ release version: check-release check-feature-configs
     # forces a signed tag - a bare `git tag <name>` errors with
     # "no tag message?" when signing is on.
     git tag -m "v{{version}}" "v{{version}}"
+    "{{just_executable()}}" --justfile "{{justfile()}}" install
     "{{just_executable()}}" --justfile "{{justfile()}}" client-release {{version}}
     "{{just_executable()}}" --justfile "{{justfile()}}" client-android-release {{version}}
     @echo
-    @echo "[OK] released v{{version}}: tagged locally, client installed at /Applications/forge.app, APK staged under client/src-tauri/target/release/bundle/android/"
+    @echo "[OK] released v{{version}}: tagged locally, server binary installed, client installed at /Applications/forge.app, APK staged under client/src-tauri/target/release/bundle/android/"
     @echo "     To publish: git push --follow-tags origin main (attach the APK to the release when cutting it)"
