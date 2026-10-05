@@ -4,6 +4,7 @@
 
 use forge_primitives::tasks::{Task, TaskId};
 
+use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 
 impl Workspace {
@@ -26,7 +27,9 @@ impl Workspace {
 
     /// Append a task and persist. Backs `tasks__create`.
     pub(crate) fn push_task(&self, task: Task) {
+        let project_name = task.project_name.clone();
         self.with_tasks_mut(|tasks| tasks.push(task));
+        self.announce_tasks_changed(&project_name);
     }
 
     /// Apply `f` to the task `id` in `project_name`, persist, and report
@@ -37,7 +40,7 @@ impl Workspace {
         id: &TaskId,
         f: impl FnOnce(&mut Task),
     ) -> bool {
-        self.with_tasks_mut(|tasks| {
+        let changed = self.with_tasks_mut(|tasks| {
             match tasks.iter_mut().find(|t| t.id == *id && t.project_name == project_name) {
                 Some(task) => {
                     f(task);
@@ -46,7 +49,11 @@ impl Workspace {
                 }
                 None => false,
             }
-        })
+        });
+        if changed {
+            self.announce_tasks_changed(project_name);
+        }
+        changed
     }
 
     /// Remove the task `id` in `project_name` together with every
@@ -55,7 +62,7 @@ impl Workspace {
     /// call site so a parent can never be deleted out from under children
     /// that would then have nobody to close them.
     pub(crate) fn remove_task_tree(&self, project_name: &str, id: &TaskId) -> bool {
-        self.with_tasks_mut(|tasks| {
+        let removed = self.with_tasks_mut(|tasks| {
             let mut doomed = vec![id.clone()];
             let mut cursor = 0;
             while cursor < doomed.len() {
@@ -73,7 +80,29 @@ impl Workspace {
             let before = tasks.len();
             tasks.retain(|t| !(t.project_name == project_name && doomed.contains(&t.id)));
             tasks.len() != before
-        })
+        });
+        if removed {
+            self.announce_tasks_changed(project_name);
+        }
+        removed
+    }
+
+    /// Tell every view the project's task set moved, as the set the write
+    /// just left. It routes on the project's lead seat, which is the seat a
+    /// project-scoped section belongs to; a name no project carries has no
+    /// seat to route on and announces nothing.
+    fn announce_tasks_changed(&self, project_name: &str) {
+        let Some(key) = self.lead_slot_for_project(project_name) else {
+            tracing::debug!(
+                target: "forge_workspace::tasks",
+                event_name = "tasks_changed_unroutable",
+                project = %project_name,
+                "a task write named a project no project carries; nothing was announced",
+            );
+            return;
+        };
+        let tasks = self.tasks_for_project(project_name);
+        let _ = self.update_tx.send(SessionUpdate::TasksChanged { key, tasks });
     }
 
     /// The tasks registered for `project_name`. Backs `tasks__list` and
@@ -89,16 +118,35 @@ impl Workspace {
     /// Cross-crate test access to the otherwise `pub(crate)` task store
     /// so forge-tui can exercise the Inspector's `refresh_tasks`
     /// resolution against a seeded task.
+    ///
+    /// The store write without the announcement: a fixture seeds state, it
+    /// does not perform the write a view is owed a frame for.
     pub fn seed_test_task(&self, task: forge_primitives::tasks::Task) {
-        self.push_task(task);
+        self.with_tasks_mut(|tasks| tasks.push(task));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SessionSlot, SessionUpdate};
     use forge_primitives::tasks::{Task, TaskId, TaskStatus};
     use tempfile::tempdir;
+
+    /// The one `TasksChanged` on a test's update stream, as its key and the
+    /// set it announces.
+    fn next_tasks_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> (SessionSlot, Vec<Task>) {
+        match rx.try_recv() {
+            Ok(SessionUpdate::TasksChanged { key, tasks }) => (key, tasks),
+            other => panic!("expected a TasksChanged on the stream, got {other:?}"),
+        }
+    }
+
+    fn subjects(tasks: &[Task]) -> Vec<String> {
+        tasks.iter().map(|task| task.subject.clone()).collect()
+    }
 
     fn sample_task(id: &str, project: &str) -> Task {
         Task {
@@ -196,6 +244,70 @@ mod tests {
             ws.tasks_for_project("elsewhere").len(),
             2,
             "another project keeps both of its tasks, one of them sharing a doomed id",
+        );
+    }
+
+    /// Every task write announces the project's set on the project's lead
+    /// seat, so the inspector's TASKS section pops on the frame that moved it
+    /// rather than on the next unrelated read.
+    ///
+    /// The three writers are pinned together because they are one section's
+    /// three doors. Mutants: drop any one emission (the drain is empty), or
+    /// announce a set taken before the write (the announced set disagrees
+    /// with the store).
+    #[test]
+    fn every_task_write_announces_the_projects_set() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-tasks");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        ws.push_task(sample_task("t-1", "proj"));
+        let (key, tasks) = next_tasks_changed(&mut rx);
+        assert_eq!(key, lead, "a create routes on the project's lead seat");
+        assert_eq!(subjects(&tasks), ["subject t-1"], "and carries the set the core now holds");
+
+        assert!(ws.update_task("proj", &TaskId::from("t-1"), |task| {
+            task.status = TaskStatus::Completed;
+        }));
+        let (key, tasks) = next_tasks_changed(&mut rx);
+        assert_eq!(key, lead, "an update routes the same way");
+        assert_eq!(tasks.len(), 1, "and announces the whole set");
+        assert_eq!(tasks[0].status, TaskStatus::Completed, "the write's own change included");
+
+        assert!(ws.remove_task_tree("proj", &TaskId::from("t-1")));
+        let (_, tasks) = next_tasks_changed(&mut rx);
+        assert!(tasks.is_empty(), "a delete announces the set it left behind");
+    }
+
+    /// A write that changed nothing emits nothing: an update for an id no
+    /// task carries and a delete of one nothing holds are both refusals, and
+    /// an announcement would be news about a write that never happened.
+    ///
+    /// Mutant: announce unconditionally, where the refused pair is news the
+    /// section never moved for.
+    #[test]
+    fn a_task_write_that_changed_nothing_announces_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-tasks-noop");
+
+        assert!(
+            !ws.update_task("proj", &TaskId::from("ghost"), |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            "precondition: no task carries the id, so the update is refused",
+        );
+        assert!(
+            !ws.remove_task_tree("proj", &TaskId::from("ghost")),
+            "precondition: nothing holds the id, so the delete is refused",
+        );
+
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a refused update and a refused delete announce nothing, and this was announced: \
+             {announced:?}",
         );
     }
 }

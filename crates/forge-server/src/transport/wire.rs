@@ -134,6 +134,13 @@ pub struct ProjectWire {
     /// this wire carried them: a client could create a cron and never see it
     /// again.
     pub crons: Vec<forge_primitives::CronEntry>,
+    /// What this project's sessions are subscribed to, one list per connector.
+    ///
+    /// The subscriptions are per PROJECT and the section that draws them sits
+    /// on the row, so they ride here rather than on the home's
+    /// [`ConnectorsWire`] - which carries the liveness facts, which belong to
+    /// the server and the workspace rather than to a project.
+    pub connectors: ProjectConnectorsWire,
     /// Whether a spawn in this project would find an account. Read beside
     /// `project.has_model`, which is what tells the two reasons a spawn cannot
     /// run apart.
@@ -264,7 +271,12 @@ pub struct AccountUsageWire {
     pub snapshot: Option<Value>,
 }
 
-/// What the inbound connectors are watching.
+/// What the inbound connectors are watching, server-wide.
+///
+/// The liveness facts and nothing else: what each connector is subscribed to
+/// belongs to a project and rides [`ProjectWire::connectors`], so a
+/// subscriptions field here would be one no read can fill - and a page drawing
+/// it shows the section empty however long it waits.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConnectorsWire {
@@ -276,7 +288,6 @@ pub struct ConnectorsWire {
 #[serde(rename_all = "snake_case")]
 pub struct GotifyWire {
     pub connected: bool,
-    pub subscriptions: Vec<GotifySubscription>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -287,7 +298,14 @@ pub struct SlackWire {
     /// iterate, and the order is the store's.
     pub connected_workspaces: Vec<(String, bool)>,
     pub load_failed: bool,
-    pub subscriptions: Vec<SlackSubscription>,
+}
+
+/// One project's connector subscriptions, as the row's section draws them.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectConnectorsWire {
+    pub gotify: Vec<GotifySubscription>,
+    pub slack: Vec<SlackSubscription>,
 }
 
 /// Dictation's preflight state.
@@ -929,10 +947,15 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     let mut projects = Vec::with_capacity(roster.projects.len());
     for project in &roster.projects {
         let seat = SessionSlot::lead(project.org.clone(), project.name.clone());
+        let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectWire {
             work: state.work.snapshot(&seat, &project.path).await,
             tasks: roster.tasks_for_project(&project.name),
             crons: roster.crons_for_project(&project.name),
+            connectors: ProjectConnectorsWire {
+                gotify: subscribed.gotify.subscriptions,
+                slack: subscribed.slack.subscriptions,
+            },
             would_bind: roster.would_bind(&project.key),
             chip: roster.chip_for(&project.key),
             project: project.clone(),
@@ -988,14 +1011,10 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
                 .collect(),
         },
         connectors: ConnectorsWire {
-            gotify: GotifyWire {
-                connected: connectors.gotify.connected,
-                subscriptions: connectors.gotify.subscriptions,
-            },
+            gotify: GotifyWire { connected: connectors.gotify.connected },
             slack: SlackWire {
                 connected_workspaces: connectors.slack.connected_workspaces.into_iter().collect(),
                 load_failed: connectors.slack.load_failed,
-                subscriptions: connectors.slack.subscriptions,
             },
         },
         dictate: DictateWire {
@@ -2535,6 +2554,64 @@ mode = \"toggle\"
 
         assert_eq!(crons.len(), 1, "the project's own cron reached the wire: {crons:?}");
         assert_eq!(crons[0]["prompt"], "a nightly sweep");
+    }
+
+    /// A project's connector subscriptions ride its row, which is the read the
+    /// section draws.
+    ///
+    /// The home's own `connectors` carried a `subscriptions` list that no read
+    /// could fill - it was built with no project scope, and `None` means "the
+    /// liveness facts only" - so a page drawing that list showed the connector
+    /// section empty however long it waited, and would have flip-flopped
+    /// against the next re-read once a frame patched it.
+    #[tokio::test]
+    async fn a_projects_connector_subscriptions_ride_its_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace_with_connector_subs();
+        let state = TransportState {
+            surface: Arc::new(crate::surface::ViewSurface::new(Arc::clone(&workspace))),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            config: forge_primitives::WebConfig::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let rows = encoded["projects"].as_array().expect("the home carries project rows");
+        let row = rows
+            .iter()
+            .find(|row| row["project"]["name"] == "forge")
+            .unwrap_or_else(|| panic!("the project has a row: {encoded}"));
+
+        assert_eq!(
+            row["connectors"]["gotify"].as_array().map(Vec::len),
+            Some(1),
+            "the project's own gotify subscription is on its row: {encoded}",
+        );
+        assert_eq!(
+            row["connectors"]["gotify"][0]["applications"][0], "forge",
+            "as the subscription itself, not a placeholder",
+        );
+        assert_eq!(
+            row["connectors"]["slack"].as_array().map(Vec::len),
+            Some(1),
+            "and so is its slack subscription: {encoded}",
+        );
+
+        // The home-level `connectors` is the liveness facts and nothing else:
+        // a subscription field a stale reader still looks for is a section
+        // that draws empty forever.
+        assert!(
+            encoded["connectors"]["gotify"].get("subscriptions").is_none(),
+            "the home's own connectors carries no subscription list: {encoded}",
+        );
+        assert!(
+            encoded["connectors"]["slack"].get("subscriptions").is_none(),
+            "for either connector: {encoded}",
+        );
+        assert!(
+            encoded["connectors"]["slack"]["connected_workspaces"].is_array(),
+            "the facts it does carry are still there: {encoded}",
+        );
     }
 
     /// A worker's row draws ITS OWN working tree, not its project's.

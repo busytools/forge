@@ -434,6 +434,12 @@ export const IGNORED: readonly string[] = [
   'notice',
   'slack_message_appended',
   'status_snapshot',
+  // The project's task set, its schedules and its connector subscriptions:
+  // all three sections are read off the home's project row, and this record
+  // has no field for any of them.
+  'tasks_changed',
+  'cron_schedules_changed',
+  'connector_subscriptions_changed',
   'worker_status_changed',
 ];
 

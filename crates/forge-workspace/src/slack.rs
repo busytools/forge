@@ -114,6 +114,18 @@ impl SlackWorkspaces {
     }
 }
 
+/// The distinct projects a set of subscriptions belongs to, in the order the
+/// subscriptions carry them: one announcement per project a write moved.
+fn projects_of(subscriptions: &[SlackSubscription]) -> Vec<String> {
+    let mut projects: Vec<String> = Vec::new();
+    for sub in subscriptions {
+        if !projects.contains(&sub.project) {
+            projects.push(sub.project.clone());
+        }
+    }
+    projects
+}
+
 impl Workspace {
     /// Register a Slack subscription in the active set. Durable ones also
     /// persist to the redb store; ephemeral ad-hoc-worker ones stay in
@@ -123,6 +135,7 @@ impl Workspace {
         sub: forge_primitives::slack::SlackSubscription,
         durable: bool,
     ) {
+        let project = sub.project.clone();
         if durable
             && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::slack::insert(db, &sub)
@@ -134,6 +147,7 @@ impl Workspace {
             );
         }
         self.slack_subs.lock().push(sub);
+        self.announce_connector_subscriptions_changed(&project);
     }
 
     /// Whether this exact message has already been handed to its
@@ -275,6 +289,7 @@ impl Workspace {
             self.prune_slack_threads(&sub.workspace);
             self.clear_slack_cursors_after_removal(sub);
         }
+        self.announce_connector_subscriptions_changed(&project_name);
     }
 
     /// Answer a held draft, returning whether one was waiting for THIS
@@ -350,6 +365,14 @@ impl Workspace {
         };
         if updated.is_empty() {
             return;
+        }
+        // The name is what the section draws, and a watched conversation
+        // starts unnamed and heals on its first message - so the heal is the
+        // common way a set moves. Announced before the store work, which a
+        // run with no store skips: the set a client draws is the one in
+        // memory, and a project's records may heal in the same sweep.
+        for project in projects_of(&updated) {
+            self.announce_connector_subscriptions_changed(&project);
         }
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
@@ -694,58 +717,73 @@ impl Workspace {
         mode: SlackWatchMode,
         durable: bool,
     ) -> Uuid {
-        let db = self.db.lock();
-        let mut subs = self.slack_subs.lock();
-        if let Some(existing) = subs.iter_mut().find(|sub| {
-            sub.workspace == workspace
-                && sub.project == project
-                && sub.team_role.as_deref() == team_role
-                && matches!(
-                    &sub.target,
-                    SlackSubscriptionTarget::Conversation { id, .. } if id == conversation
-                )
-        }) {
-            if let SlackSubscriptionTarget::Conversation { mode: stored, .. } = &mut existing.target
-            {
-                *stored = mode;
+        // The announcement is made after the guards drop: it reads both
+        // connectors' sets, and a second lock on the one held here is a
+        // deadlock rather than a warning.
+        let (id, moved) = {
+            let db = self.db.lock();
+            let mut subs = self.slack_subs.lock();
+            if let Some(existing) = subs.iter_mut().find(|sub| {
+                sub.workspace == workspace
+                    && sub.project == project
+                    && sub.team_role.as_deref() == team_role
+                    && matches!(
+                        &sub.target,
+                        SlackSubscriptionTarget::Conversation { id, .. } if id == conversation
+                    )
+            }) {
+                let mut moved = false;
+                if let SlackSubscriptionTarget::Conversation { mode: stored, .. } =
+                    &mut existing.target
+                {
+                    // A same-mode watch writes the record it already holds,
+                    // so the section moved for neither.
+                    moved = *stored != mode;
+                    *stored = mode;
+                }
+                let id = existing.id;
+                if durable
+                    && let Some(db) = db.as_ref()
+                    && let Err(error) = crate::store::slack::insert(db, existing)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::slack",
+                        %error,
+                        "persisting a Slack subscription failed",
+                    );
+                }
+                (id, moved)
+            } else {
+                let sub = SlackSubscription {
+                    id: Uuid::new_v4(),
+                    workspace: workspace.to_owned(),
+                    project: project.to_owned(),
+                    team_role: team_role.map(str::to_owned),
+                    target: SlackSubscriptionTarget::Conversation {
+                        id: conversation.to_owned(),
+                        name: None,
+                        mode,
+                    },
+                    created_at: std::time::SystemTime::now(),
+                };
+                let id = sub.id;
+                if durable
+                    && let Some(db) = db.as_ref()
+                    && let Err(error) = crate::store::slack::insert(db, &sub)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::slack",
+                        %error,
+                        "persisting a Slack subscription failed",
+                    );
+                }
+                subs.push(sub);
+                (id, true)
             }
-            let id = existing.id;
-            if durable
-                && let Some(db) = db.as_ref()
-                && let Err(error) = crate::store::slack::insert(db, existing)
-            {
-                tracing::warn!(
-                    target: "forge_workspace::slack",
-                    %error,
-                    "persisting a Slack subscription failed",
-                );
-            }
-            return id;
-        }
-        let sub = SlackSubscription {
-            id: Uuid::new_v4(),
-            workspace: workspace.to_owned(),
-            project: project.to_owned(),
-            team_role: team_role.map(str::to_owned),
-            target: SlackSubscriptionTarget::Conversation {
-                id: conversation.to_owned(),
-                name: None,
-                mode,
-            },
-            created_at: std::time::SystemTime::now(),
         };
-        let id = sub.id;
-        if durable
-            && let Some(db) = db.as_ref()
-            && let Err(error) = crate::store::slack::insert(db, &sub)
-        {
-            tracing::warn!(
-                target: "forge_workspace::slack",
-                %error,
-                "persisting a Slack subscription failed",
-            );
+        if moved {
+            self.announce_connector_subscriptions_changed(project);
         }
-        subs.push(sub);
         id
     }
 
@@ -791,6 +829,7 @@ impl Workspace {
         }
         self.prune_slack_threads(&removed_sub.workspace);
         self.clear_slack_cursors_after_removal(&removed_sub);
+        self.announce_connector_subscriptions_changed(project);
         true
     }
 
@@ -2473,6 +2512,186 @@ mod tests {
             .expect("read"),
             None,
             "a stale mention cursor would replay the entire stream",
+        );
+    }
+
+    /// The one `ConnectorSubscriptionsChanged` on a test's update stream, as
+    /// its key and the two sets it announces.
+    fn next_connectors_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) -> (SessionSlot, Vec<forge_primitives::GotifySubscription>, Vec<SlackSubscription>) {
+        match rx.try_recv() {
+            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
+                key,
+                gotify,
+                slack,
+            }) => (key, gotify, slack),
+            other => {
+                panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")
+            }
+        }
+    }
+
+    /// A slack subscribe, a watch that moves a mode, an unsubscribe and a
+    /// worker teardown each announce the project's connector sets on its
+    /// lead seat - both connectors, because the section a client patches is
+    /// one - and a watch that moves nothing announces nothing.
+    ///
+    /// Mutants: drop any one emission; announce a set taken before the
+    /// write; announce a same-mode watch, which is a write the section did
+    /// not move for.
+    #[test]
+    fn every_slack_write_announces_the_projects_subscriptions() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        ws.seed_test_project("forge", "/tmp/tp-slack");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+
+        ws.add_slack_subscription(sub_for("forge", None), true);
+        let (key, gotify, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(key, lead, "a subscribe routes on the project's lead seat");
+        assert_eq!(slack.len(), 1, "and carries the set the core now holds");
+        assert!(gotify.is_empty(), "beside the sibling connector's own set");
+
+        // A watch of a conversation lands as a new record.
+        let id =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert!(slack.iter().any(|sub| sub.id == id), "a new watch is announced: {slack:?}");
+
+        // The same watch again moves nothing, so it announces nothing.
+        let same =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+        assert_eq!(same, id, "precondition: the watch found the record it had");
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a watch that moved nothing announces nothing, and this was: {announced:?}",
+        );
+
+        // A watch whose mode differs is the one write that changes an
+        // existing record, and it is announced as the moved set.
+        ws.watch_slack_conversation(
+            "acme",
+            "forge",
+            None,
+            "C1",
+            SlackWatchMode::MentionsOnly,
+            true,
+        );
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert!(
+            slack.iter().any(|sub| {
+                sub.id == id
+                    && sub.target
+                        == SlackSubscriptionTarget::Conversation {
+                            id: "C1".to_owned(),
+                            name: None,
+                            mode: SlackWatchMode::MentionsOnly,
+                        }
+            }),
+            "the mode the watch moved to is what is announced: {slack:?}",
+        );
+
+        assert!(
+            ws.remove_slack_subscription_owned_by("forge", id, None),
+            "precondition: the lead removes its own subscription",
+        );
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert!(
+            slack.iter().all(|sub| sub.id != id),
+            "an unsubscribe announces the set it left behind: {slack:?}",
+        );
+
+        assert!(
+            !ws.remove_slack_subscription_owned_by("forge", Uuid::new_v4(), None),
+            "precondition: no subscription carries the id",
+        );
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a refused unsubscribe announces nothing, and this was: {announced:?}",
+        );
+    }
+
+    /// A name heal is the COMMON way a set moves: `watch_slack_conversation`
+    /// writes `name: None` and the pump heals it on the first message, and
+    /// the client draws the name - so a heal that announces nothing leaves the
+    /// row unnamed until some unrelated write.
+    ///
+    /// Mutants: drop the heal's announcement; announce every heal, including
+    /// one that named nothing new.
+    #[test]
+    fn a_name_heal_announces_the_projects_subscriptions() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        ws.seed_test_project("forge", "/tmp/tp-slack-heal");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+
+        let id =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert!(
+            slack.iter().any(|sub| sub.id == id),
+            "precondition: the watch announced the record it created, unnamed: {slack:?}",
+        );
+
+        ws.name_slack_conversation("acme", "C1", "general");
+        let (announced_key, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a heal routes on the project's lead seat");
+        assert!(
+            slack.iter().any(|sub| {
+                sub.id == id
+                    && sub.target
+                        == SlackSubscriptionTarget::Conversation {
+                            id: "C1".to_owned(),
+                            name: Some("general".to_owned()),
+                            mode: SlackWatchMode::All,
+                        }
+            }),
+            "and carries the name the heal wrote: {slack:?}",
+        );
+
+        // A second heal with the same name touches no record - only unnamed
+        // ones are healed - so it announces nothing.
+        ws.name_slack_conversation("acme", "C1", "general");
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a heal that named nothing new announces nothing, and this was: {announced:?}",
+        );
+    }
+
+    /// A worker teardown announces the subscriptions it left, which is the
+    /// other door the section moves through - and one that matched nothing
+    /// announces nothing.
+    #[test]
+    fn a_slack_teardown_announces_the_survivors() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        ws.seed_test_project("forge", "/tmp/tp-slack-teardown");
+        let view_key = ws.project_key_for_name("forge").expect("seeded project");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+
+        ws.add_slack_subscription(sub_for("forge", None), true);
+        ws.add_slack_subscription(sub_for("forge", Some("reviewer")), true);
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(slack.len(), 1, "precondition: the lead's subscribe announced it");
+        let (_, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(slack.len(), 2, "precondition: and the worker's announced the whole set");
+
+        ws.remove_slack_subscriptions_for_worker(&view_key, "reviewer");
+        let (announced_key, _, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a teardown routes on the project's lead seat");
+        assert!(
+            slack.iter().all(|sub| sub.team_role.is_none()),
+            "and announces what the teardown left: {slack:?}",
+        );
+
+        // A teardown matching no subscription of that label is not a write,
+        // so it announces nothing.
+        ws.remove_slack_subscriptions_for_worker(&view_key, "nobody");
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "a teardown that took nothing announces nothing, and this was: {announced:?}",
         );
     }
 }

@@ -267,6 +267,46 @@ mod tests {
         );
     }
 
+    /// A section push reaches the subscribers the section belongs to: home,
+    /// which draws the project row, and the seat the update routes on.
+    ///
+    /// Every one of these carries a key, so the slot-less arm is not what
+    /// admits it - dropping it from `fleet_news`'s redraw arm is a section
+    /// that stops popping, which is what this test exists to make fail by
+    /// name.
+    #[test]
+    fn the_section_pushes_are_home_news() {
+        for update in [
+            SessionUpdate::TasksChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                tasks: Vec::new(),
+            },
+            SessionUpdate::CronSchedulesChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                crons: Vec::new(),
+            },
+            SessionUpdate::ConnectorSubscriptionsChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                gotify: Vec::new(),
+                slack: Vec::new(),
+            },
+        ] {
+            assert!(
+                fleet_news(&update).any(),
+                "admitted by the redraw arm, not by the wildcard: {update:?}",
+            );
+            assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
+            assert!(
+                Subject::Session(SessionSlot::lead("TestOrg", "proj")).covers(&update),
+                "and the project's own seat is sent it too: {update:?}",
+            );
+            assert!(
+                !Subject::Session(SessionSlot::lead("TestOrg", "other")).covers(&update),
+                "while another seat's page is not: {update:?}",
+            );
+        }
+    }
+
     /// The client's settings come off the server's own config, so the
     /// client never reads `forge.toml` and the two cannot drift - the
     /// `[web]` keys off it directly, and the `[dictate]` axes as the

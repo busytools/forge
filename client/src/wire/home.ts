@@ -128,6 +128,14 @@ export interface ProjectWire {
   work: WorkState;
   tasks: Task[];
   crons: CronEntry[];
+  /**
+   * This project's connector subscriptions, one list per connector.
+   *
+   * Left `unknown` here like the home's own member and narrowed where it
+   * enters: the sets are per project, so they ride the row rather than the
+   * home's `connectors`, which carries the liveness facts alone.
+   */
+  connectors: unknown;
   /** Whether a spawn here would find an account, beside `has_model`. */
   would_bind: boolean;
   /** The account the row chips, and its state. */

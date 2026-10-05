@@ -1272,6 +1272,42 @@ pub enum SessionUpdate {
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },
+    /// The project's task list moved, as the whole set the core holds.
+    ///
+    /// **Pushed rather than read.** The `tasks__*` writes are the only movers
+    /// and the section a view draws sits on the home's project row - the
+    /// project's lead seat, which exists for every declared project - so the
+    /// write announces the set rather than leaving the row to the next
+    /// unrelated read.
+    TasksChanged {
+        key: SessionSlot,
+        tasks: Vec<forge_primitives::tasks::Task>,
+    },
+    /// The project's schedules moved, as the whole set the core holds.
+    ///
+    /// **Pushed rather than read.** Three doors move it - the `cron__*`
+    /// writes, a fire that advances or removes an entry, and a worker's
+    /// teardown - and the section draws the countdown, so each announces the
+    /// set it left. `key` is the project's lead seat.
+    CronSchedulesChanged {
+        key: SessionSlot,
+        crons: Vec<forge_primitives::CronEntry>,
+    },
+    /// The project's inbound connector subscriptions moved, as the two sets
+    /// the core holds.
+    ///
+    /// **Pushed rather than read.** The `gotify__*` / `slack__*` writes move
+    /// them, and so do the doors no tool call reaches: a mention's
+    /// auto-subscribe, a watched conversation's name healing on its first
+    /// message, and a worker's teardown taking its own with it. One update
+    /// carries both connectors because they are one section of the home's
+    /// row, and a reader that patches it needs the pair. `key` is the
+    /// project's lead seat.
+    ConnectorSubscriptionsChanged {
+        key: SessionSlot,
+        gotify: Vec<forge_primitives::GotifySubscription>,
+        slack: Vec<forge_primitives::slack::SlackSubscription>,
+    },
     /// The `/` menu's catalogue moved, as the whole list the core holds.
     ///
     /// **Pushed rather than read.** The CLI advertises it on a turn's init and
@@ -1659,6 +1695,9 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
+            | Self::TasksChanged { key, .. }
+            | Self::CronSchedulesChanged { key, .. }
+            | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
@@ -1792,6 +1831,22 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::TasksChanged { key, tasks } => f
+                .debug_struct("TasksChanged")
+                .field("key", key)
+                .field("count", &tasks.len())
+                .finish(),
+            Self::CronSchedulesChanged { key, crons } => f
+                .debug_struct("CronSchedulesChanged")
+                .field("key", key)
+                .field("count", &crons.len())
+                .finish(),
+            Self::ConnectorSubscriptionsChanged { key, gotify, slack } => f
+                .debug_struct("ConnectorSubscriptionsChanged")
+                .field("key", key)
+                .field("gotify", &gotify.len())
+                .field("slack", &slack.len())
+                .finish(),
             Self::SlashCommandsChanged { key, commands } => f
                 .debug_struct("SlashCommandsChanged")
                 .field("key", key)

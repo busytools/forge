@@ -111,6 +111,7 @@ function project(org: string, name: string, over: Partial<ProjectWire> = {}): Pr
     work: { branch: null, changed: null, gate: 'in_repo' },
     tasks: [],
     crons: [],
+    connectors: { gotify: [], slack: [] },
     would_bind: true,
     chip: null,
     ...over,

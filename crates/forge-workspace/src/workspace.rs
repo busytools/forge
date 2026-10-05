@@ -3342,6 +3342,14 @@ impl Workspace {
         self.config.projects.iter().find(|p| p.name == name).cloned()
     }
 
+    /// The seat a project-scoped section update routes on: the project's
+    /// lead, which exists for every declared project. `None` for a name no
+    /// project carries, the shape a project that left forge.toml leaves.
+    pub(crate) fn lead_slot_for_project(&self, project_name: &str) -> Option<SessionSlot> {
+        self.find_project_view_by_name(project_name)
+            .map(|project| SessionSlot::lead(project.org, project.name))
+    }
+
     /// Internal accessor for the SessionUpdate fan-in sender. Used
     /// by `spawn.rs` to emit `Spawning` / `ConnectionFailed` /
     /// `FatalError` from the App-level handlers.

@@ -404,20 +404,30 @@ describe('the inbox sections', () => {
   });
 
   it('takes the floor of an unbounded subscription off the whole set', () => {
-    const unbounded = withHome({
-      connectors: {
-        gotify: {
-          connected: true,
-          subscriptions: [
-            { applications: ['homelab', 'alerts'], min_priority: 4 },
-            { applications: ['homelab'], min_priority: null },
-          ],
+    // The sets ride the PROJECT's row and the liveness rides the home, which
+    // is the split the section reads across: a subscription list on the home
+    // is one nothing produces.
+    const home = withHome({
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [
+              { applications: ['homelab', 'alerts'], min_priority: 4 },
+              { applications: ['homelab'], min_priority: null },
+            ],
+            slack: [],
+          },
         },
-        slack: { connected_workspaces: [], load_failed: false, subscriptions: [] },
+      ],
+      connectors: {
+        gotify: { connected: true },
+        slack: { connected_workspaces: [], load_failed: false },
       },
     });
-    expect(gotifySection(unbounded)?.rows[1]?.v, 'a set with no floor claimed one').toBe('any');
-    expect(gotifySection(unbounded)?.rows[0]?.v).toBe('homelab, alerts');
+    const row = home.projects[0] ?? null;
+    expect(gotifySection(home, row)?.rows[1]?.v, 'a set with no floor claimed one').toBe('any');
+    expect(gotifySection(home, row)?.rows[0]?.v).toBe('homelab, alerts');
   });
 
   /**
@@ -431,14 +441,13 @@ describe('the inbox sections', () => {
    * `Conversation` is an object.
    */
   it('hangs each slack subscription off the workspace it watches', () => {
-    const slack = slackSection(
-      withHome({
-        connectors: {
-          gotify: { connected: false, subscriptions: [] },
-          slack: {
-            connected_workspaces: [['Trust Machines', true]],
-            load_failed: false,
-            subscriptions: [
+    const home = withHome({
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [],
+            slack: [
               { id: 's1', workspace: 'Acme', target: 'Mentions' },
               {
                 id: 's2',
@@ -448,8 +457,16 @@ describe('the inbox sections', () => {
             ],
           },
         },
-      }),
-    );
+      ],
+      connectors: {
+        gotify: { connected: false },
+        slack: {
+          connected_workspaces: [['Trust Machines', true]],
+          load_failed: false,
+        },
+      },
+    });
+    const slack = slackSection(home, home.projects[0] ?? null);
     expect(slack?.summary).toBe('2 workspaces');
     expect(slack?.workspaces.find((entry) => entry.name === 'Trust Machines')?.subs).toEqual([
       { id: 's2', k: '#alerts', v: 'every message' },

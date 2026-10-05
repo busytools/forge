@@ -601,6 +601,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::HistoryReplayed { .. }
         | SessionUpdate::DictateAvailability
         | SessionUpdate::WorkChanged { .. }
+        // The project's task set, schedules and connector subscriptions,
+        // which the Inspector's sections read through their own refresh
+        // rather than from this stream.
+        | SessionUpdate::TasksChanged { .. }
+        | SessionUpdate::CronSchedulesChanged { .. }
+        | SessionUpdate::ConnectorSubscriptionsChanged { .. }
         | SessionUpdate::MonitorsChanged { .. }
         | SessionUpdate::BackgroundTasksChanged { .. }
         | SessionUpdate::ProcessesChanged { .. }
