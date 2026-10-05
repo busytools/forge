@@ -726,7 +726,10 @@ details.sec[open] > summary .arw { color: var(--accent); }
    a message taller rather than shorter. The rules below carry the same value. */
 .prose p + p { margin-top: 20px; }
 /* The reset above zeroes the padding a list draws its markers in. */
-.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; }
+/* Inside rather than outside: the conversation column scrolls, and an outside
+   marker is painted left of the list's box - outside the scroller's clip - so
+   ordered numbers were never visible and bullets arrived as slivers. */
+.prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
 .prose li + li { margin-top: 4px; }
 .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
   background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
