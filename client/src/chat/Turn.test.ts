@@ -97,8 +97,8 @@ describe('one turn, as the page draws it', () => {
   /**
    * **Every row carries the fold's own key**, which is what the column's anchor
    * finds the reader's row by when the layout moves under them
-   * (`chat/anchor.ts`): a lane re-sorts, a row measures taller, and without a
-   * key on the row there is nothing to put the reader back on.
+   * (`chat/anchor.ts`): a row measures taller as its stretch is corrected, and
+   * without a key on the row there is nothing to put the reader back on.
    */
   it("carries each unit's key on the row, for the column's anchor", () => {
     const whose = {
@@ -426,8 +426,8 @@ describe('one turn, as the page draws it', () => {
 
   it('draws a hook run that landed after the result in the group', () => {
     // A Stop hook's frames arrive at the turn's end, after the result that
-    // settled it. The run is work the turn did, so it rides the group like
-    // any other lane.
+    // settled it. The run is work the turn did, so it rides the rows like any
+    // other work the turn did.
     const body = draw(
       said([{ type: 'text', text: 'Folding the earlier context down first.' }]),
       {

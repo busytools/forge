@@ -180,7 +180,7 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('keys each call by the fold own name, which an id-less block cannot collide on', () => {
-    // The view keys a lane's rows by this, and the wire's tool_use id is what
+    // The view keys the rows by this, and the wire's tool_use id is what
     // names a call - but the wire does not always give one. A row keyed on an
     // empty id is a duplicate the moment a family holds two such calls, and a
     // duplicate key stops the whole turn drawing at mount. So a block without
@@ -304,9 +304,9 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it("hangs a skill's body on the call that loaded it, not on a row of its own", () => {
-    // The skill lane already draws the call that loaded it; the body follows
-    // as a user frame, and attaching it there is what makes that row open onto
-    // the skill - a second row beside it says the same thing twice.
+    // The call that loaded it already has its row; the body follows as a user
+    // frame, and attaching it there is what makes that row open onto the
+    // skill - a second row beside it says the same thing twice.
     const load = (skill: string): unknown => said([use(`toolu_${skill}`, 'Skill', { skill })]);
     const body = heard([
       text(
@@ -1379,10 +1379,7 @@ describe('one turn folded into the units a view draws', () => {
   it("draws a hook's own row, carrying what the frames that reported it sent", () => {
     const units = fold(hookFrames());
 
-    expect(
-      kinds(units),
-      'one row for the run, rather than one for each frame - a lane of the group',
-    ).toEqual(['leaves']);
+    expect(kinds(units), 'one row for the run, rather than one for each frame').toEqual(['leaves']);
     const run = runOf(units);
     expect(run?.name, 'the hook the CLI matched, under its own name').toBe('SessionStart:startup');
     expect(run?.body, 'with the output it settled on').toBe('<redacted-hook-body>');

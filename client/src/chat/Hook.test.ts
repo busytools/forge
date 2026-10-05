@@ -59,8 +59,8 @@ describe('the hook run row', () => {
     const body = draw();
     const said = summaryWords(body);
 
-    // The row leads with the name: the lane above it says the kind, so a row
-    // repeating "hook" would be the second telling the lane exists to end.
+    // The row leads with the name: the glyph says the kind, so a row
+    // repeating "hook" would be the second telling the glyph already gives.
     expect(said, 'the name, and nothing ahead of it').toMatch(/^SessionStart:startup/);
     expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
     expect(said, 'and what it printed, joined, without opening it').toContain('capture-line-1');
