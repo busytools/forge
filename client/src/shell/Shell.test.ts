@@ -8,7 +8,7 @@ import type { AddressInfo, RawData, WebSocket } from 'ws';
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberAddress } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
-import { PROTOCOL_VERSION } from '../protocol';
+import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
 import { fontStack } from '../theme';
 import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
 import type { SessionSlot } from '../wire/types';
@@ -85,7 +85,11 @@ function frameText(raw: RawData): string {
  * An acceptance that then says nothing is what the handshake deadline is for,
  * and this is that window with its end under the test's control.
  */
-async function stubForge(settings: Partial<ClientSettings>, greeting: 'now' | 'held' = 'now') {
+async function stubForge(
+  settings: Partial<ClientSettings>,
+  greeting: 'now' | 'held' = 'now',
+  version: number = PROTOCOL_VERSION,
+) {
   const server = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
@@ -99,7 +103,7 @@ async function stubForge(settings: Partial<ClientSettings>, greeting: 'now' | 'h
     socket.send(
       JSON.stringify({
         kind: 'greeting',
-        version: PROTOCOL_VERSION,
+        version,
         settings: { ...DEFAULT_SETTINGS, ...settings },
       }),
     );
@@ -278,6 +282,58 @@ describe('the shell at launch', () => {
     expect(appliedFont(), 'the launch rewrote the settings the submit had taken').toBe(
       fontStack('system')?.ui,
     );
+  });
+});
+
+describe('a forge that is not the protocol this client speaks', () => {
+  /**
+   * The floor, seen from the shell: a server one step back is READ rather
+   * than refused, and the degradation is never silent - which build is
+   * behind, and what to run, are on screen above the page.
+   */
+  it('runs against a forge one step back and names it', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await crossed();
+
+    expect(location.pathname, 'a forge one step back did not land on the home').toBe('/');
+    const said = drawn();
+    expect(said, 'the skew named no protocol').toContain(`protocol ${MIN_PROTOCOL}`);
+    expect(said, 'the skew named no way out').toContain('just install');
+  });
+
+  /**
+   * The door draws its own copy - one line, in its own column - and the
+   * shell stands down there rather than stacking a second identical strip
+   * above it.
+   */
+  it('draws the skew once on the door', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    forges.push(forge);
+    await openAt('/connect', forge.address);
+    await crossed();
+
+    expect(location.pathname, 'the launch moved the page it was addressed at').toBe('/connect');
+    const said = drawn();
+    expect(said).toContain('just install');
+    expect(said.split('just install').length - 1, 'the skew was drawn twice on one screen').toBe(1);
+  });
+
+  /**
+   * Below the floor the launch is refused, and the door it lands on carries
+   * the refusal: both halves and the command, rather than a number.
+   */
+  it('stops on a forge below the floor, with the halves and the command shown', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL - 1);
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await crossed();
+
+    const said = drawn();
+    expect(said).toContain(`protocol ${MIN_PROTOCOL - 1}`);
+    expect(said).toContain(`protocol ${PROTOCOL_VERSION}`);
+    expect(said, 'the refusal named no way out').toContain('just install');
   });
 });
 

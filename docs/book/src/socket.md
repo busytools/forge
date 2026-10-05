@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 5, "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 5, "forge_version": "1.0.114 · abc1234", "forge_version_short": "1.0.114+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -34,6 +34,23 @@ mismatch fails plainly. **The check is the client's**: the greeting carries
 the server's version, and a client that does not speak it says so and
 closes - the server cannot refuse a client that is behind, because nothing
 a client sends carries the version it speaks.
+
+**A client reads a floor rather than one exact version.** A server one
+step back is read rather than refused - the client accepts every protocol
+from a `MIN_PROTOCOL` it pins to its own - because a client with no channel
+to its own forge is worse off than one reading shapes its own tests pin.
+The floor is deliberate rather than derived: it moves only when the new
+step's read coverage does, and a client below its floor refuses instead.
+**Nothing is negotiated in either direction**: the server gates nothing,
+and the tolerance is a range the client carries. A refusal names both
+builds and the command that updates the stale half, and a tolerated step
+is never silent - the surface that meets it says the same sentence.
+
+`forge_version` and `forge_version_short` are the build serving the
+socket, in the two forms the header draws. They ride here because the
+greeting is the only channel both halves are guaranteed to have: a client
+that refuses a protocol never receives a snapshot, so a refusal that could
+name only a number would name nothing a person can act on.
 
 `settings` is three of `forge.toml`'s `[web]` keys - `mark`, `theme` and
 `font` - which are a client's settings rather than this server's. They

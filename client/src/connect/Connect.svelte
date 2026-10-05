@@ -3,6 +3,7 @@
 
   import Brand from '../components/Brand.svelte';
   import Field from '../composer/Field.svelte';
+  import { skewMessage, type Skew } from '../protocol';
   import type { ClientSettings } from '../wire/types';
   import { DEFAULT_ADDRESS, submitAttempt, type Attempt } from './attempt';
 
@@ -10,6 +11,7 @@
     settings,
     initialAddress = DEFAULT_ADDRESS,
     launchFailure = null,
+    skew = null,
     onconnect,
   }: {
     settings: ClientSettings;
@@ -17,6 +19,12 @@
     initialAddress?: string;
     /** Why a launch did not open the home, drawn on the door as it lands. */
     launchFailure?: Extract<Attempt, { ok: false }> | null;
+    /**
+     * The live protocol skew, when the forge this client is connected to
+     * speaks a protocol one step back. The shell stands down on this route,
+     * so this is the one place the door learns it.
+     */
+    skew?: Skew | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
@@ -65,6 +73,14 @@
       projects, the seats and their conversations.
     </p>
 
+    {#if skew}
+      <!-- The connection is live and a step back is read, so this is a notice
+           rather than a failure: which half is behind, and what to run. -->
+      <div class="note" role="status">
+        <p class="r">{skewMessage(skew)}</p>
+      </div>
+    {/if}
+
     <form onsubmit={submit} novalidate>
       <label for="address">The address forge is serving on</label>
       <div class="field">
@@ -99,17 +115,9 @@
             not set to <code>false</code> in <code>forge.toml</code> - a forge whose owner turned the
             socket off refuses in silence, with nothing wrong at either end.
           </p>
-        {:else if failure.kind === 'version'}
-          <!--
-            Not a connection problem, and nothing here can talk it round: a
-            forge ahead of this client draws against a protocol this one has
-            no way to read.
-          -->
-          <p class="h">
-            That forge speaks a protocol this client does not. The two halves have to match, so one
-            of them needs updating.
-          </p>
         {/if}
+        <!-- A protocol refusal needs no second line: `why` is the skew
+             sentence itself, naming which half is behind and what to run. -->
       </div>
     {/if}
   </div>
@@ -220,6 +228,21 @@
   .no .r {
     color: var(--bad);
     font-size: var(--fs-base);
+  }
+
+  /* The failure block's shape, with the alarm taken out: a skew the client
+     is reading is news, and the same block in `--bad` would read as a fault. */
+  .note {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--line);
+    border-radius: var(--r);
+    background: var(--s1);
+    padding: 10px 14px;
+  }
+
+  .note .r {
+    color: var(--muted);
+    font-size: var(--fs-data);
   }
 
   .no .h {

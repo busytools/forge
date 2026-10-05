@@ -96,6 +96,13 @@ line under it.
   above it, and the notice stays until a fresh read lands rather than clearing
   the moment the socket reopens - the window between those two is the one
   place a reader cannot tell stale rows from current ones.
+- **A forge one protocol behind**: the shell draws one line above every page
+  naming both builds and the command that updates the stale half, and the
+  page behind it is live. The client reads a floor rather than refusing a
+  step back, so this is a notice rather than an error; a forge below the
+  floor stops the connection instead, and that same line is what says why.
+  The door is the one route the shell stands down on, because the door draws
+  its own copy of the line.
 
 **The unseen mark is drawn from a read of its own.** `unseen` is the list
 of seats whose last turn finished while no client was attached to them,
