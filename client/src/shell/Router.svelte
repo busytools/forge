@@ -53,10 +53,7 @@
   // The tab's name follows what is on screen: forge at the home, the seat's
   // project on a session, and its label too when it is a worker's.
   $effect(() => {
-    document.title = titleFor(
-      route,
-      (home.wire?.projects ?? []).map((row) => row.project),
-    );
+    document.title = titleFor(route);
   });
 </script>
 

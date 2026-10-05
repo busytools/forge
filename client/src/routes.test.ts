@@ -69,30 +69,16 @@ describe('the URLs the server serves', () => {
 
 describe("the tab's title", () => {
   it('names the seat being shown, the project first and a worker by its label', () => {
-    const projects = [{ key: 'core-v1', name: 'Core V1' }];
-    expect(titleFor({ name: 'home' }, projects), 'the home is the project itself').toBe('forge');
-    expect(titleFor({ name: 'connect' }, projects)).toBe('forge');
+    expect(titleFor({ name: 'home' }), 'the home is the forge itself').toBe('forge');
+    expect(titleFor({ name: 'connect' })).toBe('forge');
     expect(
-      titleFor(
-        { name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } },
-        projects,
-      ),
+      titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),
       "a lead's seat is its project",
-    ).toBe('Core V1');
+    ).toBe('core-v1');
     expect(
-      titleFor(
-        { name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'w1' } },
-        projects,
-      ),
+      titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'w1' } }),
       'a worker adds its own label',
-    ).toBe('Core V1 \u{b7} w1');
-  });
-
-  it("falls back to the slot's own project when the roster has no name for it", () => {
-    expect(
-      titleFor({ name: 'session', slot: { org: 'O', project: 'weird-name', label: 'lead' } }),
-      'a project the roster has not arrived for still names the seat',
-    ).toBe('weird-name');
+    ).toBe('core-v1 \u{b7} w1');
   });
 });
 
