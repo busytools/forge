@@ -373,6 +373,10 @@ pub struct SessionWire {
     pub has_dispatches: bool,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
+    /// The session's sub-agent instances, as the core joined them: one card
+    /// per dispatch with its calls under it. The catalogue above names the
+    /// TYPES the CLI offers; this is what actually ran.
+    pub subagent_instances: Vec<forge_primitives::runtime::SubagentCard>,
     /// The seat's own walk, from the store its loop keeps fresh, or a walk
     /// taken for the read when the loop has not run. Shared rather than walked
     /// per subscriber: the walk is a whole tree. Serialises as the index
@@ -1020,7 +1024,7 @@ async fn session(
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
     let conversation = conversation_for(state, slot).await;
-    let (turns, compaction_count) = match conversation {
+    let (turns, compaction_count, instances) = match conversation {
         Some(held) => {
             let seat = slot.clone();
             tokio::task::spawn_blocking(move || {
@@ -1028,6 +1032,11 @@ async fn session(
                     (
                         page(held.messages(), held.rendered(), None, SUBSCRIBE_TURNS).turns,
                         held.compaction_count(),
+                        // The same walk the page is cut on answers the card
+                        // list: one read, and the instances are the same fold
+                        // the session pushes live (`SubagentCardsChanged`),
+                        // driven over the conversation the transport holds.
+                        forge_workspace::subagent_cards::subagent_cards(held.messages()),
                     )
                 })
             })
@@ -1039,10 +1048,10 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), 0)
+                (Vec::new(), 0, Vec::new())
             })
         }
-        None => (Vec::new(), 0),
+        None => (Vec::new(), 0, Vec::new()),
     };
     // The dispatch flag is the workspace's, raised by the fold that can
     // announce its raise: read here rather than recomputed, so the record and
@@ -1085,6 +1094,7 @@ async fn session(
         file_index,
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
+        subagent_instances: instances,
         mcp: surface.mcp_servers(slot),
         processes: surface.processes(slot),
         background_tasks: surface.background_tasks(slot),
@@ -1594,6 +1604,10 @@ mod tests {
                     // the record in the rolling windows, and which of them
                     // hold it flips at midnight.
                     r#"{"type":"assistant","uuid":"a2","timestamp":"2025-01-02T03:04:05.000Z","message":{"id":"m-usage","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"counted"}],"usage":{"input_tokens":7,"output_tokens":11,"cache_read_input_tokens":13,"cache_creation_input_tokens":17}}}"#,
+                    // A sub-agent dispatch, so the record carries a
+                    // POPULATED card rather than an empty list a rename
+                    // could cross unseen.
+                    r#"{"type":"assistant","uuid":"a3","message":{"id":"m-sub","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu-sub","name":"Task","input":{"description":"map the calls","subagent_type":"general-purpose","run_in_background":false,"prompt":"do the thing"}}]}}"#,
                     r#"{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
                 ],
             )
@@ -1643,6 +1657,32 @@ mod tests {
         fleet
             .hold_conversation(&state, "TestOrg", "proj", "lead")
             .expect("the fixture's conversation is held");
+        // A dispatched instance, appended as the LIVE frames a running
+        // session carries: the resumed read holds no task-lifecycle rows, so
+        // a seeded transcript alone can only ever fold a dispatch and its
+        // answer. Fixed instants, so the fixture is deterministic.
+        if let Some(held) = state.conversations.get(&fixture_seat()) {
+            let frame = |raw: &str| {
+                serde_json::from_str::<forge_primitives::Message>(raw)
+                    .expect("the fixture frame decodes")
+            };
+            let mut conversation = held.lock();
+            conversation.append(frame(
+                r#"{"type":"system","subtype":"task_started","task_id":"t-sub","tool_use_id":"tu-sub","description":"map the calls","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent","uuid":"s1","session_id":"s"}"#,
+            ));
+            conversation.append(frame(
+                r#"{"type":"assistant","uuid":"a4","parent_tool_use_id":"tu-sub","session_id":"s","message":{"id":"m-sub1","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"tu-sub1","name":"Read","input":{"file_path":"src/lib.rs"}}]}}"#,
+            ));
+            conversation.append(frame(
+                r#"{"type":"user","uuid":"u5","parent_tool_use_id":"tu-sub","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-sub1","content":"ok"}]}}"#,
+            ));
+            conversation.append(frame(
+                r#"{"type":"system","subtype":"task_progress","task_id":"t-sub","tool_use_id":"tu-sub","description":"Running Read","subagent_type":"general-purpose","usage":{"total_tokens":9714,"tool_uses":1,"duration_ms":2716},"last_tool_name":"Read","uuid":"s2","session_id":"s"}"#,
+            ));
+            conversation.append(frame(
+                r#"{"type":"system","subtype":"task_updated","task_id":"t-sub","patch":{"status":"completed","end_time":1750000000000},"uuid":"s3","session_id":"s"}"#,
+            ));
+        }
         state
     }
 
