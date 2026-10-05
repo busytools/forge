@@ -193,9 +193,15 @@ const DRAWN: readonly Pair[] = [
 const NOT_INK = ['--line'];
 
 /**
- * The one ground the sheet draws no text on: `--s3` is a progress track, and
- * the only pair naming it is the bar fill. Named rather than left out, so a
- * ground whose text pair goes missing is a failure and not a quiet exception.
+ * The one ground the TABLE names that carries no text pair: `--s3` is a
+ * progress track there, and the only pair naming it is the bar fill. Named
+ * rather than left out, so a ground whose text pair goes missing is a failure
+ * and not a quiet exception.
+ *
+ * **What it does not scan**: a component's own style block. The walked pile
+ * card draws its words and its source chips on `--s3`, and nothing here reads
+ * that block - so this claims what the table names, not everything the sheet
+ * draws.
  */
 const NO_TEXT_GROUND = ['--s3'];
 
