@@ -1625,11 +1625,27 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
-.dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
-.dock .head .t { font-weight: 650; color: var(--text); white-space: nowrap; }
-.dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+/* The head, which says what kind of prompt this is: the question's own words,
+   a permission's subject as it arrives, or a draft's destination. */
+.dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
+.dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+.dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock .d-head .q.mono { font-weight: 400; }
+.dock .d-q { font-size: 16px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--text); overflow-wrap: anywhere; }
+/* The batch, as one mark per question with this one and the ones behind it lit. */
+.dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
+.dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
+.dock .segs i.on { background: var(--accent); }
+/* What kind of decision this is, and where a post would go. */
+.dock .tag { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
+  padding: 3px 10px; }
+.dock .tag.warn { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+.dock .dest { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
@@ -1643,10 +1659,17 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    thing being chosen. */
 .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
-.opt .ic { color: var(--dim); }
-.opt .ic.ok { color: var(--ok); }
-.opt .ic.no { color: var(--bad); }
-.opt .ic.ed { color: var(--blue); }
+/* The row's own number, which is the key that answers it. */
+.opt .n { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  flex: none; width: 10px; margin-top: 1px; }
+.opt.sel .n { color: var(--hot); }
+/* The key the marked row answers to, drawn on the row it would act on. */
+.opt .kk { margin-left: auto; flex: none; opacity: .85; }
+.opt .answering { margin-left: auto; flex: none; }
+/* The mark a reader's answer carries while it is on its way, wherever it is
+   drawn: on the row that was answered, or in the keys line for a prompt with no
+   rows. */
+.dock .answering { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
@@ -1678,8 +1701,32 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .radio.on { border-color: var(--ok); }
 .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok); }
-/* The escape row's slot, held empty so its words line up with every option's. */
-.opt .slot { width: 15px; flex: 0 0 15px; }
+/* A permission's actions, and a held post's verbs: buttons, with the trusting
+   one primary and the refusal as reachable as the approval. */
+.dock .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.dock .btn { border: 1px solid var(--line); border-radius: 9px; background: none;
+  color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
+  padding: 7px 13px; cursor: pointer; }
+.dock .btn:hover { color: var(--text); border-color: var(--ctl); }
+.dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
+/* The one row that takes words, which is also where a take's words land: the
+   field, and the mic that is this surface's own door to a take. */
+.dock .custom { display: flex; align-items: center; gap: 10px;
+  border-top: 1px solid var(--line); padding-top: 10px; }
+.dock .custom .notes { flex: 1; min-width: 0; }
+.dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+  border: 1px solid var(--line); background: none; color: var(--dim);
+  display: grid; place-items: center; cursor: pointer; }
+.dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+.dock .custom.live .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--hot); }
+/* A refusal is a row of its own, in the tone of a thing gone wrong. */
+.dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
+/* The way out of the field keeps a finger's target under a coarse pointer. */
+@media (pointer: coarse) { .dock .btn, .dock .custom .micb { min-height: 44px; } }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown
@@ -1694,16 +1741,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .notes { width: 100%; margin: 0; border: 0; background: none; padding: 0;
   font-family: inherit; font-size: inherit; color: var(--text); resize: none; outline: none; }
 .dock .notes::placeholder { color: var(--dim); }
-/* A take that is still running behind the dock: the whole indicator on this
-   surface, so a prompt cannot swallow a recording that is still going. */
-.dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
-  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
-.dock .blip .dot.tr { background: var(--blue); animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring, .dock .blip .dot {
+  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring {
     animation: none;
   }
   .tc .bars i { transition: none; }

@@ -250,6 +250,15 @@ function options(): HTMLElement[] {
   });
 }
 
+/** A held post's verb, or a permission's action: both are buttons, not rows. */
+function action(label: string): HTMLElement {
+  const found = [...document.querySelectorAll('.dock .acts button')].find((button) =>
+    button.textContent?.trim().startsWith(label),
+  );
+  if (!(found instanceof HTMLElement)) throw new Error(`the dock drew no ${label}`);
+  return found;
+}
+
 /**
  * The one behaviour here whose failure destroys something a person typed.
  *
@@ -267,14 +276,14 @@ describe("the reader's draft", () => {
     flushSync();
 
     expect(
-      document.querySelector('textarea'),
-      'the dock morphs the box, so it draws no field of its own',
+      document.querySelector('[data-editor="composer"]'),
+      'the dock morphs the box, so the composer draws no field of its own',
     ).toBeNull();
     expect(drawn(), 'the prompt itself is what the slot draws').toContain('Allow once');
 
-    const answered = document.querySelector('.opt .lbl');
+    const answered = document.querySelector('.acts .btn');
     if (!(answered instanceof HTMLElement))
-      throw new Error('the dock drew no option to answer with');
+      throw new Error('the dock drew no action to answer with');
     answered.click();
     flushSync();
 
@@ -2320,30 +2329,25 @@ describe('the dock', () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
-  it('fills the escape row\u{2019}s box once there are words typed into it', () => {
-    // The terminal's own rule: the box confirms the typed words will go with
-    // the answer, and it is display-only - the selection set never sees them.
+  it('draws the words row once, and typing in it turns no option on', () => {
+    // The words are the answer's annotation, not a selection: the boxes a set
+    // draws never see them, and the row they are written in is not one of the
+    // options.
     open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    // Onto the own-words row, whose field takes the keyboard.
-    press('ArrowUp');
     const field = document.querySelector<HTMLTextAreaElement>('.dock textarea.notes');
-    if (field === null) throw new Error('the own-words row drew no field');
+    if (field === null) throw new Error('the dock drew no words row');
 
     const boxes = (): boolean[] =>
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on'));
 
-    expect(boxes(), 'nothing typed, nothing checked').toEqual([false, false, false]);
+    expect(boxes(), 'nothing typed, nothing checked').toEqual([false, false]);
 
     field.value = 'a teal, not listed';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
-    expect(boxes(), "the typed words fill the escape row's box, and only it").toEqual([
-      false,
-      false,
-      true,
-    ]);
+    expect(boxes(), 'and typed words turn no option on').toEqual([false, false]);
   });
 
   it('draws a single-answer question as one pick, not a set of boxes', () => {
@@ -2422,7 +2426,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.opt .box2')].map((box) => box.classList.contains('on')),
       'the boxes carry what is toggled',
-    ).toEqual([true, true, false]);
+    ).toEqual([true, true]);
     expect(commands(harness), 'a toggle is not an answer').toEqual([]);
 
     press('Enter');
@@ -2454,13 +2458,13 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'space turns the marked row on',
-    ).toEqual([true, false, false]);
+    ).toEqual([true, false]);
 
     press(' ');
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'and off again',
-    ).toEqual([false, false, false]);
+    ).toEqual([false, false]);
     expect(harness.sent, 'a toggle is never an answer').toEqual([]);
   });
 
@@ -2483,7 +2487,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'the row turned on and stayed on',
-    ).toEqual([true, false, false]);
+    ).toEqual([true, false]);
   });
 
   it('keeps the keyboard with the mark, so a key after an arrow acts on the marked row', () => {
@@ -2507,7 +2511,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'so the toggle lands on the row the reader can see is marked',
-    ).toEqual([false, true, false]);
+    ).toEqual([false, true]);
   });
 
   it('answers from Enter on a focused row, rather than only toggling it', () => {
@@ -2535,43 +2539,38 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'Enter answers rather than toggling',
-    ).toEqual([false, false, false]);
+    ).toEqual([false, false]);
   });
 
-  it('opens the own-words field rather than rejecting when Enter lands there with nothing said', () => {
+  it('sends nothing when Enter lands in the words row with nothing said', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.focus();
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    field.focus();
     flushSync();
 
     press('Enter');
 
     expect(harness.sent, 'nothing said is not an answer, and not a rejection').toEqual([]);
-    expect(document.activeElement, 'so the row hands over the field to write in').toBe(
-      document.querySelector('.dock textarea.notes'),
-    );
+    expect(document.activeElement, 'and the caret stays where the reader is writing').toBe(field);
   });
 
-  it('moves the mark back out of the own-words field, so the options are reachable again', () => {
+  it('hands the keyboard back to the options from the words row', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
     const list = document.querySelector('.dock [role="listbox"]');
     if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
 
-    // One ArrowUp from the load state wraps onto the own-words row, which hands
-    // the keyboard to the field. From there the arrows have to keep working, or
-    // the field is a trap with no way back to the options.
-    press('ArrowUp');
+    // The words row is a row like any other: the arrows have to keep working
+    // from it, or it is a trap with no way back to the choices.
     const field = document.querySelector('.dock textarea.notes');
-    expect(document.activeElement, 'the own-words row hands over the keyboard').toBe(field);
+    if (!(field instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    field.focus();
+    flushSync();
 
     press('ArrowUp');
 
-    expect(document.activeElement, 'and a key hands it back').toBe(list);
-    expect(document.querySelector('.dock .opt.sel')?.textContent, 'one row further up').toContain(
-      'Production',
-    );
+    expect(document.activeElement, 'a key hands the keyboard back to the options').toBe(list);
     expect(harness.sent, 'moving the mark answers nothing').toEqual([]);
   });
 
@@ -2591,13 +2590,14 @@ describe('the dock', () => {
     ]);
   });
 
-  it('rejects a question from its own-words box, rather than only from the options', () => {
+  it('rejects a question from its words row, rather than only from the options', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    press('ArrowUp');
-    expect(document.activeElement, 'the own-words row is where the question takes words').toBe(
-      document.querySelector('.dock textarea.notes'),
-    );
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    field.focus();
+    flushSync();
+    expect(document.activeElement, 'the words row is where the question takes words').toBe(field);
 
     press('Escape');
 
@@ -2618,15 +2618,23 @@ describe('the dock', () => {
     expect(drawn(), 'the keys line says what Escape does here').toContain('Esc reject');
   });
 
-  it('leaves the counter off a lone question, where "Q1 of 1" says nothing', () => {
+  it('draws a lone question with no batch marks, and a batch with its own', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk('tu-q', {}, 0, 1)] }) });
 
-    expect(drawn(), 'the ordinary case carries no index').not.toContain('Q1 of 1');
+    expect(
+      document.querySelectorAll('.dock .segs i'),
+      'the ordinary case carries no batch marks',
+    ).toHaveLength(0);
 
     harness.page.record = record({ pending_asks: [questionAsk('tu-q', {}, 1, 3)] });
     flushSync();
 
-    expect(drawn(), 'a batch still says which one this is').toContain('Q2 of 3');
+    const marks = [...document.querySelectorAll('.dock .segs i')];
+    expect(marks, 'a batch draws one mark per question').toHaveLength(3);
+    expect(
+      marks.filter((mark) => mark.classList.contains('on')),
+      'with this one and the ones behind it lit',
+    ).toHaveLength(2);
   });
 
   it("draws an option's description under its name, where the terminal draws it", () => {
@@ -2647,25 +2655,29 @@ describe('the dock', () => {
   it("offers the reader's own words as the agent's, which is the wording rule", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    expect(options()[2]?.textContent, 'the row says agent, never the vendor').toContain(
-      'Tell the agent something else',
-    );
+    expect(
+      document.querySelector('.dock textarea.notes')?.getAttribute('placeholder'),
+      'the words row says agent, never the vendor',
+    ).toContain('agent something else');
 
-    // A permission's row is the name the core sent rather than this client's
+    // A permission's field is the name the core sent rather than this client's
     // own: the rule reaches that one where the name is written, not here, and a
     // local rename would put the dock's row out of step with the wire.
     harness.page.record = record({ pending_asks: [permissionAsk()] });
     flushSync();
 
-    expect(options()[2]?.textContent, "so a permission draws the core's own name").toContain(
-      'Tell the agent something else',
-    );
+    expect(
+      document.querySelector('.dock textarea.notes')?.getAttribute('placeholder'),
+      "so a permission draws the core's own name",
+    ).toContain('agent something else');
   });
 
-  it("does not deny on the reader's behalf from a permission's own-words row", () => {
+  it("does not deny on the reader's behalf from a permission's words row", () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
-    options()[2]?.click();
+    const notes = document.querySelector('.dock textarea.notes');
+    if (!(notes instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    notes.focus();
     flushSync();
     press('Enter');
 
@@ -2675,16 +2687,11 @@ describe('the dock', () => {
   it("carries the reader's own words as the answer's annotation, not as an option", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    const own = options()[2];
-    own?.click();
-    flushSync();
-
     const notes = document.querySelector('.dock .notes');
     if (!(notes instanceof HTMLTextAreaElement)) {
-      throw new Error('the own-words row drew no field to write in');
+      throw new Error('the dock drew no words row to write in');
     }
-    expect(commands(harness), 'a row that asks for words does not answer without them').toEqual([]);
-
+    notes.focus();
     notes.value = 'Also bump the queue worker concurrency';
     notes.dispatchEvent(new Event('input', { bubbles: true }));
     press('Enter');
@@ -2704,21 +2711,24 @@ describe('the dock', () => {
     ]);
   });
 
-  it("hands a permission's own-words row the text it promised", () => {
+  it("hands a permission's words to its deny, which carries them", () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
-
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew fewer rows than it offers');
-    own.click();
-    flushSync();
 
     const notes = document.querySelector('.dock .notes');
     if (!(notes instanceof HTMLTextAreaElement)) {
-      throw new Error('the own-words row drew no field to write in');
+      throw new Error('the dock drew no words row to write in');
     }
     notes.value = 'not this branch';
     notes.dispatchEvent(new Event('input', { bubbles: true }));
-    press('Enter');
+    flushSync();
+
+    const deny = [...document.querySelectorAll('.dock .acts .btn')].find((button) =>
+      button.textContent?.includes('Deny'),
+    );
+    if (!(deny instanceof HTMLElement)) throw new Error('the dock drew no deny');
+    expect(deny.textContent, 'the deny says what it would carry').toContain('with these words');
+    deny.click();
+    flushSync();
 
     expect(commands(harness)).toEqual([
       {
@@ -2743,9 +2753,13 @@ describe('the dock', () => {
     harness.page.record = record({ pending_asks: [permissionAsk()] });
     flushSync();
 
-    const list = document.querySelector('.dock [role="listbox"]');
-    expect(document.activeElement, 'the dock owns the keyboard it was handed').toBe(list);
-    expect(document.querySelector('textarea'), 'and the box is not beside it').toBeNull();
+    expect(document.activeElement, 'the dock owns the keyboard it was handed').toBe(
+      document.querySelector('.dock'),
+    );
+    expect(
+      document.querySelector('[data-editor="composer"]'),
+      'and the composer is not mounted beside it',
+    ).toBeNull();
 
     harness.page.record = record();
     flushSync();
@@ -2767,11 +2781,13 @@ describe('the dock', () => {
       return found instanceof HTMLTextAreaElement ? found : null;
     };
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
-    flushSync();
     expect(dockBox()?.value, 'the box the reader opened starts empty').toBe('');
+
+    // The reader is in the row, which is what makes this dock the destination.
+    const opened = dockBox();
+    if (opened === null) throw new Error('the dock drew no words row');
+    opened.focus();
+    flushSync();
 
     harness.page.record = record({
       pending_asks: [questionAsk()],
@@ -2807,13 +2823,9 @@ describe('the dock', () => {
   it("keeps a take's words when the blocker takes the dock away before they land", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
-    flushSync();
     expect(
       document.querySelector('.dock [data-editor="dock"]'),
-      'the reader opened the box the words would go in',
+      'the dock draws the box the words would go in',
     ).not.toBeNull();
 
     harness.page.seat = seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' });
@@ -2856,14 +2868,10 @@ describe('the dock', () => {
   it("opens the next prompt's own-words box empty, whatever was written in the last one", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk('tu-q')] }) });
 
-    /** The own-words row of whatever dock is up, and the box it opens. */
+    /** The words row of whatever dock is up, which is always drawn. */
     const ownWords = (): HTMLTextAreaElement => {
-      const row = options()[2];
-      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-      row.click();
-      flushSync();
       const box = document.querySelector('.dock [data-editor="dock"]');
-      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
       return box;
     };
 
@@ -2892,12 +2900,8 @@ describe('the dock', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk('tu-q')] }) });
 
     const ownWords = (): HTMLTextAreaElement => {
-      const row = options()[2];
-      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-      row.click();
-      flushSync();
       const box = document.querySelector('.dock [data-editor="dock"]');
-      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
       return box;
     };
 
@@ -2922,12 +2926,8 @@ describe('the dock', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk('tu-q', {}, 0, 2)] }) });
 
     const ownWords = (): HTMLTextAreaElement => {
-      const row = options()[2];
-      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-      row.click();
-      flushSync();
       const box = document.querySelector('.dock [data-editor="dock"]');
-      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
       return box;
     };
 
@@ -3012,12 +3012,8 @@ describe('the dock', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk('tu-q')] }) });
 
     const ownWords = (): HTMLTextAreaElement => {
-      const row = options()[2];
-      if (!(row instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-      row.click();
-      flushSync();
       const box = document.querySelector('.dock [data-editor="dock"]');
-      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the own-words row drew no box');
+      if (!(box instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
       return box;
     };
 
@@ -3045,9 +3041,9 @@ describe('the dock', () => {
   it('keeps the caret in the own-words box when the same prompt re-renders', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
+    const own = document.querySelector('.dock textarea.notes');
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    own.focus();
     flushSync();
 
     const box = document.querySelector('.dock [data-editor="dock"]');
@@ -3073,9 +3069,9 @@ describe('the dock', () => {
   it("brings the keyboard back to the dock's box when a take lands in it", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
+    const own = document.querySelector('.dock textarea.notes');
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    own.focus();
     flushSync();
 
     const box = (): HTMLTextAreaElement | null => {
@@ -3114,23 +3110,23 @@ describe('the dock', () => {
    * is by the editor the box names rather than by its class - a restyle that
    * renamed the class would otherwise reroute them in silence.
    */
-  it('hands the keyboard back to the options when Escape lands in the own-words box', () => {
+  it('hands the keyboard back to the dock when Escape lands in the words row', () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
+    const own = document.querySelector('.dock textarea.notes');
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    own.focus();
     flushSync();
 
     const box = document.querySelector('.dock [data-editor="dock"]');
-    expect(document.activeElement, 'the box the own-words row opened holds the keyboard').toBe(box);
+    expect(document.activeElement, 'the words row holds the keyboard').toBe(box);
 
     press('Escape');
 
-    expect(document.querySelector('.dock [data-editor="dock"]'), 'the box closes').toBeNull();
-    expect(document.activeElement, 'and the keyboard goes back to the options').toBe(
-      document.querySelector('.dock [role="listbox"]'),
-    );
+    expect(
+      document.activeElement,
+      'and a permission steps back out of the field rather than denying on the reader',
+    ).not.toBe(box);
     // The distinction the routing turns on: a key the dock reads as the field's
     // own moves the mark, and the same key read as the dock's answers the
     // prompt - which for a permission is a deny nobody asked for.
@@ -3146,9 +3142,9 @@ describe('the dock', () => {
   it('keeps Shift+Enter the box own, so a newline does not answer the prompt', () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
-    const own = options()[2];
-    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no own-words row');
-    own.click();
+    const own = document.querySelector('.dock textarea.notes');
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    own.focus();
     flushSync();
 
     const box = document.querySelector('.dock [data-editor="dock"]');
@@ -3187,7 +3183,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'question one has its fourth row on',
-    ).toEqual([false, false, false, true, false]);
+    ).toEqual([false, false, false, true]);
 
     harness.page.record = record({ pending_asks: [oneOf(['q2-a', 'q2-b'], 1)] });
     flushSync();
@@ -3230,7 +3226,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'question one has its second row on',
-    ).toEqual([false, true, false]);
+    ).toEqual([false, true]);
 
     harness.page.record = record({ pending_asks: [oneOf(['question_1', 'question_2'], 1)] });
     flushSync();
@@ -3238,7 +3234,7 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'and the question the reader has not answered draws with nothing on',
-    ).toEqual([false, false, false]);
+    ).toEqual([false, false]);
   });
 
   it('keeps what the reader turned on through a repaint of the same question', () => {
@@ -3256,22 +3252,22 @@ describe('the dock', () => {
     expect(
       [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
       'a repaint does not clear what the reader turned on',
-    ).toEqual([true, false, false]);
+    ).toEqual([true, false]);
   });
 
   it('moves the mark from the keyboard once the dock has the slot', () => {
-    const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
     const list = document.querySelector('.dock [role="listbox"]');
     if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
 
     list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     flushSync();
 
-    expect(document.querySelector('.opt.sel')?.textContent).toContain('Deny');
+    expect(document.querySelector('.opt.sel')?.textContent).toContain('Production');
     expect(
       list.getAttribute('aria-activedescendant'),
       'and the listbox points at the row it moved to',
-    ).toContain('opt-deny');
+    ).toContain('q-prod');
     void harness;
   });
 
@@ -3283,15 +3279,14 @@ describe('the dock', () => {
       }),
     });
 
-    expect(drawn(), 'the take is named rather than swallowed').toContain('dictating');
     expect(
-      document.querySelector('.dock .blip .dot'),
-      'and it says it is still listening',
+      document.querySelector('.dock .custom .tc'),
+      'the take draws on the row its words land in, rather than being swallowed',
     ).not.toBeNull();
 
-    const list = document.querySelector('.dock [role="listbox"]');
-    if (!(list instanceof HTMLElement)) throw new Error('the dock drew no listbox');
-    list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const dock = document.querySelector('.dock');
+    if (!(dock instanceof HTMLElement)) throw new Error('the dock drew nothing');
+    dock.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     flushSync();
 
     expect(commands(harness), 'the first escape belongs to the take').toEqual([
@@ -3344,10 +3339,10 @@ describe('the dock', () => {
     );
   });
 
-  it('posts the held draft from the row the reader picks, addressed by its own id', () => {
+  it('posts the held draft from the verb the reader picks, addressed by its own id', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -3364,7 +3359,7 @@ describe('the dock', () => {
   it('says why when the core refuses the draft, rather than dropping it in silence', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
@@ -3377,7 +3372,7 @@ describe('the dock', () => {
   it('clears the refusal it showed when the reader answers the draft again', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
     harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
     flushSync();
@@ -3385,7 +3380,7 @@ describe('the dock', () => {
     // The retry is the only thing the reader can do about a refusal, and the
     // reason belonged to the attempt that failed: left standing it reads as a
     // verdict on this one.
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     expect(commands(harness), 'the answer went out again').toHaveLength(2);
@@ -3398,18 +3393,21 @@ describe('the dock', () => {
   it('takes the dock away once the draft is answered, before any frame says so', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     expect(commands(harness), 'the approval went out').toHaveLength(1);
     expect(document.querySelector('.dock'), 'and the dock goes with it').toBeNull();
-    expect(document.querySelector('textarea'), 'the box takes the slot back').not.toBeNull();
+    expect(
+      document.querySelector('[data-editor="composer"]'),
+      'the box takes the slot back',
+    ).not.toBeNull();
   });
 
   it('does not raise an answered draft again, while the next one still draws', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     // A frame read before the resolution still carries the draft - the seat was
@@ -3452,7 +3450,7 @@ describe('the dock', () => {
   it('says why an answer did not land when the draft left under the click', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
 
@@ -3472,7 +3470,7 @@ describe('the dock', () => {
   it("says nothing when the reader's own answer is the one that took the draft", () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
 
     harness.say({
@@ -3497,7 +3495,7 @@ describe('the dock', () => {
   it('does not read a later refusal as the draft it answered', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[0]?.click();
+    action('Post').click();
     flushSync();
     harness.say({
       kind: 'update',
@@ -3552,11 +3550,12 @@ describe('the dock', () => {
     );
   });
 
-  it('draws the next held draft as a fresh dock, rather than carrying the mark over', () => {
+  it('draws the next held draft as a fresh dock, rather than carrying the words over', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    press('ArrowDown');
-    expect(document.querySelector('.opt.sel')?.textContent).toContain("Don't send");
+    // A draft draws no rows: its verbs are buttons, and the only thing that
+    // could carry over between two drafts is the body they would send.
+    expect(drawn()).toContain('Deploy finished on staging.');
 
     // The second draft, which is the next prompt the seat is parked on.
     harness.page.record = record({
@@ -3564,16 +3563,13 @@ describe('the dock', () => {
     });
     flushSync();
 
-    expect(
-      document.querySelector('.opt.sel')?.textContent,
-      'the mark belongs to the draft that was answered, not to the next one',
-    ).toContain('Send it');
+    expect(drawn(), 'the next draft is drawn as its own').toContain('Post to Slack');
   });
 
-  it('refuses the held draft from its own no-row', () => {
+  it('refuses the held draft from its own no-verb', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    options()[1]?.click();
+    action("Don't send").click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -3741,11 +3737,9 @@ describe('two clients on one seat', () => {
     other.page.record = asked;
     flushSync();
 
-    expect(options(), 'both clients draw the prompt').toHaveLength(6);
+    expect(document.querySelectorAll('.acts .btn'), 'both clients draw the prompt').toHaveLength(4);
 
-    const allow = options()[0];
-    if (allow === undefined) throw new Error('the dock drew no options');
-    allow.click();
+    action('Allow once').click();
     flushSync();
 
     expect(shared.sent, "one answer went, and it is the core's own option").toEqual([
@@ -3772,7 +3766,7 @@ describe('two clients on one seat', () => {
     other.page.record = asked;
     flushSync();
 
-    options()[1]?.click();
+    action('Deny').click();
     flushSync();
     expect(shared.sent, 'the second client answered on its own').toHaveLength(1);
 
@@ -3792,7 +3786,7 @@ describe('two clients on one seat', () => {
     one.page.record = record({ pending_asks: [permissionAsk()] });
     flushSync();
 
-    options()[0]?.click();
+    action('Allow once').click();
     flushSync();
 
     // The core dropped the answer - another device got there first - and the

@@ -802,6 +802,23 @@
   }
 
   /**
+   * The mic on the dock's words row: press to begin a take, press to end it.
+   *
+   * A divergence from this composer's own "the mic is the door, not the
+   * trigger" rule, and the reason is rule 22's touch door: a phone has no
+   * push-to-talk key, so a row that could only SHOW a take would leave a finger
+   * no way to dictate an answer at all. Ending submits, so the words land in
+   * the row they were spoken into.
+   */
+  function micTake(): void {
+    if (opening || untrack(() => take) !== null || composer.take !== null) {
+      act('finish');
+      return;
+    }
+    void startTake();
+  }
+
+  /**
    * Remember which prompt this reader answered, while the core still lists it.
    *
    * A new answer supersedes the refusal it followed: the reason belonged to the
@@ -879,11 +896,13 @@
         depth={seat.pendingDepth}
         notice={box.refusal}
         take={composer.take}
+        {wire}
         bind:notes={dockDraft}
         bind:ownOpen={dockOpen}
         land={dockLanded}
         onanswer={remember}
         onabandon={abandon}
+        onmic={micTake}
         answered={box.answeredKey !== null &&
           box.answeredKey === ownKeyOf(dockAsk) &&
           box.refusal === null}

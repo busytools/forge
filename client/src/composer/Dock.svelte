@@ -2,6 +2,7 @@
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
+  import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
   import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -15,11 +16,13 @@
     depth = 1,
     notice = null,
     take = null,
+    wire = null,
     notes = $bindable(''),
     ownOpen = $bindable(false),
     land = null,
     onanswer = () => {},
     onabandon = () => {},
+    onmic = () => {},
     answered = false,
   }: {
     ask: Ask;
@@ -38,8 +41,28 @@
     depth?: number;
     /** Why the core refused an answer to this prompt, when it did. */
     notice?: string | null;
-    /** A take still running behind the dock, which the blip names. */
+    /** A take still running behind the dock, which the row it lands in draws. */
     take?: Take | null;
+    /**
+     * That take's wire side, when this page owns the capture - the card the
+     * custom row draws, on the same terms the composer's card draws it.
+     */
+    wire?: {
+      frames: number;
+      bytes: number;
+      rate: number | null;
+      dbfs: number[];
+      elapsedMs: number;
+    } | null;
+    /**
+     * The mic on the custom row: this surface's own door to a take.
+     *
+     * A divergence from the composer's "the mic is the door, not the trigger",
+     * and the reason is rule 22's touch door: the terminal's push-to-talk key
+     * does not exist on a phone, so a row that could only SHOW a take would
+     * leave a finger no way to dictate an answer at all.
+     */
+    onmic?: () => void;
     /**
      * What the reader has said in their own words.
      *
@@ -65,119 +88,68 @@
     answered?: boolean;
   } = $props();
 
-  /** Which sprite carries an option's meaning, and the colour the sheet gives it. */
-  const ICONS: Record<PermissionOption['kind'], string> = {
-    allow: 'check',
-    deny: 'x',
-    edit: 'edit',
-    notes: 'dots',
-  };
-  const TONES: Record<PermissionOption['kind'], string> = {
-    allow: 'ok',
-    deny: 'no',
-    edit: 'ed',
-    notes: '',
-  };
+  /** The order a permission's actions are drawn in: deny, edit, then trusting. */
+  const RANK: Record<PermissionOption['kind'], number> = { deny: 0, edit: 1, allow: 2, notes: 3 };
 
-  /**
-   * One row as the dock draws it, whichever prompt it came from.
-   *
-   * A question's rows and a permission's are the same row with a different
-   * marker - a checkbox where a question draws one, the option's own icon
-   * where a permission does - so they are built once here rather than drawn
-   * twice below.
-   */
+  /** One of a question's options, as its row draws it. */
   interface Row {
     key: string;
-    /** What the row's own marker is: the meaning's icon, or the question's box. */
-    icon: string | null;
-    tone: string;
     label: string;
-    /** What choosing it means, which a question's option carries. */
+    /** What choosing it means, which the wire carries per option. */
     detail: string | null;
     /** What it would do, which the marked row shows while the reader decides. */
     preview: string | null;
-    /** The option this row answers with, or `null` for the reader's own words. */
-    optionId: string | null;
-    /**
-     * Whether this row is where the reader says something in their own words.
-     *
-     * It reveals the field rather than answering: a row labelled "tell the agent
-     * something else" that answers with nothing said is a key that cannot do
-     * what it says, one level down.
-     */
-    own: boolean;
+    /** The option this row answers with. */
+    optionId: string;
   }
 
   const rows = $derived<Row[]>(rowsOf(ask));
   const question = $derived(ask.kind === 'question');
   const multi = $derived(ask.kind === 'question' && ask.request.multiSelect);
 
+  /**
+   * A permission's actions, which are buttons rather than rows.
+   *
+   * A decision about a command is not a menu: the actions sit together, the
+   * trusting one primary, and the reason field is the one row that takes words.
+   * The wire's own options decide which actions there are - a client naming its
+   * own could allow what the prompt never offered.
+   */
+  const actions = $derived(
+    ask.kind === 'permission'
+      ? [...ask.request.options]
+          .filter((option) => option.kind !== 'notes')
+          // Deny first and the trusting actions last, so the primary sits at
+          // the row's end the way the mock draws it.
+          .sort((a, b) => (RANK[a.kind] ?? 9) - (RANK[b.kind] ?? 9))
+      : [],
+  );
+  /** The permission's own-words option, when the wire offers one. */
+  const reason = $derived(
+    ask.kind === 'permission'
+      ? (ask.request.options.find((option) => option.kind === 'notes') ?? null)
+      : null,
+  );
+
   function rowsOf(prompt: Ask): Row[] {
     if (prompt.kind === 'permission') {
-      return prompt.request.options.map((option) => ({
-        key: option.optionId,
-        icon: ICONS[option.kind],
-        tone: TONES[option.kind],
-        label: option.name,
-        detail: null,
-        preview: null,
-        optionId: option.optionId,
-        own: option.kind === 'notes',
-      }));
+      // A permission draws no rows: its actions are buttons and its words are
+      // the reason field, so there is nothing here for the listbox to hold.
+      return [];
     }
     if (prompt.kind === 'slack_draft') {
-      // A held post has two answers and no more: the draft goes out, or it does
-      // not. The rows are the dock's own because the wire carries the draft
-      // rather than a set of options to choose from.
-      return [
-        {
-          key: 'send',
-          icon: 'check',
-          tone: 'ok',
-          label: 'Send it',
-          detail: null,
-          preview: null,
-          optionId: null,
-          own: false,
-        },
-        {
-          key: 'drop',
-          icon: 'x',
-          tone: 'no',
-          label: "Don't send",
-          detail: null,
-          preview: null,
-          optionId: null,
-          own: false,
-        },
-      ];
+      // A held post draws no rows either: the draft goes out or it does not,
+      // and those two verbs are buttons under the body they would send.
+      return [];
     }
     if (prompt.kind === 'question') {
-      return [
-        ...prompt.request.options.map((option) => ({
-          key: option.optionId,
-          icon: null,
-          tone: 'ok',
-          label: option.label,
-          detail: option.description,
-          preview: option.preview,
-          optionId: option.optionId,
-          own: false,
-        })),
-        // The escape hatch the mockup draws: words rather than a choice, which
-        // is an answer the core accepts with nothing selected.
-        {
-          key: 'own',
-          icon: null,
-          tone: 'ok',
-          label: 'Tell the agent something else:',
-          detail: null,
-          preview: null,
-          optionId: null,
-          own: true,
-        },
-      ];
+      return prompt.request.options.map((option) => ({
+        key: option.optionId,
+        label: option.label,
+        detail: option.description,
+        preview: option.preview,
+        optionId: option.optionId,
+      }));
     }
     return [];
   }
@@ -186,13 +158,16 @@
   let marked = $state(0);
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
-  /** The field, so marking the own-words row can put the caret in it. */
+  /** The field the custom row draws, which is also where a take's words land. */
   let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
   let listbox = $state<HTMLDivElement | null>(null);
+  /** The dock itself, which holds the keyboard for a prompt that draws no row. */
+  let root = $state<HTMLDivElement | null>(null);
+  /** Whether the reader has been in the words row, which outlives the row. */
+  let visited = $state(false);
 
   const markedRow = $derived(rows[marked]);
-  const notesOpen = $derived(markedRow !== undefined && markedRow.own);
 
   // The dock takes the keyboard the moment it arrives, and again for every
   // question of a batch: its rows are the only thing to answer, a prompt nobody
@@ -204,40 +179,60 @@
   // **Keyed on the prompt's own identity, not on the object a record mints for
   // it.** The record is replaced on every frame and on the session poll, and a
   // re-render of the SAME prompt used to hand the dock the keyboard again: a
-  // reader typing in the notes row lost the caret to the option list
-  // mid-sentence, and the rest of their typing went to the listbox. While that
-  // box is open the caret is the reader's, so this leaves it where they put it.
+  // reader typing in the field lost the caret to the option list mid-sentence,
+  // and the rest of their typing went to the listbox. While the caret is in the
+  // field it is the reader's, so this leaves it where they put it.
   $effect(() => {
     void ownKey;
-    if (notesOpen) return;
-    if (listbox !== null) listbox.focus({ preventScroll: true });
+    if (inFieldNow()) return;
+    // The options where there are any, and the dock itself where there are not
+    // (a permission, a held post) - NOT the words row: focusing that would make
+    // this dock the destination for a take's words, and a landing sent to a row
+    // that unmounts with the prompt loses them.
+    const wanted = listbox ?? root;
+    if (wanted !== null) wanted.focus({ preventScroll: true });
   });
 
-  // The composer decides where a take's words land, and this dock is only a
-  // destination while its box is open - so it has to say whether it is.
+  /** Whether the caret is in the custom row's field right now. */
+  function inFieldNow(): boolean {
+    return field !== null && field.contains(document.activeElement);
+  }
+
+  // The composer decides where a take's words land, and this dock is a
+  // destination once the reader has been in its words row - the analogy of the
+  // row being OPENED, which it used to be revealed by and now always is.
   //
-  // The cleanup is load-bearing: a seat can fail with a prompt still waiting,
-  // which puts the blocker in the slot and takes this dock off screen while the
-  // prompt stays, and a `true` left standing here would route a take's words to
-  // a box that is no longer there.
+  // So it is sticky rather than tied to the caret: a reader who wrote a line and
+  // then clicked away is still writing there, and a landing sent to the
+  // composer's draft instead would be a box they had left. It is NOT set by the
+  // row merely being drawn, because a landing sent to a row nobody has used
+  // goes down with the dock when the prompt resolves.
+  //
+  // The cleanup is load-bearing twice over: a seat can fail with a prompt still
+  // waiting, which puts the blocker in the slot and takes this dock off screen
+  // while the prompt stays, and a `true` left standing here would route a
+  // take's words to a box that is no longer there.
   $effect(() => {
-    ownOpen = notesOpen;
+    const el = field;
+    if (el === null) return;
+    const on = (): void => {
+      visited = true;
+    };
+    el.addEventListener('focus', on);
+    if (el === document.activeElement) visited = true;
     return () => {
-      ownOpen = false;
+      el.removeEventListener('focus', on);
     };
   });
 
-  /**
-   * Focus follows the marked row.
-   *
-   * The box morphed into this, so the keyboard is already where the reader's
-   * hands are - and the dock's keys live on the listbox, which is why a dock
-   * that nothing focuses is a dock whose arrows do nothing. Marking the
-   * own-words row moves the caret into the field for the same reason.
-   */
+  // The destination itself, which outlives the field: a take drawing in the row
+  // replaces the field while it runs, and a reader who was writing there is
+  // still writing there when it comes back.
   $effect(() => {
-    const wanted = notesOpen ? field : listbox;
-    if (wanted !== null) wanted.focus();
+    ownOpen = visited;
+    return () => {
+      ownOpen = false;
+    };
   });
 
   // A take's words come with the keyboard, and this is the box they landed in.
@@ -251,25 +246,19 @@
     ask.kind === 'permission' || ask.kind === 'question' ? ask.request.toolId : null,
   );
 
-  /** Clicking a row: an option answers, the own-words row opens the field. */
+  /** Clicking a row: a single-answer question takes it, a set toggles it. */
   function choose(at: number): void {
     if (answered) return;
     const row = rows[at];
     if (row === undefined) return;
     marked = at;
-    if (row.own) {
-      // A click here reveals the field; submitting what has not been written
-      // is not an answer, and the core reads it as a cancel.
-      if (field !== null) field.focus();
-      return;
-    }
-    if (multi && row.optionId !== null) {
+    if (multi) {
       toggled = toggled.includes(row.optionId)
         ? toggled.filter((id) => id !== row.optionId)
         : [...toggled, row.optionId];
       return;
     }
-    submit();
+    submit(false);
   }
 
   /**
@@ -295,65 +284,28 @@
    * anything this component invented: an option's own `action` is what decides
    * what happens, and a client naming its own could allow what the prompt never
    * offered.
+   *
+   * `fromField` is Enter pressed in the words row: the answer is then what was
+   * written, with no row taken - which is the one answer a set of options
+   * cannot express, and the reason that row is always drawn.
    */
-  function submit(): void {
+  function submit(fromField: boolean): void {
     const row = rows[marked];
     if (row === undefined) return;
 
-    if (ask.kind === 'slack_draft') {
-      // A draft is answered by its own id rather than by a tool call, which is
-      // the command the terminal sends for the same two rows. Both are read
-      // before the answer is remembered: remembering it is what takes this dock
-      // off screen, and the prop is gone by the next read.
-      const id = ask.request.id;
-      const approved = row.key === 'send';
-      onanswer(id);
-      answer({ respond_slack_post: { key: slot, id, approved } });
-      return;
-    }
-
     if (toolId === null) return;
-    const words = notes.trim() === '' ? null : notes;
-
-    if (ask.kind === 'permission') {
-      if (row.optionId === null) return;
-      const option = ask.request.options.find((held) => held.optionId === row.optionId);
-      if (option === undefined) return;
-      // The own-words row asks for words: submitting it with none says nothing
-      // AND denies on the reader's behalf, so it waits for them to write.
-      if (option.kind === 'notes' && words === null) return;
-      onanswer(toolId);
-      answer({
-        respond_permission: {
-          key: slot,
-          tool_id: toolId,
-          outcome: {
-            outcome: 'selected',
-            option_id: option.optionId,
-            action: option.action,
-            // A permission's own-words row is a deny carrying what was said;
-            // without it the label would promise a message nobody sends.
-            ...(option.kind === 'notes' && words !== null ? { notes_text: words } : {}),
-          },
-        },
-      });
-      return;
-    }
-
     if (ask.kind !== 'question') return;
-    const empty = words === null && (!multi || toggled.length === 0) && row.optionId === null;
-    if (empty) {
-      // The own-words row asks for words, and Enter on it with nothing said has
-      // no answer to send - sending one rejects the question on the reader's
-      // behalf, which is the defect the permission's own-words guard closes one
-      // branch up. It opens the field instead, the same as clicking it does.
-      if (field !== null) field.focus();
+    const words = notes.trim() === '' ? null : notes;
+    if (fromField && words === null && (!multi || toggled.length === 0)) {
+      // Nothing written and nothing toggled: there is no answer to send, and
+      // sending one would reject the question on the reader's behalf.
       return;
     }
     // A multi-select question carries every row that is on, and the marked one
     // when nothing is: submitting a set the reader never saw is worse than
-    // submitting the row their key is on.
-    const ids = multi && toggled.length > 0 ? toggled : row.optionId === null ? [] : [row.optionId];
+    // submitting the row their key is on. An answer from the field carries no
+    // row at all unless the reader turned some on.
+    const ids = multi && toggled.length > 0 ? toggled : fromField ? [] : [row.optionId];
     const annotation = words === null ? null : { preview: null, notes: words };
     onanswer(toolId);
     answer({
@@ -389,12 +341,63 @@
       });
       return;
     }
-    // Every other prompt refuses with a row of its own: choosing that row keeps
-    // the action the core sent as the action taken, rather than one this client
-    // named.
-    const deny = rows.findIndex((row) => row.tone === 'no');
-    marked = deny < 0 ? rows.length - 1 : deny;
-    submit();
+    if (ask.kind === 'permission') {
+      // A permission refuses with its own deny action, which is the option the
+      // core sent rather than one this client named.
+      if (denyOption !== null) decide(denyWith);
+      return;
+    }
+    // A held post refuses with its own "don't send", which is the answer the
+    // core reads as the draft going nowhere.
+    post(false);
+  }
+
+  /** A permission's own deny, which its words ride when the field has any. */
+  const denyOption = $derived(actions.find((option) => option.kind === 'deny') ?? null);
+
+  /**
+   * The option a deny answers with: the wire's own-words option when the field
+   * has words, and the plain deny when it does not.
+   *
+   * A permission's own-words option IS a deny carrying what was said, so the
+   * words ride it rather than the bare deny - without them the label would
+   * promise a message nobody sends.
+   */
+  const denyWith = $derived(notes.trim() !== '' && reason !== null ? reason : denyOption);
+
+  /**
+   * A permission's action, clicked or keyed: the option IS the answer.
+   *
+   * The outcome is built from the option the core sent - its own id and its own
+   * action - so a client can never allow what the prompt did not offer.
+   */
+  function decide(option: PermissionOption | null): void {
+    if (option === null || answered || toolId === null) return;
+    const words = notes.trim() === '' ? null : notes;
+    // The own-words option asks for words: sending it with none says nothing AND
+    // denies on the reader's behalf, so it waits for them to write.
+    if (option.kind === 'notes' && words === null) return;
+    onanswer(toolId);
+    answer({
+      respond_permission: {
+        key: slot,
+        tool_id: toolId,
+        outcome: {
+          outcome: 'selected',
+          option_id: option.optionId,
+          action: option.action,
+          ...(option.kind === 'notes' && words !== null ? { notes_text: words } : {}),
+        },
+      },
+    });
+  }
+
+  /** A held post's two verbs, which are buttons rather than rows. */
+  function post(approved: boolean): void {
+    if (answered || ask.kind !== 'slack_draft') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({ respond_slack_post: { key: slot, id, approved } });
   }
 
   function move(step: number): void {
@@ -444,12 +447,16 @@
       // list. Everything else stays the field's own, so a caret still moves.
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
-        submit();
+        submit(true);
         return;
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        // The arrows move the mark AND hand the keyboard back to the options:
+        // the words row is a row like any other, and a reader who arrows out of
+        // it is back among the choices rather than stuck writing.
         event.preventDefault();
         move(event.key === 'ArrowDown' ? 1 : -1);
+        listbox?.focus();
         return;
       }
       if (event.key === 'Escape') {
@@ -461,11 +468,13 @@
           reject();
           return;
         }
-        // A permission steps back to its options instead, so the words typed so
-        // far stay in the state - a divergence from the terminal, which cancels
-        // from its notes box for this kind too.
+        // A permission steps back out of the field instead, so the words typed
+        // so far stay in the state - a divergence from the terminal, which
+        // cancels from its notes box for this kind too.
         event.preventDefault();
-        move(-1);
+        if (rows.length > 0) move(-1);
+        if (listbox !== null) listbox.focus();
+        else root?.focus();
       }
       return;
     }
@@ -485,9 +494,20 @@
       toggle();
       return;
     }
+    if (/^[1-9]$/.test(event.key)) {
+      // A row's number answers it: a single-answer question submits that row,
+      // and a multi-select toggles it - which is the same thing the row does
+      // when it is clicked.
+      const at = Number(event.key) - 1;
+      if (at < rows.length) {
+        event.preventDefault();
+        choose(at);
+      }
+      return;
+    }
     if (event.key === 'Enter') {
       event.preventDefault();
-      submit();
+      submit(false);
       return;
     }
     if (event.key === 'Escape') {
@@ -503,46 +523,92 @@
   }
 </script>
 
-<div class="dock">
-  {#if depth > 1}
-    <!-- The words say it; a marker in front of them was one more thing to
-         decode on a row that is already a count. -->
-    <div class="queue">{depth - 1} more pending after this</div>
-  {/if}
-  {#if notice !== null}
-    <div class="notice bad">{notice}</div>
-  {/if}
-
+<div
+  class="dock"
+  bind:this={root}
+  role="dialog"
+  aria-label="the prompt"
+  tabindex="-1"
+  onkeydown={onkey}
+>
   {#if ask.kind === 'permission'}
-    <div class="head">
-      <span class="t mono">{ask.request.title}</span>
-      {#if ask.request.subject !== ''}
-        <span class="q">{ask.request.subject}</span>
-      {/if}
+    <div class="d-head">
+      <span class="tag warn">&#9888; needs approval</span>
+      <span class="q mono">{ask.request.title}</span>
     </div>
+    {#if ask.request.subject !== ''}
+      <!-- The subject exactly as it arrives: prose when Claude sent prose, a
+           command when it did not. The wire's own pick between the two. -->
+      <div class="d-q">{ask.request.subject}</div>
+    {/if}
     {#if ask.request.reason !== null}
       <div class="reason">{ask.request.reason}</div>
     {/if}
     {#if ask.request.description !== null}
       <div class="desc">{ask.request.description}</div>
     {/if}
+    {#if reason !== null}
+      <div class="custom" class:live={take !== null}>
+        {#if take !== null}
+          <TakeCard {take} {wire} oncancel={onabandon} />
+        {:else}
+          <Field
+            editor="dock"
+            class="notes"
+            bind:value={notes}
+            rows={1}
+            placeholder={reason.name}
+            onkeydown={(event: KeyboardEvent) => {
+              event.stopPropagation();
+              onkey(event);
+            }}
+            field={(el: HTMLElement | null) => {
+              field = el;
+            }}
+          />
+        {/if}
+        <button class="micb" type="button" aria-label="dictate the answer" onclick={onmic}>
+          <Icon name="mic" />
+        </button>
+      </div>
+    {/if}
+    <div class="acts">
+      {#each actions as option (option.optionId)}
+        <button
+          class="btn"
+          class:d={option.kind === 'deny'}
+          class:p={option.kind === 'allow'}
+          onclick={() => decide(option.kind === 'deny' ? denyWith : option)}
+        >
+          {option.kind === 'deny' && notes.trim() !== '' && reason !== null
+            ? 'Deny with these words'
+            : option.name}
+        </button>
+      {/each}
+    </div>
   {:else if ask.kind === 'question'}
-    <div class="head">
+    <div class="d-head">
       <span class="qm"><Icon name="question" /></span>
-      <span class="t">{ask.request.header}</span>
+      <span class="d-q">{ask.request.question}</span>
       {#if ask.request.total > 1}
-        <span class="q">Q{ask.request.index + 1} of {ask.request.total}</span>
+        <!-- The batch as segments rather than a sentence: a count of three is
+             something to see, not to read. -->
+        <span class="segs" aria-hidden="true">
+          {#each Array.from({ length: ask.request.total }, (_, at) => at) as at (at)}
+            <i class:on={at <= ask.request.index}></i>
+          {/each}
+        </span>
       {/if}
     </div>
-    <div class="desc">{ask.request.question}</div>
+    <div class="desc">{ask.request.header}</div>
   {:else}
-    <div class="head">
-      <span class="t">
-        {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
-      </span>
-      <span class="q">
+    <div class="d-head">
+      <span class="dest">
         {ask.request.workspace} · {ask.request.conversationLabel}{#if ask.request.threadTs !== null}
           · thread {ask.request.threadTs}{/if}
+      </span>
+      <span class="q mono">
+        {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
       </span>
     </div>
     <!-- The body verbatim: this is what would go out, so the reader approves
@@ -562,7 +628,6 @@
       bind:this={listbox}
       tabindex="-1"
       aria-activedescendant={rowId(marked)}
-      onkeydown={onkey}
     >
       {#each rows as row, at (row.key)}
         <div
@@ -592,28 +657,14 @@
             onkey(event);
           }}
         >
-          {#if row.icon !== null}
-            <Icon name={row.icon} class={row.tone} />
-          {:else if multi}
-            <!-- The escape row's box reads checked once there are words in it:
-                 display only, because the typed words ride the answer's
-                 annotation rather than the selection set - the terminal's own
-                 rule, where the box confirms the typed content will go with
-                 the answer. -->
-            <span
-              class="box2"
-              class:on={row.own
-                ? notes.trim() !== ''
-                : row.optionId !== null && toggled.includes(row.optionId)}
-            >
-              {#if row.own ? notes.trim() !== '' : row.optionId !== null && toggled.includes(row.optionId)}
+          <!-- The row's own number, which is the key that answers it. -->
+          <span class="n" aria-hidden="true">{at + 1}</span>
+          {#if multi}
+            <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
+              {#if row.optionId !== null && toggled.includes(row.optionId)}
                 <Icon name="check" />
               {/if}
             </span>
-          {:else if row.own}
-            <!-- The escape row keeps the slot its options mark in - an empty
-                 one - so its words start in the same column theirs do. -->
-            <span class="slot"></span>
           {:else}
             <!-- A single-answer question marks its rows in the same slot the
                  set draws its boxes in - a circle that fills on the row being
@@ -622,33 +673,17 @@
             <span class="radio" class:on={at === marked}></span>
           {/if}
           <span class="tx">
-            {#if row.own && notesOpen}
-              <!-- **The escape hatch IS the box.** Moving onto the row puts the
-                   caret in it, so the answer is typed or dictated where the row
-                   already says it will be, rather than into a second box
-                   opening under the list. The keys below the listbox are the
-                   row's own while the caret is in it. -->
-              <Field
-                editor="dock"
-                class="notes"
-                bind:value={notes}
-                rows={1}
-                placeholder={row.label}
-                onkeydown={(event: KeyboardEvent) => {
-                  event.stopPropagation();
-                  onkey(event);
-                }}
-                field={(el: HTMLElement | null) => {
-                  field = el;
-                }}
-              />
-            {:else}
-              <span class="lbl">{row.label}</span>
-              {#if row.detail !== null}
-                <span class="why">{row.detail}</span>
-              {/if}
+            <span class="lbl">{row.label}</span>
+            {#if row.detail !== null}
+              <span class="why">{row.detail}</span>
             {/if}
           </span>
+          {#if answered && at === marked}
+            <!-- The wait rides the row that was answered. -->
+            <span class="answering"><span class="ring"></span>sending</span>
+          {:else if at === marked}
+            <span class="kk"><kbd>Enter</kbd></span>
+          {/if}
         </div>
       {/each}
     </div>
@@ -660,36 +695,83 @@
            handed. -->
       <div class="preview"><Prose text={markedRow.preview} /></div>
     {/if}
+  {/if}
 
-    {#if answered}
-      <!-- The same mark the reader's own words carry while they are on their
-           way, because it is the same wait: a pick that has left the reader and
-           has not been taken yet. -->
-      <div class="keys">
-        <span class="answering"
-          ><span class="ring"></span>sending · it holds until the core takes it</span
-        >
-      </div>
-    {:else}
-      <div class="keys">
-        <span><kbd>↑</kbd><kbd>↓</kbd> {question ? 'move' : 'select'}</span>
-        {#if multi}
-          <span><kbd>space</kbd> toggle</span>
-        {/if}
-        <span><kbd>Enter</kbd> {question ? 'submit' : 'confirm'}</span>
+  {#if question || reason !== null}
+    <!-- The one row that takes words, which is also the row a take's words
+         land in. It is always drawn rather than revealed by a mark: it is the
+         answer for every kind of prompt, not an escape hatch for one. -->
+    {#if ask.kind === 'question'}
+      <div class="custom" class:live={take !== null}>
         {#if take !== null}
-          <span><kbd>Esc</kbd> cancel the take</span>
+          <TakeCard {take} {wire} oncancel={onabandon} />
         {:else}
-          <span><kbd>Esc</kbd> reject</span>
+          <Field
+            editor="dock"
+            class="notes"
+            bind:value={notes}
+            rows={1}
+            placeholder="Or tell the agent something else&#8230;"
+            onkeydown={(event: KeyboardEvent) => {
+              event.stopPropagation();
+              onkey(event);
+            }}
+            field={(el: HTMLElement | null) => {
+              field = el;
+            }}
+          />
         {/if}
+        <button class="micb" type="button" aria-label="dictate the answer" onclick={onmic}>
+          <Icon name="mic" />
+        </button>
       </div>
     {/if}
+  {/if}
 
-    {#if take !== null}
-      <div class="blip">
-        <span class="dot" class:tr={take.phase === 'transcribing'}></span>
-        dictating · the words land in your draft either way
-      </div>
-    {/if}
+  {#if ask.kind === 'slack_draft'}
+    <div class="acts">
+      <button class="btn d" onclick={() => post(false)}>Don't send</button>
+      <button class="btn p" onclick={() => post(true)}>Post</button>
+    </div>
+  {/if}
+
+  {#if notice !== null}
+    <!-- A refusal is a row of its own, in the tone of a thing gone wrong. -->
+    <div class="refusal">{notice}</div>
+  {/if}
+
+  {#if answered && rows.length === 0}
+    <!-- The same mark the reader's own words carry while they are on their
+         way, because it is the same wait: an answer that has left the reader
+         and has not been taken yet. A question's wait rides its own row. -->
+    <div class="keys">
+      <span class="answering"
+        ><span class="ring"></span>sending · it holds until the core takes it</span
+      >
+    </div>
+  {:else if !answered}
+    <div class="keys">
+      {#if question}
+        <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+        {#if multi}<span><kbd>space</kbd> toggle</span>{/if}
+        <span><kbd>1</kbd>&ndash;<kbd>9</kbd> pick</span>
+        <span
+          ><kbd>Enter</kbd> submit{#if multi && toggled.length > 0}
+            {toggled.length}{/if}</span
+        >
+      {:else}
+        <span><kbd>Tab</kbd> between the actions</span>
+        <span><kbd>Enter</kbd> activates</span>
+      {/if}
+      {#if take !== null}
+        <span><kbd>Esc</kbd> cancels the take, then rejects</span>
+      {:else}
+        <span><kbd>Esc</kbd> reject</span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if depth > 1}
+    <div class="queue">{depth - 1} more pending after this</div>
   {/if}
 </div>
