@@ -276,10 +276,16 @@ mod tests {
     /// name.
     #[test]
     fn the_section_pushes_are_home_news() {
-        for update in [SessionUpdate::TasksChanged {
-            key: SessionSlot::lead("TestOrg", "proj"),
-            tasks: Vec::new(),
-        }] {
+        for update in [
+            SessionUpdate::TasksChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                tasks: Vec::new(),
+            },
+            SessionUpdate::CronSchedulesChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                crons: Vec::new(),
+            },
+        ] {
             assert!(
                 fleet_news(&update).any(),
                 "admitted by the redraw arm, not by the wildcard: {update:?}",

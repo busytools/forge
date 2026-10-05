@@ -19,6 +19,7 @@
     "ConnectionFailed": "connection_failed",
     "ContextUsageSnapshot": "context_usage_snapshot",
     "CronPromptAppended": "cron_prompt_appended",
+    "CronSchedulesChanged": "cron_schedules_changed",
     "DictateAvailability": "dictate_availability",
     "DictateDevicePin": "dictate_device_pin",
     "DictateEnded": "dictate_ended",

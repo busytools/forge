@@ -58,7 +58,9 @@ impl Workspace {
 
     /// Append a cron and persist. Backs `cron__create`.
     pub(crate) fn push_cron(&self, entry: forge_primitives::CronEntry) {
+        let project_name = entry.project_name.clone();
         self.with_crons_mut(|crons| crons.push(entry));
+        self.announce_cron_schedules_changed(&project_name);
     }
 
     /// Remove the cron `id` in `project_name` regardless of who owns it,
@@ -66,11 +68,15 @@ impl Workspace {
     /// fire-router's dead-slot removal; the owner-scoped `cron__delete`
     /// uses [`Self::remove_cron_owned_by`].
     pub(crate) fn remove_cron(&self, project_name: &str, id: &forge_primitives::CronId) -> bool {
-        self.with_crons_mut(|crons| {
+        let removed = self.with_crons_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| !(c.id == *id && c.project_name == project_name));
             crons.len() != before
-        })
+        });
+        if removed {
+            self.announce_cron_schedules_changed(project_name);
+        }
+        removed
     }
 
     /// Remove the cron `id` in `project_name` only when the slot that
@@ -83,13 +89,17 @@ impl Workspace {
         id: &forge_primitives::CronId,
         label: Option<&str>,
     ) -> bool {
-        self.with_crons_mut(|crons| {
+        let removed = self.with_crons_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| {
                 !(c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label)
             });
             crons.len() != before
-        })
+        });
+        if removed {
+            self.announce_cron_schedules_changed(project_name);
+        }
+        removed
     }
 
     /// Remove worker `label`'s crons in `project_key` from the in-memory
@@ -109,11 +119,33 @@ impl Workspace {
             );
             return;
         };
-        self.with_crons_mut(|crons| {
+        let removed = self.with_crons_mut(|crons| {
+            let before = crons.len();
             crons.retain(|c| {
                 !(c.project_name == project_name && c.team_role.as_deref() == Some(label))
             });
+            crons.len() != before
         });
+        if removed {
+            self.announce_cron_schedules_changed(&project_name);
+        }
+    }
+
+    /// Tell every view the project's schedule set moved, as the set the
+    /// write just left, on the project's lead seat. A name no project
+    /// carries has no seat to route on and announces nothing.
+    fn announce_cron_schedules_changed(&self, project_name: &str) {
+        let Some(key) = self.lead_slot_for_project(project_name) else {
+            tracing::debug!(
+                target: "forge_workspace::crons",
+                event_name = "cron_schedules_changed_unroutable",
+                project = %project_name,
+                "a cron write named a project no project carries; nothing was announced",
+            );
+            return;
+        };
+        let crons = self.crons_for_project(project_name);
+        let _ = self.update_tx.send(SessionUpdate::CronSchedulesChanged { key, crons });
     }
 
     /// The crons registered for `project_name`, whatever their owner. The
@@ -141,8 +173,12 @@ impl Workspace {
         id: &forge_primitives::CronId,
         fired_at: std::time::SystemTime,
     ) {
+        // The entry's project comes out of the fold, since a run-once the
+        // advance removes is the one thing that can no longer answer it.
+        let mut project_name = None;
         self.with_crons_mut(|crons| {
             let Some(pos) = crons.iter().position(|c| &c.id == id) else { return };
+            project_name = Some(crons[pos].project_name.clone());
             match &crons[pos].kind {
                 forge_primitives::CronKind::Once(_) => {
                     crons.remove(pos);
@@ -174,6 +210,9 @@ impl Workspace {
                 }
             }
         });
+        if let Some(project_name) = project_name {
+            self.announce_cron_schedules_changed(&project_name);
+        }
     }
 
     /// Fire every cron due at `now`: deliver each prompt into its project
@@ -326,8 +365,11 @@ impl Workspace {
     /// Cross-crate test access to the otherwise `pub(crate)` cron store
     /// so forge-tui can exercise the Inspector's `refresh_forge_crons`
     /// resolution against a seeded cron.
+    ///
+    /// The store write without the announcement: a fixture seeds state, it
+    /// does not perform the write a view is owed a frame for.
     pub fn seed_test_cron(&self, entry: forge_primitives::CronEntry) {
-        self.push_cron(entry);
+        self.with_crons_mut(|crons| crons.push(entry));
     }
 }
 
@@ -338,7 +380,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::SessionSlot;
-    use crate::protocol::Command;
+    use crate::protocol::{Command, SessionUpdate};
     use crate::workspace::PooledAgent;
     use forge_gateway::AccountKey;
 
@@ -438,6 +480,154 @@ mod tests {
             || panic!("project '{name}' missing from workspace"),
             |p| p.path.to_string_lossy().into_owned(),
         )
+    }
+
+    /// One daily schedule, as a test's write leaves it.
+    fn schedule(
+        id: &str,
+        project: &str,
+        prompt: &str,
+        owner: Option<&str>,
+    ) -> forge_primitives::cron::CronEntry {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        CronEntry {
+            id: CronId::from(id),
+            project_name: project.to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: owner.map(str::to_owned),
+        }
+    }
+
+    /// The one `CronSchedulesChanged` on a test's update stream, as its key
+    /// and the set it announces.
+    fn next_crons_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+    ) -> (SessionSlot, Vec<forge_primitives::cron::CronEntry>) {
+        match rx.try_recv() {
+            Ok(SessionUpdate::CronSchedulesChanged { key, crons }) => (key, crons),
+            other => panic!("expected a CronSchedulesChanged on the stream, got {other:?}"),
+        }
+    }
+
+    /// A cron create and a cron delete each announce the project's whole
+    /// schedule set on its lead seat, so the inspector's SCHEDULES section
+    /// pops on the frame that moved it rather than on the next unrelated
+    /// read. Mutants: drop either emission (the drain is empty); announce a
+    /// set taken before the write.
+    #[test]
+    fn a_cron_write_announces_the_projects_schedules() {
+        use forge_primitives::cron::CronId;
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-crons");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+
+        ws.push_cron(schedule("c1", "proj", "stand-up", None));
+        let (key, crons) = next_crons_changed(&mut rx);
+        assert_eq!(key, lead, "a create routes on the project's lead seat");
+        assert_eq!(
+            crons.iter().map(|cron| cron.prompt.clone()).collect::<Vec<_>>(),
+            ["stand-up"],
+            "and carries the set the core now holds",
+        );
+
+        assert!(
+            ws.remove_cron_owned_by("proj", &CronId::from("c1"), None),
+            "precondition: the lead deletes its own cron",
+        );
+        let (_, crons) = next_crons_changed(&mut rx);
+        assert!(crons.is_empty(), "a delete announces the set it left behind");
+    }
+
+    /// A cron write that changed nothing announces nothing: an id no entry
+    /// carries, a delete refused for ownership, a fire for an id that is
+    /// gone, and a teardown matching no worker cron are all no-ops.
+    ///
+    /// Mutant: emit unconditionally, where each of these is news the section
+    /// never moved for.
+    #[test]
+    fn a_cron_write_that_changed_nothing_announces_nothing() {
+        use forge_primitives::cron::CronId;
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-crons-noop");
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+
+        assert!(
+            !ws.remove_cron("proj", &CronId::from("ghost")),
+            "precondition: no entry carries the id",
+        );
+        assert!(
+            !ws.remove_cron_owned_by("proj", &CronId::from("ghost"), None),
+            "precondition: no entry carries the id for that owner either",
+        );
+        ws.seed_test_cron(schedule("c1", "proj", "stand-up", Some("reviewer")));
+        assert!(
+            !ws.remove_cron_owned_by("proj", &CronId::from("c1"), None),
+            "precondition: the entry belongs to the worker, so the lead's delete is refused",
+        );
+        ws.delete_crons_for_worker(&key, "nobody");
+        ws.advance_or_remove_cron(&CronId::from("ghost"), std::time::SystemTime::now());
+
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "no write here changed a schedule, so nothing is announced, and this was: {announced:?}",
+        );
+    }
+
+    /// The two writes the scheduler owns announce as well - a fire that
+    /// advances or removes an entry, and a worker teardown that takes its
+    /// schedules with it - because the section draws `next_fire` and the set
+    /// itself, not only what the tools edit.
+    ///
+    /// Mutant: wire only the tool-driven writes, where a fired schedule's
+    /// countdown and a despawned worker's schedules stop moving.
+    #[test]
+    fn a_fired_schedule_and_a_teardown_announce_what_they_left() {
+        use forge_primitives::cron::{CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-crons-fire");
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        let now = std::time::SystemTime::now();
+
+        ws.seed_test_cron(schedule("r", "proj", "stand-up", None));
+        ws.advance_or_remove_cron(&CronId::from("r"), now);
+        let (announced_key, crons) = next_crons_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a fire routes on the project's lead seat");
+        assert_eq!(crons.len(), 1, "a fired recurring keeps its entry");
+        assert!(crons[0].next_fire > now, "and the announcement carries the schedule it advanced to");
+        assert_eq!(crons[0].last_fire, Some(now), "with the fire it recorded");
+
+        // A run-once leaves the set with its fire, so the announcement is
+        // what is left rather than the entry that is gone.
+        ws.seed_test_cron(forge_primitives::cron::CronEntry {
+            kind: CronKind::Once(now),
+            ..schedule("o", "proj", "deploy", None)
+        });
+        ws.advance_or_remove_cron(&CronId::from("o"), now);
+        let (_, crons) = next_crons_changed(&mut rx);
+        assert!(
+            crons.iter().all(|cron| cron.id != CronId::from("o")),
+            "the fired run-once is announced as gone",
+        );
+
+        // A worker's teardown announces the schedules it left behind.
+        ws.seed_test_cron(schedule("w", "proj", "review", Some("reviewer")));
+        ws.delete_crons_for_worker(&key, "reviewer");
+        let (announced_key, crons) = next_crons_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a teardown routes on the project's lead seat");
+        assert!(
+            crons.iter().all(|cron| cron.team_role.as_deref() != Some("reviewer")),
+            "and announces what the teardown left: {crons:?}",
+        );
     }
 
     #[test]

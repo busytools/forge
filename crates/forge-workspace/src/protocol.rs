@@ -1283,6 +1283,16 @@ pub enum SessionUpdate {
         key: SessionSlot,
         tasks: Vec<forge_primitives::tasks::Task>,
     },
+    /// The project's schedules moved, as the whole set the core holds.
+    ///
+    /// **Pushed rather than read.** Three doors move it - the `cron__*`
+    /// writes, a fire that advances or removes an entry, and a worker's
+    /// teardown - and the section draws the countdown, so each announces the
+    /// set it left. `key` is the project's lead seat.
+    CronSchedulesChanged {
+        key: SessionSlot,
+        crons: Vec<forge_primitives::CronEntry>,
+    },
     /// The `/` menu's catalogue moved, as the whole list the core holds.
     ///
     /// **Pushed rather than read.** The CLI advertises it on a turn's init and
@@ -1658,6 +1668,7 @@ impl SessionUpdate {
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
             | Self::TasksChanged { key, .. }
+            | Self::CronSchedulesChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
@@ -1794,6 +1805,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("TasksChanged")
                 .field("key", key)
                 .field("count", &tasks.len())
+                .finish(),
+            Self::CronSchedulesChanged { key, crons } => f
+                .debug_struct("CronSchedulesChanged")
+                .field("key", key)
+                .field("count", &crons.len())
                 .finish(),
             Self::SlashCommandsChanged { key, commands } => f
                 .debug_struct("SlashCommandsChanged")
