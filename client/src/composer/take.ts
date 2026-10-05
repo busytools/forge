@@ -175,9 +175,9 @@ export class LocalTake {
       this.start();
       return;
     }
-    // Anything but open mid-take: the server's own close handler submits
-    // what streamed in, so this side releases the microphone and lets the
-    // landed notice be the report.
+    // Anything but open mid-take: the server's close handler DROPS the
+    // take - its reader is gone, so nothing lands - and this side releases
+    // the microphone.
     if (this.started) this.release();
   }
 

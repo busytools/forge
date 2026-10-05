@@ -57,7 +57,15 @@ pub mod wire;
 /// on, `Command` gains `dictate_stream`, and the socket now takes binary
 /// messages as dictation frames - a whole message kind a v3 client has no
 /// vocabulary for. `baselines/socket/3/` is the record a v3 server emitted.
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// **v5 is a bump for the take's owner.** A take belongs to the connection
+/// that started it: every `Dictate*` update is forwarded to that connection
+/// alone, a second take on the seat is refused by name, and a connection
+/// going away DROPS its take rather than submitting what arrived. The
+/// record's `composer` loses its `take` and `notice` for the same reason -
+/// a take's meter, phases and words are not a fact any other reader may
+/// draw. `baselines/socket/4/` is the record a v4 server emitted.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations

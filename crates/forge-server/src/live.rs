@@ -478,8 +478,13 @@ mod tests {
         let mut live = Live::new();
 
         for update in [
-            SessionUpdate::DictateStarted { key: slot.clone(), floor_db: -50.0, generation: 1 },
-            SessionUpdate::DictateLevel { key: slot.clone(), peak_db: -20.0 },
+            SessionUpdate::DictateStarted {
+                key: slot.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateLevel { key: slot.clone(), peak_db: -20.0, initiator: None },
         ] {
             let redraw = live.apply(&update);
             assert!(!redraw.fleet, "{update:?} is not a row changing");

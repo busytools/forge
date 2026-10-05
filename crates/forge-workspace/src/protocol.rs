@@ -562,6 +562,12 @@ pub enum Command {
     DictateStream {
         key: SessionSlot,
         options: crate::dictate::DictateAxes,
+        /// The connection that sent this, stamped by the transport that
+        /// received it: the take belongs to that connection, so every
+        /// update about it goes back there alone. `None` is this
+        /// process's own terminal.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// Submit (`submit = true`) or abandon the take started by `key`.
     /// During recording this is release-to-submit vs discard; during a
@@ -569,6 +575,11 @@ pub enum Command {
     DictateStop {
         key: SessionSlot,
         submit: bool,
+        /// The connection whose take this stop addresses, stamped like
+        /// [`Command::DictateStream`]'s: only the connection a take
+        /// belongs to can stop it. `None` is the terminal's own.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// Overwrite the review-thread set for `(project, branch)`.
     /// Dispatched by the diff overlay's re-anchor recompute. Fire-and-
@@ -813,7 +824,7 @@ impl std::fmt::Debug for Command {
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
             }
-            Self::DictateStop { key, submit } => {
+            Self::DictateStop { key, submit, .. } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
             }
             Self::SaveReviewThreads { project, branch, .. } => f
@@ -1596,10 +1607,18 @@ pub enum SessionUpdate {
     /// identifies this take among the key's takes: a resolver that
     /// arrives after a newer take started carries a stale one, and the
     /// composer resets on its own generation only.
+    ///
+    /// `initiator` names the connection the take belongs to, as its
+    /// `dictate_stream` carried it: every `Dictate*` update about a take
+    /// goes to that connection alone, so no other subscriber draws its
+    /// meter, its phases or its words. `None` is the terminal's own
+    /// in-process take.
     DictateStarted {
         key: SessionSlot,
         floor_db: f32,
         generation: u64,
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// One level reading for the recording at `key`: the peak over the
     /// window since the previous reading, in dBFS. Emitted on the
@@ -1617,10 +1636,18 @@ pub enum SessionUpdate {
         key: SessionSlot,
         #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
         peak_db: f32,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced
+        /// it.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// The take from `key` was submitted and a transcript is in flight.
     DictateTranscribing {
         key: SessionSlot,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced
+        /// it.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// A take from `key` has settled `done` segments of its
     /// transcription. `total` is `None` while the recording is still
@@ -1634,6 +1661,10 @@ pub enum SessionUpdate {
         generation: u64,
         done: usize,
         total: Option<usize>,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced
+        /// it.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     /// A take from `key` is done: insert, notice or reset per
     /// [`DictateOutcome`]. `generation` is the take's own, as handed
@@ -1642,6 +1673,10 @@ pub enum SessionUpdate {
         key: SessionSlot,
         outcome: DictateOutcome,
         generation: u64,
+        /// The take's own - and for a refusal, the connection that was
+        /// refused, so only it learns why. `None` is the terminal's.
+        #[serde(skip)]
+        initiator: Option<u64>,
     },
     FatalError(AppError),
 }
@@ -1677,7 +1712,7 @@ impl SessionUpdate {
             | Self::ReviewActivityNotice { key, .. }
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
-            | Self::DictateTranscribing { key }
+            | Self::DictateTranscribing { key, .. }
             | Self::DictateProgress { key, .. }
             | Self::PromptQueuedWhileBusy { key }
             | Self::PromptQueued { key, .. }
@@ -1996,13 +2031,13 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateStarted { key, .. } => {
                 f.debug_struct("DictateStarted").field("key", key).finish_non_exhaustive()
             }
-            Self::DictateLevel { key, peak_db } => {
+            Self::DictateLevel { key, peak_db, .. } => {
                 f.debug_struct("DictateLevel").field("key", key).field("peak_db", peak_db).finish()
             }
-            Self::DictateTranscribing { key } => {
+            Self::DictateTranscribing { key, .. } => {
                 f.debug_struct("DictateTranscribing").field("key", key).finish()
             }
-            Self::DictateProgress { key, generation, done, total } => f
+            Self::DictateProgress { key, generation, done, total, .. } => f
                 .debug_struct("DictateProgress")
                 .field("key", key)
                 .field("generation", generation)
@@ -2389,7 +2424,11 @@ mod dictate_level_wire_tests {
     #[test]
     fn a_level_with_no_signal_round_trips_as_null() {
         let key = SessionSlot::from_str_for_test("dictate-level".to_owned());
-        let silent = SessionUpdate::DictateLevel { key: key.clone(), peak_db: f32::NEG_INFINITY };
+        let silent = SessionUpdate::DictateLevel {
+            key: key.clone(),
+            peak_db: f32::NEG_INFINITY,
+            initiator: None,
+        };
         let encoded = serde_json::to_value(&silent).expect("a level encodes");
         assert!(
             encoded["dictate_level"]["peak_db"].is_null(),
@@ -2403,7 +2442,7 @@ mod dictate_level_wire_tests {
         assert_eq!(peak_db, f32::NEG_INFINITY, "null must read back as no signal");
 
         // And a reading that IS a signal is untouched by the tolerance.
-        let heard = SessionUpdate::DictateLevel { key, peak_db: -22.5 };
+        let heard = SessionUpdate::DictateLevel { key, peak_db: -22.5, initiator: None };
         let encoded = serde_json::to_value(&heard).expect("a level encodes");
         let back: SessionUpdate = serde_json::from_value(encoded).expect("a level decodes");
         let SessionUpdate::DictateLevel { peak_db, .. } = back else {

@@ -2345,27 +2345,46 @@ impl Workspace {
         self.config.dictate.models_dir()
     }
 
-    /// The connection that was streaming a take for `key` has gone: submit
-    /// what arrived and free the seat.
+    /// The connection that was streaming a take for `key` has gone: the
+    /// take is DROPPED, not submitted - its reader is gone, so nothing it
+    /// produced would land anywhere, and stopping it now spends nothing
+    /// further on it.
     ///
-    /// Only a take fed by FRAMES is closed - a device take's audio comes
-    /// from this machine and its recording task outlives any one client.
-    /// The seat is free the moment this returns, so a client that
-    /// reconnects and starts again is not refused by the take it left
-    /// behind. Answers whether there was one to close.
-    pub fn dictate_close(&self, key: &SessionSlot) -> bool {
+    /// Only a take by THIS connection is closed: a device take's audio
+    /// comes from this machine and its recording task outlives any one
+    /// client, and a take that ended with another one started since is
+    /// not this connection's to close. The seat is free the moment this
+    /// returns, so a client that reconnects and starts again is not
+    /// refused by the take it left behind. Answers whether there was one
+    /// to close.
+    pub fn dictate_close(&self, key: &SessionSlot, initiator: u64) -> bool {
         let mut runtime = self.dictate_runtime.lock();
-        if runtime.recordings.get(key).is_none_or(|live| live.sink.is_none()) {
-            return false;
+        let live = runtime
+            .recordings
+            .get(key)
+            .is_some_and(|live| live.sink.is_some() && live.initiator == Some(initiator));
+        if live {
+            let Some(take) = runtime.recordings.remove(key) else {
+                return false;
+            };
+            // `false` is the abandon the runner already honours for Esc:
+            // the capture is released and its audio is transcribed no
+            // further. A channel nobody is reading yet still takes the
+            // value.
+            let _ = take.stop.try_send(false);
+            return true;
         }
-        let Some(live) = runtime.recordings.remove(key) else {
-            return false;
-        };
-        // A channel nobody is reading yet still takes the value: the
-        // runner selects on it the moment its first await lands.
-        let _ = live.stop.try_send(true);
-        runtime.finishing.push(crate::dictate::FinishingTake { key: key.clone(), stop: live.stop });
-        true
+        // A take already submitted is still this connection's to cancel:
+        // its transcript would have no reader left either.
+        if let Some(take) = runtime
+            .finishing
+            .iter()
+            .find(|take| &take.key == key && take.initiator == Some(initiator))
+        {
+            let _ = take.stop.try_send(false);
+            return true;
+        }
+        false
     }
 
     /// The dictate axes in force: `forge.toml` over the crate's own
@@ -4375,7 +4394,7 @@ impl Workspace {
                         crate::dictate::handle_dictate_start(&ws, key).await;
                     });
                 }
-                Command::DictateStream { key, options } => {
+                Command::DictateStream { key, options, initiator } => {
                     let updates = self.update_sender();
                     // Registered HERE, inline, rather than on a spawned
                     // task: the connection this arrived on is ordered, so
@@ -4384,12 +4403,13 @@ impl Workspace {
                     // is nothing to take off the runtime thread. The test
                     // `a_stream_take_registers_synchronously_and_keeps_its_frames`
                     // fails the moment this moves onto one.
-                    match crate::dictate::register_stream_take(self, &key, options) {
+                    match crate::dictate::register_stream_take(self, &key, options, initiator) {
                         Ok(take) => {
                             let _ = updates.send(SessionUpdate::DictateStarted {
                                 key: key.clone(),
                                 floor_db: take.floor_db,
                                 generation: take.generation,
+                                initiator,
                             });
                             tokio::spawn(crate::dictate::run_stream_take(
                                 Arc::clone(self),
@@ -4402,19 +4422,20 @@ impl Workspace {
                             // The start refused, so any park the press's
                             // release left behind answers a take that will
                             // never exist.
-                            self.dictate_runtime.lock().clear_stop_pending(&key);
+                            self.dictate_runtime.lock().clear_stop_pending(&key, initiator);
                             let _ = updates.send(SessionUpdate::DictateEnded {
                                 key,
                                 outcome: crate::protocol::DictateOutcome::Refused { message },
                                 generation: 0,
+                                initiator,
                             });
                         }
                     }
                 }
-                Command::DictateStop { key, submit } => {
+                Command::DictateStop { key, submit, initiator } => {
                     let ws = Arc::clone(self);
                     tokio::spawn(async move {
-                        crate::dictate::handle_dictate_stop(&ws, &key, submit).await;
+                        crate::dictate::handle_dictate_stop(&ws, &key, submit, initiator).await;
                     });
                 }
                 // User-action store writes routed through the command

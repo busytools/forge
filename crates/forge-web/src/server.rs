@@ -291,7 +291,11 @@ async fn dictate(
             if start {
                 forge_server::Command::DictateStart { key: slot.clone() }
             } else {
-                forge_server::Command::DictateStop { key: slot.clone(), submit: action == "stop" }
+                forge_server::Command::DictateStop {
+                    key: slot.clone(),
+                    submit: action == "stop",
+                    initiator: None,
+                }
             }
         },
     )

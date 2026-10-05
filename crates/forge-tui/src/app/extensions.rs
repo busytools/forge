@@ -2572,7 +2572,12 @@ mod tests {
         app.plugins.search_focused = true;
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         (app, key)
     }
@@ -2592,6 +2597,7 @@ mod tests {
                     text: "retry guard".to_owned(),
                     truncated: false,
                 },
+                initiator: None,
             },
         );
         assert_eq!(app.plugins.search_query_for(ExtensionsTab::Installed), "retry guard");
@@ -2609,6 +2615,7 @@ mod tests {
                     text: " alpha\nbeta\r\ngamma\rdelta".to_owned(),
                     truncated: false,
                 },
+                initiator: None,
             },
         );
         assert_eq!(
@@ -2644,6 +2651,7 @@ mod tests {
                 key,
                 generation: 1,
                 outcome: DictateOutcome::Landed { text: "sample".to_owned(), truncated: false },
+                initiator: None,
             },
         );
 
@@ -2690,7 +2698,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
 
         apply_session_update(
@@ -2699,6 +2712,7 @@ mod tests {
                 key: key.clone(),
                 generation: 1,
                 outcome: DictateOutcome::Landed { text: "owner/repo".to_owned(), truncated: false },
+                initiator: None,
             },
         );
         let overlay = app.config.add_marketplace_overlay_mut().expect("overlay still up");
@@ -2713,6 +2727,7 @@ mod tests {
                     text: " alpha\nbeta\r\ngamma\rdelta".to_owned(),
                     truncated: false,
                 },
+                initiator: None,
             },
         );
         let overlay = app.config.add_marketplace_overlay_mut().expect("overlay still up");
@@ -2732,7 +2747,7 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1, initiator: None },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();

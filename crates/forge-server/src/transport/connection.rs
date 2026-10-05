@@ -104,6 +104,11 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
 /// message this server chose to drop, which is the failure that reads as a
 /// hang rather than as an error.
 async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::Result<()> {
+    // This connection's own number: the stamp that names which take is
+    // this connection's, on the commands that start and stop one and on
+    // the updates that come back. Minted here so the teardown closes the
+    // take this connection started and no other.
+    let me = mint_connection_id();
     let mut watched: Vec<Subject> = Vec::new();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
@@ -123,20 +128,22 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
 
     let outcome =
-        run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate).await;
+        run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate, me)
+            .await;
 
-    // The take this connection was streaming ends with it: what already
-    // arrived is submitted, and the seat is free for the next take. A
+    // The take this connection was streaming ends with it: it is DROPPED
+    // rather than submitted - its reader is gone, so nothing it produced
+    // would land anywhere - and the seat is free for the next take. A
     // DEVICE take is not touched - its audio is this machine's, and its
     // recording task outlives any one client.
     if let Some(seat) = dictate.as_ref()
-        && state.surface.dictate_close(seat)
+        && state.surface.dictate_close(seat, me)
     {
         tracing::debug!(
             target: "forge_server::transport",
-            event_name = "dictate_take_closed",
+            event_name = "dictate_take_dropped",
             slot = %seat.display(),
-            "the connection that was streaming a take went away; the take was submitted",
+            "the connection that was streaming a take went away; the take was dropped",
         );
     }
 
@@ -167,6 +174,7 @@ async fn run_connection(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     dictate: &mut Option<SessionSlot>,
+    me: u64,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
     loop {
@@ -179,7 +187,7 @@ async fn run_connection(
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
-                handle_client(socket, state, watched, holds, updates, dictate, msg).await?;
+                handle_client(socket, state, watched, holds, updates, dictate, me, msg).await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -188,7 +196,7 @@ async fn run_connection(
                 let Some(update) = heard else { break };
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if watched.iter().any(|what| what.covers(&update)) {
+                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
                     held.push(Instant::now(), update);
                 }
             }
@@ -264,6 +272,7 @@ async fn handle_client(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     dictate: &mut Option<SessionSlot>,
+    me: u64,
     msg: Message,
 ) -> anyhow::Result<()> {
     let text = match msg {
@@ -294,7 +303,7 @@ async fn handle_client(
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
             for update in open_stream(state, updates, answering) {
-                if watched.iter().any(|what| what.covers(&update)) {
+                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
                     queued.push(update);
                 }
             }
@@ -351,7 +360,20 @@ async fn handle_client(
             }
         }
         ClientMessage::Command { command, reply_to } => {
-            let command = *command;
+            // This connection's own stamp on the two commands that carry
+            // one: the take a start begins and the stop that ends it are
+            // this connection's alone, and the stamp riding back on the
+            // take's updates is what routes them home. A client cannot
+            // claim another's - the field never crosses the wire.
+            let command = match *command {
+                Command::DictateStream { key, options, .. } => {
+                    Command::DictateStream { key, options, initiator: Some(me) }
+                }
+                Command::DictateStop { key, submit, .. } => {
+                    Command::DictateStop { key, submit, initiator: Some(me) }
+                }
+                other => other,
+            };
             // The seat a stream start names is this connection's to
             // remember: the dictation frames that follow carry no seat of
             // their own, and this is the one message that says which take
@@ -546,6 +568,38 @@ async fn handle_client(
             }
             Ok(())
         }
+    }
+}
+
+/// The next number for a connection, unique for the process's life.
+///
+/// A take belongs to the connection it started on, so the number is what
+/// both halves of that routing name: the transport stamps it on
+/// `dictate_stream` and `dictate_stop`, the core echoes it on the take's
+/// updates, and a connection forwards only what carries its own. Minted
+/// process-wide rather than per transport so two servers in one process -
+/// a test's, a scratch instance beside the real one - cannot hand the same
+/// number to different connections.
+fn mint_connection_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether this connection is one of an update's readers.
+///
+/// Every `Dictate*` update about a take belongs to the connection that
+/// started it, so a connection hears its own take and no other's - and the
+/// terminal's in-process take, whose updates carry no connection at all,
+/// is nobody's on the socket. Every other update keeps the watch rule
+/// alone.
+fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
+    match update {
+        SessionUpdate::DictateStarted { initiator, .. }
+        | SessionUpdate::DictateLevel { initiator, .. }
+        | SessionUpdate::DictateTranscribing { initiator, .. }
+        | SessionUpdate::DictateProgress { initiator, .. }
+        | SessionUpdate::DictateEnded { initiator, .. } => *initiator == Some(me),
+        _ => true,
     }
 }
 
@@ -841,6 +895,34 @@ mod tests {
         assert!(
             matches!(updates, Some((_, true))),
             "and the client is still counted as one that can answer",
+        );
+    }
+
+    /// A connection hears its own take's updates and no other's: another
+    /// connection's take is dropped, and so is the terminal's own - which
+    /// carries no connection at all - because neither is this connection's
+    /// to draw.
+    #[test]
+    fn only_its_own_takes_updates_are_heard() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let mine = SessionUpdate::DictateStarted {
+            key: seat.clone(),
+            floor_db: -50.0,
+            generation: 1,
+            initiator: Some(7),
+        };
+        assert!(ours_to_hear(&mine, 7), "a connection hears the take it started");
+        assert!(!ours_to_hear(&mine, 8), "and not one another connection started");
+
+        let terminal = SessionUpdate::DictateLevel { key: seat, peak_db: -20.0, initiator: None };
+        assert!(
+            !ours_to_hear(&terminal, 7),
+            "the terminal's in-process take is nobody's on the socket"
+        );
+
+        assert!(
+            ours_to_hear(&SessionUpdate::CatalogLoaded, 7),
+            "every other update keeps the watch rule alone"
         );
     }
 

@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 4, "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 5, "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -188,6 +188,17 @@ always finds it. `options` is the axes that client's panel was showing.
 The terminal's own `dictate_start` is unchanged: it records from forge's
 machine, and its axes are the session's stored overrides.
 
+**A take belongs to the connection that started it.** Every `dictate_*`
+update about it - the start, the levels, the phases, the end - goes back to
+that connection alone: no other subscriber to the seat draws its meter, its
+phases or its words, and the seat's record carries no take at all. A second
+`dictate_stream` for a seat whose take is live is refused with a sentence
+naming the reason, and only the refused connection hears it. A connection
+that goes away drops its take rather than submitting it - its reader is
+gone, so nothing more is transcribed and nothing lands anywhere. What does
+land sits in that reader's box, and pressing enter sends it as an ordinary
+prompt every view then sees.
+
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
 the two mean the same thing - a `null` is what the field is if a client
@@ -290,7 +301,7 @@ conversation, and what the composer is doing.
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them. |
 | `state` | The seat's scan cwd, what it dictates with where it has overridden the defaults, and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it. |
-| `composer` | What the composer is doing: a take in flight with its meter and phase, the line a finished take left, whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. The asks it is answering ride `pending_asks` rather than being copied here. |
+| `composer` | What the composer is doing: whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. **No take and no notice**: a take belongs to the connection that started it, so its meter, its phases and its words ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here. |
 
 **`usage`** is the token/cost pool behind a `/usage` view, scanned on the
 ask.

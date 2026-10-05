@@ -613,6 +613,7 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
         &serde_json::to_value(Command::DictateStream {
             key: seat.clone(),
             options: forge_workspace::DictateAxes::default(),
+            initiator: None,
         })
         .expect("a command encodes"),
         "",

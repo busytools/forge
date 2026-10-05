@@ -216,9 +216,11 @@ fn request_stop(app: &mut App, cancelled: bool) {
         .or_else(|| app.active_session_key.clone());
     let Some(key) = target else { return };
     let Some(workspace) = app.workspace.as_ref() else { return };
-    if let Err(error) =
-        workspace.dispatch(forge_workspace::Command::DictateStop { key, submit: !cancelled })
-    {
+    if let Err(error) = workspace.dispatch(forge_workspace::Command::DictateStop {
+        key,
+        submit: !cancelled,
+        initiator: None,
+    }) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "dictate_stop_dispatch_failed",
@@ -650,7 +652,7 @@ mod tests {
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         match dispatched.last() {
-            Some(forge_workspace::Command::DictateStop { key, submit }) => {
+            Some(forge_workspace::Command::DictateStop { key, submit, .. }) => {
                 assert_eq!(key, &background, "the stop names the take's own session");
                 assert!(submit);
             }

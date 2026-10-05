@@ -1078,7 +1078,12 @@ pub(crate) mod tests {
         let key = app.active_session_key.clone().expect("active session");
         crate::app::events::apply_session_update(
             &mut app,
-            forge_workspace::SessionUpdate::DictateStarted { key, floor_db: -50.0, generation: 1 },
+            forge_workspace::SessionUpdate::DictateStarted {
+                key,
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         if let Some(ws) = app.workspace.as_ref() {
             ws.enable_test_dispatch_intercept();

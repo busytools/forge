@@ -703,16 +703,6 @@ function occupantAs(name: string): SessionUpdate {
   return { [name]: Object.values(occupant('new'))[0] };
 }
 
-/**
- * A take's landed notice, as the record carries it.
- *
- * Opaque on purpose: it is the composer's own state and every reader leaves it
- * as it came - which is exactly why a stale copy of it can reach the box.
- */
-function landed(): Record<string, unknown> {
-  return { landed: true, text: 'the words', truncated: false };
-}
-
 /** A prompt as the CLI writes one: the frame shape the dev fixture carries. */
 function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
   return {
@@ -1156,44 +1146,42 @@ describe('the read, and the answer a frame has outrun', () => {
     page.stop();
   });
 
-  it('does not put a landing back from an answer older than the take', () => {
+  it('does not put a settled turn back from an answer older than the frame', () => {
     const connection = drivable();
     const page = watch(connection);
-    // The seat's record carries a landed take: the words the reader sent are
-    // still its notice.
-    page.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+    // The seat's record says a turn is running.
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
 
     // A frame that replaces the record asks for a whole one, which is what a
     // reconnect or a swap does.
     page.land(updateOf(occupant('new')));
     const asked = page.reads();
 
-    // A take starts while that answer is in flight, which takes the notice off
-    // the record the page holds - and the paint states it, so what the page
-    // holds and what it publishes agree when the answer lands.
-    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+    // The turn settles while that answer is in flight - a frame, and an
+    // answer from before it would put the running turn back.
+    page.land(updateOf({ turn_complete: { key: LEAD } }));
     paint();
 
-    // The answer lands: the seat as it was BEFORE the take, notice and all.
-    // Adopted whole it puts the landing back, and the box takes words the
-    // reader already sent a second time.
-    page.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+    // The answer lands: the seat as it was BEFORE the settle. Adopted whole
+    // it puts the running turn back, and the box refuses a send the turn has
+    // already taken.
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
 
     expect(
-      page.read().wire?.composer.notice,
-      'an answer from before the take put the landing back',
-    ).toBeNull();
+      page.read().wire?.header.turn_in_flight,
+      'an answer from before the settle put the running turn back',
+    ).toBe(false);
 
     // **The whole record is still WANTED.** Refusing the outrun answer keeps
-    // the frame-fed composer, which is the fix above, but the conversation and
+    // the frame-fed record, which is the fix above, but the conversation and
     // the header this answer was asked for are still owed - so the want is kept
     // and asked again. Without this the old occupant stands until a later
     // REPLACES frame with a clean window or a socket drop.
     expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
 
     // And the fresh ask converges: its clean answer is adopted whole.
-    page.land(snapshotOf(LEAD, { composer: { notice: landed() }, work: { branch: 'new' } }));
-    expect(page.read().wire?.composer.notice, 'the fresh answer was not taken').toEqual(landed());
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: false }, work: { branch: 'new' } }));
+    expect(page.read().wire?.work.branch, 'the fresh answer was not taken').toBe('new');
     page.stop();
 
     // The control, and it is the guard's NARROWNESS it holds: the same answer
@@ -1201,12 +1189,12 @@ describe('the read, and the answer a frame has outrun', () => {
     // over-broad guard re-asks here and fails this.
     const control = drivable();
     const other = watch(control);
-    other.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+    other.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
     other.land(updateOf(occupant('new')));
     const askedOnce = other.reads();
-    other.land(snapshotOf(LEAD, { composer: { notice: landed() } }));
+    other.land(snapshotOf(LEAD, { header: { turn_in_flight: true }, work: { branch: 'new' } }));
 
-    expect(other.read().wire?.composer.notice, 'the control took the record').toEqual(landed());
+    expect(other.read().wire?.work.branch, 'the control took the record').toBe('new');
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
   });
 });

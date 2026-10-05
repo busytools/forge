@@ -481,9 +481,11 @@ pub(crate) fn notice_for_outcome(
 /// Dispatch the abandon for the live take. Esc ownership is per
 /// surface; the stop itself is the same command everywhere.
 pub(crate) fn dispatch_stop(app: &App) {
-    if let Err(message) =
-        app.dispatch_command(|key| forge_workspace::Command::DictateStop { key, submit: false })
-    {
+    if let Err(message) = app.dispatch_command(|key| forge_workspace::Command::DictateStop {
+        key,
+        submit: false,
+        initiator: None,
+    }) {
         tracing::warn!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "dictate_stop_failed",
@@ -1048,7 +1050,12 @@ mod tests {
         let key = app.active_session_key.clone().expect("test_default has an active bucket");
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         apply_session_update(
             &mut app,
@@ -1057,6 +1064,7 @@ mod tests {
                 generation: 2,
                 done: 2,
                 total: Some(6),
+                initiator: None,
             },
         );
         let progress = {
@@ -1074,6 +1082,7 @@ mod tests {
                 generation: 1,
                 done: 2,
                 total: Some(6),
+                initiator: None,
             },
         );
         let progress = {
@@ -1226,6 +1235,7 @@ mod tests {
                 key: other.clone(),
                 generation: 1,
                 outcome: DictateOutcome::Landed { text: "landed".to_owned(), truncated: false },
+                initiator: None,
             },
         );
         assert!(app.shows_activity(), "the beat is still inside its window");
@@ -1296,7 +1306,12 @@ mod tests {
         let before = Instant::now();
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         let carried = {
             let bucket = app.session_mut(&key).expect("bucket");
@@ -1333,7 +1348,12 @@ mod tests {
         }
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         let bucket = app.session_mut(&key).expect("bucket");
         let carried = bucket.dictate_border.as_ref().expect("the new take holds a border").rgb();
@@ -1432,7 +1452,12 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::DictateStarted { key: key.clone(), floor_db: -50.0, generation: 1 },
+            SessionUpdate::DictateStarted {
+                key: key.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
         );
         let hot = blip_span(&app, 0.0).expect("a live take blips");
         assert_eq!(hot.style.fg, Some(Color::Rgb(244, 118, 0)), "recording pulses orange");

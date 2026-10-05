@@ -35,14 +35,14 @@ pub struct DictateView {
 }
 
 impl ViewSurface {
-    /// The connection that was streaming a take for `key` has gone: submit
-    /// what arrived and free the seat for the next take.
+    /// The connection that was streaming a take for `key` has gone: drop
+    /// the take it started and free the seat for the next one.
     ///
     /// A connection's own lifecycle rather than a user action, which is why
     /// it is a verb here and not a command: nothing a view dispatches means
     /// "the client went away".
-    pub fn dictate_close(&self, key: &SessionSlot) -> bool {
-        self.workspace.dictate_close(key)
+    pub fn dictate_close(&self, key: &SessionSlot, initiator: u64) -> bool {
+        self.workspace.dictate_close(key, initiator)
     }
 
     /// The axes a client that captures starts on and resets to: the
