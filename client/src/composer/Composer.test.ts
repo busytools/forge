@@ -437,6 +437,18 @@ describe('the box', () => {
     expect(document.querySelector('.dict'), 'the row collapses with the take').toBeNull();
   });
 
+  it('draws no wire line for a take this page did not start', () => {
+    const harness = open();
+    harness.page.record = withNotice(null, take());
+    flushSync();
+
+    expect(document.querySelector('.dict'), 'the record still draws the take').not.toBeNull();
+    expect(
+      document.querySelector('.dict .wire'),
+      'a take this page did not capture has no count here',
+    ).toBeNull();
+  });
+
   it("lands a take's words at the caret and takes one green beat before easing back", () => {
     vi.useFakeTimers();
     try {
@@ -1022,6 +1034,45 @@ describe('the key', () => {
     flushSync();
     expect(line(), 'the frames produced, a hundred of them later').toContain('112 fr');
     expect(line(), 'while the bytes taken stay where the socket left them').toContain('7.5 KB');
+  });
+
+  /**
+   * The line outlives the capture, because the take does.
+   *
+   * A local take lets go of the microphone at the release, while the record
+   * keeps drawing the same take through transcription - so the counts the
+   * page produced are kept until the row that draws them goes.
+   */
+  it('keeps the wire line while the take transcribes, after the release', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      harness.page.record = bound('right_cmd', 'auto', take());
+      flushSync();
+
+      for (let at = 0; at < 12; at += 1) mic.held.onFrame?.(new Uint8Array(641));
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+
+      // The server moves the same take to transcribing, which is the row the
+      // reader is looking at now; the page's own capture is already gone.
+      harness.page.record = bound(
+        'right_cmd',
+        'auto',
+        take({ phase: 'transcribing', progress: [2, 6] }),
+      );
+      flushSync();
+
+      expect(drawn(), 'the row draws the take transcribing').toContain('transcribing 2/6');
+      expect(drawn(), 'with the counts it sent still beside it').toContain('12 fr');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('learns what the system default is from the first take that opens it', async () => {

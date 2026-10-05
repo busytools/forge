@@ -119,6 +119,15 @@
    * opens over the first.
    */
   let take = $state<LocalTake | null>(null);
+  /**
+   * The counts of the take this page last finished, kept while the record
+   * still shows it transcribing.
+   *
+   * A local take lets go of the microphone at the release, so its counts go
+   * with it - but the record's take stays on screen through transcription,
+   * and the line that says what it sent belongs there for as long as it does.
+   */
+  let wireDone = $state<{ seat: string; frames: number; bytes: number } | null>(null);
   /** Whether a start is waiting on the browser's permission round trip. */
   let opening = false;
   /**
@@ -163,6 +172,22 @@
   const ask = $derived(owns ? pendingAsk(record) : null);
   /** Whether the landed beat's window is still open. */
   const beat = $derived(box.beatAt !== null && clock - box.beatAt < BEAT_MS);
+
+  /**
+   * The counts the row draws: the live take's while this page holds one, and
+   * the finished take's while the record still shows it transcribing.
+   *
+   * Keyed on the seat both ways, because the take is not: counts this page
+   * produced on one seat are no reading of a take the shown row is drawing.
+   * A take this page never captured has none at all - the count belongs to
+   * the producer of the frames, and this page is the only producer here.
+   */
+  const wire = $derived.by(() => {
+    const shown = boxKey(slot);
+    if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
+    if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
+    return { frames: wireDone.frames, bytes: wireDone.bytes };
+  });
 
   /**
    * What the ring is doing: one state rather than three that can overlap.
@@ -618,6 +643,14 @@
           target.dictateLine = { tone: 'bad', text };
         },
         onEnded: () => {
+          const finished = take;
+          if (finished !== null) {
+            wireDone = {
+              seat: boxKey(finished.seat),
+              frames: finished.wire.frames,
+              bytes: finished.wire.bytes,
+            };
+          }
           take = null;
         },
       });
@@ -859,7 +892,7 @@
       class:done={ring === 'done'}
     >
       {#if composer.take !== null}
-        <Dictation take={composer.take} {slot} {connection} wire={take?.wire ?? null} />
+        <Dictation take={composer.take} {slot} {connection} {wire} />
       {:else if line !== null}
         <div class="notice {line.tone}">{line.text}</div>
       {/if}
