@@ -1756,9 +1756,10 @@ mod tests {
 
         let stats = app.history_retention_stats().expect("active session");
         assert!(
-            stats.total_before_bytes <= 2 * CAP,
-            "the last enforcement saw {} bytes; a walk that trims only at its end sees the whole \
-             transcript, so the bucket is held unboundedly while it replays",
+            stats.total_before_bytes <= CAP + CAP / 4,
+            "the last enforcement saw {} bytes; a walk that binds per message sees the bucket \
+             within a message or two of its cap, while one that trims only at its end sees the \
+             whole transcript",
             stats.total_before_bytes,
         );
         assert!(

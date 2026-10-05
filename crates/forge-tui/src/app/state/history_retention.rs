@@ -582,7 +582,9 @@ impl super::App {
     ///
     /// The append path calls this per applied sdk message, and a trim
     /// rebuilds the message vec, so the O(1) comparison is what keeps
-    /// steady-state appends from paying for one.
+    /// steady-state appends from paying for one. A bucket whose protected set
+    /// alone exceeds the cap pays a scan per append with nothing droppable;
+    /// that set is small by construction.
     pub(crate) fn enforce_history_retention_if_over_cap(&mut self) {
         let Some(policy) = self.history_retention() else {
             return;

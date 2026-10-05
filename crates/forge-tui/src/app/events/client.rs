@@ -3080,6 +3080,27 @@ mod tests {
         }
     }
 
+    /// A `User` frame carrying `text`.
+    fn user_frame_with_text(session_id: &str, text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text {
+                    text: text.to_owned(),
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
+            },
+            session_id: session_id.to_owned(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+            timestamp: None,
+            synthetic: false,
+            extras: serde_json::Map::new(),
+        }
+    }
+
     /// One streamed assistant frame into `key`, through the production
     /// dispatch path.
     fn stream_background_frame(app: &mut App, key: &SessionSlot, payload: &str) {
@@ -3178,6 +3199,11 @@ mod tests {
         stream_background_frame(&mut app, &background, &payload);
         let per_turn = retained(&app, &background) - before;
         end_background_turn(&mut app, &background);
+        assert_ne!(
+            per_turn, 0,
+            "a streamed turn must append bytes, or the headroom stretch below is sized by a \
+             division that cannot mean anything",
+        );
         for _ in 0..((CAP - before) / (2 * per_turn)) {
             stream_background_frame(&mut app, &background, &payload);
             end_background_turn(&mut app, &background);
@@ -3219,6 +3245,72 @@ mod tests {
             bucket.history_retention_stats.total_before_bytes, 0,
             "no enforcement runs at all under the cap: the O(1) comparison is what keeps the \
              full trim off the append path",
+        );
+    }
+
+    /// The guard sits at the tail of the sdk dispatcher rather than inside
+    /// the assistant handler: a `User` frame carries a tool result, which is
+    /// the append that grows a worker's bucket most between assistant frames.
+    #[test]
+    fn a_user_frame_carries_enforcement_too() {
+        const CAP: usize = 256 * 1024;
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        let workspace = app.workspace.clone().expect("workspace");
+        let _cmds_background = workspace.install_testing_stub(&background);
+        app.sessions.get_mut(&background).expect("bg bucket").history_retention.max_bytes = CAP;
+        let payload = "x".repeat(8 * 1024);
+        stream_background_frame(&mut app, &background, &payload);
+        end_background_turn(&mut app, &background);
+
+        // The cap drops under what the bucket already holds, so the next
+        // frame is the one that has to carry the trim.
+        let held = retained(&app, &background);
+        app.sessions.get_mut(&background).expect("bg bucket").history_retention.max_bytes =
+            held / 2;
+        assert_eq!(dropped(&app, &background), 0, "precondition: nothing trimmed yet");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::ChatAppended {
+                key: background.clone(),
+                msg: user_frame_with_text(&background.display(), "a tool result"),
+                origin: None,
+            },
+        );
+
+        assert!(
+            retained(&app, &background) <= held / 2,
+            "a User frame must reach the guard: the bucket holds {} bytes against a {}-byte cap",
+            retained(&app, &background),
+            held / 2,
+        );
+        assert!(dropped(&app, &background) > 0, "the tail guard ran on a non-assistant frame");
+    }
+
+    /// The spawning placeholder is a direct write into a bucket that has no
+    /// append path yet: it has to carry the retained-byte total the cap is
+    /// read from.
+    #[test]
+    fn the_spawning_placeholder_moves_the_retained_total() {
+        let mut app = App::test_default();
+        let key = SessionSlot::from_str_for_test("spawning-uuid");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::Spawning {
+                key: key.clone(),
+                project_name: "test-project".to_owned(),
+                cwd: "/tmp/spawning".to_owned(),
+                display_name: "spawning".to_owned(),
+            },
+        );
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the placeholder landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > 0,
+            "the direct write must move the bucket's retained-byte total",
         );
     }
 

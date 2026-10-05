@@ -1346,6 +1346,54 @@ mod teardown_clears_background_registry_tests {
     }
 }
 
+/// The two background writes below push straight into a bucket's buffer,
+/// bypassing the tracked append path. The over-cap check reads the running
+/// total those writes leave behind, so each has to carry it.
+#[cfg(test)]
+mod background_write_accounting_tests {
+    use super::{handle_connection_failed_event, handle_core_notice};
+    use crate::app::App;
+    use crate::app::session::UiSession;
+    use forge_workspace::{NoticeSeverity, SessionSlot};
+
+    /// A background bucket holding nothing yet.
+    fn seed_bucket(app: &mut App, name: &str) -> SessionSlot {
+        let key = SessionSlot::from_str_for_test(name);
+        app.sessions.insert(key.clone(), UiSession::new(key.clone(), "test-project"));
+        key
+    }
+
+    #[test]
+    fn a_rate_limit_explainer_moves_the_retained_total() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "rate-limited");
+
+        handle_connection_failed_event(&mut app, &key, "429 rate limit exceeded");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the explainer landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > 0,
+            "the direct write must move the bucket's retained-byte total",
+        );
+    }
+
+    #[test]
+    fn a_background_core_notice_moves_the_retained_total() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "noticed");
+
+        handle_core_notice(&mut app, &key, NoticeSeverity::Info, "effort set");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the notice landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > 0,
+            "the direct write must move the bucket's retained-byte total",
+        );
+    }
+}
+
 #[cfg(test)]
 mod connected_log_tests {
     use super::apply_connected_presentation;
