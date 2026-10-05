@@ -6,13 +6,16 @@
   import { firstLine } from './text';
 
   /**
-   * The agents row above the composer: how many instances the seat has out
-   * and how many it has finished, and the way into each one.
+   * The agents row in the strip above the composer: how many instances the
+   * seat has out and how many it has finished, and the way into each one.
    *
-   * **Persistent where the strip is not.** The strip fades with the turn it
-   * reports; this row is the seat's own agent work, so it stays for as long
-   * as the session holds any. It reads the same card join every dispatch row
-   * reads, so the counts, the list and the rows can never disagree.
+   * **It rides the strip, so its lifetime is the strip's** - a turn being
+   * written, plus the beat after it settles. Whether the row should outlive
+   * the turn (a backgrounded instance can) is an open design call, not
+   * something this component decides.
+   *
+   * It reads the same card join every dispatch row reads, so the counts, the
+   * list and the rows can never disagree.
    *
    * **Only instances a transcript can be opened for are listed.** The row a
    * dispatch drew is where its transcript lives - and an instance that ran
@@ -55,8 +58,15 @@
    * would unmount the element the reader just tabbed to.
    */
   function release(event?: FocusEvent) {
-    const next = event?.relatedTarget;
-    if (next != null && segEl !== null && segEl.contains(next)) return;
+    // A blur whose related target is nothing (a click on the panel's own
+    // padding) leaves focus wherever the browser put it: read the live one.
+    const next = event?.relatedTarget ?? document.activeElement;
+    if (segEl !== null && next !== null && segEl.contains(next)) return;
+    // A leave arms nothing while the segment still holds the reader - the
+    // pointer may be crossing back in, and a row may hold the keyboard.
+    if (event === undefined && segEl !== null && segEl.matches(':hover')) return;
+    if (segEl !== null && document.activeElement !== null && segEl.contains(document.activeElement))
+      return;
     if (closing !== null) clearTimeout(closing);
     closing = setTimeout(() => {
       closing = null;
@@ -71,15 +81,22 @@
    * when the reader is already at the foot.
    */
   let seated = false;
+  /** The list's height as of the previous run, so a follow judges the foot it saw. */
+  let seen = 0;
 
   /** Put the list's scroll at its foot. */
   function toFoot(el: HTMLElement): void {
     el.scrollTop = el.scrollHeight;
   }
 
-  /** Whether the reader has the foot of the list on screen. */
-  function atFoot(el: HTMLElement): boolean {
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  /** The list's full height, read through a helper for the compiled scope. */
+  function heightOf(el: HTMLElement): number {
+    return el.scrollHeight;
+  }
+
+  /** Whether the foot the reader last saw is still on screen. */
+  function atSeenFoot(el: HTMLElement, seen: number): boolean {
+    return el.scrollTop + el.clientHeight >= seen - 48;
   }
 
   $effect(() => {
@@ -92,9 +109,14 @@
     if (!seated) {
       seated = true;
       toFoot(el);
+      seen = heightOf(el);
       return;
     }
-    if (atFoot(el)) toFoot(el);
+    // Judged against the height BEFORE this run's rows landed: measured after,
+    // the new content has already pushed the foot away and a batch of two or
+    // more never follows.
+    if (atSeenFoot(el, seen)) toFoot(el);
+    seen = heightOf(el);
   });
 </script>
 
@@ -109,8 +131,10 @@
     onfocusout={release}
     onkeydown={(event) => {
       if (event.key !== 'Escape') return;
-      open = false;
+      // Focus first: the focusin that follows sets `open` back, so closing
+      // after it is the close that sticks.
       segEl?.querySelector('button')?.focus();
+      open = false;
     }}
   >
     <button type="button" class="sg-tog" aria-expanded={open} onclick={() => (open = !open)}>

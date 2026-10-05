@@ -248,9 +248,8 @@
   );
 
   /** Whether this dispatch owns its RESULT text on the row: only a foreground
-   * one does. A backgrounded instance's result is the launch ack, so that block
-   * is not drawn - its task facts and the transcript path still are, because
-   * the file's existence is a fact about the instance either way. */
+   * one does. A backgrounded instance's result is the launch ack, so neither
+   * that block nor the transcript path draws for it - its task facts do. */
   const grounded = $derived(card !== undefined && !card.backgrounded);
 
   /** The meta line's own pairs: what the CLI said about the task itself. */
@@ -278,12 +277,14 @@
 >
   <summary>
     <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
-    {#if running}
-      <span class="st"><span class="ring"></span></span>
-    {:else if card !== undefined && card.failed}
+    {#if card !== undefined && card.failed}
       <!-- A shape, not the glyph's tint alone: a failed instance and a clean
-           one must not differ by colour only on a closed row. -->
+           one must not differ by colour only on a closed row - and the cross
+           leads the ring, because `failed` can land before the roster settles
+           the task. -->
       <Icon name="x" class="gl err" />
+    {:else if running}
+      <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>
     {#if card !== undefined && card.agent_type !== null}

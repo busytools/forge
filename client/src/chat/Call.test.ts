@@ -319,7 +319,7 @@ describe('the dispatch row, joined to its instance', () => {
 
   it('stops a backgrounded instance at its own report', () => {
     // Its own text is the launch ack, which says nothing a reader acts on -
-    // so no output block - while its task facts and the transcript path stay,
+    // so no output block and no transcript path - while its task facts stay,
     // the same line a foreground row carries minus the path.
     subagents.sync([card({ backgrounded: true, running: false })]);
     const drawn = render(Call, {
@@ -344,6 +344,19 @@ describe('the dispatch row, joined to its instance', () => {
     expect(drawn, 'no output block').not.toContain('sg-result');
     expect(drawn, 'the task facts are drawn either way').toContain('sg-meta');
     expect(drawn, 'and the transcript path is not').not.toContain('output file');
+
+    subagents.sync(null);
+  });
+
+  it('crosses a failed instance even while the roster still calls it running', () => {
+    // `failed` comes from the dispatch's answer and can land before the
+    // roster settles the task: the cross leads the ring, so the row never
+    // wears a spinner over work that already failed.
+    subagents.sync([card({ running: true, failed: true })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the cross draws').toContain('i-x');
+    expect(drawn, 'and the ring does not').not.toContain('<span class="ring">');
 
     subagents.sync(null);
   });
