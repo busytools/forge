@@ -603,7 +603,10 @@ mod tests {
         let (announced_key, crons) = next_crons_changed(&mut rx);
         assert_eq!(announced_key, lead, "a fire routes on the project's lead seat");
         assert_eq!(crons.len(), 1, "a fired recurring keeps its entry");
-        assert!(crons[0].next_fire > now, "and the announcement carries the schedule it advanced to");
+        assert!(
+            crons[0].next_fire > now,
+            "and the announcement carries the schedule it advanced to"
+        );
         assert_eq!(crons[0].last_fire, Some(now), "with the fire it recorded");
 
         // A run-once leaves the set with its fire, so the announcement is

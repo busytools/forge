@@ -2499,11 +2499,7 @@ mod tests {
     /// its key and the two sets it announces.
     fn next_connectors_changed(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
-    ) -> (
-        SessionSlot,
-        Vec<forge_primitives::GotifySubscription>,
-        Vec<SlackSubscription>,
-    ) {
+    ) -> (SessionSlot, Vec<forge_primitives::GotifySubscription>, Vec<SlackSubscription>) {
         match rx.try_recv() {
             Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
                 key,
@@ -2537,26 +2533,14 @@ mod tests {
         assert!(gotify.is_empty(), "beside the sibling connector's own set");
 
         // A watch of a conversation lands as a new record.
-        let id = ws.watch_slack_conversation(
-            "acme",
-            "forge",
-            None,
-            "C1",
-            SlackWatchMode::All,
-            true,
-        );
+        let id =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
         let (_, _, slack) = next_connectors_changed(&mut rx);
         assert!(slack.iter().any(|sub| sub.id == id), "a new watch is announced: {slack:?}");
 
         // The same watch again moves nothing, so it announces nothing.
-        let same = ws.watch_slack_conversation(
-            "acme",
-            "forge",
-            None,
-            "C1",
-            SlackWatchMode::All,
-            true,
-        );
+        let same =
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
         assert_eq!(same, id, "precondition: the watch found the record it had");
         let announced = rx.try_recv();
         assert!(
@@ -2566,7 +2550,14 @@ mod tests {
 
         // A watch whose mode differs is the one write that changes an
         // existing record, and it is announced as the moved set.
-        ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::MentionsOnly, true);
+        ws.watch_slack_conversation(
+            "acme",
+            "forge",
+            None,
+            "C1",
+            SlackWatchMode::MentionsOnly,
+            true,
+        );
         let (_, _, slack) = next_connectors_changed(&mut rx);
         assert!(
             slack.iter().any(|sub| {

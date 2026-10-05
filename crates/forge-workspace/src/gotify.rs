@@ -180,9 +180,11 @@ impl Workspace {
         };
         let gotify = self.gotify_subscriptions_for_project(project_name);
         let slack = self.slack_subscriptions_for_project(project_name);
-        let _ = self
-            .update_tx
-            .send(SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack });
+        let _ = self.update_tx.send(SessionUpdate::ConnectorSubscriptionsChanged {
+            key,
+            gotify,
+            slack,
+        });
     }
 
     /// Whether the Gotify stream is currently connected. Backs the
