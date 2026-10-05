@@ -2118,6 +2118,15 @@ mod tests {
             boundary,
             text("fifth prompt"),
             text(continued),
+            // The carriers and non-heads the two walks must agree about: a
+            // titled skill body behind its own call, a body no call holds, a
+            // result row, and a sub-agent's frame.
+            call("Skill", serde_json::json!({ "skill": "pr-review-loop" }), "toolu_5"),
+            text("# PR Review Loop\n\nReview a change with parallel reviewers."),
+            text("Base directory for this skill: /x/other\n\n# T\n\nDo it."),
+            tool_result("tu1", false),
+            dispatched(text("a sub-agent's row")),
+            text("sixth prompt"),
         ];
 
         let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
@@ -2131,7 +2140,7 @@ mod tests {
 
         assert_eq!(
             named,
-            vec![0, 3, 11, 13, 14, 16, 17, 19, 20],
+            vec![0, 3, 11, 13, 14, 16, 17, 19, 20, 23, 26],
             "precondition: the scan names the fixture's own prompts - each state-reset frame \
              included - and the suppressions hold",
         );
