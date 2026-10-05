@@ -20,6 +20,11 @@ use std::collections::HashMap;
 use forge_primitives::messages::StopHookInfo;
 use forge_primitives::runtime::RuntimeSessionState;
 use forge_primitives::{ContentBlock, Message, StopReason, ToolCallContent};
+// The row predicates the fold opens a turn by, which the conversation window
+// reads too: they live in the window's crate so the two share one copy.
+use forge_workspace::conversation_turns::{
+    claims_skill_call, is_continuation, is_dispatched, is_image_note, is_task_notice,
+};
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
 use crate::family::{ToolFamily, tool_label};
@@ -632,18 +637,6 @@ fn close_traced(
 /// here.
 pub use forge_primitives::messages::names_a_dispatch;
 
-/// A frame a sub-agent produced. What it narrates and calls belongs to the
-/// SUBAGENTS surface, never to the session's own conversation.
-fn is_dispatched(message: &Message) -> bool {
-    let (Message::Assistant { parent_tool_use_id: parent, .. }
-    | Message::User { parent_tool_use_id: parent, .. }
-    | Message::StopHookSummary { parent_tool_use_id: parent, .. }) = message
-    else {
-        return false;
-    };
-    names_a_dispatch(parent.as_deref())
-}
-
 /// What names a settled row: the instant the turn's own first row carried,
 /// which survives an insertion above it where a count of the rows before it
 /// does not.
@@ -866,113 +859,6 @@ fn absorb_typed(units: &mut [ChatUnit], text: &str) -> bool {
 /// fold keyed on one of them drifts from the other the first time either moves.
 fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
     command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
-}
-
-/// Whether a turn's text is the harness's own task notice rather than anything
-/// a person said: the marker the CLI writes at the head of the XML.
-///
-/// Two carriers hold it - the `attachment` row the scan hoists into a
-/// `queued_command` block, and a `user` row whose content string is the XML -
-/// and the fold reads the marker out of both, so a third shape would arrive
-/// here and not elsewhere.
-fn is_task_notice(text: &str) -> bool {
-    text.trim_start().starts_with("<task-notification>")
-}
-
-/// The skill a body's own frame names, off its first line's directory.
-///
-/// The CLI injects a skill's body as a user row whose first line names the
-/// skill's directory and whose remainder is the skill's markdown. The name is
-/// the path's last segment that is not a version, so a plugin-cached skill
-/// (`.../ui-ux-pro-max/2.13.0`) is named as its directory names it - the same
-/// reading the web client's fold makes (`skillBody` in its `units.ts`).
-fn skill_body_name(text: &str) -> Option<&str> {
-    let lead = text.split('\n').next()?;
-    if let Some(path) = lead.strip_prefix("Base directory for this skill:") {
-        let path = path.trim();
-        return path
-            .split('/')
-            .rev()
-            .find(|part| part.chars().next().is_some_and(|c| !c.is_ascii_digit()));
-    }
-    // The carrier a tool-invoked skill uses: the skill's own markdown, opening
-    // on its title heading (`# PR Review Loop` for `pr-review-loop`) with no
-    // plumbing line. The heading is the whole of what names it, so that is the
-    // name - normalized by `names_skill`, the same match the client makes.
-    let trimmed = lead.trim();
-    let title = trimmed.trim_start_matches('#');
-    if title.len() == trimmed.len() || !title.starts_with(' ') {
-        return None;
-    }
-    let title = title.trim();
-    (!title.is_empty()).then_some(title)
-}
-
-/// Whether `text` is the harness's own line about an image it just read.
-///
-/// The CLI sends it as the reader's own row right after the result that
-/// carried the image; the client fold hangs it on the call that read the
-/// picture (`imageNoteOf` in its `units.ts`), so it belongs in that call's
-/// turn rather than in one of its own.
-fn is_image_note(text: &str) -> bool {
-    text.trim().starts_with("[Image: original ")
-}
-
-/// Whether `text` is the continuation prompt a compaction leaves behind.
-///
-/// The CLI sends it as the reader's own user row right after the boundary
-/// frame, and it is the compaction's own account of what was cut. The client
-/// fold hangs it on the boundary's row (`attachContinuation` in its
-/// `units.ts`), and the two reads must agree.
-fn is_continuation(text: &str) -> bool {
-    text.starts_with("This session is being continued from a previous conversation")
-}
-
-/// Whether a `Skill` call's own input names the skill a body's path ended in.
-///
-/// The spellings differ two ways: a plugin skill is `ui-ux-pro-max:ui-ux-pro-max`
-/// where the path ends `ui-ux-pro-max`, and a tool-invoked body's heading is
-/// `PR Review Loop` where the call says `pr-review-loop`. The client fold
-/// matches the same way (`namesSkill` in its `units.ts`); the two must agree,
-/// or the same frame lands in one view and not the other.
-fn names_skill(want: &str, name: &str) -> bool {
-    if want == name || want.ends_with(&format!(":{name}")) || want.starts_with(&format!("{name}:"))
-    {
-        return true;
-    }
-    let held = normalized_skill(want);
-    let wanted = normalized_skill(name);
-    held == wanted || held.contains(&wanted) || wanted.contains(&held)
-}
-
-/// A skill name as its words, so `pr-review-loop` and `PR Review Loop` agree.
-fn normalized_skill(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c == '-' || c == '_' || c == ':' { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Whether `text` is the body of a skill the open turn holds a call for,
-/// consuming that claim.
-///
-/// A body belongs in the turn whose call loaded it: it is the same telling the
-/// call's row already carries, and a turn of its own draws it a second time
-/// under the reader's name. The claim is consumed so a later body for the same
-/// skill lands on the call after it, and a body no call holds opens a turn as
-/// it did before - nothing may be dropped.
-fn claims_skill_call(turn_skills: &mut Vec<String>, text: &str) -> bool {
-    let Some(name) = skill_body_name(text) else {
-        return false;
-    };
-    let Some(at) = turn_skills.iter().position(|want| names_skill(want, name)) else {
-        return false;
-    };
-    turn_skills.remove(at);
-    true
 }
 
 /// What a persisted task ending says, which is what the live wire's
@@ -2168,6 +2054,106 @@ mod tests {
             assert!(rendered.turns.is_empty(), "a completion notice opens no turn: {signal}");
             assert!(rendered.units.is_empty(), "and draws no unit of its own: {signal}");
         }
+    }
+
+    /// **The window's turn scan names no frame the fold opens no turn at.**
+    ///
+    /// The window cuts its oldest edge on a turn's first frame, and it reads
+    /// the fold's own row predicates to find one - so the two walks have to
+    /// agree on the direction that matters: a frame the scan named and the fold
+    /// drew as something else would start the window inside a turn, which is
+    /// the whole thing the window's front is for.
+    ///
+    /// The other direction is pinned as the one place they are meant to differ:
+    /// a queued prompt opens a turn in the fold unless a question card takes it,
+    /// and the scan cannot see the card, so it leaves the prompt alone.
+    #[test]
+    fn the_windows_turn_scan_names_no_frame_the_fold_opens_no_turn_at() {
+        let text = |text: &str| {
+            user(vec![ContentBlock::Text { text: text.to_owned(), extras: serde_json::Map::new() }])
+        };
+        let call = |name: &str, input: serde_json::Value, id: &str| {
+            assistant(vec![ContentBlock::ToolUse {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input,
+                extras: serde_json::Map::new(),
+            }])
+        };
+        let boundary = Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 68_031,
+            post_tokens: 9_149,
+            uuid: "cb-1".to_owned(),
+            session_id: "session".to_owned(),
+            metadata_extras: serde_json::Map::new(),
+            extras: serde_json::Map::new(),
+        };
+        let continued = "This session is being continued from a previous conversation";
+        let messages = vec![
+            text("hello"),
+            call("Skill", serde_json::json!({ "skill": "pr-review-loop" }), "toolu_1"),
+            text("Base directory for this skill: /x/pr-review-loop\n\n# T\n\nDo it."),
+            text(continued),
+            text("<task-notification><tool-use-id>tu1</tool-use-id></task-notification>"),
+            text("[Cron]\n\ndo the thing"),
+            call("Bash", serde_json::json!({ "command": "ls" }), "toolu_2"),
+            text("[Image: original 2782x1034, displayed at 2000x743.]"),
+            queued_prompt("queued mid-turn"),
+            boundary.clone(),
+            text(continued),
+            text("second prompt"),
+            // The state a turn opens under does not straddle the open: a claim
+            // an earlier turn made, a boundary it took and a call it made are
+            // all gone by the next turn's own first frame. Each shape below is
+            // one a stale flag would swallow - a body the claim no longer
+            // holds, an image note behind no call, a continuation behind no
+            // boundary - so dropping any one of the three resets loses a head.
+            call("Skill", serde_json::json!({ "skill": "pr-review-loop" }), "toolu_3"),
+            text("third prompt"),
+            text("Base directory for this skill: /x/pr-review-loop\n\n# T\n\nDo it."),
+            call("Bash", serde_json::json!({ "command": "ls" }), "toolu_4"),
+            text("fourth prompt"),
+            text("[Image: original 2782x1034, displayed at 2000x743.]"),
+            boundary,
+            text("fifth prompt"),
+            text(continued),
+            // The carriers and non-heads the two walks must agree about: a
+            // titled skill body behind its own call, a body no call holds, a
+            // result row, and a sub-agent's frame.
+            call("Skill", serde_json::json!({ "skill": "pr-review-loop" }), "toolu_5"),
+            text("# PR Review Loop\n\nReview a change with parallel reviewers."),
+            text("Base directory for this skill: /x/other\n\n# T\n\nDo it."),
+            tool_result("tu1", false),
+            dispatched(text("a sub-agent's row")),
+            text("sixth prompt"),
+        ];
+
+        let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
+        let mut scan = forge_workspace::conversation_turns::TurnScan::default();
+        let named: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| scan.opens(message))
+            .map(|(at, _)| at)
+            .collect();
+
+        assert_eq!(
+            named,
+            vec![0, 3, 11, 13, 14, 16, 17, 19, 20, 23, 26],
+            "precondition: the scan names the fixture's own prompts - each state-reset frame \
+             included - and the suppressions hold",
+        );
+        assert!(
+            named.iter().all(|at| opened.contains(at)),
+            "every frame the window would cut at is one the fold opens a turn at: \
+             scan {named:?}, fold {opened:?}",
+        );
+        assert!(
+            opened.contains(&8) && !named.contains(&8),
+            "and the queued prompt is where they are meant to differ, the scan leaving it alone: \
+             scan {named:?}, fold {opened:?}",
+        );
     }
 
     /// A persisted notice IS an ending, and it says the same three things the
