@@ -175,6 +175,47 @@ pub struct ConversationHistory {
     pub compaction_count: u32,
 }
 
+/// A span of a session's transcript, read for a page below the window a
+/// conversation is kept in.
+///
+/// The frames carry the session's own numbering: [`Self::first`] is the index
+/// the session gives [`Self::messages`]' first frame, so a page cut from the
+/// span continues the numbering the held window's cursors are written in
+/// rather than starting a sequence of its own.
+#[derive(Debug, Default)]
+pub struct TranscriptSpan {
+    /// The session-absolute index of [`Self::messages`]' first frame.
+    pub first: usize,
+    /// The frames, in conversation order, each below the index the read was
+    /// asked to end at.
+    pub messages: Vec<Message>,
+    /// Whether the read reached the transcript's own first frame, so nothing
+    /// sits above this span.
+    pub exhausted: bool,
+    /// The byte each frame of [`Self::messages`] starts at, aligned with it,
+    /// so a caller holding a cursor into the span can hand the row below it
+    /// back as a [`TranscriptAnchor`] the next read seeks to.
+    pub offsets: Vec<u64>,
+}
+
+/// Where a transcript read stopped, for the read below it.
+///
+/// A walk down a transcript hands this back as the next read's anchor: with
+/// the byte [`Self::offset`] known the read seeks rather than searches, and
+/// the row id beside it is what says the file is still the one that was read -
+/// a resumed or rewritten transcript carries a different row there, which
+/// sends the read back to searching for the anchor by id, and to the empty
+/// page when nothing lines up either way.
+#[derive(Debug, Default, Clone)]
+pub struct TranscriptAnchor {
+    /// The id of the row a read's window ends at.
+    pub row: String,
+    /// The session-absolute index that row sits at.
+    pub index: usize,
+    /// The byte that row starts at, when a read has seen it.
+    pub offset: Option<u64>,
+}
+
 /// What a [`SessionMessage`] holds. The two halves the SDK knows are its
 /// own `Literal["user", "assistant"]` on `SessionMessage.type`; `System` is
 /// forge's, for a frame the SDK does not read back.

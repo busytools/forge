@@ -126,91 +126,111 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 continue;
             }
         };
-        let row_type = value.get("type").and_then(Value::as_str);
-        let (kind, message) = match row_type {
-            Some("user") => (SessionMessageKind::User, value.get("message").cloned()),
-            Some("assistant") => (SessionMessageKind::Assistant, value.get("message").cloned()),
-            // Attachment rows hold claude's persisted record of mid-turn
-            // queued inputs - `{"type":"attachment", "attachment":{"type":
-            // "queued_command", "prompt":"...", "commandMode":"prompt"}}`.
-            // On replay we hoist them into a synthetic user envelope
-            // whose single content block is the `queued_command`, so the
-            // downstream walker reconstructs the user bubble that was
-            // never on the wire as a regular user message.
-            Some("attachment") => match value.get("attachment") {
-                Some(att) if att.get("type").and_then(Value::as_str) == Some("queued_command") => {
-                    (SessionMessageKind::User, Some(synthesize_queued_command_message(att)))
-                }
-                _ => continue,
-            },
-            // The only durable record of how often this session has compacted
-            // and of where each cut fell - nothing else survives a resume.
-            // Counted here, and the row is kept so a resumed conversation
-            // draws its boundaries the way a live one does.
-            Some("system")
-                if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
-            {
-                compaction_count = compaction_count.saturating_add(1);
-                // Keyed on what the row yielded rather than on the metadata
-                // object being there: the plausible drift is a rename inside it
-                // (`preTokens`, per the primitives test), which leaves the
-                // object present and one field unread - a row drawn without
-                // that fact, and nothing else saying why. The live arm warns on
-                // the same degradation. Every modelled field is read here, so a
-                // rename of any one of them lands in this record.
-                let missing = missing_boundary_facts(&value);
-                if !missing.is_empty() {
-                    let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default();
-                    let session = session_in_row(&value);
-                    tracing::warn!(
-                        target: "forge_agent::userdata::catalog",
-                        event_name = "compact_boundary_missing_facts",
-                        uuid,
-                        session,
-                        missing = %missing.join(", "),
-                        "compact_boundary row did not yield every fact; counted, but the kept frame arrives untyped",
-                    );
-                }
-                (SessionMessageKind::System, Some(compact_boundary_frame(&value)))
-            }
-            // What the turn's hooks did. A system row is the frame the wire
-            // sends, so it is kept whole; the one field the frame's decoder
-            // spells differently is the session.
-            Some("system")
-                if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
-            {
-                let mut frame = value.clone();
-                if let Some(record) = frame.as_object_mut() {
-                    record.insert("session_id".into(), Value::String(session_in_row(&value)));
-                }
-                (SessionMessageKind::System, Some(frame))
-            }
-            _ => continue,
-        };
-        // The same rule the fold reads a frame by: a parent id that names a
-        // dispatch, which on the wire is never empty and never null.
-        if value
-            .get("parent_tool_use_id")
-            .and_then(Value::as_str)
-            .is_some_and(|parent| !parent.trim().is_empty())
-        {
+        let Some((message, boundary)) = transcript_row(&value) else {
             continue;
+        };
+        if boundary {
+            compaction_count = compaction_count.saturating_add(1);
         }
-        let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
-        let sess = session_in_row(&value);
-        let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
-        // The CLI's own stamps that nobody typed this row. They do not
-        // co-occur - the reminder carries `isMeta` and `turnCompanion`, a
-        // compaction summary carries `isCompactSummary` and
-        // `isVisibleInTranscriptOnly` and no `isMeta` - and the wire writes
-        // the whole set as one `isSynthetic`, so reading a subset here is
-        // what let a summary be the reader's turn on resume and the harness's
-        // line live.
-        let synthetic =
-            ["isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "turnCompanion"]
-                .iter()
-                .any(|flag| value.get(flag).and_then(Value::as_bool).unwrap_or(false));
-        out.push(SessionMessage {
+        out.push(message);
+    }
+    SessionHistory { messages: out, compaction_count }
+}
+
+/// One transcript row as the session's message, or `None` for a row that is
+/// not one. The flag says the row is a compaction boundary, which the read
+/// counts.
+///
+/// **The one row rule, shared by every read of a transcript.** A resume walks
+/// the whole file and the paging span read walks a window of it, and a second
+/// copy of this is how the two would come to type the same row differently.
+fn transcript_row(value: &Value) -> Option<(SessionMessage, bool)> {
+    let row_type = value.get("type").and_then(Value::as_str);
+    let mut boundary = false;
+    let (kind, message) = match row_type {
+        Some("user") => (SessionMessageKind::User, value.get("message").cloned()),
+        Some("assistant") => (SessionMessageKind::Assistant, value.get("message").cloned()),
+        // Attachment rows hold claude's persisted record of mid-turn
+        // queued inputs - `{"type":"attachment", "attachment":{"type":
+        // "queued_command", "prompt":"...", "commandMode":"prompt"}}`.
+        // On replay we hoist them into a synthetic user envelope
+        // whose single content block is the `queued_command`, so the
+        // downstream walker reconstructs the user bubble that was
+        // never on the wire as a regular user message.
+        Some("attachment") => match value.get("attachment") {
+            Some(att) if att.get("type").and_then(Value::as_str) == Some("queued_command") => {
+                (SessionMessageKind::User, Some(synthesize_queued_command_message(att)))
+            }
+            _ => return None,
+        },
+        // The only durable record of how often this session has compacted
+        // and of where each cut fell - nothing else survives a resume.
+        // Counted by the caller, and the row is kept so a resumed conversation
+        // draws its boundaries the way a live one does.
+        Some("system")
+            if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+        {
+            boundary = true;
+            // Keyed on what the row yielded rather than on the metadata
+            // object being there: the plausible drift is a rename inside it
+            // (`preTokens`, per the primitives test), which leaves the
+            // object present and one field unread - a row drawn without
+            // that fact, and nothing else saying why. The live arm warns on
+            // the same degradation. Every modelled field is read here, so a
+            // rename of any one of them lands in this record.
+            let missing = missing_boundary_facts(value);
+            if !missing.is_empty() {
+                let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default();
+                let session = session_in_row(value);
+                tracing::warn!(
+                    target: "forge_agent::userdata::catalog",
+                    event_name = "compact_boundary_missing_facts",
+                    uuid,
+                    session,
+                    missing = %missing.join(", "),
+                    "compact_boundary row did not yield every fact; counted, but the kept frame arrives untyped",
+                );
+            }
+            (SessionMessageKind::System, Some(compact_boundary_frame(value)))
+        }
+        // What the turn's hooks did. A system row is the frame the wire
+        // sends, so it is kept whole; the one field the frame's decoder
+        // spells differently is the session.
+        Some("system")
+            if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
+        {
+            let mut frame = value.clone();
+            if let Some(record) = frame.as_object_mut() {
+                record.insert("session_id".into(), Value::String(session_in_row(value)));
+            }
+            (SessionMessageKind::System, Some(frame))
+        }
+        _ => return None,
+    };
+    // The same rule the fold reads a frame by: a parent id that names a
+    // dispatch, which on the wire is never empty and never null.
+    if value
+        .get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .is_some_and(|parent| !parent.trim().is_empty())
+    {
+        return None;
+    }
+    let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
+    let sess = session_in_row(value);
+    let timestamp = value.get("timestamp").and_then(Value::as_str).map(str::to_owned);
+    // The CLI's own stamps that nobody typed this row. They do not
+    // co-occur - the reminder carries `isMeta` and `turnCompanion`, a
+    // compaction summary carries `isCompactSummary` and
+    // `isVisibleInTranscriptOnly` and no `isMeta` - and the wire writes
+    // the whole set as one `isSynthetic`, so reading a subset here is
+    // what let a summary be the reader's turn on resume and the harness's
+    // line live.
+    let synthetic = ["isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "turnCompanion"]
+        .iter()
+        .any(|flag| value.get(flag).and_then(Value::as_bool).unwrap_or(false));
+    Some((
+        SessionMessage {
             kind,
             uuid,
             session_id: sess,
@@ -219,9 +239,9 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
             timestamp,
             tool_use_result: value.get("toolUseResult").filter(|result| !result.is_null()).cloned(),
             synthetic,
-        });
-    }
-    SessionHistory { messages: out, compaction_count }
+        },
+        boundary,
+    ))
 }
 
 /// The session a transcript row belongs to. The wire spells it
@@ -524,6 +544,383 @@ pub fn get_session_messages(
         }
     };
     parse_session_messages(file)
+}
+
+/// The rows a transcript's messages convert to, typed as the wire sends them
+/// and stamped with `session_id`.
+///
+/// **One conversion for every read of a transcript.** A resume hands these
+/// messages over as history and a paging span read hands them over as a page
+/// below the window; a second copy of the conversion is how the two would
+/// come to type the same row differently.
+pub(crate) fn messages_from_rows(
+    rows: Vec<SessionMessage>,
+    session_id: &str,
+) -> Vec<forge_primitives::Message> {
+    let raw: Vec<Value> = rows
+        .into_iter()
+        .map(|m| {
+            let kind = match m.kind {
+                forge_primitives::SessionMessageKind::User => "user",
+                forge_primitives::SessionMessageKind::Assistant => "assistant",
+                forge_primitives::SessionMessageKind::System => "system",
+            };
+            serde_json::json!({
+                "type": kind,
+                "uuid": m.uuid,
+                "message": m.message,
+                "parent_tool_use_id": m.parent_tool_use_id,
+                "timestamp": m.timestamp,
+                "tool_use_result": m.tool_use_result,
+                "synthetic": m.synthetic,
+            })
+        })
+        .collect();
+    let mut messages = crate::replay::synthesize_replay_messages(&raw);
+    // The synthesizer leaves the session empty so the caller picks the right
+    // value: the resumed session for a resume, the transcript's own for a page.
+    for message in &mut messages {
+        match message {
+            forge_primitives::Message::Assistant { session_id: s, .. }
+            | forge_primitives::Message::User { session_id: s, .. }
+            | forge_primitives::Message::StopHookSummary { session_id: s, .. }
+            | forge_primitives::Message::CompactBoundary { session_id: s, .. } => {
+                session_id.clone_into(s);
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
+/// The file a session id reads from: its project's directory when the caller
+/// places it, the first copy named after it otherwise.
+fn session_transcript(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+) -> Option<PathBuf> {
+    let file_name = format!("{session_id}.jsonl");
+    if let Some(dir) = directory {
+        let candidate = project_dir_for(config_dir, dir).join(&file_name);
+        return candidate.is_file().then_some(candidate);
+    }
+    try_read_dir(&projects_dir_for(config_dir))?
+        .flatten()
+        .map(|entry| entry.path().join(&file_name))
+        .find(|path| path.is_file())
+}
+
+/// How many bytes of a transcript one paging pass reads before growing, and
+/// how far it may grow before the transcript stops answering pages.
+///
+/// **A page below the window's floor lies near the file's END**: the floor is
+/// the oldest frame the window still holds, so the turns above it are the
+/// newest rows of a file the session is still writing - some 4,000 rows, a
+/// few hundred KB at the rows a transcript writes. The step is what a cold
+/// session pays for its first paging request, and the cap is where the
+/// transcript is treated as unreadable for paging rather than read whole.
+pub const SPAN_STEP_BYTES: u64 = 1024 * 1024;
+pub const SPAN_CAP_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many rows a page's own turn count may ask for.
+///
+/// Sized from the turns a page is cut into: the heaviest twenty-turn run
+/// measured across the eight largest transcripts on the author's machine is
+/// 2,799 rows, so 150 a turn asks for 3,000 at the twenty a subscribe carries,
+/// which covers every page these transcripts would cut. A page whose turns
+/// run heavier comes back short with a cursor to ask below with, rather than
+/// converting a window's rows for turns nothing reads.
+pub const SPAN_ROWS_PER_TURN: usize = 150;
+
+/// Read the span of `session_id`'s transcript that ends below `ends_before`,
+/// located against a row the caller's own conversation holds.
+///
+/// **Bounded by construction.** The read takes a tail window of the file,
+/// grows it only while the span it needs is not inside the window it took,
+/// and never reads past [`SPAN_CAP_BYTES`]; what it returns is the newest
+/// `rows_wanted` rows of that span, so a window's rows are converted for a
+/// page and not for the window. `anchors` are rows the caller's own
+/// conversation still holds - the id a transcript row names each by, the
+/// session-absolute index it sits at, and, once a read has seen one, the byte
+/// it starts at: together they turn a window's rows into the session's
+/// numbering without a walk from the file's start, which on a long transcript
+/// is the whole file. The first anchor the file carries is the one used, so a
+/// caller that cannot tell which of its rows the file has - a frame forge
+/// forged is in no transcript - can hand over several.
+///
+/// `None` when the transcript cannot answer for this session: no file, none
+/// of the anchors in it, an anchor whose numbering does not reach back to the
+/// file's own first frame, or a span that would need more than the cap.
+pub fn read_span(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+    anchors: &[forge_primitives::TranscriptAnchor],
+    ends_before: usize,
+    rows_wanted: usize,
+) -> Option<forge_primitives::TranscriptSpan> {
+    read_span_with(
+        config_dir,
+        session_id,
+        directory,
+        anchors,
+        ends_before,
+        rows_wanted,
+        SPAN_STEP_BYTES,
+        SPAN_CAP_BYTES,
+    )
+}
+
+/// [`read_span`] with the page's own budget in the caller's hands, so the
+/// growth, the cap and the returned rows can be driven by a test without a
+/// transcript of the size the production budget is written for.
+fn read_span_with(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+    anchors: &[forge_primitives::TranscriptAnchor],
+    ends_before: usize,
+    rows_wanted: usize,
+    step: u64,
+    cap: u64,
+) -> Option<forge_primitives::TranscriptSpan> {
+    let first = anchors.iter().find(|at| !at.row.is_empty())?;
+    if !is_valid_uuid(session_id) || ends_before == 0 {
+        return None;
+    }
+    let path = session_transcript(config_dir, session_id, directory)?;
+    let mut file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(
+                event_name = "span_read_open_failed",
+                %session_id,
+                path = %path.display(),
+                %err,
+                "the transcript could not be opened; the page is answered empty",
+            );
+            return None;
+        }
+    };
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let ceiling = len.min(cap);
+    let mut take = step.min(len).max(1);
+    // **Where the window ends.** A walk down a transcript hands the row its
+    // last page stopped at back as the anchor, and when that anchor carries
+    // the byte it sits at, the read seeks rather than searches: the window
+    // ends there and its rows are the ones just below. The file's own end is
+    // where a walk's first page, or a walk whose anchor moved, reads from.
+    let mut end = first.offset.filter(|at| *at <= len);
+    loop {
+        let at = end.unwrap_or(len);
+        let window = match window_ending(&mut file, at, take) {
+            Ok(window) => window,
+            Err(err) => {
+                tracing::warn!(
+                    event_name = "span_read_failed",
+                    %session_id,
+                    from = at.saturating_sub(take),
+                    %err,
+                    "the transcript window could not be read; the page is answered empty",
+                );
+                return None;
+            }
+        };
+        let rows = window_rows(&window);
+        let read = match end {
+            // **The verify, and the invalidation path.** The row at the
+            // anchored byte is read and named: a transcript that was resumed
+            // or rewritten carries something else there, and the read then
+            // searches for the anchor by id from the file's end - which is
+            // also what answers when that search cannot line up.
+            Some(_) if row_at(&mut file, at).is_some_and(|row| row.uuid == first.row) => {
+                span_below(&rows, first.index, window.from, ends_before, rows_wanted)
+            }
+            Some(_) => {
+                end = None;
+                continue;
+            }
+            None => locating_span(&rows, anchors, window.from, ends_before, rows_wanted),
+        };
+        match read {
+            SpanRead::Found { first, rows, exhausted } => {
+                let (rows, offsets) = rows.into_iter().unzip();
+                return Some(forge_primitives::TranscriptSpan {
+                    first,
+                    messages: messages_from_rows(rows, session_id),
+                    exhausted,
+                    offsets,
+                });
+            }
+            // The span is not inside this window: take a bigger one, until
+            // the cap says this transcript is not answering pages.
+            SpanRead::Grow if take < ceiling => take = (take * 2).min(ceiling),
+            SpanRead::Grow => {
+                tracing::warn!(
+                    event_name = "span_read_cap_reached",
+                    %session_id,
+                    read = take,
+                    len,
+                    cap,
+                    "the span is not inside the window read and the cap is reached; the page is \
+                     answered empty",
+                );
+                return None;
+            }
+            SpanRead::Diverged(why) => {
+                tracing::warn!(
+                    event_name = "span_read_diverged",
+                    %session_id,
+                    path = %path.display(),
+                    why,
+                    "the transcript does not line up with the session's own conversation; the \
+                     page is answered empty",
+                );
+                return None;
+            }
+        }
+    }
+}
+
+/// One window of a transcript file: the bytes read and the byte they start
+/// at.
+struct Window {
+    from: u64,
+    bytes: Vec<u8>,
+}
+
+/// Read up to `take` bytes ending at `end`.
+fn window_ending(file: &mut fs::File, end: u64, take: u64) -> std::io::Result<Window> {
+    let from = end.saturating_sub(take);
+    let mut bytes = vec![0_u8; usize::try_from(end - from).unwrap_or(0)];
+    file.seek(SeekFrom::Start(from))?;
+    file.read_exact(&mut bytes)?;
+    Ok(Window { from, bytes })
+}
+
+/// The rows a window holds, each with the byte it starts at.
+///
+/// A window that does not begin at the file's start begins inside a row, and
+/// everything before its first newline is that row's fragment - not a row, and
+/// not counted.
+fn window_rows(window: &Window) -> Vec<(SessionMessage, u64)> {
+    let mut rows = Vec::new();
+    let mut at = window.from;
+    for line in window.bytes.split(|byte| *byte == b'\n') {
+        let start = at;
+        at = at.saturating_add(line.len() as u64 + 1);
+        if window.from > 0 && start == window.from {
+            continue;
+        }
+        if let Ok(text) = std::str::from_utf8(line)
+            && let Some(row) = session_row(text)
+        {
+            rows.push((row, start));
+        }
+    }
+    rows
+}
+
+/// The row that starts at `at`, for the anchored read's verify.
+fn row_at(file: &mut fs::File, at: u64) -> Option<SessionMessage> {
+    // One line, and a cap so a torn file cannot hand back the rest of itself.
+    const LINE_CAP: u64 = 1024 * 1024;
+    file.seek(SeekFrom::Start(at)).ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::take(&mut *file, LINE_CAP).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    session_row(text.lines().next().unwrap_or_default())
+}
+
+/// One line of a transcript as its row, or `None` for a line that is not one.
+fn session_row(line: &str) -> Option<SessionMessage> {
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    transcript_row(&value).map(|(row, _)| row)
+}
+
+/// What a window of a transcript says about the span a page asked for.
+enum SpanRead {
+    Found { first: usize, rows: Vec<(SessionMessage, u64)>, exhausted: bool },
+    Grow,
+    Diverged(&'static str),
+}
+
+/// The span inside a window whose rows are all below the anchor, numbered
+/// back from it.
+fn span_below(
+    rows: &[(SessionMessage, u64)],
+    anchor_at: usize,
+    from: u64,
+    ends_before: usize,
+    rows_wanted: usize,
+) -> SpanRead {
+    let Some(base) = anchor_at.checked_sub(rows.len()) else {
+        return SpanRead::Diverged(
+            "the transcript holds more rows below the anchor than the session's numbering has",
+        );
+    };
+    cut_span(rows, base, from, ends_before, rows_wanted)
+}
+
+/// The span inside a window found by searching for an anchor's own row.
+///
+/// `from` is the byte the window starts at, so a window that reaches the
+/// file's start is the one that can report the span exhausted. The first of
+/// the caller's anchors the file carries is the one used: a frame forge
+/// forged carries an id no transcript row has, and a caller that cannot tell
+/// which of its rows the file holds hands over several.
+fn locating_span(
+    rows: &[(SessionMessage, u64)],
+    anchors: &[forge_primitives::TranscriptAnchor],
+    from: u64,
+    ends_before: usize,
+    rows_wanted: usize,
+) -> SpanRead {
+    let Some((at, anchor)) = anchors.iter().find_map(|anchor| {
+        rows.iter().position(|(row, _)| row.uuid == anchor.row).map(|at| (at, anchor))
+    }) else {
+        return SpanRead::Grow;
+    };
+    // The anchor's own index is the session's numbering: every row in the
+    // window counts from it, so no walk from the file's start is needed.
+    let Some(base) = anchor.index.checked_sub(at) else {
+        return SpanRead::Diverged("the anchor sits above the file's own first frame");
+    };
+    if from == 0 && base != 0 {
+        return SpanRead::Diverged("the file's first frame is not the session's first");
+    }
+    cut_span(rows, base, from, ends_before, rows_wanted)
+}
+
+/// The newest `rows_wanted` rows below `ends_before`, and where the first of
+/// them sits in the session's numbering.
+fn cut_span(
+    rows: &[(SessionMessage, u64)],
+    base: usize,
+    from: u64,
+    ends_before: usize,
+    rows_wanted: usize,
+) -> SpanRead {
+    if base >= ends_before {
+        return SpanRead::Grow;
+    }
+    let cut = (ends_before - base).min(rows.len());
+    let kept = cut.saturating_sub(rows_wanted);
+    SpanRead::Found {
+        first: base + kept,
+        rows: rows[kept..cut].to_vec(),
+        // The span is the transcript's whole start only when the window
+        // reached it and nothing was trimmed off the span's own front.
+        exhausted: from == 0 && base == 0 && kept == 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,6 +2245,215 @@ mod tests {
         assert!(
             from_repo_root.is_empty(),
             "the same session id under the repo-root key is not where a git worker reads",
+        );
+    }
+
+    /// A transcript of `rows` plain turns, each a user row carrying its own
+    /// number and a uuid a caller can anchor on.
+    fn a_transcript(rows: usize) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for at in 0..rows {
+            let _ = writeln!(
+                out,
+                "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+            );
+        }
+        out
+    }
+
+    /// An anchor on a row the file carries, without a byte: what a caller
+    /// holding the row but not the position reads by.
+    fn anchored(row: &str, index: usize) -> Vec<forge_primitives::TranscriptAnchor> {
+        vec![forge_primitives::TranscriptAnchor { row: row.to_owned(), index, offset: None }]
+    }
+
+    /// The words a frame carries, for a span whose rows are its turns' names.
+    fn said(message: &forge_primitives::Message) -> String {
+        let forge_primitives::Message::User { message, .. } = message else {
+            return String::new();
+        };
+        message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// **A resumed read seeks where a locating read searches.** Handed the
+    /// byte its anchor row starts at, the read takes the window ending there
+    /// and needs nothing above it; without it, the read has to find the row,
+    /// which a window too small to reach it cannot do.
+    #[test]
+    fn a_span_read_seeks_when_it_is_given_the_rows_byte() {
+        // A cap of a couple of hundred bytes: two rows or so, which is not
+        // where the anchor 29 rows back is.
+        const SMALL: u64 = 200;
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_transcript(40));
+
+        let located = read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, 100)
+            .expect("the first read locates the anchor");
+        let last = located.messages.len() - 1;
+        let resume = vec![forge_primitives::TranscriptAnchor {
+            row: "u29".to_owned(),
+            index: located.first + last,
+            offset: located.offsets.get(last).copied(),
+        }];
+        assert_eq!(resume[0].index, 29, "precondition: the anchor is the span's own last row");
+
+        assert!(
+            read_span_with(
+                config.path(),
+                session,
+                Some(cwd),
+                &anchored("u29", 29),
+                29,
+                100,
+                SMALL,
+                SMALL,
+            )
+            .is_none(),
+            "a locating read whose window cannot reach its anchor answers nothing",
+        );
+        let resumed =
+            read_span_with(config.path(), session, Some(cwd), &resume, 29, 100, SMALL, SMALL)
+                .expect("the resumed read seeks to the row and reads the rows just below it");
+        assert!(resumed.first < 29, "the span is below the anchor");
+        assert_eq!(
+            said(resumed.messages.last().expect("a last")),
+            "turn 28",
+            "and its newest row is the one just under the anchor",
+        );
+    }
+
+    /// The span a page below the window asks for: every row below the cursor,
+    /// in the session's own numbering, with the caller's anchor turning the
+    /// window's rows into that numbering.
+    #[test]
+    fn a_span_read_serves_the_rows_below_the_cursor() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_transcript(40));
+
+        let span = read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, 100)
+            .expect("the transcript has a span below the cursor");
+
+        assert_eq!(span.first, 0, "the read reached the transcript's first frame");
+        assert!(span.exhausted, "and says nothing sits above it");
+        assert_eq!(span.messages.len(), 30, "every frame below the cursor, and none above");
+    }
+
+    /// **The read is a window, not the file.** The span is found in a tail
+    /// window and the window grows only while the span is not inside it, so a
+    /// request that lands inside the first window is answered without reading
+    /// the transcript's older megabytes.
+    #[test]
+    fn a_span_read_grows_its_window_only_while_the_span_is_outside_it() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let body = a_transcript(40);
+        write_session_jsonl(&dir, session, &body);
+        let len = body.len() as u64;
+
+        // A window of a third of the file cannot hold the anchor at row 30, so
+        // the read grows - and it grows to the window that holds the span, not
+        // to the file's start: the span's own start says how far it read.
+        let grown = read_span_with(
+            config.path(),
+            session,
+            Some(cwd),
+            &anchored("u30", 30),
+            30,
+            100,
+            len / 3,
+            len,
+        )
+        .expect("the read grows to hold the span");
+        assert!(grown.first > 0, "the read did not walk the transcript from its start");
+        assert!(!grown.exhausted, "and does not claim to have reached it");
+        assert_eq!(
+            said(&grown.messages[0]),
+            format!("turn {}", grown.first),
+            "the span starts where the window did",
+        );
+        assert_eq!(said(grown.messages.last().unwrap()), "turn 29", "and ends at the cursor");
+        assert_eq!(grown.messages.len(), 30 - grown.first, "carrying every frame below it");
+
+        // And the cap is where the read stops: an anchor deeper than the cap
+        // reaches answers nothing rather than the read walking to it.
+        assert!(
+            read_span_with(
+                config.path(),
+                session,
+                Some(cwd),
+                &anchored("u5", 5),
+                5,
+                100,
+                len / 5,
+                len / 5,
+            )
+            .is_none(),
+            "a span the cap cannot reach is not answered by reading further",
+        );
+    }
+
+    /// A transcript that no longer lines up with the session's numbering is
+    /// not a transcript a page can be cut from: the read says so rather than
+    /// serving rows at indices the client's cursors do not name.
+    #[test]
+    fn a_span_read_refuses_an_anchor_its_rows_do_not_carry() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_transcript(40));
+
+        assert!(
+            read_span(config.path(), session, Some(cwd), &anchored("nowhere", 30), 30, 100)
+                .is_none(),
+            "an anchor the file does not carry is a file that does not line up",
+        );
+        assert!(
+            read_span(config.path(), session, Some(cwd), &anchored("u30", 300), 30, 100).is_none(),
+            "and one whose index leaves the file's own first frame above it is the same",
+        );
+    }
+
+    /// The cases a page cannot be answered from at all: no file for the
+    /// session, and a cursor at the very start, which is a page with nothing
+    /// above it by definition.
+    #[test]
+    fn a_span_read_answers_nothing_without_a_transcript() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+
+        assert!(
+            read_span(config.path(), session, Some(cwd), &anchored("u1", 1), 1, 100).is_none(),
+            "no file for the session is no span",
+        );
+        write_session_jsonl(&dir, session, &a_transcript(40));
+        assert!(
+            read_span(config.path(), session, Some(cwd), &anchored("u1", 1), 0, 100).is_none(),
+            "a cursor at the transcript's first frame has nothing above it to read",
         );
     }
 }

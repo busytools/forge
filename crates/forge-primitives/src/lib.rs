@@ -122,7 +122,7 @@ pub use public_types::{
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,
     McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations,
     SandboxNetworkConfig, SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind,
-    StreamEvent,
+    StreamEvent, TranscriptAnchor, TranscriptSpan,
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,

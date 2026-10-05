@@ -238,6 +238,48 @@ impl ViewSurface {
     /// surface's own tests and the measurement harness, which is what a
     /// surface test is for rather than a sign it is unused.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
+        let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
+            return ConversationHistory::default();
+        };
+        let read = forge_workspace::session_history(self.workspace.config_dir(), &session_id, &cwd);
+        ConversationHistory {
+            messages: crate::transcript::notices_as_blocks(read.messages),
+            compaction_count: read.compaction_count,
+        }
+    }
+
+    /// The span of `slot`'s transcript that ends below `ends_before`, for a
+    /// paging read that has walked below the held window's floor.
+    ///
+    /// **The session's numbering, and a bounded read.** `anchors` are rows the
+    /// caller's held window still carries - an id a transcript row names, with
+    /// the index the session gives it - which is what lets the read find the
+    /// span without walking the file from its start; the first the file holds
+    /// is the one used. `None` when the transcript cannot answer: no session
+    /// for the slot, no file, or a file that no longer lines up with the
+    /// session's own numbering.
+    pub fn transcript_span(
+        &self,
+        slot: &SessionSlot,
+        cwd_raw: &Path,
+        anchors: &[forge_primitives::TranscriptAnchor],
+        ends_before: usize,
+        rows: usize,
+    ) -> Option<forge_primitives::TranscriptSpan> {
+        let (session_id, cwd) = self.transcript_place(slot, cwd_raw)?;
+        forge_workspace::transcript_span(
+            self.workspace.config_dir(),
+            &session_id,
+            &cwd,
+            anchors,
+            ends_before,
+            rows,
+        )
+    }
+
+    /// The session id and the working directory a transcript read for `slot`
+    /// needs, each unmet case recorded as it was met.
+    fn transcript_place(&self, slot: &SessionSlot, cwd_raw: &Path) -> Option<(String, String)> {
         let Some(session_id) = self.workspace.running_session_id_for(slot) else {
             tracing::debug!(
                 event_name = "conversation_no_pooled_session",
@@ -247,7 +289,7 @@ impl ViewSurface {
                 "no session is pooled for this slot, so nothing here can find its \
                  transcript; drawing the conversation empty",
             );
-            return ConversationHistory::default();
+            return None;
         };
         let cwd_raw = if cwd_raw.as_os_str().is_empty() {
             let Some(recorded) = self.workspace.cwd_for_session(slot) else {
@@ -260,22 +302,14 @@ impl ViewSurface {
                     "no record places this session's working directory, so its transcript \
                      cannot be looked up; drawing the conversation empty",
                 );
-                return ConversationHistory::default();
+                return None;
             };
             PathBuf::from(recorded)
         } else {
             cwd_raw.to_path_buf()
         };
         let cwd = self.workspace.git_scan_cwd_for_session(slot, &cwd_raw);
-        let read = forge_workspace::session_history(
-            self.workspace.config_dir(),
-            &session_id,
-            &cwd.to_string_lossy(),
-        );
-        ConversationHistory {
-            messages: crate::transcript::notices_as_blocks(read.messages),
-            compaction_count: read.compaction_count,
-        }
+        Some((session_id, cwd.to_string_lossy().into_owned()))
     }
 }
 

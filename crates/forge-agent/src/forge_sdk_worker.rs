@@ -523,41 +523,8 @@ pub(crate) fn load_history_messages(
     let history =
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let compaction_count = history.compaction_count;
-    let raw: Vec<serde_json::Value> = history
-        .messages
-        .into_iter()
-        .map(|m| {
-            let kind = match m.kind {
-                forge_primitives::SessionMessageKind::User => "user",
-                forge_primitives::SessionMessageKind::Assistant => "assistant",
-                forge_primitives::SessionMessageKind::System => "system",
-            };
-            serde_json::json!({
-                "type": kind,
-                "uuid": m.uuid,
-                "message": m.message,
-                "parent_tool_use_id": m.parent_tool_use_id,
-                "timestamp": m.timestamp,
-                "tool_use_result": m.tool_use_result,
-                "synthetic": m.synthetic,
-            })
-        })
-        .collect();
-    let mut synthesized = crate::replay::synthesize_replay_messages(&raw);
-    // Stamp the resumed session_id on every synthesised Message - the
-    // synthesizer leaves it empty so the caller picks the right value.
-    for msg in &mut synthesized {
-        match msg {
-            forge_primitives::Message::Assistant { session_id: s, .. }
-            | forge_primitives::Message::User { session_id: s, .. }
-            | forge_primitives::Message::StopHookSummary { session_id: s, .. }
-            | forge_primitives::Message::CompactBoundary { session_id: s, .. } => {
-                session_id.clone_into(s);
-            }
-            _ => {}
-        }
-    }
-    forge_primitives::ConversationHistory { messages: synthesized, compaction_count }
+    let messages = crate::userdata::catalog::scan::messages_from_rows(history.messages, session_id);
+    forge_primitives::ConversationHistory { messages, compaction_count }
 }
 
 /// The sessions a seat can move onto: its own directory's transcripts,

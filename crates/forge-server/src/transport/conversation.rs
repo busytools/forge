@@ -442,6 +442,14 @@ pub struct Conversations {
     /// Fires when a seat is first held, so a request that had to ask for a
     /// replay knows when its answer has landed.
     seeded: tokio::sync::Notify,
+    /// Where each seat's last transcript page stopped, so the page below it is
+    /// a seek rather than a read that locates the anchor again.
+    ///
+    /// **Per seat, and never process-wide**: a transcript position belongs to
+    /// the session it was read from, and two seats can hold two sessions. A
+    /// position the file has outgrown is caught where it is used - the read
+    /// verifies the row it names before trusting it - rather than here.
+    transcript_at: Mutex<HashMap<SessionSlot, forge_primitives::TranscriptAnchor>>,
 }
 
 impl Conversations {
@@ -545,6 +553,28 @@ impl Conversations {
                 self.insert(slot, Conversation::new(history.to_vec(), compaction_count));
             }
         }
+    }
+
+    /// The anchor the next page below `before` reads from, when the seat's
+    /// walk has already been there: the row its last page stopped at, with the
+    /// byte that row starts at.
+    ///
+    /// `None` when the seat has no such position, or when the request is above
+    /// it - a client asking from the floor again - and the read then locates
+    /// the caller's own anchor instead.
+    pub fn anchor_below(
+        &self,
+        slot: &SessionSlot,
+        before: usize,
+    ) -> Option<forge_primitives::TranscriptAnchor> {
+        let at =
+            self.transcript_at.lock().unwrap_or_else(PoisonError::into_inner).get(slot).cloned()?;
+        (at.index >= before && at.offset.is_some()).then_some(at)
+    }
+
+    /// Remember where a page's read stopped, for the page below it.
+    pub fn remember_anchor(&self, slot: &SessionSlot, at: forge_primitives::TranscriptAnchor) {
+        self.transcript_at.lock().unwrap_or_else(PoisonError::into_inner).insert(slot.clone(), at);
     }
 
     /// How many seats are held.

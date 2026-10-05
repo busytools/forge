@@ -56,3 +56,23 @@ pub fn session_history(
 ) -> forge_primitives::ConversationHistory {
     forge_sdk_worker::load_history_messages(config_dir, session_id, cwd, session_id)
 }
+
+/// The span of a session's transcript that ends below `ends_before`, for a
+/// paging read that has walked below the window a conversation is kept in.
+///
+/// [`session_history`] is the whole file and answers what a session IS;
+/// this is a window of it and answers what a page needs. `anchor` is a frame
+/// id the caller's held conversation still carries together with the index
+/// the session gives that frame, which is what lets the read find the span
+/// without walking the file from its start.
+pub fn transcript_span(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    cwd: &str,
+    anchors: &[forge_primitives::TranscriptAnchor],
+    ends_before: usize,
+    rows: usize,
+) -> Option<forge_primitives::TranscriptSpan> {
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
+    userdata::catalog::scan::read_span(config_dir, session_id, dir, anchors, ends_before, rows)
+}
