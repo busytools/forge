@@ -69,11 +69,36 @@ export function reveal(dispatchId: string, root: ParentNode = document): boolean
   if (row === null) return false;
   row.open = true;
   row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  row.classList.remove('sg-hit');
-  void row.offsetWidth;
-  row.classList.add('sg-hit');
-  setTimeout(() => row.classList.remove('sg-hit'), 1700);
+  flash(row);
   return true;
+}
+
+/**
+ * The one-flash, lit again when the scroll LANDS.
+ *
+ * A long smooth scroll outlives a flash lit at its start, so the reader
+ * arrives at a row that has already stopped signalling. `scrollend` is the
+ * precise signal; the timer covers engines without it.
+ */
+function flash(row: HTMLDetailsElement): void {
+  const light = () => {
+    row.classList.remove('sg-hit');
+    void row.offsetWidth;
+    row.classList.add('sg-hit');
+  };
+  light();
+  let landed = false;
+  const land = () => {
+    if (landed) return;
+    landed = true;
+    light();
+    setTimeout(() => row.classList.remove('sg-hit'), 1700);
+  };
+  const doc = row.ownerDocument;
+  if (doc != null && typeof doc.addEventListener === 'function') {
+    doc.addEventListener('scrollend', land, { capture: true, once: true });
+  }
+  setTimeout(land, 700);
 }
 
 /** One per client, as the seat records are. */

@@ -682,12 +682,15 @@
       if (at !== null) {
         asking = false;
         list?.scrollToIndex(at, { align: 'start' });
-        let tries = 0;
+        // The row mounts with the turn, and a tall turn takes real time to
+        // draw: the chase runs on a wall-clock budget rather than frames, so
+        // a slow mount is not mistaken for a dispatch that is not there.
+        const until = Date.now() + 2500;
         const chase = () => {
-          if (reveal(wanted) || tries++ > 20) return;
-          requestAnimationFrame(chase);
+          if (reveal(wanted)) return;
+          if (Date.now() < until) setTimeout(chase, 60);
         };
-        requestAnimationFrame(chase);
+        setTimeout(chase, 0);
       } else if (held.cursor === null) {
         // The real top: the dispatch is not in this conversation at all.
         asking = false;
