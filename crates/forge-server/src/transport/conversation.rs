@@ -36,29 +36,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use forge_primitives::{Message, SessionSlot};
+// The window this copy is kept in, which is the session task's window too: the
+// two hold the same conversation, and a source kept shorter than the copy that
+// reads it is a page that cannot reach its cap. The cap's why, and what the
+// drop costs, are stated there.
+use forge_workspace::conversation_window::{CONVERSATION_CAP, CONVERSATION_SLACK, drop_past_cap};
 
 use crate::SessionUpdate;
 use crate::transcript::Rendered;
-
-/// How many messages one seat's held conversation keeps.
-///
-/// **Sized from the read that consumes it.** What a client is handed is the
-/// newest twenty turns (`SUBSCRIBE_TURNS`), and across the eight largest
-/// transcripts measured on a live machine that window spans 85 to 1,270
-/// messages, with the heaviest twenty-turn run at 2,799 - so the cap holds
-/// every window any of them would serve. What it buys is a seat's copy no
-/// longer tracking its transcript's length: the live heap grew a pair of
-/// ~90MB contiguous buffers an hour through this structure, and a seat held
-/// in a cap-sized window cannot reach one.
-const HELD_CAP: usize = 4_000;
-
-/// How far past the cap a seat's conversation may grow before the drop runs.
-///
-/// The drop rebuilds what it keeps into an allocation of its own, so running
-/// it on every append past the cap would pay that rebuild per frame instead
-/// of once per slack - and the slack costs a proportion of the cap, not a
-/// second conversation.
-const HELD_SLACK: usize = 1_000;
 
 /// One seat's conversation: the messages, where its turns sit and how many
 /// times it has compacted.
@@ -120,7 +105,11 @@ impl Conversation {
     /// an 18 ms render on whatever task built this, and that task is the
     /// socket's single stream folder.
     pub fn new(messages: Vec<Message>, compaction_count: u32) -> Self {
-        let (messages, dropped) = held_only(messages);
+        // **The drop runs before the conversion**, so a resume's transient
+        // cost is the history it handed over plus a window, rather than two
+        // transcripts.
+        let mut messages = messages;
+        let dropped = drop_past_cap(&mut messages);
         Self {
             messages: as_blocks(messages),
             rendered: Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
@@ -143,7 +132,8 @@ impl Conversation {
     /// [`Conversation::new`] gives: this is reached from the stream fold, and
     /// a render there stalls every seat rather than this one.
     pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32) {
-        let (messages, dropped) = held_only(messages);
+        let mut messages = messages;
+        let dropped = drop_past_cap(&mut messages);
         self.messages = as_blocks(messages);
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
@@ -172,7 +162,7 @@ impl Conversation {
         // **Before the push, so the drop pays for the room it makes.** After
         // it, this one frame is what tips the store into a doubling the drop
         // is about to throw away.
-        if self.messages.len() >= HELD_CAP + HELD_SLACK {
+        if self.messages.len() >= CONVERSATION_CAP + CONVERSATION_SLACK {
             self.drop_to_cap();
         }
         self.messages.push(message);
@@ -182,9 +172,7 @@ impl Conversation {
     /// Drop the oldest messages once the held list has outgrown the cap's
     /// slack, and leave the seat due a fold.
     fn drop_to_cap(&mut self) {
-        let (messages, dropped) = held_only(std::mem::take(&mut self.messages));
-        self.messages = messages;
-        self.dropped = self.dropped.saturating_add(dropped);
+        self.dropped = self.dropped.saturating_add(drop_past_cap(&mut self.messages));
         // The same reason a seed clears them: the boundaries name message
         // indices, and the drop has just moved every one of them.
         self.rendered.turns.clear();
@@ -239,24 +227,6 @@ impl Conversation {
     pub fn dropped(&self) -> usize {
         self.dropped
     }
-}
-
-/// The newest [`HELD_CAP`] of `messages`, and how many that left behind.
-///
-/// **A fresh allocation rather than a `drain`**, because a `Vec` keeps the
-/// store it grew to: the point of the cap is that a seat stops holding the
-/// backing store of a conversation it no longer has, and a drain would leave
-/// it holding all of it with a window's worth of messages in front.
-fn held_only(messages: Vec<Message>) -> (Vec<Message>, usize) {
-    let excess = messages.len().saturating_sub(HELD_CAP);
-    if excess == 0 {
-        return (messages, 0);
-    }
-    // Sized for the slack as well, so the appends that refill it do not
-    // double the store on the way back up.
-    let mut kept: Vec<Message> = Vec::with_capacity(HELD_CAP + HELD_SLACK);
-    kept.extend(messages.into_iter().skip(excess));
-    (kept, excess)
 }
 
 /// A history as the CLI wrote it, with its task notices in the shape a view
@@ -988,12 +958,12 @@ mod tests {
     #[test]
     fn an_append_past_the_caps_slack_drops_the_oldest_messages() {
         let mut conversation = Conversation::empty();
-        for at in 0..HELD_CAP + HELD_SLACK {
+        for at in 0..CONVERSATION_CAP + CONVERSATION_SLACK {
             conversation.append(a_frame(&format!("{at}")));
         }
         assert_eq!(
             conversation.messages().len(),
-            HELD_CAP + HELD_SLACK,
+            CONVERSATION_CAP + CONVERSATION_SLACK,
             "precondition: the slack is filled and nothing has been dropped",
         );
 
@@ -1001,17 +971,17 @@ mod tests {
 
         assert_eq!(
             conversation.messages().len(),
-            HELD_CAP + 1,
+            CONVERSATION_CAP + 1,
             "the drop keeps the cap, and the frame that triggered it joins them",
         );
         assert_eq!(
             conversation.dropped(),
-            HELD_SLACK,
+            CONVERSATION_SLACK,
             "and it counted every message it left behind",
         );
         assert_eq!(
             said(&conversation.messages()[0]),
-            format!("{HELD_SLACK}"),
+            format!("{CONVERSATION_SLACK}"),
             "the oldest kept is the one the cap reaches back to",
         );
         assert_eq!(
@@ -1029,18 +999,18 @@ mod tests {
     #[test]
     fn a_conversation_over_the_cap_is_held_in_a_window_sized_store() {
         let one = a_frame("a message");
-        let history = vec![one; HELD_CAP * 4];
+        let history = vec![one; CONVERSATION_CAP * 4];
 
         let conversation = Conversation::new(history, 0);
 
-        assert_eq!(conversation.messages().len(), HELD_CAP, "a seed keeps the cap");
-        assert_eq!(conversation.dropped(), HELD_CAP * 3, "and reports what it left behind");
+        assert_eq!(conversation.messages().len(), CONVERSATION_CAP, "a seed keeps the cap");
+        assert_eq!(conversation.dropped(), CONVERSATION_CAP * 3, "and reports what it left behind");
         assert!(
-            conversation.messages.capacity() <= HELD_CAP + HELD_SLACK,
+            conversation.messages.capacity() <= CONVERSATION_CAP + CONVERSATION_SLACK,
             "the store it left is the window's rather than the history's: capacity for {} \
              messages over a history of {}",
             conversation.messages.capacity(),
-            HELD_CAP * 4,
+            CONVERSATION_CAP * 4,
         );
     }
 
@@ -1051,7 +1021,7 @@ mod tests {
     /// cursor naming the same message.
     #[test]
     fn the_drop_leaves_the_newest_page_exactly_as_it_was() {
-        let messages = a_long_history(HELD_CAP + HELD_SLACK);
+        let messages = a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK);
         let whole = crate::transcript::render(&messages);
         let unbounded = crate::transport::wire::page(
             &messages,
@@ -1085,7 +1055,8 @@ mod tests {
     /// rather than with whatever now sits at that index in the held list.
     #[test]
     fn a_cursor_survives_a_drop_and_stops_at_the_floor() {
-        let conversation = Conversation::new(a_long_history(HELD_CAP + HELD_SLACK), 0);
+        let conversation =
+            Conversation::new(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0);
         let held = Held::new(conversation);
         let dropped = held.lock().dropped();
         assert!(dropped > 0, "precondition: the seed was over the cap");
