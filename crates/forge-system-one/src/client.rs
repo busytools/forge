@@ -124,6 +124,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::wire::NoulCriteria;
 
     /// One request the test server saw.
     #[derive(Debug)]
@@ -187,15 +188,18 @@ mod tests {
     }
 
     fn noul_question() -> Question {
-        Question::Noul { instructions: "Is this a bug?".to_owned(), criteria: None }
+        Question::Noul { instructions: serde_json::json!("Is this a bug?"), criteria: None }
     }
 
     fn choice_question() -> Question {
         Question::Choice {
-            instructions: "Which team?".to_owned(),
-            criteria: [("billing".to_owned(), None), ("technical".to_owned(), None)]
-                .into_iter()
-                .collect(),
+            instructions: serde_json::json!("Which team?"),
+            criteria: [
+                ("billing".to_owned(), serde_json::Value::Null),
+                ("technical".to_owned(), serde_json::Value::Null),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -240,6 +244,80 @@ mod tests {
             serde_json::json!({"model":"test-model","state":{"ticket":"x"},"questions":{"q":{"type":"noul","instructions":"Is this a bug?"}}})
         );
         assert_eq!(seen[0].authorization.as_deref(), Some("Bearer k"));
+    }
+
+    /// The API's own typing carried end to end: structured `instructions`
+    /// and criteria values reach the request body verbatim.
+    #[tokio::test]
+    async fn structured_question_reaches_the_request_body() {
+        let (base, requests) = spawn_server(200, NOUL_OK_BODY, None).await;
+        let client = client_for(&base, Some("k"));
+
+        let noul = Question::Noul {
+            instructions: serde_json::json!({
+                "question": "Is the claim `just check` green?",
+                "evidence": {"command": "just check", "verdict": "all green"}
+            }),
+            criteria: Some(NoulCriteria {
+                r#true: serde_json::json!({"rule": "the verdict line says all green"}),
+                r#false: serde_json::json!("anything else"),
+            }),
+        };
+        client
+            .ask(&serde_json::json!({"ticket": "x"}), &noul)
+            .await
+            .expect("the structured noul request succeeds");
+
+        let choice = Question::Choice {
+            instructions: serde_json::json!("Which team owns `auth.rs`?"),
+            criteria: [
+                ("billing".to_owned(), serde_json::json!({"files": ["a.rs"]})),
+                ("frontend".to_owned(), serde_json::Value::Null),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let choice_body = r#"{"model":"test-model","answers":{"q":{"type":"choice","choice":"billing"}},"usage":{"input_tokens":10,"output_tokens":3}}"#;
+        let (choice_base, choice_requests) = spawn_server(200, choice_body, None).await;
+        client_for(&choice_base, Some("k"))
+            .ask(&serde_json::json!("x"), &choice)
+            .await
+            .expect("the structured choice request succeeds");
+
+        let seen = requests.lock().await;
+        assert_eq!(
+            seen[0].body,
+            serde_json::json!({
+                "model": "test-model",
+                "state": {"ticket": "x"},
+                "questions": {"q": {
+                    "type": "noul",
+                    "instructions": {
+                        "question": "Is the claim `just check` green?",
+                        "evidence": {"command": "just check", "verdict": "all green"}
+                    },
+                    "criteria": {
+                        "true": {"rule": "the verdict line says all green"},
+                        "false": "anything else"
+                    }
+                }}
+            }),
+            "structured noul values reach the request body verbatim"
+        );
+        let choice_seen = choice_requests.lock().await;
+        assert_eq!(
+            choice_seen[0].body,
+            serde_json::json!({
+                "model": "test-model",
+                "state": "x",
+                "questions": {"q": {
+                    "type": "choice",
+                    "instructions": "Which team owns `auth.rs`?",
+                    "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+                }}
+            }),
+            "structured choice option values reach the request body verbatim"
+        );
     }
 
     #[tokio::test]

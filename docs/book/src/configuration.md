@@ -384,6 +384,16 @@ missing one refuses the load naming the key - the message reads
 endpoint itself rejects surfaces as a tool error naming `api_key`;
 forge never substitutes another credential.
 
+What the endpoint takes: up to 255 options in a choice question, 2 to 10
+levels in a score question, and a whole request - state, instructions and
+the question together - inside the live context, which OpenRouter lists
+as 32000 tokens for these models. Upstream describes the shape as 32k of
+state under a 64k request; the live 32000 is what to size against, with
+the state kept well inside it. It serves about 100K tokens/s at 80
+requests/s and bills $0.042 per million input tokens, rates upstream
+notes can change without notice; the default 30s `timeout_ms` has ample
+headroom.
+
 ## `[[slack]]`
 
 Optional, and repeatable: one entry per Slack workspace. Absent or empty

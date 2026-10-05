@@ -23,10 +23,10 @@ async fn live_typesafe_noul() {
     let client = SystemOneClient::new(&config, reqwest::Client::new());
 
     let question = Question::Noul {
-        instructions: "Is this state a greeting?".to_owned(),
+        instructions: serde_json::json!("Is this state a greeting?"),
         criteria: Some(NoulCriteria {
-            r#true: "The state greets a reader.".to_owned(),
-            r#false: "Anything else.".to_owned(),
+            r#true: serde_json::json!("The state greets a reader."),
+            r#false: serde_json::json!("Anything else."),
         }),
     };
     let outcome = client

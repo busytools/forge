@@ -69,11 +69,11 @@ fn noul_question(args: &NoulArgs) -> Result<Question, String> {
     let criteria = match &args.criteria {
         Some(criteria) => {
             let mut criteria = criteria.clone();
-            let true_text = criteria.remove("true");
-            let false_text = criteria.remove("false");
-            match (true_text, false_text, criteria.is_empty()) {
-                (Some(true_text), Some(false_text), true) => {
-                    Some(NoulCriteria { r#true: true_text, r#false: false_text })
+            let true_value = criteria.remove("true");
+            let false_value = criteria.remove("false");
+            match (true_value, false_value, criteria.is_empty()) {
+                (Some(true_value), Some(false_value), true) => {
+                    Some(NoulCriteria { r#true: true_value, r#false: false_value })
                 }
                 _ => {
                     return Err(
@@ -128,6 +128,8 @@ impl Tool for AskNoul {
         "Ask the System One decision model a single yes/no question about a state (a string, \
          a JSON object, or an array) and get back the probability that the answer is yes, from \
          0 to 1. The model answers from its predictive distribution and never writes prose. \
+         `instructions` and criteria values may be any JSON - the question in one field, \
+         referenced data in others, named with backticks. \
          When to reach for it: before interrupting the user with a question this session could \
          probably decide itself (put the situation in `state` and the ask in `instructions`; \
          when the answer is decisive and the action reversible, act), or as a second opinion \
@@ -159,13 +161,13 @@ impl Tool for AskNoul {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The yes/no question itself." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
                     "properties": {
-                        "true": { "type": "string", "description": "What makes the answer yes." },
-                        "false": { "type": "string", "description": "What makes the answer no." },
+                        "true": { "type": ["string", "object", "array", "null"], "description": "What makes the answer yes." },
+                        "false": { "type": ["string", "object", "array", "null"], "description": "What makes the answer no." },
                     },
                     "description": "Optional: what yes and no mean here. Give both keys or omit.",
                 },
@@ -205,7 +207,9 @@ impl Tool for AskChoice {
         "Ask the System One decision model to choose one option from the set you define, for a \
          state (a string, a JSON object, or an array). Returns the winning option, the \
          probability of every option, and a confidence for the distribution. The model never \
-         writes prose. When to reach for it: routing and picking between enumerated \
+         writes prose. `instructions` and criteria values may be any JSON - the question in \
+         one field, referenced data in others, named with backticks. \
+         When to reach for it: routing and picking between enumerated \
          alternatives, or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
@@ -230,11 +234,11 @@ impl Tool for AskChoice {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The question the options answer." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
-                    "additionalProperties": { "type": ["string", "null"] },
+                    "additionalProperties": { "type": ["string", "object", "array", "null"] },
                     "description": "Option names mapped to when each applies (null when the name stands alone). Every option must be listed.",
                 },
             },
@@ -273,7 +277,10 @@ impl Tool for AskScore {
         "Ask the System One decision model to place a state (a string, a JSON object, or an \
          array) on an ordered rubric you define. Returns a fractional score (it can land \
          between levels), the probability of each level, a legend mapping level positions to \
-         your text, and a confidence. The model never writes prose. When to reach for it: \
+         your text, and a confidence. The model never writes prose. \
+         `instructions` and criteria values may be any JSON - the question in one field, \
+         referenced data in others, named with backticks. \
+         When to reach for it: \
          severity, quality, priority, or risk judgments where the levels are meaningful to you. \
          Beyond those moments, score a judgment when it matters to the user and is not obvious, \
          and skip it when the position would not change what you do. \
@@ -295,11 +302,11 @@ impl Tool for AskScore {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part." },
-                "instructions": { "type": "string", "description": "The rubric question itself." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": { "type": ["string", "object", "array"] },
                     "minItems": 2,
                     "maxItems": 10,
                     "description": "The ordered level descriptions, lowest first.",
@@ -341,6 +348,42 @@ mod tests {
             model: "test-model".to_owned(),
             answer,
             usage: Some(Usage { input_tokens: 10, output_tokens: 3, cost: None }),
+        }
+    }
+
+    /// The tool text ships to every caller that has the tools, so the two
+    /// sentences that teach the shape a call takes and the budget it must
+    /// fit are pinned here: a silent delete fails instead of shipping.
+    #[test]
+    fn the_tool_text_carries_its_structured_values_and_budget_sentences() {
+        let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() };
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() };
+        let score = AskScore { facade: MockSystemOneFacade::new().into_arc() };
+        for (tool, description, schema) in [
+            ("systemone__ask_noul", noul.description(), noul.input_schema()),
+            ("systemone__ask_choice", choice.description(), choice.input_schema()),
+            ("systemone__ask_score", score.description(), score.input_schema()),
+        ] {
+            assert!(
+                description.contains(
+                    "`instructions` and criteria values may be any JSON - the question in one \
+                     field, referenced data in others, named with backticks"
+                ),
+                "{tool} must teach the structured values it takes: {description}"
+            );
+            let state = schema["properties"]["state"]["description"]
+                .as_str()
+                .expect("the state description is a string");
+            for clause in [
+                "The state carries what the decision needs",
+                "pass the context, not a pointer to it",
+                "must fit the live ~32k-token context; keep the state well inside it",
+            ] {
+                assert!(
+                    state.contains(clause),
+                    "{tool}'s state description owes {clause:?}: {state}"
+                );
+            }
         }
     }
 
@@ -392,13 +435,128 @@ mod tests {
         assert_eq!(
             calls[0].1,
             Question::Noul {
-                instructions: "Is this a billing issue?".to_owned(),
+                instructions: serde_json::json!("Is this a billing issue?"),
                 criteria: Some(NoulCriteria {
-                    r#true: "Payments".to_owned(),
-                    r#false: "Anything else".to_owned()
+                    r#true: serde_json::json!("Payments"),
+                    r#false: serde_json::json!("Anything else")
                 }),
             }
         );
+    }
+
+    /// The API's own typing: `instructions` and criteria values are any
+    /// JSON, and the tool must carry the structure through verbatim -
+    /// the pre-flight constraints still fire by name around it.
+    #[tokio::test]
+    async fn structured_values_reach_the_facade_verbatim() {
+        let mock = Arc::new(MockSystemOneFacade::new());
+        *mock.result.lock() = Some(Ok(outcome(Answer::Noul { noul: 0.83 })));
+
+        let noul = AskNoul { facade: mock.clone() };
+        let out = noul
+            .call(input(serde_json::json!({
+                "state": {"ticket": "x"},
+                "instructions": {"question": "Is this a billing issue?", "policy": "refunds within 30 days"},
+                "criteria": {"true": {"rule": "Payments"}, "false": "Anything else"}
+            })))
+            .await;
+        assert!(!out.is_error, "structured noul arguments are accepted: {}", out.blocks[0].text);
+
+        let choice = AskChoice { facade: mock.clone() };
+        let out = choice
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": {"question": "Which team?", "touched": ["a.rs"]},
+                "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            })))
+            .await;
+        assert!(!out.is_error, "structured choice values are accepted: {}", out.blocks[0].text);
+
+        let score = AskScore { facade: mock.clone() };
+        let out = score
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
+                "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
+            })))
+            .await;
+        assert!(!out.is_error, "a structured score question is accepted: {}", out.blocks[0].text);
+
+        let malformed = noul
+            .call(input(serde_json::json!({
+                "state": "x",
+                "instructions": "Is it?",
+                "criteria": {"true": {"rule": "yes"}, "false": "no", "maybe": "hmm"}
+            })))
+            .await;
+        assert!(malformed.is_error, "a third noul key is still refused");
+        assert!(
+            malformed.blocks[0].text.contains("exactly the keys `true` and `false`"),
+            "{}",
+            malformed.blocks[0].text
+        );
+
+        let calls = mock.calls.lock();
+        assert_eq!(calls.len(), 3, "the malformed call never reaches the facade");
+        assert_eq!(
+            serde_json::to_value(&calls[0].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "noul",
+                "instructions": {"question": "Is this a billing issue?", "policy": "refunds within 30 days"},
+                "criteria": {"true": {"rule": "Payments"}, "false": "Anything else"}
+            }),
+            "structured noul values reach the wire verbatim"
+        );
+        assert_eq!(
+            serde_json::to_value(&calls[1].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "choice",
+                "instructions": {"question": "Which team?", "touched": ["a.rs"]},
+                "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
+            }),
+            "structured choice values reach the wire verbatim"
+        );
+        assert_eq!(
+            serde_json::to_value(&calls[2].1).expect("question serializes"),
+            serde_json::json!({
+                "type": "score",
+                "instructions": {"question": "How urgent?", "note": "per `sev.md`"},
+                "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
+            }),
+            "structured score levels reach the wire verbatim"
+        );
+    }
+
+    /// What each tool advertises: the structured union the API accepts,
+    /// minus the score tool's levels, which stay strings.
+    #[test]
+    fn schemas_advertise_the_structured_union() {
+        let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+        let score = AskScore { facade: MockSystemOneFacade::new().into_arc() }.input_schema();
+
+        let union = serde_json::json!(["string", "object", "array", "null"]);
+        assert_eq!(
+            noul["properties"]["instructions"]["type"], union,
+            "noul instructions advertise the API's union"
+        );
+        assert_eq!(noul["properties"]["criteria"]["properties"]["true"]["type"], union);
+        assert_eq!(noul["properties"]["criteria"]["properties"]["false"]["type"], union);
+        assert_eq!(
+            choice["properties"]["criteria"]["additionalProperties"]["type"], union,
+            "choice option values advertise the API's union"
+        );
+        assert_eq!(
+            score["properties"]["criteria"]["items"]["type"],
+            serde_json::json!(["string", "object", "array"]),
+            "score levels advertise the API's union, which has no null"
+        );
+        for (tool, schema) in [("noul", &noul), ("choice", &choice), ("score", &score)] {
+            assert_eq!(
+                schema["properties"]["instructions"]["type"], union,
+                "{tool} instructions advertise the API's union"
+            );
+        }
     }
 
     #[tokio::test]
@@ -508,8 +666,12 @@ mod tests {
         assert_eq!(
             calls[0].1,
             Question::Score {
-                instructions: "How urgent?".to_owned(),
-                criteria: vec!["Routine".to_owned(), "Soon".to_owned(), "Urgent".to_owned()],
+                instructions: serde_json::json!("How urgent?"),
+                criteria: vec![
+                    serde_json::json!("Routine"),
+                    serde_json::json!("Soon"),
+                    serde_json::json!("Urgent"),
+                ],
             }
         );
     }
