@@ -17,6 +17,7 @@
     "CliVersionChanged": "cli_version_changed",
     "Connected": "connected",
     "ConnectionFailed": "connection_failed",
+    "ConnectorSubscriptionsChanged": "connector_subscriptions_changed",
     "ContextUsageSnapshot": "context_usage_snapshot",
     "CronPromptAppended": "cron_prompt_appended",
     "CronSchedulesChanged": "cron_schedules_changed",

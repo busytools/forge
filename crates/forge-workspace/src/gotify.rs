@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use forge_connectors::gotify::GotifyHost;
 
-use crate::protocol::Command;
+use crate::protocol::{Command, SessionUpdate};
 use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 
@@ -40,6 +40,7 @@ impl Workspace {
         sub: forge_primitives::GotifySubscription,
         durable: bool,
     ) {
+        let project = sub.project.clone();
         if durable
             && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::insert(db, &sub)
@@ -51,6 +52,7 @@ impl Workspace {
             );
         }
         self.gotify_subs.lock().push(sub);
+        self.announce_connector_subscriptions_changed(&project);
     }
 
     /// Remove the subscription `id` in `project` only when its owner
@@ -84,6 +86,9 @@ impl Workspace {
                 %error,
                 "removing a persisted Gotify subscription failed",
             );
+        }
+        if removed {
+            self.announce_connector_subscriptions_changed(project);
         }
         removed
     }
@@ -142,6 +147,7 @@ impl Workspace {
                 }
             }
         }
+        self.announce_connector_subscriptions_changed(&project_name);
     }
 
     /// The active subscriptions for `project`. Backs `gotify__list` and
@@ -152,6 +158,31 @@ impl Workspace {
         project: &str,
     ) -> Vec<forge_primitives::GotifySubscription> {
         self.gotify_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
+    }
+
+    /// Tell every view the project's connector subscriptions moved, as the
+    /// two sets the core holds, on the project's lead seat. One update
+    /// carries both connectors: they are one section of the home's row, and
+    /// a reader that patches it needs the pair. A name no project carries
+    /// has no seat to route on and announces nothing.
+    ///
+    /// Lives here rather than on either connector: the section is the pair,
+    /// so both seams announce through the one site.
+    pub(crate) fn announce_connector_subscriptions_changed(&self, project_name: &str) {
+        let Some(key) = self.lead_slot_for_project(project_name) else {
+            tracing::debug!(
+                target: "forge_workspace::gotify",
+                event_name = "connector_subscriptions_changed_unroutable",
+                project = %project_name,
+                "a subscription write named a project no project carries; nothing was announced",
+            );
+            return;
+        };
+        let gotify = self.gotify_subscriptions_for_project(project_name);
+        let slack = self.slack_subscriptions_for_project(project_name);
+        let _ = self
+            .update_tx
+            .send(SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack });
     }
 
     /// Whether the Gotify stream is currently connected. Backs the
@@ -283,8 +314,11 @@ impl Workspace {
     /// subscribe path. Cross-crate test access so forge-tui can exercise
     /// the Inspector's `refresh_gotify` resolution, mirroring
     /// [`Self::seed_test_cron`].
+    ///
+    /// The active-set write without the announcement: a fixture seeds state,
+    /// it does not perform the write a view is owed a frame for.
     pub fn seed_test_gotify_subscription(&self, sub: forge_primitives::GotifySubscription) {
-        self.add_gotify_subscription(sub, false);
+        self.gotify_subs.lock().push(sub);
     }
 }
 
@@ -865,6 +899,100 @@ mod tests {
             parked_gotify(&ws, "forge", Some("reviewer")),
             vec![notif],
             "parked for the worker's own label, for its Connected drain",
+        );
+    }
+
+    /// The one `ConnectorSubscriptionsChanged` on a test's update stream, as
+    /// its key and the two sets it announces.
+    fn next_connectors_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) -> (
+        SessionSlot,
+        Vec<forge_primitives::GotifySubscription>,
+        Vec<forge_primitives::slack::SlackSubscription>,
+    ) {
+        match rx.try_recv() {
+            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
+                key,
+                gotify,
+                slack,
+            }) => (key, gotify, slack),
+            other => {
+                panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")
+            }
+        }
+    }
+
+    /// A gotify subscribe, unsubscribe and worker teardown each announce the
+    /// project's connector sets on its lead seat - BOTH connectors, because
+    /// the section a client patches is one - so the inspector's GOTIFY
+    /// section pops on the frame that moved it.
+    ///
+    /// Mutants: drop any one emission (the drain is empty); announce only the
+    /// connector that moved (a patch would leave the sibling stale); announce
+    /// a set taken before the write.
+    #[test]
+    fn every_gotify_write_announces_the_projects_subscriptions() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-gotify");
+        let view_key = ws.project_key_for_name("forge").expect("seeded project");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+
+        let subscription = gotify_sub("forge", &["alerts"], Some(5));
+        ws.add_gotify_subscription(subscription.clone(), true);
+        let (key, gotify, slack) = next_connectors_changed(&mut rx);
+        assert_eq!(key, lead, "a subscribe routes on the project's lead seat");
+        assert_eq!(
+            gotify.iter().map(|sub| sub.id).collect::<Vec<_>>(),
+            [subscription.id],
+            "and carries the set the core now holds",
+        );
+        assert!(slack.is_empty(), "beside the sibling connector's own set");
+
+        assert!(
+            ws.remove_gotify_subscription_owned_by("forge", subscription.id, None),
+            "precondition: the lead removes its own subscription",
+        );
+        let (_, gotify, _) = next_connectors_changed(&mut rx);
+        assert!(gotify.is_empty(), "an unsubscribe announces the set it left behind");
+
+        // A worker's teardown announces the survivors.
+        let mut worker_subscription = gotify_sub("forge", &[], None);
+        worker_subscription.team_role = Some("reviewer".to_owned());
+        ws.add_gotify_subscription(worker_subscription, true);
+        let (_, gotify, _) = next_connectors_changed(&mut rx);
+        assert_eq!(gotify.len(), 1, "precondition: the worker's subscribe announced it");
+        ws.remove_gotify_subscriptions_for_worker(&view_key, "reviewer");
+        let (announced_key, gotify, _) = next_connectors_changed(&mut rx);
+        assert_eq!(announced_key, lead, "a teardown routes the same way");
+        assert!(gotify.is_empty(), "and announces what the teardown left");
+    }
+
+    /// A write that changed nothing announces nothing: an unsubscribe for an
+    /// id nothing holds and a teardown matching no worker subscription are
+    /// both no-ops.
+    ///
+    /// Mutant: emit unconditionally, where each of these is news the section
+    /// never moved for.
+    #[test]
+    fn a_gotify_write_that_changed_nothing_announces_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-gotify-noop");
+        let view_key = ws.project_key_for_name("forge").expect("seeded project");
+
+        assert!(
+            !ws.remove_gotify_subscription_owned_by("forge", uuid::Uuid::new_v4(), None),
+            "precondition: no subscription carries the id",
+        );
+        ws.remove_gotify_subscriptions_for_worker(&view_key, "nobody");
+
+        let announced = rx.try_recv();
+        assert!(
+            announced.is_err(),
+            "no write here moved a subscription, so nothing is announced, and this was: \
+             {announced:?}",
         );
     }
 }

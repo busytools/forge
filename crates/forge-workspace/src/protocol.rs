@@ -1293,6 +1293,20 @@ pub enum SessionUpdate {
         key: SessionSlot,
         crons: Vec<forge_primitives::CronEntry>,
     },
+    /// The project's inbound connector subscriptions moved, as the two sets
+    /// the core holds.
+    ///
+    /// **Pushed rather than read.** The `gotify__*` / `slack__*` writes move
+    /// them, a mention's auto-subscribe moves them with no tool call, and a
+    /// worker's teardown takes its own with it - so each write announces the
+    /// pair. One update carries both connectors because they are one section
+    /// of the home's row, and a reader that patches it needs the pair.
+    /// `key` is the project's lead seat.
+    ConnectorSubscriptionsChanged {
+        key: SessionSlot,
+        gotify: Vec<forge_primitives::GotifySubscription>,
+        slack: Vec<forge_primitives::slack::SlackSubscription>,
+    },
     /// The `/` menu's catalogue moved, as the whole list the core holds.
     ///
     /// **Pushed rather than read.** The CLI advertises it on a turn's init and
@@ -1669,6 +1683,7 @@ impl SessionUpdate {
             | Self::WorkChanged { key, .. }
             | Self::TasksChanged { key, .. }
             | Self::CronSchedulesChanged { key, .. }
+            | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
             | Self::DispatchesChanged { key, .. }
@@ -1810,6 +1825,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("CronSchedulesChanged")
                 .field("key", key)
                 .field("count", &crons.len())
+                .finish(),
+            Self::ConnectorSubscriptionsChanged { key, gotify, slack } => f
+                .debug_struct("ConnectorSubscriptionsChanged")
+                .field("key", key)
+                .field("gotify", &gotify.len())
+                .field("slack", &slack.len())
                 .finish(),
             Self::SlashCommandsChanged { key, commands } => f
                 .debug_struct("SlashCommandsChanged")

@@ -196,10 +196,12 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // it is the composer that asked for it.
         | SessionUpdate::PendingInteractionResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
-        // The project's task set and its schedules moved, both of which the
-        // home's project row draws.
+        // The project's task set, its schedules and its connector
+        // subscriptions moved - the three sections the home's project row
+        // draws from this stream.
         | SessionUpdate::TasksChanged { .. }
-        | SessionUpdate::CronSchedulesChanged { .. } => FleetNews::Redraw,
+        | SessionUpdate::CronSchedulesChanged { .. }
+        | SessionUpdate::ConnectorSubscriptionsChanged { .. } => FleetNews::Redraw,
         // Everything else is the conversation, which no row shows.
         _ => FleetNews::Nothing,
     }

@@ -285,6 +285,11 @@ mod tests {
                 key: SessionSlot::lead("TestOrg", "proj"),
                 crons: Vec::new(),
             },
+            SessionUpdate::ConnectorSubscriptionsChanged {
+                key: SessionSlot::lead("TestOrg", "proj"),
+                gotify: Vec::new(),
+                slack: Vec::new(),
+            },
         ] {
             assert!(
                 fleet_news(&update).any(),
