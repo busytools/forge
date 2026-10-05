@@ -114,10 +114,11 @@ fn front_of(messages: &[Message]) -> usize {
     }
     match newest {
         Some(at) if messages.len() - at <= CONVERSATION_CAP + CONVERSATION_SLACK => at,
-        // No turn opens at or above the line and none below it can be kept
-        // whole within the slack - the newest turn alone is longer than the
-        // window may be, or the conversation opens no turn at all. Cutting
-        // inside it is the only option left.
+        // No turn THE SCAN CAN NAME leaves the window inside the slack: either
+        // none opens at or above the line, or the newest one it names is
+        // further back than the slack. The fold can still hold a head there -
+        // a queued prompt opens a turn at it and this cannot read one - and
+        // the count's own cut is what is left, inside whichever turn holds it.
         _ => line,
     }
 }
@@ -152,6 +153,20 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// A user row carrying a queued prompt, which the fold opens a turn at
+    /// unless a question card takes it.
+    fn a_queued(text: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "queued_command", "prompt": text}],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a user frame")
     }
 
     /// A frame inside a turn: a result answering the turn's own call, which
@@ -263,6 +278,34 @@ mod tests {
         assert!(
             !opens_a_turn(&messages[0]),
             "inside the turn, which is the only option when a single turn alone exceeds the slack",
+        );
+    }
+
+    /// **A head the scan cannot read leaves the count's own cut, deliberately.**
+    /// A queued prompt opens a turn in the fold, and the window's scan cannot
+    /// see the card that decides whether it does - so a queued prompt at or
+    /// above the line is a head the fold has and the scan does not. When the
+    /// newest frame the scan CAN name is further back than the slack, the cut
+    /// falls at the count and starts inside whatever turn holds it, which is
+    /// the one thing the window's front is otherwise never allowed to do. That
+    /// is what the pre-window cut did everywhere, and no real conversation
+    /// measured has reached it.
+    #[test]
+    fn a_head_the_scan_cannot_name_leaves_the_count_cut() {
+        let mut messages = vec![a_said("the only head the scan can name")];
+        messages.extend((0..1_999).map(|within| a_work_frame(9_999, within)));
+        messages.push(a_queued("a head the scan cannot read"));
+        messages.extend((2_001..5_001).map(|within| a_work_frame(9_998, within)));
+        assert_eq!(messages.len(), 5_001, "precondition: one queued head sits above the line");
+
+        let dropped = drop_past_cap(&mut messages);
+
+        assert_eq!(dropped, 1_001, "the cut is the count the cap holds, not a turn's first frame");
+        assert_eq!(messages.len(), CONVERSATION_CAP, "and the window comes out at the cap");
+        assert!(
+            !opens_a_turn(&messages[0]),
+            "inside the turn the fold opened at the head the scan could name, because the head \
+             above the line is a queued prompt it cannot read",
         );
     }
 

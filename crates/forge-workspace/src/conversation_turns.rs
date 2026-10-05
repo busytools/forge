@@ -9,11 +9,22 @@
 //! **This answers no more than the fold would.** Every frame [`TurnScan`]
 //! names is one the fold opens a turn at; it names none the fold would not.
 //! Two shapes it cannot read the way the fold does are answered the safe way -
-//! no turn - which costs a boundary rather than a wrong one. A row opening
-//! with a bracket is every envelope this workspace writes, and the parser that
-//! tells an envelope from the reader's own words lives above this crate. And a
-//! queued prompt opens a turn in the fold unless a question card takes it,
-//! which is the fold's own unit state and not visible from here.
+//! no turn - so what they cost is a head the window cannot start on, never a
+//! cut inside a turn.
+//!
+//! A queued prompt opens a turn in the fold unless a question card takes it,
+//! which is the fold's own unit state and not visible from here. That miss is
+//! not only the prompt: the fold's turn opens there and resets the state the
+//! next turn opens under, so a frame the fold then draws as a head of its own -
+//! the continuation a compaction leaves - is left alone here too.
+//!
+//! And a row opening with a bracket is read as an envelope, because every
+//! envelope this workspace writes opens with one and the parser that tells an
+//! envelope from the reader's own words lives above this crate. That is broader
+//! than the envelopes: a reader's own `[note] ...` row, and a bracket-led
+//! notice the parser rejects, are heads here that this leaves alone. The shapes
+//! read here are exempt from that, so an image note the fold opens a turn at is
+//! named.
 
 use forge_primitives::messages::names_a_dispatch;
 use forge_primitives::{ContentBlock, Message};
