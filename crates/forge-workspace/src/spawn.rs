@@ -2323,7 +2323,7 @@ pub(crate) fn handle_deliver_worker_prompt(
     push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
     drop(wrapped);
     if let Err(err) =
-        workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Forge, uuid)
+        workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Peer, uuid)
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -2381,7 +2381,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped, &uuid);
     drop(wrapped);
     if let Err(err) =
-        workspace.dispatch_workspace_prompt_under(target_lead_key, text, PromptSource::Forge, uuid)
+        workspace.dispatch_workspace_prompt_under(target_lead_key, text, PromptSource::Peer, uuid)
     {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -5901,6 +5901,105 @@ provider = "anthropic"
             1,
             "prompt parked for the worker's Connected drain, not dropped"
         );
+    }
+
+    /// The (source, text) of the one prompt a handler dispatched, read off
+    /// the workspace's dispatch intercept: the pre-routing capture of the
+    /// Command `record_queued` labels the queued row from.
+    fn drain_the_prompt(workspace: &Workspace) -> (PromptSource, String) {
+        workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .find_map(|cmd| match cmd {
+                crate::protocol::Command::PromptUnder { source, text, .. } => Some((source, text)),
+                _ => None,
+            })
+            .expect("the peer envelope is dispatched as a prompt")
+    }
+
+    /// A worker entry for `label`, connected, so the delivery dispatches
+    /// now rather than parking on the pre-Connect bucket.
+    fn connected_worker_entry(
+        slot: &SessionSlot,
+        session_id: &str,
+    ) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: slot.label().to_owned(),
+            charter: "c".into(),
+            slot: slot.clone(),
+            session_id: Some(forge_primitives::SessionId::new(session_id)),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("TestOrg", "forge"),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// A peer envelope delivered to a sibling worker is recorded with the
+    /// peer source, not forge's: the prose IS a peer envelope, and every
+    /// other peer path labels its queued row `peer`.
+    #[tokio::test]
+    async fn deliver_to_a_worker_records_the_peer_source() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/deliver-worker-peer-source");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project")
+            .key;
+        let worker_key = SessionSlot::worker("TestOrg", "forge", "builder");
+        workspace
+            .insert_live_worker(&project, connected_worker_entry(&worker_key, "builder-session"));
+        workspace.mark_session_connected_for_test(&worker_key, "builder-session");
+        workspace.enable_test_dispatch_intercept();
+
+        handle_deliver_worker_prompt(
+            &workspace,
+            &SessionSlot::lead("TestOrg", "forge"),
+            &project,
+            "builder",
+            fixture_wrapped(),
+        );
+
+        let (source, text) = drain_the_prompt(&workspace);
+        assert_eq!(
+            source,
+            PromptSource::Peer,
+            "a worker-to-worker peer envelope is recorded with the peer source",
+        );
+        assert!(text.contains("[Message id="), "the dispatched text is the peer envelope: {text}");
+    }
+
+    /// The same for the worker-to-lead path: the lead's queued row must
+    /// read the peer source too, since the envelope is a peer message.
+    #[tokio::test]
+    async fn deliver_to_the_lead_records_the_peer_source() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        // The handler drops a lead that is not pooled, and a connected
+        // domain keeps the delivery a dispatch rather than a park.
+        workspace.seed_test_running_session_id(&lead, "lead-session");
+        workspace.mark_session_connected_for_test(&lead, "lead-session");
+        workspace.enable_test_dispatch_intercept();
+
+        handle_deliver_worker_prompt_to_lead(
+            &workspace,
+            &SessionSlot::worker("TestOrg", "forge", "builder"),
+            &lead,
+            fixture_wrapped(),
+        );
+
+        let (source, text) = drain_the_prompt(&workspace);
+        assert_eq!(
+            source,
+            PromptSource::Peer,
+            "a worker-to-lead peer envelope is recorded with the peer source",
+        );
+        assert!(text.contains("[Message id="), "the dispatched text is the peer envelope: {text}");
     }
 
     /// `handle_deliver_worker_prompt` for a worker carrying
