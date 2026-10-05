@@ -75,6 +75,8 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportStat
 async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
     let greeting = ServerMessage::Greeting {
         version: PROTOCOL_VERSION,
+        forge_version: crate::FORGE_VERSION.to_owned(),
+        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
         settings: ClientSettings::new(&state.config, state.surface.dictate_axes()),
     };
     let Ok(text) = serde_json::to_string(&greeting) else {

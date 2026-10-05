@@ -176,6 +176,8 @@
     },
     "Greeting": {
       "": [
+        "forge_version",
+        "forge_version_short",
         "kind",
         "settings",
         "version"

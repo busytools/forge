@@ -95,6 +95,18 @@
   .door[data-state="connecting"] .say { color: var(--muted); }
   .say code { font-family: var(--mono); color: var(--text); }
 
+  /* The failure block's shape with the alarm taken out: a forge one step
+     back is being READ, so the rail stays `--line` and the sentence is
+     `--muted` rather than `--bad`. It sits above the address, because it is
+     about the forge the door is already holding rather than the attempt. */
+  .note {
+    border: 1px solid var(--line); border-left: 3px solid var(--line);
+    border-radius: var(--r); background: var(--s1);
+    padding: 10px 14px; margin-bottom: 22px;
+    color: var(--muted); font-size: var(--fs-data);
+  }
+  .note code { font-family: var(--mono); color: var(--text); }
+
   .act { margin-top: 26px; }
   .act button {
     background: var(--s2); border: 1px solid var(--line); border-radius: var(--r);
@@ -218,6 +230,23 @@
           </div>
           <p class="say">:::: is not an address. It wants a host and a port, like 127.0.0.1:8790.</p>
           <div class="act"><button type="button">Try again</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cat">
+      <h4>a forge one protocol behind <span class="why">the connection is live and the step back is read, so this is a notice rather than a failure: the failure block's shape with the alarm taken out, above the address it is about</span></h4>
+      <div class="stage">
+        <div class="door" data-state="idle">
+          <div class="note">
+            <p>this forge server speaks protocol 4; this client is v1.0.114 (protocol 5). In the forge checkout run <code>just install</code> and restart forge.</p>
+          </div>
+          <div class="addr">
+            <input type="text" value="127.0.0.1:8790" readonly>
+            <div class="rule"></div>
+          </div>
+          <p class="say">the port forge serves on by default</p>
+          <div class="act"><button type="button">Connect</button></div>
         </div>
       </div>
     </div>

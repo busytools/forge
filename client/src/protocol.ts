@@ -20,10 +20,122 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * The protocol this client speaks, which the greeting must agree with.
  *
  * Fixed rather than negotiated, because the server changes far more slowly
- * than a client's visuals do: either a client speaks this version or it does
- * not, and a mismatch fails plainly instead of silently.
+ * than a client's visuals do: either a client speaks a version or it does
+ * not, and a mismatch fails plainly instead of silently. What is tolerated
+ * below this one is `MIN_PROTOCOL`, and nothing above it is.
  */
 export const PROTOCOL_VERSION = 5;
+
+/**
+ * The oldest protocol this client reads.
+ *
+ * A step back is tolerated because the read is proven rather than because a
+ * skew is believed harmless: `wire/floor.test.ts` folds a committed
+ * protocol-4 payload through this client's own read path, so the floor is
+ * one where "it still reads" is checked rather than assumed. A bump keeps
+ * this where it is until the new step is covered the same way, which is why
+ * it is a literal rather than `PROTOCOL_VERSION - 1`.
+ */
+export const MIN_PROTOCOL = 4;
+
+/**
+ * The release this client was built from, baked in by the build.
+ *
+ * `client/src-tauri/Cargo.toml` is where `just release` sets it, and this
+ * is the only way the built app can know it: a bundle carries no manifest to
+ * read.
+ */
+export const CLIENT_VERSION = __FORGE_CLIENT_VERSION__;
+
+/** A greeting below this client's own protocol, and within the floor. */
+export interface Skew {
+  /** The protocol the greeting declared. */
+  serverProtocol: number;
+  /**
+   * The build the greeting named, or `null` when it named none.
+   *
+   * `null` is the case for a server one step back, which predates the
+   * greeting's own release fields; a server ahead of this client carries
+   * them.
+   */
+  serverVersion: string | null;
+}
+
+/** The release part of a build stamp, without the sha the build adds. */
+function releaseOf(version: string): string {
+  const [release] = version.split(/[+ ]/);
+  return release ?? version;
+}
+
+/** Whether this client reads a server speaking `version`. */
+export function readableProtocol(version: number): boolean {
+  return version >= MIN_PROTOCOL && version <= PROTOCOL_VERSION;
+}
+
+/** The greeting's skew: the build it named, and the protocol it speaks. */
+export function skewOf(greeting: Extract<ServerMessage, { kind: 'greeting' }>): Skew | null {
+  if (greeting.version === PROTOCOL_VERSION) return null;
+  return {
+    serverProtocol: greeting.version,
+    // Narrowed here rather than in the sentence, for the same reason
+    // `settingsFrom` narrows beside it: the greeting crosses as blind JSON,
+    // and a value that is not a string would reach the text as `v[object
+    // Object]` at the one moment the text matters.
+    serverVersion: releaseFrom(greeting.forge_version_short, greeting.forge_version),
+  };
+}
+
+/** The first of the two stamps that is a release, or `null` when neither is. */
+function releaseFrom(short: unknown, long: unknown): string | null {
+  for (const stamp of [short, long]) {
+    if (typeof stamp === 'string' && stamp !== '') return stamp;
+  }
+  return null;
+}
+
+/**
+ * One sentence for a protocol skew: what the wire carries, and the way out.
+ *
+ * Both refusal sites and every notice read from here, so the command and the
+ * halves that CAN be named cannot be named at one site and forgotten at
+ * another.
+ */
+export function skewMessage(skew: Skew): string {
+  const command = 'In the forge checkout run `just install` and restart forge.';
+  const mine = `this client is v${CLIENT_VERSION} (protocol ${PROTOCOL_VERSION})`;
+  // A server ahead of this client is the half this client cannot fix by
+  // rebuilding the server: the half to update is this one, and the command
+  // is the one that installs a client.
+  if (skew.serverProtocol > PROTOCOL_VERSION) {
+    const named =
+      skew.serverVersion === null || skew.serverVersion === '' ? null : skew.serverVersion;
+    const theirs =
+      named === null
+        ? `this forge server speaks protocol ${skew.serverProtocol}`
+        : `this forge server is v${named} (protocol ${skew.serverProtocol})`;
+    const command =
+      named === null
+        ? 'in the forge checkout run `just client-release <version>` with the release the server ' +
+          'reports, and restart the app.'
+        : `in the forge checkout run \`just client-release ${releaseOf(named)}\` and restart the app.`;
+    return `${theirs}; ${mine}. This client is the half that is behind: ${command}`;
+  }
+  if (skew.serverVersion === null || skew.serverVersion === '') {
+    return `this forge server speaks protocol ${skew.serverProtocol}; ${mine}. ${command}`;
+  }
+  if (releaseOf(skew.serverVersion) === releaseOf(CLIENT_VERSION)) {
+    const release = releaseOf(CLIENT_VERSION);
+    // "Reinstall both" is two commands, and this is the one branch where the
+    // release to hand the client's installer is known: both halves are it.
+    return (
+      `this forge server and this client are both v${release}, but they speak protocols ` +
+      `${skew.serverProtocol} and ${PROTOCOL_VERSION}: a mixed install of one build. Reinstall ` +
+      `both: in the forge checkout run \`just install\` and \`just client-release ${release}\`, ` +
+      'then restart.'
+    );
+  }
+  return `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol}); ${mine}. ${command}`;
+}
 
 /** What a client can watch, and the address a subscription is held under. */
 export type Subject = 'home' | { session: SessionSlot } | 'usage';
@@ -147,7 +259,19 @@ export type ClientMessage =
 
 /** What the server sends. */
 export type ServerMessage =
-  | { kind: 'greeting'; version: number; settings: ClientSettings }
+  | {
+      kind: 'greeting';
+      version: number;
+      /**
+       * The build the server is, in the greeting because that is the only
+       * channel both halves have before a client refuses anything. Absent
+       * from a server that predates the fields, which is every server a
+       * skew is against today.
+       */
+      forge_version?: string;
+      forge_version_short?: string;
+      settings: ClientSettings;
+    }
   | { kind: 'snapshot'; subject: Subject; data: unknown }
   | { kind: 'update'; update: SessionUpdate }
   /**

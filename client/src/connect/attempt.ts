@@ -8,7 +8,7 @@
  * cause is on the far side.
  */
 
-import { PROTOCOL_VERSION } from '../protocol';
+import { readableProtocol, skewMessage, skewOf, type Skew } from '../protocol';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_WEB_PORT, settingsFrom, type ClientSettings } from '../wire/types';
 import { rememberAddress } from './remembered';
@@ -172,7 +172,7 @@ export async function submitAttempt(
 function greeting(
   connection: Connection,
   handshakeMs: number,
-): Promise<{ settings: ClientSettings; version: number }> {
+): Promise<{ settings: ClientSettings; version: number; skew: Skew | null }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       stop();
@@ -182,7 +182,11 @@ function greeting(
       if (message.kind !== 'greeting') return;
       clearTimeout(timer);
       stop();
-      resolve({ settings: settingsFrom(message.settings), version: message.version });
+      resolve({
+        settings: settingsFrom(message.settings),
+        version: message.version,
+        skew: skewOf(message),
+      });
     });
   });
 }
@@ -203,17 +207,15 @@ export async function connectTo(
 
   const connection = connect(normalized.url);
   try {
-    const { settings, version } = await greeting(connection, handshakeMs);
-    // The protocol's only mismatch detector: the greeting carries the version
-    // the server speaks, and a client that draws against another one has no
-    // way to tell a field it does not know from a field that is not there.
-    if (version !== PROTOCOL_VERSION) {
+    const { settings, version, skew } = await greeting(connection, handshakeMs);
+    // The protocol's only mismatch detector, and the range is the client's
+    // own: one step back is read - the connection already carries the skew
+    // for whatever draws it - and anything outside the range is refused with
+    // the way out named. A `why` of two protocol numbers alone names no
+    // build and no way out.
+    if (skew !== null && !readableProtocol(version)) {
       connection.close();
-      return {
-        ok: false,
-        kind: 'version',
-        why: `${normalized.url} speaks protocol ${version}, and this client speaks ${PROTOCOL_VERSION}`,
-      };
+      return { ok: false, kind: 'version', why: skewMessage(skew) };
     }
     return { ok: true, address: input.trim(), settings, connection };
   } catch (error) {

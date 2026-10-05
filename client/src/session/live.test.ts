@@ -297,6 +297,7 @@ describe('the session page over a socket', () => {
         failure: null,
         connected: true,
         connection,
+        notice: null,
         onconnect: () => {},
       },
     });
@@ -651,6 +652,7 @@ function drivable(refused = false): Driveable {
     },
     store: () => undefined,
     settings: () => null,
+    skew: () => null,
     status: () => 'open',
     close: () => {},
     land: (message) => {

@@ -456,6 +456,8 @@ fn frames_record() -> Value {
     let samples = [
         ServerMessage::Greeting {
             version: PROTOCOL_VERSION,
+            forge_version: forge_server::FORGE_VERSION.to_owned(),
+            forge_version_short: forge_server::FORGE_VERSION_SHORT.to_owned(),
             settings: ClientSettings {
                 mark: None,
                 theme: None,
@@ -563,12 +565,15 @@ fn frames_record() -> Value {
         }),
     );
     // The greeting, because its settings gained the dictate axes a
-    // capturing client starts on: without a sample, the new key is as
-    // invisible to this record as it was before the record existed.
+    // capturing client starts on - and its own fields the release identity a
+    // skew names the other half by: without a sample, either is as invisible
+    // to this record as it was before the record existed.
     payload_sampled.insert(
         "Greeting".to_owned(),
         shape_of(&ServerMessage::Greeting {
             version: PROTOCOL_VERSION,
+            forge_version: forge_server::FORGE_VERSION.to_owned(),
+            forge_version_short: forge_server::FORGE_VERSION_SHORT.to_owned(),
             settings: ClientSettings {
                 mark: None,
                 theme: None,

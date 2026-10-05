@@ -109,11 +109,23 @@ the socket off refuses in silence, with nothing wrong at either end, and
 a generic "could not connect" sends the reader off to look at their
 network.
 
-**A forge that answers and speaks a protocol this client does not is a
-failure of its own**, with its own line. The connection was made, so the
+**A forge that answers and speaks a protocol this client does not read is
+a failure of its own**, with its own line. The connection was made, so the
 unreachable hint would send the reader to look at their network and their
-`forge.toml` for a problem that is neither; the only thing that fixes a
-mismatch is the two halves agreeing.
+`forge.toml` for a problem that is neither. The line is the skew sentence
+itself: the command that updates the stale half, this client's build, and
+the answering build where the greeting carried it - a server ahead carries
+it, and one a step back predates it.
+
+**A forge one protocol behind is read rather than refused, and the door
+says so.** The client tolerates one step back, so a connect to an older
+forge presses through to the home; and while `/connect` is up over a
+connection that is skewed - the reader went back to the door - it draws a
+one-line notice above the field naming what the wire carries: the command
+that updates the stale half and this client's build. It is a notice rather
+than a failure, so it takes the failure block's shape with the alarm taken
+out rather than the `--bad` rail: nothing has to be fixed for the page to
+keep working.
 
 ## What the first pass got wrong
 

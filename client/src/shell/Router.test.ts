@@ -32,6 +32,7 @@ function untouched(): Connection {
     onStatus: refuse,
     store: refuse,
     settings: refuse,
+    skew: refuse,
     status: refuse,
     close: refuse,
   };
@@ -56,6 +57,7 @@ function draw(): string {
       failure: null,
       connected: true,
       connection: untouched(),
+      notice: null,
       onconnect: () => {},
     },
   }).body;

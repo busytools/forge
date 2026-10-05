@@ -6,7 +6,7 @@
   import { boot } from '../connect/boot';
   import { rememberedAddress } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
-  import { subjectKey } from '../protocol';
+  import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { hrefFor, parseRoute, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchRemovals } from '../session/close';
   import type { Connection, ConnectionStatus } from '../socket';
@@ -32,6 +32,13 @@
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);
   let connectionStatus = $state<ConnectionStatus>('connecting');
+  /**
+   * What the live connection's greeting said this client's protocol does not
+   * agree with, or `null`. Set from the connection rather than from the
+   * attempt that took it, because a page left open across a forge upgrade
+   * meets the skew again on the reconnect.
+   */
+  let skew = $state<Skew | null>(null);
   let failure = $state<Extract<Attempt, { ok: false }> | null>(null);
   // A remembered address is a claim that something answered there once, so it
   // is tried before there is a page to draw - a door drawn over an attempt in
@@ -108,6 +115,7 @@
     const open = connection;
     if (open === null) return;
     connectionStatus = open.status();
+    skew = open.skew();
 
     const stopHome = watchHome(open).subscribe(($home) => {
       home = $home;
@@ -117,9 +125,16 @@
       connectionStatus = next;
       if (next !== 'open') settled = false;
     });
+    // A greeting lands after the socket opens and changes no status, so the
+    // status alone would never announce a skew - and a reconnect after a
+    // forge upgrade is exactly where one appears or clears.
+    const stopGreetings = open.onMessage((message) => {
+      if (message.kind === 'greeting') skew = open.skew();
+    });
     return () => {
       stopHome();
       stopStatus();
+      stopGreetings();
     };
   });
 
@@ -167,6 +182,27 @@
     connectionStatus === 'closed'
       ? `The connection to ${displayAddress(address)} was closed - showing the last read`
       : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+  );
+
+  /**
+   * The one line a protocol skew draws here, or `null` when this surface
+   * draws none.
+   *
+   * A REFUSED connection is drawn on every route: the connection stopped,
+   * and falling through to the reconnect line under it would claim a retry
+   * that nothing is making. The notice a tolerated skew draws stands down on
+   * the door, which draws its own copy in its own column rather than having
+   * a second identical strip stacked above it.
+   */
+  const skewLine = $derived(
+    skew === null || (connectionStatus !== 'mismatched' && route.name === 'connect')
+      ? null
+      : skewMessage(skew),
+  );
+
+  /** The notice the door draws for itself: a skew being read, never a refusal. */
+  const doorNotice = $derived(
+    skew === null || connectionStatus === 'mismatched' ? null : skewMessage(skew),
   );
 
   function go(next: Route) {
@@ -234,11 +270,10 @@
     <p class="opening">Opening {displayAddress(address)}...</p>
   </main>
 {:else}
-  {#if connectionStatus === 'mismatched'}
-    <p class="stale" role="alert">
-      That forge speaks a protocol this client does not. The two halves have to match, so one of
-      them needs updating.
-    </p>
+  {#if skewLine}
+    <!-- A refusal is an alert, because the connection stopped; a skew that
+         is being read is a status, because the page behind it is live. -->
+    <p class="stale" role={connectionStatus === 'mismatched' ? 'alert' : 'status'}>{skewLine}</p>
   {:else if stale}
     <!-- A live region rather than a landmark: the pages below each carry the
          page's own `main`, and a second one would be a second page. -->
@@ -252,6 +287,7 @@
     {home}
     {failure}
     {connection}
+    notice={doorNotice}
     connected={connection !== null}
     onconnect={connect}
   />

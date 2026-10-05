@@ -88,6 +88,15 @@
     text-transform: uppercase; flex: none;
   }
 
+  /* The shell's own line, above whatever page is drawn. A raised surface in
+     the theme's tokens rather than a wash of its own, and wide rather than
+     boxed: it is the frame speaking, not a card on the page. */
+  .shellline {
+    background: var(--s2); color: var(--text);
+    font-size: var(--fs-label); padding: 6px 12px; text-align: center;
+  }
+  .shellline code { font-family: var(--mono); color: var(--text); }
+
   .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
   .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
   .dot.off { background: var(--dim); }
@@ -700,6 +709,11 @@
         <span class="k">claude status</span>
         <span>Elevated error rates on the Messages API. Sessions may fail and retry.</span>
       </div>
+    </div>
+
+    <div class="cat">
+      <h4>a forge one protocol behind <span class="why">the shell's own line, above whatever page is drawn: the connection is live and a step back is read, so it names the command that updates the stale half rather than stopping</span></h4>
+      <p class="shellline">this forge server speaks protocol 4; this client is v1.0.114 (protocol 5). In the forge checkout run <code>just install</code> and restart forge.</p>
     </div>
 
     <div class="cat">

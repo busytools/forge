@@ -58,6 +58,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     onStatus: () => () => {},
     store: () => undefined,
     settings: () => null,
+    skew: () => null,
     status: () => 'open',
     close: () => {},
   };

@@ -754,6 +754,36 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
     );
 }
 
+/// The greeting names the build that sent it.
+///
+/// The greeting is the only channel both halves are guaranteed to have - a
+/// refused client never gets a snapshot - so the release identity has to
+/// cross here or a protocol skew can name nothing but a number at either
+/// end.
+#[tokio::test]
+async fn the_greeting_carries_the_builds_own_identity() {
+    let (url, _fleet) = a_server().await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text").to_owned();
+    let ServerMessage::Greeting { forge_version, forge_version_short, .. } =
+        serde_json::from_str(&text).expect("the greeting decodes")
+    else {
+        panic!("the first thing the server says is its greeting, not {text}")
+    };
+
+    assert_eq!(
+        forge_version,
+        forge_server::FORGE_VERSION,
+        "the greeting must name the build with the same stamp the header draws"
+    );
+    assert_eq!(
+        forge_version_short,
+        forge_server::FORGE_VERSION_SHORT,
+        "and the short stamp beside it, which is the one a tight line can carry"
+    );
+}
+
 /// One command the core handed a seat's stub, or `None` if it said nothing
 /// inside `ms`.
 ///

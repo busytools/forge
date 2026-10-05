@@ -2,7 +2,7 @@ import { type AddressInfo, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
-import { PROTOCOL_VERSION } from '../protocol';
+import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
 import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
 import {
   DEFAULT_ADDRESS,
@@ -14,7 +14,7 @@ import {
 } from './attempt';
 
 /** A forge that greets, which is all this file needs one to do. */
-async function stubServer(version = PROTOCOL_VERSION) {
+async function stubServer(version = PROTOCOL_VERSION, release: string | null = null) {
   const server = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
@@ -23,6 +23,7 @@ async function stubServer(version = PROTOCOL_VERSION) {
       JSON.stringify({
         kind: 'greeting',
         version,
+        ...(release === null ? {} : { forge_version: release, forge_version_short: release }),
         settings: { mark: null, theme: null, font: null },
       }),
     );
@@ -133,6 +134,9 @@ describe('one attempt', () => {
    * The greeting carries the protocol, the server fixes it, and it is the
    * only mismatch detector there is - so a client that read it and drew
    * anyway would draw against a shape it cannot know it understands.
+   *
+   * Above this client's own version is still a refusal: a shipped client
+   * cannot be retro-fitted, so that direction has nothing to do but say so.
    */
   it('refuses a forge speaking a protocol this client does not', async () => {
     const server = await stubServer(PROTOCOL_VERSION + 1);
@@ -142,6 +146,61 @@ describe('one attempt', () => {
     expect(answer.ok).toBe(false);
     expect(answer.ok === false && answer.kind).toBe('version');
     expect(answer.ok === false && answer.why).toContain(`protocol ${PROTOCOL_VERSION + 1}`);
+    // The ahead direction is this client's to fix: the command it names
+    // updates this half, and `just install` - which rebuilds the server, the
+    // half that is NOT stale - is not the one offered.
+    expect(answer.ok === false && answer.why).toContain('just client-release');
+    expect(answer.ok === false && answer.why).not.toContain('just install');
+  });
+
+  /**
+   * One step back connects: the client has a proven read for it, and a
+   * person whose server is a version behind keeps their connection.
+   */
+  it('carries a forge one step back, with the skew on the connection', async () => {
+    const server = await stubServer(MIN_PROTOCOL);
+    servers.push(server);
+
+    const answer = await connectTo(server.address);
+    expect(answer.ok).toBe(true);
+    expect(answer.ok && answer.connection.status()).toBe('open');
+    expect(answer.ok && answer.connection.skew()).toEqual({
+      serverProtocol: MIN_PROTOCOL,
+      serverVersion: null,
+    });
+  });
+
+  /**
+   * Below the floor the connection is refused, and the refusal names both
+   * halves and the command - the numbers alone are not something a person
+   * can act on.
+   */
+  it('refuses a forge below the floor, naming the halves and the command', async () => {
+    const server = await stubServer(MIN_PROTOCOL - 1);
+    servers.push(server);
+
+    const answer = await connectTo(server.address);
+    expect(answer.ok).toBe(false);
+    expect(answer.ok === false && answer.kind).toBe('version');
+    const why = answer.ok === false ? answer.why : '';
+    expect(why).toContain(`protocol ${MIN_PROTOCOL - 1}`);
+    expect(why).toContain(`protocol ${PROTOCOL_VERSION}`);
+    expect(why, 'the refusal named no way out').toContain('just install');
+  });
+
+  /**
+   * A server old enough to be below the floor predates the greeting's
+   * release fields, so the common refusal has no build to name - but a
+   * newer one does, and the refusal names it rather than a bare number.
+   */
+  it('names the release a refused greeting carried, when one crossed', async () => {
+    const server = await stubServer(PROTOCOL_VERSION + 1, '1.0.116+def5678');
+    servers.push(server);
+
+    const answer = await connectTo(server.address);
+    expect(answer.ok).toBe(false);
+    const why = answer.ok === false ? answer.why : '';
+    expect(why, 'the refusal named the build it was given').toContain('1.0.116+def5678');
   });
 
   /** A socket that opens and then says nothing is not one this client can draw. */
