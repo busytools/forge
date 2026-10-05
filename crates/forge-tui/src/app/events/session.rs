@@ -303,6 +303,18 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // borrow - the bump needs `&app.workspace` and the mut borrow
         // would conflict.
         bump_bucket_session_scope_epoch(app, session_key);
+        // The rate-limit explainer lands in the bucket's own chat buffer so a
+        // future switch shows it; built and measured here because the bucket
+        // borrow below is held across the append.
+        let rate_limit_notice = is_rate_limited.then(|| {
+            ChatMessage::new(
+                MessageRole::System(Some(SystemSeverity::Warning)),
+                vec![MessageBlock::Text(TextBlock::from_complete(RATE_LIMIT_FALLBACK_MESSAGE))],
+            )
+        });
+        let rate_limit_notice_bytes = rate_limit_notice
+            .as_ref()
+            .map_or(0, |notice| App::measure_message_bytes(&app.render_caches, notice));
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -331,17 +343,14 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         } else {
             SessionLifecycleState::Sleeping
         };
-        // Rate-limit fallback message in the bucket's own chat
-        // buffer so a future switch shows the explainer. Other
-        // failures stay quiet on a background bucket - the user
-        // didn't choose to look at this session and we don't want
-        // to clutter its history with unrelated errors.
-        if is_rate_limited {
-            session.messages.push(ChatMessage::new(
-                MessageRole::System(Some(SystemSeverity::Warning)),
-                vec![MessageBlock::Text(TextBlock::from_complete(RATE_LIMIT_FALLBACK_MESSAGE))],
-            ));
-            session.message_retained_bytes.push(0);
+        // Other failures stay quiet on a background bucket - the user didn't
+        // choose to look at this session and we don't want to clutter its
+        // history with unrelated errors.
+        if let Some(notice) = rate_limit_notice {
+            session.messages.push(notice);
+            session.message_retained_bytes.push(rate_limit_notice_bytes);
+            session.retained_history_bytes =
+                session.retained_history_bytes.saturating_add(rate_limit_notice_bytes);
         }
         // Capture the failure reason on the bucket for the launchpad
         // picker to surface beneath a failed project row. Cleared on
@@ -485,6 +494,9 @@ pub(super) fn handle_core_notice(
         NoticeSeverity::Error => MessageRole::System(None),
     };
     if app.active_session_key.as_ref() != Some(session_key) {
+        let notice =
+            ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(msg))]);
+        let bytes = App::measure_message_bytes(&app.render_caches, &notice);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -499,13 +511,11 @@ pub(super) fn handle_core_notice(
         // Background: append to the bucket's chat buffer (so a future
         // switch shows it). Skip retention enforcement / viewport
         // auto-scroll because the bucket isn't being rendered.
-        session
-            .messages
-            .push(ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(msg))]));
-        // Append a 0 to the parallel retained-bytes vec so the
-        // history-retention bookkeeping stays consistent next time
-        // the bucket runs through the active path.
-        session.message_retained_bytes.push(0);
+        session.messages.push(notice);
+        // This write bypasses the tracked append path, so the retained-bytes
+        // row and the running total are both carried here.
+        session.message_retained_bytes.push(bytes);
+        session.retained_history_bytes = session.retained_history_bytes.saturating_add(bytes);
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "core_notice_background",
@@ -1333,6 +1343,54 @@ mod teardown_clears_background_registry_tests {
         let bucket = app.sessions.get(&key).expect("bucket");
         assert!(bucket.background_tasks.is_empty(), "roster cleared on auth-required");
         assert!(bucket.session_task_tool_use_ids.is_empty(), "task-id mirror cleared too");
+    }
+}
+
+/// The two background writes below push straight into a bucket's buffer,
+/// bypassing the tracked append path. The over-cap check reads the running
+/// total those writes leave behind, so each has to carry it.
+#[cfg(test)]
+mod background_write_accounting_tests {
+    use super::{handle_connection_failed_event, handle_core_notice};
+    use crate::app::App;
+    use crate::app::session::UiSession;
+    use forge_workspace::{NoticeSeverity, SessionSlot};
+
+    /// A background bucket holding nothing yet.
+    fn seed_bucket(app: &mut App, name: &str) -> SessionSlot {
+        let key = SessionSlot::from_str_for_test(name);
+        app.sessions.insert(key.clone(), UiSession::new(key.clone(), "test-project"));
+        key
+    }
+
+    #[test]
+    fn a_rate_limit_explainer_moves_the_retained_total() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "rate-limited");
+
+        handle_connection_failed_event(&mut app, &key, "429 rate limit exceeded");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the explainer landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > 0,
+            "the direct write must move the bucket's retained-byte total",
+        );
+    }
+
+    #[test]
+    fn a_background_core_notice_moves_the_retained_total() {
+        let mut app = App::test_default();
+        let key = seed_bucket(&mut app, "noticed");
+
+        handle_core_notice(&mut app, &key, NoticeSeverity::Info, "effort set");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the notice landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > 0,
+            "the direct write must move the bucket's retained-byte total",
+        );
     }
 }
 

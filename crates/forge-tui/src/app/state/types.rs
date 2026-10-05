@@ -417,6 +417,9 @@ pub use forge_primitives::runtime::SessionTurnState;
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// The trim target, as a percent of the cap. A trim rebuilds the message vec,
+/// so it drops well under the cap rather than to it.
+pub const DEFAULT_HISTORY_RETENTION_LOW_WATER_PERCENT: usize = 75;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderCacheBudget {
     pub max_bytes: usize,

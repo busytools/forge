@@ -473,12 +473,17 @@ pub(crate) fn push_system_message_to_session(
         app.needs_redraw = true;
         return;
     }
+    let toast = ChatMessage::new(
+        MessageRole::System(severity),
+        vec![MessageBlock::Text(TextBlock::from_complete(message))],
+    );
+    let toast_bytes = App::measure_message_bytes(&app.render_caches, &toast);
     if let Some(session) = app.sessions.get_mut(key) {
-        session.messages.push(ChatMessage::new(
-            MessageRole::System(severity),
-            vec![MessageBlock::Text(TextBlock::from_complete(message))],
-        ));
-        session.message_retained_bytes.push(0);
+        session.messages.push(toast);
+        // This write bypasses the tracked append path, so the retained-bytes
+        // row and the running total are both carried here.
+        session.message_retained_bytes.push(toast_bytes);
+        session.retained_history_bytes = session.retained_history_bytes.saturating_add(toast_bytes);
         app.needs_redraw = true;
     } else {
         // No live bucket for this key (e.g. a review notice for a session
@@ -5987,6 +5992,28 @@ mod tests {
         assert!(
             !app.active_viewport_mut().expect("active session").auto_scroll,
             "no auto-scroll: the toast must not yank a scrolled-up reader",
+        );
+    }
+
+    /// A toast to a bucket that is not on screen writes straight into that
+    /// bucket's buffer, bypassing the tracked append path. The retained-byte
+    /// total is what the retention check reads, so the direct write has to
+    /// carry it rather than leave a zero row behind.
+    #[test]
+    fn background_toast_keeps_the_retention_total_live() {
+        let mut app = make_test_app();
+        let key = forge_workspace::SessionSlot::from_str_for_test("background-session");
+        app.sessions
+            .insert(key.clone(), crate::app::session::UiSession::new(key.clone(), "test-project"));
+        let before = app.sessions.get(&key).expect("bucket").retained_history_bytes;
+
+        push_system_message_to_session(&mut app, &key, Some(SystemSeverity::Info), "Worker closed");
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(bucket.messages.len(), 1, "the toast landed in that bucket");
+        assert!(
+            bucket.retained_history_bytes > before,
+            "the direct write must move the bucket's retained-byte total",
         );
     }
 

@@ -578,6 +578,22 @@ impl super::App {
         Self::remap_anchor_for_insert(preserved_anchor, insert_idx)
     }
 
+    /// Enforce only when the bucket is over its cap.
+    ///
+    /// The append path calls this per applied sdk message, and a trim
+    /// rebuilds the message vec, so the O(1) comparison is what keeps
+    /// steady-state appends from paying for one. A bucket whose protected set
+    /// alone exceeds the cap pays a scan per append with nothing droppable;
+    /// that set is small by construction.
+    pub(crate) fn enforce_history_retention_if_over_cap(&mut self) {
+        let Some(policy) = self.history_retention() else {
+            return;
+        };
+        if self.retained_history_bytes().is_some_and(|bytes| bytes > policy.max_bytes) {
+            self.enforce_history_retention_tracked();
+        }
+    }
+
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
         self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
@@ -589,12 +605,15 @@ impl super::App {
         stats.total_after_bytes = stats.total_before_bytes;
 
         if stats.total_before_bytes > max_bytes {
+            let trim_target = max_bytes
+                .saturating_mul(super::types::DEFAULT_HISTORY_RETENTION_LOW_WATER_PERCENT)
+                / 100;
             // The tail of a full scan was never consumed.
             let mut drop_indices = Vec::new();
             {
                 let messages = self.messages().unwrap_or_default();
                 for (msg_idx, msg) in messages.iter().enumerate() {
-                    if stats.total_after_bytes <= max_bytes {
+                    if stats.total_after_bytes <= trim_target {
                         break;
                     }
                     if Self::is_history_hidden_marker_message(msg)
@@ -1053,7 +1072,7 @@ mod tests {
         let mut app = make_test_app();
         *app.active_messages_mut().expect("active session") = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
-            user_text_message("drop me first"),
+            user_text_message(&format!("drop me first {}", "x".repeat(4_000))),
             user_text_message("keep this anchored"),
             user_text_message("tail"),
         ];
@@ -1072,11 +1091,11 @@ mod tests {
         app.active_viewport_mut().expect("active session").scroll_offset = 9;
         app.active_viewport_mut().expect("active session").scroll_target = 9;
         app.active_viewport_mut().expect("active session").scroll_pos = 9.0;
+        // The droppable holds most of the bucket's bytes and the cap is half
+        // of it, so one drop lands the total under the low-water mark and the
+        // trim stops before the message the reader is on.
         app.history_retention_mut().expect("active session").max_bytes =
-            app.measure_history_bytes().saturating_sub(App::measure_message_bytes(
-                &app.render_caches,
-                &app.messages().expect("active session")[1],
-            ));
+            app.measure_history_bytes() / 2;
 
         let _ = app.enforce_history_retention();
 
