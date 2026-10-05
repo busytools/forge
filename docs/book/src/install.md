@@ -152,7 +152,7 @@ shell picks it up.
 and the client's manifest to the same number, commits and tags them, then
 installs the server binary through this same script, builds and installs
 the client over `/Applications/forge.app`, and stages the Android release
-APK. The binary goes first, so a refusal later in the sequence - a client
+APK. The binary goes first, so a failure later in the sequence - a client
 running from the installed bundle, a missing Android keystore or
 toolchain - cannot leave it stale. The install replaces the on-disk
 binary; a running forge picks the new one up at its next restart. A
