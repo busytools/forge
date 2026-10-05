@@ -105,7 +105,11 @@ mod tests {
         let dropped = drop_past_cap(&mut messages);
 
         assert_eq!(dropped, CONVERSATION_SLACK, "the drop keeps the cap and reports the rest");
-        assert_eq!(messages.len(), CONVERSATION_CAP);
+        assert_eq!(
+            messages.len(),
+            CONVERSATION_CAP,
+            "and what it left is the cap's worth of messages",
+        );
         assert_eq!(
             said(&messages[0]),
             format!("frame {CONVERSATION_SLACK}"),
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(
             said(messages.last().expect("a newest")),
             format!("frame {}", CONVERSATION_CAP + CONVERSATION_SLACK - 1),
+            "and the newest is the frame the copy ended on",
         );
     }
 
@@ -126,7 +131,7 @@ mod tests {
 
         drop_past_cap(&mut messages);
 
-        assert_eq!(messages.len(), CONVERSATION_CAP);
+        assert_eq!(messages.len(), CONVERSATION_CAP, "the drop still keeps the cap");
         assert!(
             messages.capacity() <= CONVERSATION_CAP + CONVERSATION_SLACK,
             "the store it left is the window's rather than the history's: capacity for {} \
@@ -162,11 +167,16 @@ mod tests {
 
         let long: Vec<Message> = (0..CONVERSATION_CAP * 2).map(a_frame).collect();
         let kept = tail_of(&long);
-        assert_eq!(kept.len(), CONVERSATION_CAP);
-        assert_eq!(said(&kept[0]), format!("frame {CONVERSATION_CAP}"), "the newest window");
+        assert_eq!(kept.len(), CONVERSATION_CAP, "an over-long history is taken as a window");
+        assert_eq!(
+            said(&kept[0]),
+            format!("frame {CONVERSATION_CAP}"),
+            "and the window is the newest one",
+        );
         assert_eq!(
             said(kept.last().expect("a newest")),
-            format!("frame {}", CONVERSATION_CAP * 2 - 1)
+            format!("frame {}", CONVERSATION_CAP * 2 - 1),
+            "ending on the history's own last frame",
         );
     }
 }
