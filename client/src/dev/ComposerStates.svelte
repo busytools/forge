@@ -15,6 +15,7 @@
    * deferred import, so neither it nor its specimens reach the shipped bundle.
    */
   import Composer from '../composer/Composer.svelte';
+  import Queue from '../chat/Queue.svelte';
   import Driven from './Driven.svelte';
   import type {
     ComposerConnection,
@@ -22,6 +23,9 @@
     ComposerRecord,
     SeatRead,
   } from '../composer/view';
+  // The Queue specimen's own prop is the socket-shaped one, and the stand-in
+  // above is the composer's narrower view of it.
+  import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -422,6 +426,18 @@
       props: { seat: seat({ pendingDepth: 3 }), record: { ...blank(), pending_ask: permission } },
     },
   ];
+
+  /**
+   * The prompts waiting in the CLI's queue, in the pile's own specimen.
+   *
+   * **The words fill their line or the card is broken**: this is what a
+   * real-engine measurement and the eye read for #1705, and the mockup's own
+   * copy is kept so the two can be set side by side.
+   */
+  const pile = [
+    { uuid: 'q1', source: 'you', text: 'fix the flaky retry test before the gate' },
+    { uuid: 'q2', source: 'cron', text: 'nightly sweep: re-run the bench suite' },
+  ];
 </script>
 
 <div class="states">
@@ -437,6 +453,14 @@
       {/if}
     </section>
   {/each}
+  <section>
+    <h3>queue · two waiting, the newest in front</h3>
+    <div class="comp">
+      <div class="composer">
+        <Queue rows={pile} ended={null} slot={SLOT} connection={idle as unknown as Connection} />
+      </div>
+    </div>
+  </section>
 </div>
 
 <style>

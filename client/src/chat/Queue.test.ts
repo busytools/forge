@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import axe from 'axe-core';
+import { JSDOM } from 'jsdom';
 import { flushSync, mount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Connection } from '../socket';
-import type { QueuedPromptRow } from '../session/wire';
+import type { QueueEnding, QueuedPromptRow } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import Queue from './Queue.svelte';
 import { faceAt, walk } from './queue';
@@ -53,8 +56,15 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function draw(held: QueuedPromptRow[], connection: Connection): void {
-  const app = mount(Queue, { target: host, props: { rows: held, slot: SLOT, connection } });
+function draw(
+  held: QueuedPromptRow[],
+  connection: Connection,
+  ended: QueueEnding | null = null,
+): void {
+  const app = mount(Queue, {
+    target: host,
+    props: { rows: held, ended, slot: SLOT, connection },
+  });
   flushSync();
   // The unmount rides the afterEach that empties the host.
   void app;
@@ -130,27 +140,28 @@ describe('the queue pile', () => {
 
     key(pile(), 'ArrowUp');
     expect(
-      pile().querySelector('.row.cur')?.getAttribute('id'),
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
       'the first up walks to the newest row',
     ).toBe('u1');
 
     key(pile(), 'ArrowUp');
-    expect(pile().querySelector('.row.cur')?.getAttribute('id'), 'the second walks older').toBe(
+    expect(pile().querySelector('.qcard.cur')?.getAttribute('id'), 'the second walks older').toBe(
       'u0',
     );
 
     key(pile(), 'ArrowUp');
     expect(
-      pile().querySelector('.row.cur')?.getAttribute('id'),
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
       'up stops on the first queued prompt',
     ).toBe('u0');
 
     key(pile(), 'ArrowDown');
-    expect(pile().querySelector('.row.cur')?.getAttribute('id'), 'down returns to the newest').toBe(
-      'u1',
-    );
+    expect(
+      pile().querySelector('.qcard.cur')?.getAttribute('id'),
+      'down returns to the newest',
+    ).toBe('u1');
     key(pile(), 'ArrowDown');
-    expect(pile().querySelector('.row.cur'), 'down past the newest lands in the box').toBeNull();
+    expect(pile().querySelector('.qcard.cur'), 'down past the newest lands in the box').toBeNull();
   });
 
   it('walks the face: its words, its place in the pile, and the cancel it offers', () => {
@@ -158,14 +169,14 @@ describe('the queue pile', () => {
     draw(rows('one', 'two', 'three'), connection);
 
     key(pile(), 'ArrowUp');
-    const face = pile().querySelector('.row.cur');
+    const face = pile().querySelector('.qcard.cur');
     expect(face?.querySelector('.w')?.textContent, 'the face is the walked row').toBe('three');
     expect(face?.querySelector('.pos')?.textContent, 'and says where that row sits').toBe('#3 / 3');
 
     key(pile(), 'ArrowUp');
     // The runner spells its rows' sources, so the second row's own label is
     // what the control should name.
-    const control = host.querySelector<HTMLButtonElement>('.head .del');
+    const control = host.querySelector<HTMLButtonElement>('.qcount .del');
     expect(control?.textContent?.trim(), 'the head offers to cancel the walked source').toBe(
       'cancel you',
     );
@@ -184,7 +195,7 @@ describe('the queue pile', () => {
 
     expect(sent).toEqual([{ command: { cancel_queued_prompt: { key: SLOT, uuid: 'u0' } } }]);
     expect(
-      pile().querySelectorAll('.row'),
+      pile().querySelectorAll('.qcard'),
       'the row leaves when the core says so, not when the key does',
     ).toHaveLength(1);
   });
@@ -193,10 +204,10 @@ describe('the queue pile', () => {
     const { connection } = recording();
     draw(rows('one', 'two', 'three', 'four'), connection);
 
-    const stack = host.querySelector<HTMLElement>('.rows');
+    const stack = host.querySelector<HTMLElement>('.qstack');
     expect(stack?.style.height, 'the face plus one step per older prompt').toBe(`${64 + 3 * 6}px`);
 
-    const drawn = host.querySelectorAll<HTMLElement>('.row');
+    const drawn = host.querySelectorAll<HTMLElement>('.qcard');
     expect(drawn[3]?.style.transform, 'the newest sits at the foot').toBe('translateY(0px)');
     expect(drawn[0]?.style.transform, 'the oldest is three steps above it').toBe(
       'translateY(-18px)',
@@ -284,5 +295,103 @@ describe('the walk and the box in one composer', () => {
     harness.page.rows = [];
     flushSync();
     expect(document.activeElement, 'the pile going takes nothing with it').toBe(harness.box());
+  });
+});
+
+/**
+ * The pile's vocabulary is its own.
+ *
+ * **A namespace, not a preference.** The sheet carries bare `.row` (the home
+ * list's own grid: `display: grid; grid-template-columns: var(--cols)`) and
+ * bare `.hint` (the composer's), and a card that shared a name let a rule it
+ * never declared - `display` - shrink its word line to a single character:
+ * measured in the real engine against Ved's screenshot, `.w` drew 13px inside
+ * a 498px card (#1705). The mock keeps the same namespaced set (`.qcard`,
+ * `.qcount`, `.qstack`, `web-queue.html`), and this is the guard that the
+ * sheet never grows a rule over one of them again.
+ *
+ * **The one shared name is `.ic`, on purpose**: `Icon.svelte` applies it to
+ * every icon the app draws, the cancel control's included. Every other name
+ * the sheet could reach the pile by, the pile must not carry.
+ */
+describe("the pile's own vocabulary", () => {
+  /** The sheet's icon name, which `Icon.svelte` gives every icon there is. */
+  const SHARED = new Set(['ic']);
+
+  it('keeps every named rule off the pile, in the walked state too', () => {
+    // The walked state is the one carrying the cancel control and its icon,
+    // and the ended line belongs to the same check: guarding only the states
+    // the app draws for a frame is how a live reach passed this test.
+    draw(rows('one', 'two'), recording().connection, { text: 'gone', state: 'discarded' });
+    key(pile(), 'ArrowUp');
+
+    // Inside the composer, where the page mounts the pile: a rule anchored on
+    // an ancestor the snapshot omits would pass a flatter tree.
+    // From the suite's own root, which the runner sets to the client: jsdom
+    // rewrites `import.meta.url` to a non-file URL, so the sheet has no file
+    // URL to be read by, and vitest hands a css `?raw` import back empty.
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    const dom = new JSDOM(`<style>${sheet}</style><div class="composer">${host.innerHTML}</div>`);
+    const styles = dom.window.document.styleSheets[0];
+    if (styles === undefined) throw new Error('the sheet did not parse');
+
+    const reached: string[] = [];
+    const check = (selectorText: string): void => {
+      for (const part of selectorText.split(',')) {
+        const selector = part.trim();
+        // An element-only selector is the sheet's touch and type rules, not a
+        // name the pile carries by accident - and it is where the reset and
+        // its `*::before` companions sit, so they leave by the same door.
+        if (!selector.includes('.') && !selector.includes('#') && !selector.includes('[')) {
+          continue;
+        }
+        const names = selector.match(/\.[A-Za-z0-9_-]+/g) ?? [];
+        if (names.length > 0 && names.every((name) => SHARED.has(name.slice(1)))) continue;
+        for (const element of dom.window.document.querySelectorAll('.pile, .pile *')) {
+          try {
+            if (element.matches(selector)) {
+              reached.push(
+                `${selector} reaches ${element.getAttribute('class') ?? element.tagName}`,
+              );
+            }
+          } catch {
+            // A selector this reader cannot place is not evidence of a reach.
+          }
+        }
+      }
+    };
+    // Counted at the walk, not read from the sheet: the sheet's own nested-rule
+    // count stays greater than zero even when the descent below is removed, so
+    // a denominator read off the sheet cannot die.
+    let nested = 0;
+    const visit = (rules: CSSRuleList, depth: number): void => {
+      for (const rule of rules) {
+        if (depth > 0) nested += 1;
+        if ('selectorText' in rule) check((rule as CSSStyleRule).selectorText);
+        const inner = 'cssRules' in rule ? (rule as CSSGroupingRule).cssRules : undefined;
+        if (inner !== undefined && inner.length > 0) visit(inner, depth + 1);
+      }
+    };
+    visit(styles.cssRules, 0);
+
+    // Coverage assertions for the ways this check went blind: the snapshot
+    // must hold the walked icon the check exists for, the pile must sit in
+    // the composer an anchored rule could otherwise hide behind, the ended
+    // line belongs to the drawn states, and the walk must have entered the
+    // at-rule bodies a bare `.row` already hides in.
+    expect(
+      dom.window.document.querySelector('.qcount .del .ic'),
+      'the walked cancel icon is the case this check reads',
+    ).not.toBeNull();
+    expect(
+      dom.window.document.querySelector('.composer .pile'),
+      'the check must read the pile inside its composer',
+    ).not.toBeNull();
+    expect(
+      dom.window.document.querySelector('.pile .ended'),
+      'the ended line is one of the states this check reads',
+    ).not.toBeNull();
+    expect(nested, "the walk read the sheet's at-rule bodies").toBeGreaterThan(0);
+    expect(reached, 'the sheet must not reach into the pile').toEqual([]);
   });
 });
