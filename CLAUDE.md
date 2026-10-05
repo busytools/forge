@@ -1018,9 +1018,20 @@ them:
 ## Releases
 
 `just release <version>` bumps the workspace version and the client's own
-manifest to the same number, commits and tags them together, then builds
-the client and installs it over `/Applications/forge.app`. One number and
-one tag name both halves. The client bundle is the app alone
+manifest to the same number, commits and tags them together, then installs
+the server binary first, through `install` (the same `scripts/install.sh`
+`just install` runs), and the client over `/Applications/forge.app`. One
+number and one tag name both halves.
+
+The server install goes first, so the client's refusal - the one that
+names `just client-release` as its recovery - cannot leave the binary
+behind. It is unconditional and fails rather than skipping: an install
+that cannot complete aborts the recipe with the tag cut and no OK line,
+and each half re-runs alone (`just install`, `just client-release
+<version>`, `just client-android-release <version>`), while a fresh
+`just release` refuses on the existing tag.
+
+The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
 opens, and a client running from the installed bundle is a refusal rather
 than a replace: replacing a live bundle underneath itself is the one way
