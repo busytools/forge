@@ -1363,19 +1363,23 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 /* The card narrows with the box: one reading leaves at a time from the left -
    clock, graph, ready tally, frames, bytes, pace - and the dot, the way out
    and the state's colour are what remain. Items are removed, never reordered.
-   Each step is the measured fit point in the real engine, against the
-   container's own measure (the box's content width), with the widest digits a
-   take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
+   Each step is one below the measured fit point in the real engine, against
+   the container's own measure (the box's content width), with the widest digits
+   a take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
    every reading, 457 without the clock, 331 without the graph, 267 without the
-   tally, 196 without the frames, 124 without the bytes, and 57 alone with the
-   state and the way out. The transcribing card is narrower at every step
-   (366/317/184/128/57), so one ladder holds for both. */
-@container (max-width: 495px) { .tc .clock { display: none; } }
-@container (max-width: 454px) { .tc .bars, .tc .ticks, .tc .bar { display: none; } }
-@container (max-width: 328px) { .tc .ready, .tc .count { display: none; } }
-@container (max-width: 262px) { .tc .fr { display: none; } }
-@container (max-width: 198px) { .tc .kb { display: none; } }
-@container (max-width: 127px) { .tc .pace { display: none; } }
+   tally, 196 without the frames, 124 without the bytes, and alone with the
+   state and the way out at 52.5px recording (dot + way out) or 56.5px
+   transcribing (spinner + way out). The transcribing card is narrower at every
+   step (366/317/184/128/57), so one ladder holds for both. Below the last
+   floor the pill shrinks into its own chrome and clips its readings; that is a
+   box under ~51px, narrower than the pill's 22px of padding and border, which
+   nothing draws at. */
+@container (max-width: 505px) { .tc .clock { display: none; } }
+@container (max-width: 456px) { .tc .bars, .tc .ticks, .tc .bar { display: none; } }
+@container (max-width: 330px) { .tc .ready, .tc .count { display: none; } }
+@container (max-width: 266px) { .tc .fr { display: none; } }
+@container (max-width: 195px) { .tc .kb { display: none; } }
+@container (max-width: 124px) { .tc .pace { display: none; } }
 /* The way out keeps a finger's target wherever the card ends up, and the target
    is drawn rather than laid out: a 44px box centred on the glyph, so the pill's
    width does not change with the pointer and the ladder's steps hold for both. */
