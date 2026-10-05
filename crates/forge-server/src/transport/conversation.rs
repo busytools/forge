@@ -1279,7 +1279,10 @@ mod tests {
         });
 
         // Frames until the appends spend the slack and a second drop runs.
-        for at in 0..=CONVERSATION_SLACK {
+        // A couple past the slack, because the seed's own drop is measured to
+        // the turn it lands on and so can leave the held list a frame or two
+        // further under the cap.
+        for at in 0..=CONVERSATION_SLACK + 2 {
             held.lock().append(a_frame(&format!("later {at}")));
         }
         assert!(

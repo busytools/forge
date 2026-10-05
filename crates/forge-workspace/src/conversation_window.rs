@@ -10,6 +10,11 @@
 //! One definition rather than two, because one copy is the other's source: a
 //! replay kept shorter than the window its reader holds is a page that cannot
 //! reach the cap it was sized for, and the two would drift apart silently.
+//!
+//! **And both cuts land on a turn's first frame.** A window starting part-way
+//! through a turn serves its first turn with the head missing, so what the cap
+//! sheds is counted to a frame a turn opens at - one cut, shared by both entry
+//! points, and [`crate::conversation_turns`] is where a turn opens.
 
 use forge_primitives::Message;
 
@@ -42,7 +47,7 @@ const _: () = assert!(
 /// conversation.
 pub const CONVERSATION_SLACK: usize = 1_000;
 
-/// Drop the oldest messages until `messages` is back to the cap, and report
+/// Drop the oldest messages until the copy is back inside the cap, and report
 /// how many went.
 ///
 /// **A fresh allocation rather than a `drain`**, because a `Vec` keeps the
@@ -50,17 +55,17 @@ pub const CONVERSATION_SLACK: usize = 1_000;
 /// backing store of a conversation it no longer has, and a drain would leave
 /// it holding all of it with a window's worth of messages in front.
 pub fn drop_past_cap(messages: &mut Vec<Message>) -> usize {
-    let excess = messages.len().saturating_sub(CONVERSATION_CAP);
-    if excess == 0 {
+    let front = front_of(messages);
+    if front == 0 {
         return 0;
     }
     let taken = std::mem::take(messages);
     // Sized for the slack as well, so the frames that refill it do not double
     // the store on the way back up.
     let mut kept: Vec<Message> = Vec::with_capacity(CONVERSATION_CAP + CONVERSATION_SLACK);
-    kept.extend(taken.into_iter().skip(excess));
+    kept.extend(taken.into_iter().skip(front));
     *messages = kept;
-    excess
+    front
 }
 
 /// The newest window of `history`, as a copy to keep or hand over.
@@ -73,8 +78,48 @@ pub fn tail_of(history: &[Message]) -> Vec<Message> {
     // Sized for the slack as well, so the frames that refill it do not double
     // the store on the way back up.
     let mut kept: Vec<Message> = Vec::with_capacity(CONVERSATION_CAP + CONVERSATION_SLACK);
-    kept.extend(history[history.len().saturating_sub(CONVERSATION_CAP)..].iter().cloned());
+    kept.extend(history[front_of(history)..].iter().cloned());
     kept
+}
+
+/// Where the window's front moves to in `messages`: the first frame of the
+/// oldest turn it keeps.
+///
+/// **The window ends at the end of a turn, so its front is a turn's first
+/// frame.** `line` is where a count-based cut would land - `len` less the cap -
+/// and the front is the first turn open at or above it, which keeps the window
+/// whole turns and can come in slightly under the cap.
+///
+/// **A turn crossing the line rides into the slack.** The newest turn holds
+/// the newest frames, so a window cannot drop it: when it alone is longer than
+/// the cap, the window keeps it whole up to the cap's slack rather than cutting
+/// inside it - and only when that single turn alone would push the window past
+/// the slack is the cut made inside it, the one case with no whole turn to land
+/// on. [`crate::conversation_turns`] answers where the turns open, and the walk
+/// stops at the first one at or above the line.
+fn front_of(messages: &[Message]) -> usize {
+    let line = messages.len().saturating_sub(CONVERSATION_CAP);
+    if line == 0 {
+        return 0;
+    }
+    let mut scan = crate::conversation_turns::TurnScan::default();
+    let mut newest = None;
+    for (at, message) in messages.iter().enumerate() {
+        if scan.opens(message) {
+            if at >= line {
+                return at;
+            }
+            newest = Some(at);
+        }
+    }
+    match newest {
+        Some(at) if messages.len() - at <= CONVERSATION_CAP + CONVERSATION_SLACK => at,
+        // No turn opens at or above the line and none below it can be kept
+        // whole within the slack - the newest turn alone is longer than the
+        // window may be, or the conversation opens no turn at all. Cutting
+        // inside it is the only option left.
+        _ => line,
+    }
 }
 
 #[cfg(test)]
@@ -82,9 +127,14 @@ mod tests {
     use super::*;
 
     fn a_frame(at: usize) -> Message {
+        a_said(&format!("frame {at}"))
+    }
+
+    /// A user row carrying `text`.
+    fn a_said(text: &str) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "user",
-            "message": {"role": "user", "content": format!("frame {at}")},
+            "message": {"role": "user", "content": text},
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         }))
         .expect("a user frame")
@@ -102,6 +152,153 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// A frame inside a turn: a result answering the turn's own call, which
+    /// the fold draws no turn of its own from.
+    fn a_work_frame(at: usize, within: usize) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": format!("tu{at}-{within}"),
+                    "content": "ok",
+                }],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a user frame")
+    }
+
+    /// `turns` turns of `frames_each` frames: the user row that opens one,
+    /// then frames that belong to it and open none of their own.
+    fn a_history_of(turns: usize, frames_each: usize) -> Vec<Message> {
+        let mut messages = Vec::with_capacity(turns * frames_each);
+        for at in 0..turns {
+            messages.push(a_said(&format!("turn {at}")));
+            for within in 1..frames_each {
+                messages.push(a_work_frame(at, within));
+            }
+        }
+        messages
+    }
+
+    fn opens_a_turn(message: &Message) -> bool {
+        crate::conversation_turns::TurnScan::default().opens(message)
+    }
+
+    /// **The window's front is a turn's first frame.** The frame the cap's own
+    /// count would land on is inside a turn, so the drop walks up to the next
+    /// turn and the window comes in under the cap.
+    #[test]
+    fn the_drop_lands_on_the_first_turn_at_or_above_the_line() {
+        let mut messages = a_history_of(1_666, 3);
+        messages.extend((0..2).map(|within| a_work_frame(9_999, within)));
+        assert_eq!(
+            messages.len(),
+            CONVERSATION_CAP + CONVERSATION_SLACK,
+            "precondition: the list is at the slack's edge, where an append drops",
+        );
+
+        let dropped = drop_past_cap(&mut messages);
+
+        assert_eq!(
+            dropped, 1_002,
+            "the drop passes the count it had to shed to land on a turn's first frame",
+        );
+        assert_eq!(
+            messages.len(),
+            3_998,
+            "and the window it leaves is whole turns at or under the cap",
+        );
+        assert!(messages.len() <= CONVERSATION_CAP, "never over the cap");
+        assert_eq!(
+            said(&messages[0]),
+            "turn 334",
+            "the oldest kept opens the window's oldest turn"
+        );
+        assert!(
+            opens_a_turn(&messages[0]),
+            "the frame the window starts on opens a turn, not the one the count landed in",
+        );
+    }
+
+    /// A single turn crossing the line rides into the slack: the newest turn
+    /// holds the newest frames and cannot be dropped, so a window that would
+    /// cut inside it keeps it whole up toward the cap's slack instead.
+    #[test]
+    fn a_turn_crossing_the_line_rides_into_the_slack() {
+        let mut messages = a_history_of(125, 4);
+        messages.extend(a_history_of(1, 4_501));
+        assert_eq!(messages.len(), 5_001, "precondition: one turn alone reaches over the cap");
+
+        let dropped = drop_past_cap(&mut messages);
+
+        assert_eq!(dropped, 500, "the crossing turn is kept whole");
+        assert_eq!(
+            messages.len(),
+            4_501,
+            "so the window rides over the cap rather than being cut inside the turn",
+        );
+        assert!(messages.len() <= CONVERSATION_CAP + CONVERSATION_SLACK, "and stays in the slack");
+        assert_eq!(said(&messages[0]), "turn 0", "the window is that one turn");
+    }
+
+    /// **And a turn larger than the slack is cut inside, which is the one case
+    /// with no whole turn to land on.** Keeping it would push the window past
+    /// the slack the cap bounds it by; the newest turn alone is longer than
+    /// that, so the cut is made inside it.
+    #[test]
+    fn a_turn_larger_than_the_slack_is_cut_inside() {
+        let mut messages = a_history_of(125, 4);
+        messages.extend(a_history_of(1, 5_500));
+        assert_eq!(messages.len(), 6_000, "precondition: one turn is longer than the cap's slack");
+
+        let dropped = drop_past_cap(&mut messages);
+
+        assert_eq!(dropped, 2_000, "the cut is the count the cap holds");
+        assert_eq!(messages.len(), CONVERSATION_CAP, "and the window comes out at the cap");
+        assert!(
+            !opens_a_turn(&messages[0]),
+            "inside the turn, which is the only option when a single turn alone exceeds the slack",
+        );
+    }
+
+    /// A frame the fold draws as something other than a turn never takes the
+    /// cut: the window would start with a notice that opens nothing, and the
+    /// turn behind it would draw with its head missing.
+    #[test]
+    fn a_frame_that_opens_no_turn_is_never_the_cut() {
+        let mut messages = a_history_of(333, 3);
+        // The run of deliveries the line lands in. Each draws as a notice -
+        // and a queued prompt, which the fold opens a turn for unless a
+        // question card takes it, is left alone too.
+        messages
+            .extend((0..4).map(|at| a_said(&format!("[Gotify - app 'x', priority 1]\n\n{at}"))));
+        messages.push(
+            serde_json::from_value(serde_json::json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "queued_command", "prompt": "and this one"}],
+                },
+                "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            }))
+            .expect("a user frame"),
+        );
+        messages.extend(a_history_of(1_332, 3));
+        assert_eq!(
+            messages.len(),
+            CONVERSATION_CAP + CONVERSATION_SLACK,
+            "precondition: the line lands inside the run of frames that open no turn",
+        );
+
+        let dropped = drop_past_cap(&mut messages);
+
+        assert_eq!(dropped, 1_004, "the cut passes every frame that opens no turn");
+        assert!(opens_a_turn(&messages[0]), "and the window starts on a turn's own first frame");
     }
 
     /// The cap keeps the newest and reports what it dropped.
