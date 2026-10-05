@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import Call from './Call.svelte';
 import type { ToolLeaf } from './leaves';
+import { subagents } from './subagents.svelte';
+import type { SubagentCard } from '../session/wire';
 
 /** A backgrounded call that has ended, as the fold hands it to the row. */
 const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
@@ -231,5 +233,77 @@ describe('the row one call draws', () => {
     expect(drawn, 'the block draws').toContain('class="dec"');
     expect(drawn, 'with the answer as its number').toContain('0.93');
     expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
+  });
+});
+
+describe('the dispatch row, joined to its instance', () => {
+  /**
+   * A `Task` dispatch, as the fold hands it to the row: the call itself is
+   * COMPLETED - the CLI's launch-ack answered it in a second - while the
+   * instance it opened runs on for minutes.
+   */
+  const dispatch = (): ToolLeaf => ({
+    id: 'toolu_task',
+    row: { kind: 'family', family: 'tool' },
+    name: 'Task',
+    title: 'review the fold',
+    command: null,
+    status: 'completed',
+    note: null,
+    body: [{ kind: 'text', text: 'Async agent launched successfully.' }],
+    mutation: null,
+    decision: null,
+    skill: null,
+    image: null,
+    imageNote: null,
+  });
+
+  const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
+    name: 'review the fold',
+    dispatch_id: 'toolu_task',
+    agent_type: 'code-reviewer',
+    running: true,
+    failed: false,
+    backgrounded: false,
+    ended_at: null,
+    calls: 3,
+    tail: [],
+    usage: { total_tokens: 12_000, tool_uses: 3, duration_ms: 184_000 },
+    ...over,
+  });
+
+  it('draws the instance running while the settled call would have said done', () => {
+    subagents.sync([card({ backgrounded: true })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the loader is the liveness of the instance, not the call').toContain(
+      '<span class="ring"></span>',
+    );
+    expect(drawn, 'the agent type rides the row').toContain('code-reviewer');
+    expect(drawn, 'and the background chip does').toContain('>background<');
+    expect(drawn, 'no figures while it runs').not.toContain('sg-fig');
+
+    subagents.sync(null);
+  });
+
+  it('draws the figures once the instance settles', () => {
+    subagents.sync([card({ running: false })]);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'the settled figures').toContain('3 calls \u{b7} 12.0k tokens \u{b7} 3m 04s');
+    expect(drawn).not.toContain('<span class="ring"></span>');
+
+    subagents.sync(null);
+  });
+
+  it('leaves a call that opened no instance exactly as it was', () => {
+    // No card in the store: a plain call row, whose liveness is its own
+    // status - which is what a pre-resume dispatch draws.
+    subagents.sync(null);
+    const drawn = render(Call, { props: { call: dispatch(), k: 'task' } }).body;
+
+    expect(drawn, 'settled, so no loader').not.toContain('<span class="ring"></span>');
+    expect(drawn, 'and none of the instance chrome').not.toContain('sg-ty');
+    expect(drawn, 'nor figures').not.toContain('sg-fig');
   });
 });

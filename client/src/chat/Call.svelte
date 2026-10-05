@@ -7,7 +7,9 @@
   import Decision from './Decision.svelte';
   import { iconOf } from './families';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
+  import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
+  import { subagents } from './subagents.svelte';
   import { searchHits } from './text';
 
   /**
@@ -173,20 +175,75 @@
         ? ' err'
         : '',
   );
+
+  /**
+   * The sub-agent instance this call dispatched, when it is one.
+   *
+   * A dispatch row draws the INSTANCE's liveness rather than the call's own:
+   * the launch-ack answers the call in a second while the agent runs on for
+   * minutes, so the call's status alone would draw a finished row over work
+   * that is still going.
+   */
+  const card = $derived(subagents.by(call.id));
+
+  /** Whether the row reads as work in flight, which for a dispatch is the instance's own answer. */
+  const running = $derived(
+    card === undefined
+      ? call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'
+      : card.running,
+  );
+
+  /**
+   * Whether the row's text brightens, which is the narrower condition the
+   * group's own rule uses: a call that has a frame in hand. A dispatch takes
+   * the instance's answer instead, so it brightens for as long as the agent
+   * actually works rather than for the second the ack takes.
+   */
+  const bright = $derived(card === undefined ? call.status === 'in_progress' : card.running);
+
+  /** The kind glyph's tone, off the instance when this row carries one. */
+  const shownTone = $derived(card === undefined ? tone : card.failed ? ' err' : card.running ? '' : ' ok');
+
+  /**
+   * The figures a settled dispatch draws at the row's right: how many calls
+   * it made, the tokens it spent, and how long it took. Tokens and the clock
+   * come from the usage the CLI reported, so each draws only when it is
+   * there; the call count always is.
+   */
+  const figures = $derived(
+    card === undefined || card.running
+      ? null
+      : [
+          `${card.calls} ${card.calls === 1 ? 'call' : 'calls'}`,
+          card.usage === null ? null : `${tokens(card.usage.total_tokens)} tokens`,
+          card.usage === null ? null : duration(card.usage.duration_ms),
+        ]
+          .filter((part) => part !== null)
+          .join(' \u{b7} '),
+  );
 </script>
 
 <details
   class="leaf"
-  class:running={call.status === 'in_progress'}
+  class:running={bright}
   bind:open={opened}
   data-k={`call-${k}`}
 >
   <summary>
-    <Icon name={iconOf(call.row)} class={`gl${tone}`} />
-    {#if call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'}
+    <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
+    {#if running}
       <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>
+    {#if card !== undefined && card.agent_type !== null}
+      <span class="sg-ty">{card.agent_type}</span>
+    {/if}
+    {#if card !== undefined && card.backgrounded}
+      <span class="sg-chip">background</span>
+    {/if}
+    {#if figures !== null}
+      <span class="sg-fig">{figures}</span>
+    {/if}
     <Chevron />
   </summary>
 

@@ -813,6 +813,20 @@ details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-sp
    prose tone rather than the row's own muting, so a mark reads as a mark. */
 details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+/* A dispatch row's own fields, joined from the record's card: the agent type,
+   the background chip, and - once settled - the figures at the row's right.
+   Namespaced `sg-` so no bare name of the sheet's other surfaces catches
+   them, the same rule the card's classes follow. */
+details.leaf > summary .sg-ty { color: var(--dim); font-size: var(--fs-data); flex: none; }
+details.leaf > summary .sg-ty::before { content: '\00b7'; color: var(--line); margin-right: 6px; }
+details.leaf > summary .sg-chip { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--warn); border: 1px solid rgba(201,161,59,.4); border-radius: 99px;
+  padding: 0 7px; flex: none; }
+details.leaf > summary .sg-fig { margin-left: auto; color: var(--dim); flex: none;
+  font-family: var(--mono); font-size: var(--fs-data); }
+/* The figures take the free space when they are there, so the chevron tucks in
+   behind them instead of splitting the gap with them. */
+details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
