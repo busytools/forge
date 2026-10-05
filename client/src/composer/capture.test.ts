@@ -7,7 +7,7 @@
  * so the two halves of the contract are the same vector read two ways.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CODEC_PCM_I16,
@@ -163,6 +163,37 @@ describe('the ring a take holds while the socket is down', () => {
     expect(ring.flush()).toBe(true);
     expect(ring.heldFrames).toBe(0);
     expect(sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
+  });
+
+  /**
+   * The pace, which is the one reading that falls: it is the newest second of
+   * sends rather than the take's average, so a socket that has stopped taking
+   * reads as stopped rather than as fast as it once was.
+   */
+  it('reads the pace of the newest second the socket took', () => {
+    vi.useFakeTimers();
+    try {
+      const wire = socket();
+      wire.open = true;
+      const ring = new FrameRing(wire.send);
+      // One real frame's worth of bytes - 20 ms of i16 samples behind the tag.
+      const frame = new Uint8Array(641);
+
+      for (let at = 0; at < 50; at += 1) {
+        vi.advanceTimersByTime(20);
+        ring.push(frame);
+      }
+      expect(Math.round(ring.rate), 'fifty frames a second at 641 bytes each').toBe(32_050);
+
+      wire.open = false;
+      for (let at = 0; at < 60; at += 1) {
+        vi.advanceTimersByTime(20);
+        ring.push(frame);
+      }
+      expect(ring.rate, 'a second with nothing taken').toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

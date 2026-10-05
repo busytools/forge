@@ -26,6 +26,9 @@ export const CODEC_PCM_I16 = 0;
 /** How many frames a take holds while the socket is down: about 30 s. */
 export const RING_FRAMES = 1500;
 
+/** The window the socket's pace is read over. */
+export const RATE_WINDOW_MS = 1000;
+
 /**
  * Encode `samples` as one frame: the codec tag, then little-endian i16.
  *
@@ -90,6 +93,8 @@ export class FrameChunker {
  */
 export class FrameRing {
   private held: Uint8Array[] = [];
+  /** What the socket had taken, and when, over the last second. */
+  private readonly taken: { at: number; bytes: number }[] = [];
   /** Frames the take has PRODUCED, since it began. */
   frames = $state(0);
   /**
@@ -132,8 +137,29 @@ export class FrameRing {
   /** Send one frame, counting its bytes only when the wire takes it. */
   private sendNow(bytes: Uint8Array): boolean {
     if (!this.send(bytes)) return false;
+    const at = Date.now();
     this.bytes += bytes.length;
+    this.taken.push({ at, bytes: this.bytes });
+    // The read filters by now as well, so this is only the array's own bound.
+    while (this.taken.length > 2 && at - (this.taken[0]?.at ?? at) > RATE_WINDOW_MS)
+      this.taken.shift();
     return true;
+  }
+
+  /**
+   * Bytes per second the socket is taking, over the newest window it has.
+   *
+   * A live pace rather than the take's average: a socket that has stopped
+   * falls to zero as its window ages out, which the average would hide by
+   * remembering the pace it once had. `0` until two sends span a moment.
+   */
+  get rate(): number {
+    const at = Date.now();
+    const recent = this.taken.filter((sample) => at - sample.at <= RATE_WINDOW_MS);
+    const newest = recent.at(-1);
+    const oldest = recent[0];
+    if (newest === undefined || oldest === undefined || newest === oldest) return 0;
+    return (newest.bytes - oldest.bytes) / ((newest.at - oldest.at) / 1000);
   }
 
   get heldFrames(): number {

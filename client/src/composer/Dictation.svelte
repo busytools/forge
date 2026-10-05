@@ -14,13 +14,14 @@
     slot: SessionSlot;
     connection: Pick<Connection, 'dispatch'>;
     /**
-     * The take's wire side, when this page owns the capture: frames produced
-     * and bytes the socket has taken. `null` for a take this page did not
-     * start, since the count is the producer's own fact. Required rather than
-     * defaulted, so a page that forgets it fails the type check instead of
-     * drawing a row with no count and nothing else wrong.
+     * The take's wire side, when this page owns the capture: frames produced,
+     * bytes the socket has taken, and the pace it is taking them at. `null`
+     * for a take this page did not start, since the count is the producer's
+     * own fact. Required rather than defaulted, so a page that forgets it
+     * fails the type check instead of drawing a row with no count and nothing
+     * else wrong.
      */
-    wire: { frames: number; bytes: number } | null;
+    wire: { frames: number; bytes: number; rate: number | null } | null;
   } = $props();
 
   const transcribing = $derived(take.phase === 'transcribing');
@@ -35,12 +36,16 @@
   const level = $derived(`${Math.round(take.peakDb)} dB`);
 
   /**
-   * The wire line: what the capture has produced and what has left. The
-   * numbers are the ring's own signals, so this recomputes as the take runs.
+   * The wire line: what the capture has produced, what has left, and the pace
+   * it is leaving at. The numbers are the ring's own signals, so this
+   * recomputes as the take runs. The pace is a live reading only: a take past
+   * its release has nothing moving, so it draws none.
    */
-  const wireLine = $derived.by(() =>
-    wire === null ? null : `${wire.frames} fr \u{b7} ${(wire.bytes / 1024).toFixed(1)} KB`,
-  );
+  const wireLine = $derived.by(() => {
+    if (wire === null) return null;
+    const pace = wire.rate === null ? '' : ` \u{b7} ${String(Math.round(wire.rate / 1024))} KB/s`;
+    return `${wire.frames} fr \u{b7} ${(wire.bytes / 1024).toFixed(1)} KB${pace}`;
+  });
 
   /**
    * What the row says it is doing, in the terminal's own words.

@@ -1070,6 +1070,9 @@ describe('the key', () => {
 
       expect(drawn(), 'the row draws the take transcribing').toContain('transcribing 2/6');
       expect(drawn(), 'with the counts it sent still beside it').toContain('12 fr');
+      expect(drawn(), 'and no pace, which is a reading of a take still producing').not.toContain(
+        'KB/s',
+      );
     } finally {
       vi.useRealTimers();
     }

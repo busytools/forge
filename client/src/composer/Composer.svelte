@@ -186,7 +186,9 @@
     const shown = boxKey(slot);
     if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
-    return { frames: wireDone.frames, bytes: wireDone.bytes };
+    // No pace past the release: the line's live reading belongs to a take
+    // that is still producing.
+    return { frames: wireDone.frames, bytes: wireDone.bytes, rate: null };
   });
 
   /**

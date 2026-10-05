@@ -39,7 +39,7 @@ function narrowed(over: Record<string, unknown> = {}): Take {
 
 function open(
   over: Record<string, unknown> = {},
-  wire: { frames: number; bytes: number } | null = null,
+  wire: { frames: number; bytes: number; rate: number | null } | null = null,
 ) {
   app = mount(Dictation, {
     target: document.body,
@@ -62,9 +62,9 @@ describe('the dictation row', () => {
    * take another connection started has no producer on this side to count.
    */
   it('draws the wire count while this page owns the capture', () => {
-    open({}, { frames: 412, bytes: 257_512 });
+    open({}, { frames: 412, bytes: 257_512, rate: 32_768 });
     expect(drawn(), 'the frames produced and the bytes the socket took').toContain(
-      '412 fr \u{b7} 251.5 KB',
+      '412 fr \u{b7} 251.5 KB \u{b7} 32 KB/s',
     );
 
     void unmount(app as Record<string, unknown>);

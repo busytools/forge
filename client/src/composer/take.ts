@@ -57,11 +57,12 @@ export class LocalTake {
   /** The input the take's stream opened, when the browser reported one. */
   readonly resolved: { id: string; label: string } | null;
   /**
-   * The take's wire side, read live: frames produced and bytes the socket
-   * has taken. One stable object whose getters read the ring's own signals,
-   * so a panel that holds it repaints as the numbers move.
+   * The take's wire side, read live: frames produced, bytes the socket has
+   * taken, and the pace it is taking them at. One stable object whose getters
+   * read the ring's own signals, so a panel that holds it repaints as the
+   * numbers move.
    */
-  readonly wire: { readonly frames: number; readonly bytes: number };
+  readonly wire: { readonly frames: number; readonly bytes: number; readonly rate: number };
 
   private started = false;
   private ended = false;
@@ -89,6 +90,9 @@ export class LocalTake {
       },
       get bytes(): number {
         return ring.bytes;
+      },
+      get rate(): number {
+        return ring.rate;
       },
     };
     mic.onFrame = (bytes) => this.ring.push(bytes);
