@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
-import { SubagentCards, reveal } from './subagents.svelte';
+import { SubagentCards, reveal, transcribable } from './subagents.svelte';
 
 /** One instance, as the record holds it. */
 const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
@@ -55,6 +55,26 @@ describe('the dispatch join', () => {
       'toolu_other',
     ]);
     expect(cards.running(), 'one of the two is still working').toBe(1);
+  });
+});
+
+describe('which instances a list may lead to', () => {
+  it('keeps the running and the ones with calls on the page', () => {
+    const keeping = transcribable([
+      card({ running: true, calls: 0 }),
+      card({ dispatch_id: 'with-calls', running: false, calls: 3 }),
+    ]);
+
+    expect(keeping.map((one) => one.dispatch_id)).toEqual(['toolu_task', 'with-calls']);
+  });
+
+  it('drops an instance that ran before a restart or resume', () => {
+    // The resumed bound: no frames are held for it, so its row would open
+    // onto a brief and nothing - it stays out of any list that leads
+    // somewhere.
+    const keeping = transcribable([card({ running: false, calls: 0 })]);
+
+    expect(keeping).toEqual([]);
   });
 });
 

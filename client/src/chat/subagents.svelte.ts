@@ -45,6 +45,16 @@ export class SubagentCards {
 }
 
 /**
+ * The instances a transcript can be opened for: one that is running, or one
+ * with calls on the page. An instance that ran before a restart or resume has
+ * no frames held, so its row would open onto a brief and nothing - it stays
+ * out of any list that leads somewhere.
+ */
+export function transcribable(cards: readonly SubagentCard[]): SubagentCard[] {
+  return cards.filter((card) => card.running || card.calls > 0);
+}
+
+/**
  * Reveal the chat row a dispatch drew: open it, bring it into view, and give
  * it one flash so the eye lands on it.
  *

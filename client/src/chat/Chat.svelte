@@ -22,6 +22,8 @@
   import { echoes, ownWords } from './echoes.svelte';
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
+  import { turnOfDispatch } from './dispatch-jump';
+  import { reveal } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -671,6 +673,24 @@
       asking = true;
     }
     if (!asking || !held.loaded) return;
+    // A dispatch's row may sit in a turn the virtualised list has not drawn:
+    // scroll to its turn first, then chase the row, which mounts a frame
+    // after the scroll that asked for it.
+    if (ask?.what === 'dispatch' && ask.dispatch !== undefined) {
+      const wanted = ask.dispatch;
+      const at = turnOfDispatch(held.turns, wanted);
+      if (at !== null) {
+        asking = false;
+        list?.scrollToIndex(at, { align: 'start' });
+        let tries = 0;
+        const chase = () => {
+          if (reveal(wanted) || tries++ > 20) return;
+          requestAnimationFrame(chase);
+        };
+        requestAnimationFrame(chase);
+      } else if (!loadOlder()) asking = false;
+      return;
+    }
     const at = latestCompaction(held.turns);
     if (at !== null) {
       asking = false;

@@ -21,30 +21,28 @@ const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
 });
 
 describe('the strip segment', () => {
-  it('says how many are running while any is', () => {
+  it('carries the subagents glyph, both counts, and the running mark', () => {
     subagents.sync([card(), card({ dispatch_id: 'toolu_other' })]);
     const body = render(SubagentSegment, {}).body;
 
-    expect(body, 'the running count leads').toContain('2 agents running');
+    expect(body, 'the glyph says what the segment is').toContain('i-subagents');
+    expect(body, 'running and finished, session totals').toContain(
+      '2 running \u{b7} 0 finished',
+    );
+    expect(body, 'a ring while any is working').toContain('class="ring"');
     subagents.sync(null);
   });
 
-  it('says settled once none is', () => {
+  it('counts the finished once none is running', () => {
     subagents.sync([
       card({ running: false }),
       card({ dispatch_id: 'toolu_other', running: false, failed: true }),
     ]);
     const body = render(SubagentSegment, {}).body;
 
-    expect(body, 'the count is what matters most').toContain('2 agents settled');
-    subagents.sync(null);
-  });
-
-  it('counts one agent in the singular', () => {
-    subagents.sync([card()]);
-    const body = render(SubagentSegment, {}).body;
-
-    expect(body).toContain('1 agent running');
+    expect(body, 'the finished count holds while the running one reads zero').toContain(
+      '0 running \u{b7} 2 finished',
+    );
     subagents.sync(null);
   });
 

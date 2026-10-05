@@ -1,61 +1,80 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import { askReveal } from '../session/scroll-ask';
   import { duration } from './numbers';
-  import { reveal, subagents } from './subagents.svelte';
+  import { subagents, transcribable } from './subagents.svelte';
+  import { firstLine } from './text';
 
   /**
-   * The sub-agent segment of the strip: how many instances the seat has out,
-   * and the way into each one.
+   * The agents row above the composer: how many instances the seat has out
+   * and how many it has finished, and the way into each one.
    *
-   * **The segment is the only home subagents have outside the chat.** It reads
-   * the same card join every dispatch row reads, so the count, the list and
-   * the rows can never disagree. Hovering opens the list, a tap toggles it,
-   * and a row's click reveals that dispatch's chat row - opened, scrolled to,
-   * and flashed - rather than drawing a second copy of the instance anywhere.
+   * **Persistent where the strip is not.** The strip fades with the turn it
+   * reports; this row is the seat's own agent work, so it stays for as long
+   * as the session holds any. It reads the same card join every dispatch row
+   * reads, so the counts, the list and the rows can never disagree.
+   *
+   * **Only instances a transcript can be opened for are listed.** The row a
+   * dispatch drew is where its transcript lives - and an instance that ran
+   * before a restart or resume has no frames on the page, so its row would
+   * open onto a brief and nothing. Such instances stay out of the list rather
+   * than leading somewhere empty.
    */
+  const MAX_ACTIVITY = 64;
 
   /** Whether the list is open: hover, tap and focus all ask for it. */
   let open = $state(false);
+  /** A beat of grace on leaving, so crossing the gap into the list lands. */
+  let closing: ReturnType<typeof setTimeout> | null = null;
 
   const all = $derived(subagents.all());
   const running = $derived(all.filter((card) => card.running));
-  const settled = $derived(all.length - running.length);
+  const finished = $derived(all.length - running.length);
+  const listed = $derived(transcribable(all));
 
-  const agents = (count: number) => `${count} ${count === 1 ? 'agent' : 'agents'}`;
+  /** What one instance is doing, short enough for a row: one line, capped. */
+  const doing = (card: (typeof all)[number]) => {
+    const said = firstLine(card.tail[card.tail.length - 1]?.title ?? 'working').trim();
+    return said.length > MAX_ACTIVITY ? `${said.slice(0, MAX_ACTIVITY).trimEnd()}\u{2026}` : said;
+  };
 
-  /** The most important thing the summary can say, never a full tally. */
-  const label = $derived(
-    running.length > 0
-      ? `${agents(running.length)} running`
-      : `${agents(settled)} settled`,
-  );
+  function hold() {
+    if (closing !== null) clearTimeout(closing);
+    closing = null;
+    open = true;
+  }
+  function release() {
+    if (closing !== null) clearTimeout(closing);
+    closing = setTimeout(() => {
+      closing = null;
+      open = false;
+    }, 250);
+  }
 </script>
 
 {#if all.length > 0}
-  <span
-    class="sg-seg"
-    class:open
-    onmouseenter={() => (open = true)}
-    onmouseleave={() => (open = false)}
-    onfocusout={() => (open = false)}
-  >
+  <span class="sg-seg" class:open onmouseenter={hold} onmouseleave={release} onfocusout={release}>
     <button type="button" class="sg-tog" aria-expanded={open} onclick={() => (open = !open)}>
+      <!-- The subagents glyph leads, so the segment reads as what it is; the
+           mark after it is the state. -->
+      <Icon name="subagents" />
       {#if running.length > 0}
         <span class="ring"></span>
       {:else}
         <Icon name="check" class="ok" />
       {/if}
-      {label}
+      {running.length} running &#183; {finished} finished
     </button>
 
     {#if open}
       <div class="sg-list">
-        {#each all as card (card.dispatch_id)}
+        {#each listed as card (card.dispatch_id)}
           <button
             type="button"
             class="sg-it"
             onclick={() => {
-              if (reveal(card.dispatch_id)) open = false;
+              askReveal(card.dispatch_id);
+              open = false;
             }}
           >
             {#if card.running}
@@ -66,11 +85,7 @@
               <Icon name="check" class="ok" />
             {/if}
             <span class="nm">{card.agent_type ?? 'agent'}</span>
-            <span class="tx"
-              >{card.running
-                ? (card.tail[card.tail.length - 1]?.title ?? 'working')
-                : card.name}</span
-            >
+            <span class="tx">{card.running ? doing(card) : card.name}</span>
             {#if card.usage !== null}
               <span class="n">{duration(card.usage.duration_ms)}</span>
             {/if}

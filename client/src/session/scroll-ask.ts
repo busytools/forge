@@ -10,8 +10,11 @@ import { writable } from 'svelte/store';
  * alone would be dropped as unchanged.
  */
 export interface ScrollAsk {
-  what: 'compaction';
+  what: 'compaction' | 'dispatch';
   token: number;
+  /** The dispatch to reveal, for `what: 'dispatch'`: its row may sit in a
+   * turn the virtualised list has not drawn, so the column scrolls first. */
+  dispatch?: string;
 }
 
 export const scrollAsk = writable<ScrollAsk | null>(null);
@@ -19,4 +22,9 @@ export const scrollAsk = writable<ScrollAsk | null>(null);
 /** Ask the column to reveal its latest compaction. */
 export function askCompaction(): void {
   scrollAsk.set({ what: 'compaction', token: Date.now() });
+}
+
+/** Ask the column to reveal the chat row a dispatch drew. */
+export function askReveal(dispatchId: string): void {
+  scrollAsk.set({ what: 'dispatch', token: Date.now(), dispatch: dispatchId });
 }
