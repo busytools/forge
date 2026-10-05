@@ -2992,3 +2992,122 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     }
     assert!(!drawn, "a refused prompt reached no model, so no view draws it as a turn");
 }
+
+/// The answer to a `more`, with whatever the connection had queued ahead of
+/// it read past: the socket is shared with every update the seat emits, and
+/// the answer is not necessarily the next message after the ask.
+async fn page_answer(socket: &mut Client) -> ServerMessage {
+    loop {
+        let message = next_server(socket).await;
+        if matches!(message, ServerMessage::Page { .. } | ServerMessage::Error { .. }) {
+            return message;
+        }
+    }
+}
+
+/// **A `more` below the window's floor, end to end over the socket.** The
+/// wiring around it has no other test: a cursor a client sends crosses this
+/// arm, the page comes back cut and numbered by it, and the walk continues
+/// from the cursor the page hands back - all with the anchors the held window
+/// itself named, never a list a test built.
+#[tokio::test]
+async fn a_more_below_the_floor_is_answered_from_the_transcript() {
+    let (url, fleet, state) = a_server_with_state().await;
+    fleet.start("TestOrg", "proj").expect("a live lead session");
+    // A transcript longer than the window holds, one row a turn, so the held
+    // copy drops a prefix of it and the floor lands on a turn's own frame.
+    let rows: Vec<String> = (0..5_200)
+        .map(|at| {
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+            )
+        })
+        .collect();
+    fleet
+        .seed_transcript(
+            "TestOrg",
+            "proj",
+            "lead",
+            &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .expect("the session's transcript");
+    fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the seat's window");
+    let held = state.conversations.get(&lead_seat()).expect("the seat is held");
+    let dropped = held.lock().dropped();
+    assert_eq!(dropped, 5_200 - 4_000, "precondition: the window dropped its oldest rows");
+    assert_eq!(
+        held.lock().without_rows().len(),
+        0,
+        "precondition: the held copy came from the transcript, so every frame has a row",
+    );
+
+    // A cursor two turns below the floor - a client holding pages from before
+    // a drop asks from one. The socket is on the server whose state holds the
+    // conversation above, which is the one thing this test cannot get wrong.
+    let mut socket = connect(&url).await;
+    let asked: usize = 5_200 - 4_000 - 4;
+    send(
+        &mut socket,
+        ClientMessage::More {
+            conversation: lead_seat(),
+            before: Some(asked.to_string()),
+            turns: 4,
+        },
+    )
+    .await;
+    let answer = page_answer(&mut socket).await;
+    if let ServerMessage::Error { what, why, .. } = &answer {
+        panic!("the server refused the more: {what}: {why}");
+    }
+    let ServerMessage::Page { turns: page, cursor, .. } = answer else {
+        panic!("a more below the floor is answered with a page");
+    };
+    let texts: Vec<String> = page
+        .iter()
+        .map(|turn| {
+            turn.messages
+                .first()
+                .and_then(|frame| frame["message"]["content"][0]["text"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["turn 1192", "turn 1193", "turn 1194", "turn 1195"],
+        "the turns directly above the cursor the client asked with",
+    );
+    assert_eq!(
+        cursor.as_deref(),
+        Some("1192"),
+        "and a cursor below that one, so the walk carries on rather than restarting or stopping",
+    );
+
+    // The walk, one page down: the client asks with the cursor it was handed.
+    send(
+        &mut socket,
+        ClientMessage::More { conversation: lead_seat(), before: cursor.clone(), turns: 4 },
+    )
+    .await;
+    let ServerMessage::Page { turns: below, cursor: next, .. } = page_answer(&mut socket).await
+    else {
+        panic!("the page below is answered too");
+    };
+    assert_eq!(below.len(), 4, "the walk serves the page below the one before it");
+    assert_eq!(next.as_deref(), Some("1188"), "and hands back the cursor below it");
+
+    // And the floor of the transcript: a cursor at its very first frame has
+    // nothing above it, which is the one page that ends the walk.
+    send(
+        &mut socket,
+        ClientMessage::More { conversation: lead_seat(), before: Some("0".to_owned()), turns: 4 },
+    )
+    .await;
+    let ServerMessage::Page { turns: none, cursor: end, .. } = page_answer(&mut socket).await
+    else {
+        panic!("a cursor at the transcript's first frame is still answered with a page");
+    };
+    assert!(none.is_empty(), "with nothing above it");
+    assert!(end.is_none(), "and no cursor, which is what stops a client asking");
+}

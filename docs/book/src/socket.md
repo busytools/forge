@@ -124,6 +124,14 @@ stops asking on - so an answer the server could not give would make the seat's
 history unreachable rather than merely late. An `error` naming `more` means
 ask again, not that the conversation is over.
 
+**A cursor below the held window is the exception, and it is answered either
+way.** Past its oldest frame the window stops, and the page is read from the
+session's own transcript on disk, so a client can walk arbitrarily far back.
+Where that read cannot answer - no file, a file whose rows no longer line up
+with the session's numbering, one that would take more than the read's cap -
+the answer IS the empty page, and what it ends is the history, not the seat.
+An `error` still means ask again.
+
 **A turn can carry a frame the CLI did not send.** A backgrounded task's
 ending reaches a transcript as a row of its own, and a row that opens no turn
 itself still lands in a later turn than the call it ends whenever something

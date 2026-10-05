@@ -137,6 +137,24 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
     SessionHistory { messages: out, compaction_count }
 }
 
+/// Whether a transcript row carries this frame.
+///
+/// **The row rule's other half, and the one place it is stated.** A frame
+/// whose kind no row round-trips - a `Result`, a thinking-token frame, a
+/// `system` subtype other than the two kept - is one the live stream emits and
+/// the CLI never writes, so a copy holding it counts a frame the file counts
+/// no row for. That difference is what a page below the floor has to be
+/// numbered through, by whoever still holds the frames the drops took.
+pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
+    matches!(
+        message,
+        forge_primitives::Message::User { .. }
+            | forge_primitives::Message::Assistant { .. }
+            | forge_primitives::Message::StopHookSummary { .. }
+            | forge_primitives::Message::CompactBoundary { .. }
+    )
+}
+
 /// One transcript row as the session's message, or `None` for a row that is
 /// not one. The flag says the row is a compaction boundary, which the read
 /// counts.
@@ -793,9 +811,15 @@ struct Window {
     bytes: Vec<u8>,
 }
 
-/// Read up to `take` bytes ending at `end`.
+/// Read up to `take` bytes ending at `end`, and the byte before the window as
+/// well.
+///
+/// **That one byte is what says whether the window starts on a row.** A window
+/// beginning exactly at a row's first byte holds that whole row; one beginning
+/// anywhere else holds a fragment of the row before it, and the two are
+/// indistinguishable from inside the window.
 fn window_ending(file: &mut fs::File, end: u64, take: u64) -> std::io::Result<Window> {
-    let from = end.saturating_sub(take);
+    let from = end.saturating_sub(take).saturating_sub(1);
     let mut bytes = vec![0_u8; usize::try_from(end - from).unwrap_or(0)];
     file.seek(SeekFrom::Start(from))?;
     file.read_exact(&mut bytes)?;
@@ -804,16 +828,19 @@ fn window_ending(file: &mut fs::File, end: u64, take: u64) -> std::io::Result<Wi
 
 /// The rows a window holds, each with the byte it starts at.
 ///
-/// A window that does not begin at the file's start begins inside a row, and
-/// everything before its first newline is that row's fragment - not a row, and
-/// not counted.
+/// A window whose first byte follows anything but a newline begins inside a
+/// row: everything before its next newline is that row's fragment - not a row,
+/// and not counted. Every other line is whole.
 fn window_rows(window: &Window) -> Vec<(SessionMessage, u64)> {
+    // The window's first byte is the one before the window: a newline means
+    // the window begins on a row, anything else means it begins inside one.
+    let fragment = window.from > 0 && window.bytes.first() != Some(&b'\n');
     let mut rows = Vec::new();
     let mut at = window.from;
     for line in window.bytes.split(|byte| *byte == b'\n') {
         let start = at;
         at = at.saturating_add(line.len() as u64 + 1);
-        if window.from > 0 && start == window.from {
+        if fragment && start == window.from {
             continue;
         }
         if let Ok(text) = std::str::from_utf8(line)
@@ -891,12 +918,15 @@ fn locating_span(
     };
     // The anchor's own index is the session's numbering: every row in the
     // window counts from it, so no walk from the file's start is needed.
+    //
+    // **Whether the file's first row is the session's first frame is not
+    // asked here**, because the answer is not the file's: the session counts
+    // frames the file has no row for, so the number this read gives the
+    // file's own first row is not zero unless every frame below the floor has
+    // a row - and only the copy the page is cut for can say that.
     let Some(base) = anchor.index.checked_sub(at) else {
         return SpanRead::Diverged("the anchor sits above the file's own first frame");
     };
-    if from == 0 && base != 0 {
-        return SpanRead::Diverged("the file's first frame is not the session's first");
-    }
     cut_span(rows, base, from, ends_before, rows_wanted)
 }
 
@@ -2335,6 +2365,103 @@ mod tests {
         );
     }
 
+    /// **A stale byte does not answer with a stale span.** The anchor's byte
+    /// is verified before it is believed: a transcript rewritten under a walk
+    /// carries another row there, and the read falls back to searching for the
+    /// anchor by id - which is the read a caller with no byte at all gets, so
+    /// the two must answer alike.
+    #[test]
+    fn a_span_read_falls_back_when_the_anchors_byte_moved() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_transcript(40));
+
+        let located = read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, 100)
+            .expect("the first read locates the anchor");
+        let last = located.messages.len() - 1;
+        let resume = vec![forge_primitives::TranscriptAnchor {
+            row: "u29".to_owned(),
+            index: located.first + last,
+            offset: located.offsets.get(last).copied(),
+        }];
+        assert!(resume[0].offset.is_some(), "precondition: the span gave the row its byte");
+
+        // A row prepended: every byte below it moved, so the anchored byte no
+        // longer holds the row it was read for.
+        let prepended = format!(
+            "{{\"type\":\"user\",\"uuid\":\"u_pre\",\"session_id\":\"s1\",\
+             \"message\":{{\"role\":\"user\",\"content\":\"prepended\"}}}}\n{}",
+            a_transcript(40),
+        );
+        write_session_jsonl(&dir, session, &prepended);
+
+        let stale = read_span_with(config.path(), session, Some(cwd), &resume, 29, 100, 4096, 4096);
+        let located_again = read_span_with(
+            config.path(),
+            session,
+            Some(cwd),
+            &anchored("u29", 29),
+            29,
+            100,
+            4096,
+            4096,
+        );
+        assert_eq!(
+            stale.map(|span| span.messages.len()),
+            located_again.map(|span| span.messages.len()),
+            "a stale byte answers exactly as the read that never had one: this file was \
+             rewritten under the walk, so the anchor's row sits at another index and both refuse \
+             it rather than serving rows the numbering does not name",
+        );
+    }
+
+    /// The one row rule's forks reach a span: a queued prompt's attachment row
+    /// is hoisted into the block a view reads it as, and a hook summary is the
+    /// frame it is - not skipped, and not flattened into something else.
+    #[test]
+    fn a_span_read_types_the_rows_the_conversion_has_forks_for() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let body = format!(
+            "{}\n{}\n{}\n{}",
+            "{\"type\":\"user\",\"uuid\":\"u0\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"turn 0\"}}",
+            "{\"type\":\"attachment\",\"uuid\":\"a1\",\"session_id\":\"s1\",\
+             \"attachment\":{\"type\":\"queued_command\",\"prompt\":\"queued\",\"commandMode\":\"prompt\"}}",
+            "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":\"h1\",\
+             \"sessionId\":\"s1\",\"compactMetadata\":{\"trigger\":\"auto\",\"preTokens\":1,\"postTokens\":1}}",
+            "{\"type\":\"user\",\"uuid\":\"u2\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"turn 1\"}}",
+        );
+        write_session_jsonl(&dir, session, &body);
+
+        let span = read_span(config.path(), session, Some(cwd), &anchored("u2", 3), 3, 100)
+            .expect("a span over the forks");
+
+        assert_eq!(span.first, 0, "every row the read kept is below the anchor");
+        assert_eq!(span.messages.len(), 3, "the attachment's row is a frame, not a skip");
+        assert!(
+            matches!(
+                &span.messages[1],
+                forge_primitives::Message::User { message, .. }
+                    if matches!(message.content[0], forge_primitives::ContentBlock::QueuedCommand { .. })
+            ),
+            "the queued command arrives as the block a view reads it as",
+        );
+        assert!(
+            matches!(&span.messages[2], forge_primitives::Message::CompactBoundary { uuid, .. }
+                if uuid == "h1"),
+            "and the boundary row as the frame it is, not a skip: {:?}",
+            span.messages[2],
+        );
+    }
+
     /// The span a page below the window asks for: every row below the cursor,
     /// in the session's own numbering, with the caller's anchor turning the
     /// window's rows into that numbering.
@@ -2393,6 +2520,23 @@ mod tests {
         );
         assert_eq!(said(grown.messages.last().unwrap()), "turn 29", "and ends at the cursor");
         assert_eq!(grown.messages.len(), 30 - grown.first, "carrying every frame below it");
+
+        // And the rows a page asks for are what come back: a read asked for
+        // five rows of a thirty-row span gets the newest five, not the span.
+        let trimmed = read_span_with(
+            config.path(),
+            session,
+            Some(cwd),
+            &anchored("u30", 30),
+            30,
+            5,
+            len,
+            len,
+        )
+        .expect("a span the budget trims");
+        assert_eq!(trimmed.messages.len(), 5, "the page's own rows and no more");
+        assert_eq!(trimmed.first, 25, "and the span starts where the budget reaches");
+        assert!(!trimmed.exhausted, "which is not the transcript's start");
 
         // And the cap is where the read stops: an anchor deeper than the cap
         // reaches answers nothing rather than the read walking to it.

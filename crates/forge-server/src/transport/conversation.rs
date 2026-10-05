@@ -116,6 +116,28 @@ pub struct Conversation {
     /// end of an empty list. Two requests on one seat is the ordinary case
     /// for that, not an exotic one.
     folding: bool,
+    /// The indices, in this conversation's own numbering, of the frames the
+    /// drops have carried off that a transcript row does not carry.
+    ///
+    /// **Why a page below the floor needs them: the two numberings count
+    /// different things.** A conversation counts every frame the live stream
+    /// emits - a turn's `Result`, its thinking-token frames, a `system`
+    /// subtype the CLI never wrote, a delivery row forge forged - and a
+    /// transcript counts only its rows. The frames *above* the floor are
+    /// still held and can be counted; the ones below it are gone, so the seat
+    /// records their positions as it lets them go. Without them, a page below
+    /// the floor would be numbered as if every frame had a row and would skip
+    /// one row for each rowless frame in between.
+    ///
+    /// Sorted, ascending: every drop takes a front.
+    without_rows: Vec<usize>,
+    /// The uuids of the delivery rows this transport forged.
+    ///
+    /// **A forged row is a frame no transcript has**, and nothing about its
+    /// shape says so - it is a user row like the prompt it draws. Only the
+    /// site that forged it knows, which is why the set lives here rather than
+    /// in the row rule.
+    forged: std::collections::HashSet<String>,
 }
 
 impl Conversation {
@@ -129,7 +151,11 @@ impl Conversation {
     pub fn new(mut messages: Vec<Message>, compaction_count: u32) -> Self {
         // **The drop runs before the conversion**, so a resume's transient
         // cost is the history it handed over plus a window, rather than two
-        // transcripts.
+        // transcripts. What the drop takes is read first, because a frame it
+        // takes and no transcript row carries is one the numbering has to
+        // keep counting.
+        let cut = forge_workspace::conversation_window::frames_dropped(&messages);
+        let without_rows = rowless(&messages[..cut], 0, &std::collections::HashSet::new());
         let dropped = drop_past_cap(&mut messages);
         Self {
             messages: as_blocks(messages),
@@ -138,6 +164,8 @@ impl Conversation {
             dropped,
             dirty: true,
             folding: false,
+            without_rows,
+            forged: std::collections::HashSet::new(),
         }
     }
 
@@ -156,6 +184,13 @@ impl Conversation {
     /// `route` decides whether the numbering may be carried over the reseed:
     /// see [`Reseed`].
     pub fn seed(&mut self, mut messages: Vec<Message>, compaction_count: u32, route: Reseed) {
+        // What the seed's own drop takes, and what a shorter window drops off
+        // this seat's front, are frames the numbering keeps counting only if
+        // nothing but a row carries them.
+        let cut = forge_workspace::conversation_window::frames_dropped(&messages);
+        let incoming = rowless(&messages[..cut], 0, &self.forged);
+        let lost = self.messages.len().saturating_sub(messages.len());
+        let leaving = rowless(&self.messages[..lost], self.dropped, &self.forged);
         let seeded = drop_past_cap(&mut messages);
         // **Converted before the comparison.** The copy a seat already holds
         // went through `as_blocks` at its own seed, so a `<task-notification>`
@@ -190,12 +225,45 @@ impl Conversation {
         self.rendered.turns.clear();
         self.rendered.endings.clear();
         self.dropped = if carried { shifted } else { seeded };
+        // **What the numbering counts below the floor.** A connect restarts
+        // it, so nothing above the new floor is needed; a carried replay keeps
+        // the seat's own positions and adds the frames this seed took off its
+        // front, which the floor has just passed.
+        self.without_rows = if carried {
+            let mut kept = std::mem::take(&mut self.without_rows);
+            kept.retain(|at| *at < self.dropped);
+            kept.extend(incoming.into_iter().filter(|at| *at < self.dropped));
+            kept.extend(leaving);
+            kept
+        } else {
+            incoming
+        };
+        // A frame whose id is no longer held cannot be met again, so the set
+        // that answers "did forge forge this" holds only what the seat keeps.
+        self.forged.retain(|id| self.messages.iter().any(|m| frame_id(m) == Some(id)));
         self.compaction_count = compaction_count;
         self.dirty = true;
     }
 
     /// One frame the session emitted.
     pub fn append(&mut self, message: Message) {
+        self.push(message);
+    }
+
+    /// One row this transport forged for display, which no transcript holds.
+    ///
+    /// **Forged rows are frames the file counts no row for**, and nothing
+    /// about their shape says so - a delivery row is a user row like the
+    /// prompt it draws. So the seat keeps their ids, and a page below the
+    /// floor counts the frames they were in.
+    pub fn append_forged(&mut self, message: Message) {
+        if let Some(id) = frame_id(&message) {
+            self.forged.insert(id.to_owned());
+        }
+        self.push(message);
+    }
+
+    fn push(&mut self, message: Message) {
         // **A boundary that arrives moves the count**, the same way the
         // session task's own retain does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
@@ -216,12 +284,65 @@ impl Conversation {
     /// Drop the oldest messages once the held list has outgrown the cap's
     /// slack, and leave the seat due a fold.
     fn drop_to_cap(&mut self) {
+        // **Read what is going before it goes**: a frame no transcript row
+        // carries is one the numbering keeps counting, and after the drop its
+        // place is the only thing that said where it was.
+        let cut = forge_workspace::conversation_window::frames_dropped(&self.messages);
+        self.without_rows.extend(rowless(&self.messages[..cut], self.dropped, &self.forged));
         self.dropped = self.dropped.saturating_add(drop_past_cap(&mut self.messages));
         // The same reason a seed clears them: the boundaries name message
         // indices, and the drop has just moved every one of them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
         self.dirty = true;
+    }
+
+    /// The row number the transcript read should end a page at, for a page
+    /// below the frame `cursor` names.
+    ///
+    /// The read numbers transcript rows as if every frame were one, because
+    /// that is all it can see; the seat counts the frames the transcript
+    /// never wrote, so this is where the two numberings meet. `cursor` is a
+    /// frame index in this conversation's own numbering, and the number this
+    /// returns is the read's: the rows strictly below the cursor, ended after
+    /// the newest of them.
+    pub fn rows_below_frame(&self, cursor: usize) -> usize {
+        // The session's first frame has nothing above it, and a cursor naming
+        // it is a client asking for the page above the beginning.
+        if cursor == 0 {
+            return 0;
+        }
+        let carried = self.without_rows.len();
+        let rowless_at_or_below =
+            |frame: usize| self.without_rows.partition_point(|at| *at <= frame);
+        // The newest ROW strictly below the cursor: a frame the transcript
+        // never wrote is stepped over, because there is no row to end at.
+        let cursor = cursor.saturating_sub(1);
+        let mut row = cursor;
+        while row > 0 && rowless_at_or_below(row) > rowless_at_or_below(row - 1) {
+            row -= 1;
+        }
+        // The read's number for that row, and one past it: a row at true
+        // index `row` counts as `row + carried - k(row)` - every rowless
+        // frame below the floor shifts it up by one.
+        carried + row - rowless_at_or_below(row) + 1
+    }
+
+    /// The frame index the transcript read's row number `row` stands for:
+    /// the inverse of the numbering [`Self::rows_below_frame`] reads.
+    pub fn frame_of_row(&self, row: usize) -> usize {
+        let carried = self.without_rows.len();
+        let rowless_at_or_below =
+            |frame: usize| self.without_rows.partition_point(|at| *at <= frame);
+        let mut frame = row.saturating_sub(carried);
+        for _ in 0..8 {
+            let stepped = row - carried + rowless_at_or_below(frame);
+            if stepped <= frame {
+                break;
+            }
+            frame = stepped;
+        }
+        frame
     }
 
     /// The messages if the fold is behind them, taken in O(1).
@@ -270,6 +391,43 @@ impl Conversation {
     /// turns a held index into the one a page's cursor carries.
     pub fn dropped(&self) -> usize {
         self.dropped
+    }
+
+    /// The frames the drops have taken that no transcript row carries: the
+    /// count a page below the floor is numbered through.
+    pub fn without_rows(&self) -> &[usize] {
+        &self.without_rows
+    }
+}
+
+/// The absolute indices of the frames in `frames` - which start at `from` in
+/// the conversation's numbering - that no transcript row carries.
+fn rowless(
+    frames: &[Message],
+    from: usize,
+    forged: &std::collections::HashSet<String>,
+) -> Vec<usize> {
+    frames
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| !carries_a_row(message, forged))
+        .map(|(at, _)| from + at)
+        .collect()
+}
+
+/// Whether a transcript row carries `message`: the kinds the row rule reads,
+/// and nothing this transport forged for display.
+fn carries_a_row(message: &Message, forged: &std::collections::HashSet<String>) -> bool {
+    forge_workspace::has_a_transcript_row(message)
+        && !frame_id(message).is_some_and(|id| forged.contains(id))
+}
+
+/// The id a frame carries, for the frames that carry one.
+pub(crate) fn frame_id(message: &Message) -> Option<&str> {
+    match message {
+        Message::User { uuid, .. } | Message::Assistant { uuid, .. } => uuid.as_deref(),
+        Message::StopHookSummary { uuid, .. } | Message::CompactBoundary { uuid, .. } => Some(uuid),
+        _ => None,
     }
 }
 
@@ -528,7 +686,10 @@ impl Conversations {
                 if let Some(msg) = crate::delivery::delivery_turn(update, slot)
                     && let Some(held) = self.get(slot)
                 {
-                    held.lock().append(msg);
+                    // Forged for display, and in no transcript: the seat has
+                    // to know, because a page below the floor numbers the
+                    // frames the file never wrote.
+                    held.lock().append_forged(msg);
                 }
             }
         }
