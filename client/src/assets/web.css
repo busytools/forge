@@ -1331,8 +1331,12 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    fixed length so the pitch stays still while the heights move. */
 .tc .bars { display: flex; align-items: flex-end; gap: 1px; width: 116px;
   height: 16px; flex: none; }
+/* The readings arrive every 50 ms and each bar takes its neighbour's height as
+   the history slides, so the height is interpolated: without it the graph snaps
+   twenty times a second while everything beside it moves at fifty. */
 .tc .bars i { flex: 1 0 1px; border-radius: 1px;
-  background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  background: linear-gradient(180deg, var(--hot), var(--accent));
+  transition: height 90ms linear; }
 .tc .bars i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
 .tc .bars i.hot { background: var(--hot); }
 /* The section bar takes the graph's slot while the take transcribes: a tick
@@ -1594,6 +1598,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring, .dock .blip .dot {
     animation: none;
   }
+  .tc .bars i { transition: none; }
 }
 
 /* The narrow widths, which the mockup draws the composer at too. The take's
