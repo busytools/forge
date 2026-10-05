@@ -3080,13 +3080,19 @@ mod tests {
         }
     }
 
-    /// A `User` frame carrying `text`.
-    fn user_frame_with_text(session_id: &str, text: &str) -> forge_primitives::Message {
+    /// A `User` frame carrying a tool result, the append shape a worker's
+    /// bucket grows by between assistant frames.
+    fn user_frame_with_tool_result(
+        session_id: &str,
+        tool_use_id: &str,
+    ) -> forge_primitives::Message {
         forge_primitives::Message::User {
             message: forge_primitives::UserEnvelope {
                 role: "user".to_owned(),
-                content: vec![forge_primitives::ContentBlock::Text {
-                    text: text.to_owned(),
+                content: vec![forge_primitives::ContentBlock::ToolResult {
+                    tool_use_id: tool_use_id.to_owned(),
+                    content: serde_json::Value::String("ok".to_owned()),
+                    is_error: false,
                     extras: serde_json::Map::new(),
                 }],
                 extras: serde_json::Map::new(),
@@ -3249,8 +3255,8 @@ mod tests {
     }
 
     /// The guard sits at the tail of the sdk dispatcher rather than inside
-    /// the assistant handler: a `User` frame carries a tool result, which is
-    /// the append that grows a worker's bucket most between assistant frames.
+    /// the assistant handler: a `User` frame's tool result runs its own
+    /// handler, and still has to carry the trim for the bucket it lands in.
     #[test]
     fn a_user_frame_carries_enforcement_too() {
         const CAP: usize = 256 * 1024;
@@ -3270,11 +3276,13 @@ mod tests {
             held / 2;
         assert_eq!(dropped(&app, &background), 0, "precondition: nothing trimmed yet");
 
+        // The result targets no live tool call, so its own handler drops the
+        // payload and the tail guard is the only thing left to act on it.
         apply_session_update(
             &mut app,
             SessionUpdate::ChatAppended {
                 key: background.clone(),
-                msg: user_frame_with_text(&background.display(), "a tool result"),
+                msg: user_frame_with_tool_result(&background.display(), "toolu_gone"),
                 origin: None,
             },
         );
