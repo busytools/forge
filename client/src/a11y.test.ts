@@ -446,21 +446,24 @@ function populatedHome(): HomeWire {
             next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
           },
         ],
+        connectors: {
+          gotify: [{ applications: ['homelab'], min_priority: 4 }],
+          slack: [
+            {
+              id: 's1',
+              workspace: 'Trust Machines',
+              target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
+            },
+            { id: 's2', workspace: 'Trust Machines', target: 'Mentions' },
+          ],
+        },
       },
     ],
     connectors: {
-      gotify: { connected: true, subscriptions: [{ applications: ['homelab'], min_priority: 4 }] },
+      gotify: { connected: true },
       slack: {
         connected_workspaces: [['Trust Machines', true]],
         load_failed: false,
-        subscriptions: [
-          {
-            id: 's1',
-            workspace: 'Trust Machines',
-            target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
-          },
-          { id: 's2', workspace: 'Trust Machines', target: 'Mentions' },
-        ],
       },
     },
   };

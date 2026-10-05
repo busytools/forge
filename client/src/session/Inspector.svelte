@@ -47,8 +47,10 @@
 
   const tasks = $derived(project?.tasks ?? []);
   const crons = $derived(project?.crons ?? []);
-  const gotify = $derived(gotifySection(wire));
-  const slack = $derived(slackSection(wire));
+  // The sections' subscriptions come off the seat's own row, like its tasks
+  // and crons; the connector liveness they draw beside them is home-wide.
+  const gotify = $derived(gotifySection(wire, project));
+  const slack = $derived(slackSection(wire, project));
   const mcp = $derived(record === null ? null : mcpSection(record));
   const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);

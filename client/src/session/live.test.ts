@@ -427,23 +427,31 @@ function slackWire(): typeof homeWire {
   if (project === undefined) throw new Error('the fixture holds no project');
   return {
     ...homeWire,
+    projects: [
+      {
+        ...project,
+        connectors: {
+          gotify: [],
+          slack: [
+            {
+              id: 's1',
+              workspace: 'Trust Machines',
+              target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
+            },
+            { id: 's2', workspace: 'Trust Machines', target: 'DirectMessages' },
+            { id: 's3', workspace: 'Trust Machines', target: 'Mentions' },
+            // The same words as s3: a row keyed by the target rather than by the
+            // subscription's own id throws on this pair.
+            { id: 's4', workspace: 'Trust Machines', target: 'Mentions' },
+          ],
+        },
+      },
+    ],
     connectors: {
-      gotify: { connected: false, subscriptions: [] },
+      gotify: { connected: false },
       slack: {
         connected_workspaces: [['Trust Machines', true]],
         load_failed: false,
-        subscriptions: [
-          {
-            id: 's1',
-            workspace: 'Trust Machines',
-            target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
-          },
-          { id: 's2', workspace: 'Trust Machines', target: 'DirectMessages' },
-          { id: 's3', workspace: 'Trust Machines', target: 'Mentions' },
-          // The same words as s3: a row keyed by the target rather than by the
-          // subscription's own id throws on this pair.
-          { id: 's4', workspace: 'Trust Machines', target: 'Mentions' },
-        ],
       },
     },
   };

@@ -21,6 +21,10 @@
       },
       "tasks": [],
       "crons": [],
+      "connectors": {
+        "gotify": [],
+        "slack": []
+      },
       "would_bind": false,
       "chip": null
     }
@@ -126,13 +130,11 @@
   ],
   "connectors": {
     "gotify": {
-      "connected": false,
-      "subscriptions": []
+      "connected": false
     },
     "slack": {
       "connected_workspaces": [],
-      "load_failed": false,
-      "subscriptions": []
+      "load_failed": false
     }
   },
   "dictate": {

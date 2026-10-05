@@ -253,13 +253,13 @@ facts a row is drawn from.
 
 | Field | What it is |
 |---|---|
-| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `would_bind`, and `chip` - the account the row binds and its state. |
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
 | `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
 | `plugins` | Every remembered plugin update, latest write per installed entry. |
 | `workers` | The live workers per project, with their charters and slots. |
-| `connectors` | Gotify's connection and subscriptions, Slack's workspaces, subscriptions and load failure. |
+| `connectors` | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the project's own row. |
 | `dictate` | Whether dictation is on, the per-model fetch and load state, where the models land, and the device a pick has moved to. |
 | `cli_version` | The installed and latest `claude` versions. |
 | `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws these rather than its own version. |

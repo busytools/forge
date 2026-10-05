@@ -816,19 +816,20 @@ export function untilOf(at: { secs_since_epoch: number } | null, now: number): s
 }
 
 /** The gotify section, or `null` when nothing is subscribed and it is not up. */
-export function gotifySection(home: HomeWire): GotifyView | null {
+export function gotifySection(home: HomeWire, project: ProjectWire | null): GotifyView | null {
   const view = connectorsOf(home).gotify;
   if (view === null) return null;
-  if (!view.connected && view.subscriptions.length === 0) return null;
+  const subscriptions = rowConnectors(project).gotify;
+  if (!view.connected && subscriptions.length === 0) return null;
 
   const apps: string[] = [];
-  for (const sub of view.subscriptions) {
+  for (const sub of subscriptions) {
     for (const app of sub.applications) if (!apps.includes(app)) apps.push(app);
   }
   // One subscription with no floor makes the whole set unbounded, which is
   // what `any` says: a delivery is let through when ANY subscription matches,
   // so the set's floor is the lowest of them and an absent one removes it.
-  const floors = view.subscriptions.map((sub) => sub.min_priority);
+  const floors = subscriptions.map((sub) => sub.min_priority);
   const floor = floors.includes(null)
     ? null
     : floors.reduce<number | null>(
@@ -853,11 +854,12 @@ export function gotifySection(home: HomeWire): GotifyView | null {
  * draw: a subscription watches a workspace, and a target prefixed with two
  * spaces said so in a way nothing could style or wrap.
  */
-export function slackSection(home: HomeWire): SlackView | null {
+export function slackSection(home: HomeWire, project: ProjectWire | null): SlackView | null {
   const view = connectorsOf(home).slack;
   if (view === null) return null;
+  const subscriptions = rowConnectors(project).slack;
   const names: string[] = view.connected_workspaces.map(([name]) => name);
-  for (const sub of view.subscriptions) {
+  for (const sub of subscriptions) {
     if (!names.includes(sub.workspace)) names.push(sub.workspace);
   }
   if (names.length === 0) return null;
@@ -867,7 +869,7 @@ export function slackSection(home: HomeWire): SlackView | null {
     workspaces: names.map((name) => ({
       name,
       connected: view.connected_workspaces.find(([held]) => held === name)?.[1] === true,
-      subs: view.subscriptions
+      subs: subscriptions
         .filter((sub) => sub.workspace === name)
         .map((sub) => ({ id: sub.id, k: targetOf(sub.target), v: modeOf(sub.target) })),
     })),
@@ -905,20 +907,25 @@ function conversationOf(target: unknown): Record<string, unknown> {
   return isRecord(held) ? held : {};
 }
 
-/** The connector views, which the home's snapshot carries beside the fleet. */
+/**
+ * The connectors' LIVENESS, which the home's snapshot carries beside the
+ * fleet. What a project is subscribed to is not here: it rides the project's
+ * own row, since the sets are per project and a home-level list would be one
+ * no read can fill. See {@link rowConnectors}.
+ */
 interface ConnectorViews {
-  gotify: {
-    connected: boolean;
-    subscriptions: { applications: string[]; min_priority: number | null }[];
-  } | null;
-  slack: {
-    connected_workspaces: [string, boolean][];
-    subscriptions: { id: string; workspace: string; target: unknown }[];
-  } | null;
+  gotify: { connected: boolean } | null;
+  slack: { connected_workspaces: [string, boolean][] } | null;
+}
+
+/** One project's connector subscriptions, as its two sections draw them. */
+interface RowConnectorViews {
+  gotify: { applications: string[]; min_priority: number | null }[];
+  slack: { id: string; workspace: string; target: unknown }[];
 }
 
 /**
- * The connectors, narrowed where they enter.
+ * The connectors' liveness, narrowed where it enters.
  *
  * The home's own type leaves this member `unknown`, because no page in that
  * slice drew one; the two section bodies above are the readers, so the
@@ -929,19 +936,7 @@ function connectorsOf(home: HomeWire): ConnectorViews {
   const gotify = isRecord(held['gotify']) ? held['gotify'] : null;
   const slack = isRecord(held['slack']) ? held['slack'] : null;
   return {
-    gotify:
-      gotify === null
-        ? null
-        : {
-            connected: gotify['connected'] === true,
-            subscriptions: array(gotify['subscriptions']).map((entry) => {
-              const sub = isRecord(entry) ? entry : {};
-              return {
-                applications: array(sub['applications']).map((app) => String(app)),
-                min_priority: typeof sub['min_priority'] === 'number' ? sub['min_priority'] : null,
-              };
-            }),
-          },
+    gotify: gotify === null ? null : { connected: gotify['connected'] === true },
     slack:
       slack === null
         ? null
@@ -951,17 +946,38 @@ function connectorsOf(home: HomeWire): ConnectorViews {
                 ? [[entry[0], entry[1] === true] as [string, boolean]]
                 : [],
             ),
-            subscriptions: array(slack['subscriptions']).map((entry) => {
-              const sub = isRecord(entry) ? entry : {};
-              const workspace = sub['workspace'];
-              const id = sub['id'];
-              return {
-                id: typeof id === 'string' ? id : '',
-                workspace: typeof workspace === 'string' ? workspace : '',
-                target: sub['target'],
-              };
-            }),
           },
+  };
+}
+
+/**
+ * One project's subscriptions, narrowed where they enter.
+ *
+ * A seat with no row on the home - a project that left `forge.toml` between
+ * the record and this snapshot - reads as nothing subscribed rather than as
+ * the page's problem: the sections the row would feed draw empty, the way
+ * they do for a project nobody has subscribed anything to.
+ */
+function rowConnectors(project: ProjectWire | null): RowConnectorViews {
+  const held = isRecord(project?.connectors) ? project.connectors : {};
+  return {
+    gotify: array(held['gotify']).map((entry) => {
+      const sub = isRecord(entry) ? entry : {};
+      return {
+        applications: array(sub['applications']).map((app) => String(app)),
+        min_priority: typeof sub['min_priority'] === 'number' ? sub['min_priority'] : null,
+      };
+    }),
+    slack: array(held['slack']).map((entry) => {
+      const sub = isRecord(entry) ? entry : {};
+      const workspace = sub['workspace'];
+      const id = sub['id'];
+      return {
+        id: typeof id === 'string' ? id : '',
+        workspace: typeof workspace === 'string' ? workspace : '',
+        target: sub['target'],
+      };
+    }),
   };
 }
 
