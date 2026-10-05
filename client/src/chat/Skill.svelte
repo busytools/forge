@@ -17,7 +17,7 @@
 
 <details class="leaf">
   <summary>
-    <Icon name="skill" class="st sk" />
+    <Icon name="skill" class="gl" />
     <span class="tn">skill /{name}</span>
     <Chevron />
   </summary>

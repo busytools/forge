@@ -26,6 +26,7 @@ const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
 
 const row = (extra: Partial<InboundLeaf> = {}): InboundLeaf => ({
   key: 'delivery-1',
+  kind: 'cron',
   title: 'the morning sweep',
   body: 'the morning sweep',
   elevated: false,
@@ -45,6 +46,22 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the inbound delivery row', () => {
+  it("renders a cron fire's own line rather than showing its marks", () => {
+    // **A cron fire's title IS its body's first line** (#1708), so it carries
+    // the prompt's markdown - drawn raw it showed the marks as themselves.
+    const raw = '**nightly** sweep: re-run the `bench`';
+    const marked = draw({ title: raw, body: `${raw}\nand then report` });
+    expect(marked, 'emphasis renders').toContain('<strong>nightly</strong>');
+    expect(marked, 'and code renders').toContain('<code>bench</code>');
+    expect(marked, 'with no raw syntax left in the row').not.toContain('**nightly**');
+
+    // The other kinds' titles are names - a channel, an app - where a markdown
+    // pass would rewrite what the name literally is.
+    const named = draw({ kind: 'slack', title: 'Busytools \u{b7} *general*', body: 'hi' });
+    expect(named, 'a channel name stays the name it is').toContain('*general*');
+    expect(named, 'not an emphasis element').not.toContain('<em>');
+  });
+
   it('draws a tail that adds to the title, and none that repeats it', () => {
     // A cron fire: the fold makes the title the body's first line, so the tail
     // would be the same sentence twice (Ved, 2026-10-03).
@@ -57,6 +74,7 @@ describe('the inbound delivery row', () => {
     // A Slack message: a header for the title, the message's own first line as
     // the tail - the shape the tail exists for.
     const slack = draw({
+      kind: 'slack',
       title: 'Busytools \u{b7} general \u{b7} steward',
       body: 'the gate is green\nand the queue is empty',
     });

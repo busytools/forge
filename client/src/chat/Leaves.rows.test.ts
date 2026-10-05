@@ -1,57 +1,53 @@
-import { readFileSync } from 'node:fs';
-
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
-import Group from './Group.svelte';
+import Leaves from './Leaves.svelte';
 import { leafOf } from './leaves';
-import type { Lane, PeerCard } from './units';
+import type { PeerCard, WorkRow } from './units';
 
-const card = (over: Partial<PeerCard> = {}): PeerCard => ({
-  id: 'm-1',
-  row: 'arrived',
-  peer: 'forge/steward',
-  body: 'picking up the render half now.',
-  org: null,
-  status: 'completed',
-  ack: null,
-  seat: null,
-  seats: [],
-  ...over,
+/** One peer card, as the row the leaf list draws. */
+const card = (over: Partial<PeerCard> = {}): WorkRow => ({
+  tag: 'card',
+  card: {
+    id: 'm-1',
+    row: 'arrived',
+    peer: 'forge/steward',
+    body: 'picking up the render half now.',
+    org: null,
+    status: 'completed',
+    ack: null,
+    seat: null,
+    seats: [],
+    ...over,
+  },
 });
 
-/** One peer lane: every card draws on the one lane, whichever row it is. */
-const lane = (cards: PeerCard[]): Lane => ({ tag: 'message', cards });
+const draw = (rows: WorkRow[]): string => render(Leaves, { props: { rows } }).body;
 
-const draw = (lanes: Lane[]): string => render(Group, { props: { lanes } }).body;
+describe('the rows of peer traffic, drawn as tool rows', () => {
+  it('draws a card as its own row, with nothing above it', () => {
+    // There is no count and no disclosure around the list - and no family row
+    // either: the rows are the whole of what it draws.
+    const one = draw([card()]);
 
-describe('a lane of peer traffic, drawn as tool rows', () => {
-  it('draws a lone message as its lane and its card, with no summary over them', () => {
-    // There is no count and no disclosure around a group: the lane's own row
-    // and the message under it are the whole of what it draws.
-    const one = draw([lane([card()])]);
-
-    expect(one, 'the lane drew').toContain('class="knd"');
-    expect(one, 'under the peer lane word').toContain('>peer<');
-    expect(one, 'and the card under it').toContain('picking up the render half now.');
+    expect(one, 'the card drew').toContain('picking up the render half now.');
   });
 
-  it('draws every row on the one lane, whatever direction it went', () => {
+  it('draws every card the list holds, whatever direction it went', () => {
     const drawn = draw([
-      lane([
-        card({ row: 'sent', peer: 'forge/steward' }),
-        card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend', org: 'Granite' }),
-        card({ id: 'm-3', row: 'whoami', peer: 'whoami' }),
-        card({ id: 'm-4', row: 'list', peer: 'list' }),
-      ]),
+      card({ row: 'sent', peer: 'forge/steward' }),
+      card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend', org: 'Granite' }),
+      card({ id: 'm-3', row: 'whoami', peer: 'whoami' }),
+      card({ id: 'm-4', row: 'list', peer: 'list' }),
     ]);
 
-    expect(drawn.match(/>peer</g)?.length, 'one lane, not one per kind').toBe(1);
+    expect((drawn.match(/<details class="leaf"/g) ?? []).length, 'one row each').toBe(4);
   });
 
   it('carries the direction in the words, and the mark reinforces it', () => {
     const drawn = draw([
-      lane([card({ row: 'sent' }), card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend' })]),
+      card({ row: 'sent' }),
+      card({ id: 'm-2', row: 'arrived', peer: 'gateway-backend' }),
     ]);
 
     expect(drawn, 'the outgoing row says which way it went').toContain('>sent to</span>');
@@ -61,9 +57,7 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
   });
 
   it('tags the org only when the counterparty is outside the reader own', () => {
-    const drawn = draw([
-      lane([card(), card({ id: 'm-2', peer: 'gateway-backend', org: 'Gateway' })]),
-    ]);
+    const drawn = draw([card(), card({ id: 'm-2', peer: 'gateway-backend', org: 'Gateway' })]);
 
     expect(drawn, 'the org the fold left on the card').toContain('>Gateway<');
     expect(
@@ -75,7 +69,7 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
   it('labels the message with its sender and its first line, and opens onto the body', () => {
     const body =
       'pgtemp, spawned per test binary rather than per test.\n\n' + 'The fixture is the example.';
-    const drawn = draw([lane([card({ body })])]);
+    const drawn = draw([card({ body })]);
 
     expect(drawn, 'the sender is the label the reader would have passed').toContain(
       '<span class="k">forge/steward</span>',
@@ -93,9 +87,7 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
   });
 
   it('opens a send onto the ack its own result carried', () => {
-    const drawn = draw([
-      lane([card({ row: 'sent', ack: 'id m-7f3a92e0 · to Busytools/forge/w1' })]),
-    ]);
+    const drawn = draw([card({ row: 'sent', ack: 'id m-7f3a92e0 · to Busytools/forge/w1' })]);
 
     expect(drawn, 'the ack is on the row').toContain('id m-7f3a92e0');
     expect(drawn, 'and names the seat it went to').toContain('to Busytools/forge/w1');
@@ -103,7 +95,7 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
 
   it('draws a failed delivery as the outgoing row, warn-toned', () => {
     const drawn = draw([
-      lane([card({ row: 'failed', peer: 'companies', body: 'channel closed', status: 'failed' })]),
+      card({ row: 'failed', peer: 'companies', body: 'channel closed', status: 'failed' }),
     ]);
 
     expect(drawn, 'the row says what happened, in the words').toContain(
@@ -115,47 +107,45 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
 
   it('opens whoami onto this seat and list onto the seats it can reach', () => {
     const drawn = draw([
-      lane([
-        card({
-          row: 'whoami',
-          peer: 'whoami',
-          seat: {
+      card({
+        row: 'whoami',
+        peer: 'whoami',
+        seat: {
+          org: 'Busytools',
+          project: 'forge',
+          label: 'lead',
+          path: '/tmp/forge',
+          status: 'running',
+        },
+      }),
+      card({
+        id: 'm-2',
+        row: 'list',
+        peer: 'list',
+        seats: [
+          {
             org: 'Busytools',
-            project: 'forge',
             label: 'lead',
-            path: '/tmp/forge',
-            status: 'running',
+            project: 'forge',
+            what: 'this session',
+            liveness: '',
           },
-        }),
-        card({
-          id: 'm-2',
-          row: 'list',
-          peer: 'list',
-          seats: [
-            {
-              org: 'Busytools',
-              label: 'lead',
-              project: 'forge',
-              what: 'this session',
-              liveness: '',
-            },
-            {
-              org: 'Busytools',
-              label: 'w1',
-              project: 'forge',
-              what: 'review the diff',
-              liveness: 'idle',
-            },
-            {
-              org: 'Gateway',
-              label: 'lead',
-              project: 'gateway-backend',
-              what: 'another project',
-              liveness: '',
-            },
-          ],
-        }),
-      ]),
+          {
+            org: 'Busytools',
+            label: 'w1',
+            project: 'forge',
+            what: 'review the diff',
+            liveness: 'idle',
+          },
+          {
+            org: 'Gateway',
+            label: 'lead',
+            project: 'gateway-backend',
+            what: 'another project',
+            liveness: '',
+          },
+        ],
+      }),
     ]);
 
     expect(drawn, 'whoami says what it is').toContain('whoami');
@@ -173,29 +163,27 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     // seat and what it is for - and a row that printed the third clause
     // unconditionally ended in a dangling separator.
     const drawn = draw([
-      lane([
-        card({
-          id: 'm-1',
-          row: 'list',
-          peer: 'list',
-          seats: [
-            {
-              org: 'Busytools',
-              label: 'lead',
-              project: 'forge',
-              what: 'this session',
-              liveness: '',
-            },
-            {
-              org: 'Busytools',
-              label: 'w1',
-              project: 'forge',
-              what: 'review the diff',
-              liveness: 'idle',
-            },
-          ],
-        }),
-      ]),
+      card({
+        id: 'm-1',
+        row: 'list',
+        peer: 'list',
+        seats: [
+          {
+            org: 'Busytools',
+            label: 'lead',
+            project: 'forge',
+            what: 'this session',
+            liveness: '',
+          },
+          {
+            org: 'Busytools',
+            label: 'w1',
+            project: 'forge',
+            what: 'review the diff',
+            liveness: 'idle',
+          },
+        ],
+      }),
     ]);
 
     const values = [...drawn.matchAll(/<span class="v">(.*?)<\/span>/g)].map(
@@ -215,15 +203,13 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
     // falling back to the sent text would say the words arrived. Pinned here
     // because the fold's own test does not draw.
     const drawn = draw([
-      lane([
-        card({
-          id: 'm-1',
-          row: 'failed',
-          peer: 'companies',
-          body: '',
-          status: 'failed',
-        }),
-      ]),
+      card({
+        id: 'm-1',
+        row: 'failed',
+        peer: 'companies',
+        body: '',
+        status: 'failed',
+      }),
     ]);
 
     const at = drawn.indexOf('<span class="tn');
@@ -236,34 +222,32 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
    * **Every project's own agent is labelled `lead`**, so the ordinary
    * unfiltered `list` - the documented health check - carries two rows with
    * that word. Their key is asserted where the refusal lives: a duplicate key
-   * is the client runtime's, so `Group.mount.test.ts` is the file that throws
+   * is the client runtime's, so `Leaves.mount.test.ts` is the file that throws
    * for it. This one pins what the rows draw.
    */
   it('draws a list whose rows share the word lead', () => {
     const drawn = draw([
-      lane([
-        card({
-          id: 'm-1',
-          row: 'list',
-          peer: 'list',
-          seats: [
-            {
-              org: 'Busytools',
-              label: 'lead',
-              project: 'forge',
-              what: 'this session',
-              liveness: '',
-            },
-            {
-              org: 'Gateway',
-              label: 'lead',
-              project: 'gateway-backend',
-              what: 'another project',
-              liveness: '',
-            },
-          ],
-        }),
-      ]),
+      card({
+        id: 'm-1',
+        row: 'list',
+        peer: 'list',
+        seats: [
+          {
+            org: 'Busytools',
+            label: 'lead',
+            project: 'forge',
+            what: 'this session',
+            liveness: '',
+          },
+          {
+            org: 'Gateway',
+            label: 'lead',
+            project: 'gateway-backend',
+            what: 'another project',
+            liveness: '',
+          },
+        ],
+      }),
     ]);
 
     expect(drawn.match(/>lead</g)?.length, 'both rows drew').toBe(2);
@@ -277,15 +261,17 @@ describe('a lane of peer traffic, drawn as tool rows', () => {
    * 2026-10-03).
    */
   it('draws a peer body as prose, not as the raw text it arrived as', () => {
-    const drawn = draw([lane([card({ body: 'the **fold** joins, `cargo check` runs' })])]);
+    const drawn = draw([card({ body: 'the **fold** joins, `cargo check` runs' })]);
     expect(drawn, 'the marks render').toContain('<strong>fold</strong>');
     expect(drawn, 'rather than sitting on the page').not.toContain('**fold**');
   });
 });
 
-describe('a lane of systemone decisions', () => {
-  /** One family lane holding a settled decision call. */
-  function decisionLane(): Lane {
+describe('a systemone decision row', () => {
+  it('opens the decided call, which holds only while the list hands its decision down', () => {
+    // The opener is the LIST's call site: this row draws open because
+    // `Leaves.svelte` passes the leaf's decision into `opensByDefault`, and a
+    // list handing `null` instead would silently revert to a closed row.
     const leaf = leafOf(
       'tu-dec',
       'mcp__forge__systemone__ask_noul',
@@ -295,37 +281,22 @@ describe('a lane of systemone decisions', () => {
         content: '{"model":"jev-1.13.0","answer":{"type":"noul","noul":0.93}}',
       },
     );
-    return {
-      tag: 'family',
-      row: { kind: 'systemone' },
-      label: 'systemone',
-      calls: [{ key: 'c-tu-dec', leaf }],
-    };
-  }
+    const drawn = draw([{ tag: 'call', key: 'c-tu-dec', leaf }]);
 
-  it('opens the decided call, which holds only while the lane hands its decision down', () => {
-    // The opener is the LANE's call site: this row draws open because
-    // `Group.svelte` passes the leaf's decision into `opensByDefault`, and a
-    // lane handing `null` instead would silently revert to a closed row.
-    const drawn = draw([decisionLane()]);
-
-    expect(drawn, 'the lane carries its own word').toContain('>systemone<');
-    expect(drawn, 'and leads with the fork').toContain('href="#i-decide"');
+    expect(drawn, 'the row leads with the fork').toContain('href="#i-decide"');
     const tag = /<details[^>]*>/.exec(drawn)?.[0] ?? '';
     expect(tag, 'the row draws open').toContain('open');
     expect(drawn, 'with the block inside it').toContain('class="dec"');
   });
 });
 
-describe('the thinking lane', () => {
-  const thought = (text: string): Lane => ({ tag: 'thought', thoughts: [{ key: 'a1#0', text }] });
+describe('the thinking row', () => {
+  const thought = (text: string): WorkRow => ({ tag: 'thought', key: 'a1#0', text });
 
-  it('names the kind on the lane and previews the thought joined into one line', () => {
+  it('leads with the bubble and previews the thought joined into one line', () => {
     const drawn = draw([thought('the first thing I checked\n\nand what came after it.')]);
 
-    expect(drawn, 'the lane says what kind of thing this is').toContain('>thinking<');
-    expect(drawn, 'the lane leads with the brain').toContain('href="#i-brain"');
-    expect(drawn, 'and each row leads with its own bulb').toContain('href="#i-lightbulb"');
+    expect(drawn, 'the row leads with the bubble').toContain('href="#i-message-circle-more"');
     // The row shows the text joined, not cut at its first newline: a thought's
     // first line is often a stub with the substance below it. The layout is
     // what breaks the line, at the width the row has.
@@ -357,13 +328,5 @@ describe('the thinking lane', () => {
     expect(drawn, 'a heading is a heading').toContain('<h2>');
     expect(drawn, 'a list is a list').toContain('<li>');
     expect(drawn, 'and code keeps its own face').toContain('<code>');
-  });
-
-  it('sizes the row bulb below the marks, where its ink sits with the words', () => {
-    // The bulb's ink nearly fills its box, so at the 15 the check wears its
-    // base ran below the baseline and the row read low. Dropping the size rule
-    // silently returns the row to that.
-    const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
-    expect(sheet, 'the bulb keeps its own size').toMatch(/\.st\.bulb\s*\{[^}]*13px/);
   });
 });

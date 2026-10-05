@@ -122,8 +122,8 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * here takes the 3:1 large-text floor, since the sheet's largest is
  * `.brand .word` at 22px and weight 650, neither 24px nor bold.
  *
- * Every pair but `--violet`'s comes from a rule, in `assets/web.css` or in a
- * component's own style block, and names the token that rule paints. Where a
+ * Every pair comes from a rule, in `assets/web.css` or in a component's own
+ * style block, and names the token that rule paints. Where a
  * rule paints over a gradient or an alpha layer the row still has to name a
  * token, so its number reads higher than the ground's: `--blue` is
  * `.opt .ic.ed` in the dock's gradient, at 6.80-7.08 rather than 7.38;
@@ -132,9 +132,9 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * 3.50, and 3.10 on the selected row's own ground. Each clears its floor
  * where it lands.
  *
- * `--violet` is drawn by nothing - no rule in the sheet reads it - and is
- * pinned against the page so the token cannot sit in the palette with no
- * answer for where a surface would put it.
+ * `--violet`'s rule is the pile card's own: `.m .src.forge` in `Queue.svelte`
+ * paints it on the card's raised ground, and it is paired there so the token
+ * cannot sit in the palette with no answer for where a surface would put it.
  *
  * The one ceiling is on the row the prose is read from: every other row that
  * draws `--text` is the same token on a raised ground, and always measures
@@ -144,6 +144,8 @@ const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
   ['--text', '--s2', TEXT],
+  // The walked pile card's own ground: its words draw on `--s3`.
+  ['--text', '--s3', TEXT],
   ['--muted', '--bg', TEXT],
   ['--muted', '--s1', TEXT],
   ['--muted', '--s2', TEXT],
@@ -170,7 +172,8 @@ const DRAWN: readonly Pair[] = [
   ['--blue', '--bg', TEXT],
   ['--teal', '--bg', TEXT],
   ['--teal', '--s2', TEXT],
-  ['--violet', '--bg', TEXT],
+  // The pile card's own source chip: `.m .src.forge`, on the card's ground.
+  ['--violet', '--s2', TEXT],
   ['--hot', '--bg', TEXT],
 ];
 
@@ -190,13 +193,6 @@ const DRAWN: readonly Pair[] = [
  * Named rather than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
-
-/**
- * The one ground the sheet draws no text on: `--s3` is a progress track, and
- * the only pair naming it is the bar fill. Named rather than left out, so a
- * ground whose text pair goes missing is a failure and not a quiet exception.
- */
-const NO_TEXT_GROUND = ['--s3'];
 
 /**
  * Two grounds one step apart, which is the shape a wrong entry in the table
@@ -291,7 +287,7 @@ describe('the palette', () => {
     expect(
       [...grounds].filter((ground) => !withText.has(ground)).sort(),
       'a ground that has lost its text pair',
-    ).toEqual([...NO_TEXT_GROUND]);
+    ).toEqual([]);
   });
 
   it('draws every pair it names inside its band', () => {

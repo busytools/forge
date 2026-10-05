@@ -164,8 +164,8 @@ describe('the queue pile', () => {
     expect(pile().querySelector('.qcard.cur'), 'down past the newest lands in the box').toBeNull();
   });
 
-  it('walks the face: its words, its place in the pile, and the cancel it offers', () => {
-    const { sent, connection } = recording();
+  it('walks the face: its words and its place in the pile', () => {
+    const { connection } = recording();
     draw(rows('one', 'two', 'three'), connection);
 
     key(pile(), 'ArrowUp');
@@ -174,16 +174,10 @@ describe('the queue pile', () => {
     expect(face?.querySelector('.pos')?.textContent, 'and says where that row sits').toBe('#3 / 3');
 
     key(pile(), 'ArrowUp');
-    // The runner spells its rows' sources, so the second row's own label is
-    // what the control should name.
-    const control = host.querySelector<HTMLButtonElement>('.qcount .del');
-    expect(control?.textContent?.trim(), 'the head offers to cancel the walked source').toBe(
-      'cancel you',
-    );
-    control?.click();
-    expect(sent, 'and dispatches the walked row, not the newest').toEqual([
-      { command: { cancel_queued_prompt: { key: SLOT, uuid: 'u1' } } },
-    ]);
+    expect(
+      pile().querySelector('.qcard.cur .w')?.textContent,
+      'the walk steps to the row beside it',
+    ).toBe('two');
   });
 
   it('dispatches a cancel for the row it is on, and leaves the row to the stream', () => {
@@ -205,17 +199,91 @@ describe('the queue pile', () => {
     draw(rows('one', 'two', 'three', 'four'), connection);
 
     const stack = host.querySelector<HTMLElement>('.qstack');
-    expect(stack?.style.height, 'the face plus one step per older prompt').toBe(`${64 + 3 * 6}px`);
+    expect(stack?.style.height, 'the face plus one step per older prompt').toBe(`${64 + 3 * 16}px`);
 
     const drawn = host.querySelectorAll<HTMLElement>('.qcard');
     expect(drawn[3]?.style.transform, 'the newest sits at the foot').toBe('translateY(0px)');
     expect(drawn[0]?.style.transform, 'the oldest is three steps above it').toBe(
-      'translateY(-18px)',
+      'translateY(-48px)',
     );
     expect(
       drawn[0]?.classList.contains('back'),
       'an older row is an edge: it keeps its words to itself',
     ).toBe(true);
+  });
+
+  it('offers the cancel hint only while a row is walked', () => {
+    // Nothing walked means nothing for the key to cancel, so the head must
+    // not advertise it (Ved, 2026-10-04): a key offered that does nothing
+    // reads as broken.
+    const { connection } = recording();
+    draw(rows('one'), connection);
+    const hint = (): string => host.querySelector('.qcount .qhint')?.textContent ?? '';
+
+    expect(hint(), 'the walk is always on offer').toContain('walk');
+    expect(hint(), 'with nothing walked, no cancel is').not.toContain('cancel');
+
+    key(pile(), 'ArrowUp');
+    expect(hint(), 'walked: the key is on offer').toContain('cancel');
+  });
+
+  it('draws a queued envelope as its body alone, with the sender on the meta', () => {
+    // Ved, live 2026-10-04: the card showed the whole `[Message id=...]` head
+    // and a "from X" lead; the sender belongs on the meta, where it explains
+    // what the message is - project alone for a lead, project/label for a
+    // worker.
+    const { connection } = recording();
+    draw(
+      [
+        {
+          uuid: 'u0',
+          source: 'forge',
+          text: "[Message id=m-c154a659 from agent 'forge/client-dev' (org 'Busytools')]\n\nTest peer message from the lead - just a test, nothing needed.",
+        },
+      ],
+      connection,
+    );
+
+    const card = host.querySelector('.qcard .w');
+    expect(card?.textContent, 'the body alone draws').toBe(
+      'Test peer message from the lead - just a test, nothing needed.',
+    );
+    expect(card?.textContent, 'with no envelope head').not.toContain('Message id=');
+    const src = host.querySelector('.qcard .m .src');
+    expect(src?.textContent, 'the meta names the sender, not the transport kind').toBe(
+      'forge/client-dev',
+    );
+    expect(src?.getAttribute('class'), 'coloured as peer traffic').toContain('peer');
+  });
+
+  it('renders the marks in a queued prompt, not the raw syntax', () => {
+    // The three live cron cards, verbatim: marks, a long line, and a text
+    // whose first line carries a code span before its list.
+    const { connection } = recording();
+    draw(
+      [
+        {
+          uuid: 'u0',
+          source: 'cron',
+          text: '**Queue test:** a bold lead with a `code` span and an *italic* tail - nothing to do, this is a card-rendering marker.',
+        },
+        {
+          uuid: 'u1',
+          source: 'cron',
+          text: 'Queue test: a first line with `marks`, then the rest behind the open\n\n- the list survives\n- so does the second item',
+        },
+      ],
+      connection,
+    );
+
+    const first = host.querySelectorAll('.qcard .w')[0];
+    expect(first?.innerHTML, 'emphasis renders').toContain('<strong>Queue test:</strong>');
+    expect(first?.innerHTML, 'and code renders').toContain('<code>code</code>');
+    expect(first?.textContent, 'with no raw marks left').not.toContain('**Queue test:**');
+
+    const second = host.querySelectorAll('.qcard .w')[1];
+    expect(second?.innerHTML, 'a first-line code span renders').toContain('<code>marks</code>');
+    expect(second?.textContent, 'with no raw backticks').not.toContain('`marks`');
   });
 
   it('says what an ending was, where the card was', () => {
@@ -296,6 +364,26 @@ describe('the walk and the box in one composer', () => {
     flushSync();
     expect(document.activeElement, 'the pile going takes nothing with it').toBe(harness.box());
   });
+
+  it('the row revealed behind a cancelled one draws its words', () => {
+    // The walked row settles and leaves: the row behind it takes the face,
+    // and a face that draws nothing is a cancel that reads as a loss.
+    const { connection } = recording();
+    const harness = composed(rows('one', 'two', 'three'), connection);
+
+    key(harness.pile(), 'ArrowUp');
+    expect(harness.pile().querySelector('.qcard.cur .w')?.textContent, 'the walk is on three').toBe(
+      'three',
+    );
+
+    // The core settles the walked row and it leaves the pile.
+    harness.page.rows = rows('one', 'two');
+    flushSync();
+
+    const cards = [...harness.pile().querySelectorAll('.qcard')];
+    const face = cards.find((card) => !card.classList.contains('back'));
+    expect(face?.querySelector('.w')?.textContent, 'the revealed row draws its words').toBe('two');
+  });
 });
 
 /**
@@ -311,26 +399,26 @@ describe('the walk and the box in one composer', () => {
  * sheet never grows a rule over one of them again.
  *
  * **The one shared name is `.ic`, on purpose**: `Icon.svelte` applies it to
- * every icon the app draws, the cancel control's included. Every other name
- * the sheet could reach the pile by, the pile must not carry.
+ * every icon the app draws. Every other name the sheet could reach the pile
+ * by, the pile must not carry.
  */
 describe("the pile's own vocabulary", () => {
   /** The sheet's icon name, which `Icon.svelte` gives every icon there is. */
   const SHARED = new Set(['ic']);
 
   it('keeps every named rule off the pile, in the walked state too', () => {
-    // The walked state is the one carrying the cancel control and its icon,
-    // and the ended line belongs to the same check: guarding only the states
-    // the app draws for a frame is how a live reach passed this test.
+    // The walked state is the one the walk's own marks draw in, and the ended
+    // line belongs to the same check: guarding only the states the app draws
+    // for a frame is how a live reach passed this test.
     draw(rows('one', 'two'), recording().connection, { text: 'gone', state: 'discarded' });
     key(pile(), 'ArrowUp');
 
-    // Inside the composer, where the page mounts the pile: a rule anchored on
-    // an ancestor the snapshot omits would pass a flatter tree.
     // From the suite's own root, which the runner sets to the client: jsdom
     // rewrites `import.meta.url` to a non-file URL, so the sheet has no file
     // URL to be read by, and vitest hands a css `?raw` import back empty.
     const sheet = readFileSync('src/assets/web.css', 'utf8');
+    // Inside the composer, where the page mounts the pile: a rule anchored on
+    // an ancestor the snapshot omits would pass a flatter tree.
     const dom = new JSDOM(`<style>${sheet}</style><div class="composer">${host.innerHTML}</div>`);
     const styles = dom.window.document.styleSheets[0];
     if (styles === undefined) throw new Error('the sheet did not parse');
@@ -375,13 +463,13 @@ describe("the pile's own vocabulary", () => {
     visit(styles.cssRules, 0);
 
     // Coverage assertions for the ways this check went blind: the snapshot
-    // must hold the walked icon the check exists for, the pile must sit in
+    // must hold the walked row the check exists for, the pile must sit in
     // the composer an anchored rule could otherwise hide behind, the ended
     // line belongs to the drawn states, and the walk must have entered the
     // at-rule bodies a bare `.row` already hides in.
     expect(
-      dom.window.document.querySelector('.qcount .del .ic'),
-      'the walked cancel icon is the case this check reads',
+      dom.window.document.querySelector('.qcard.cur .pos'),
+      'the walked row is the case this check reads',
     ).not.toBeNull();
     expect(
       dom.window.document.querySelector('.composer .pile'),

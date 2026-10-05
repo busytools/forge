@@ -10,7 +10,6 @@
   import { mintPromptId } from '../wire/ids';
   import type { SessionSlot } from '../wire/types';
   import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
-  import Compacting from './Compacting.svelte';
   import { latestCompaction } from './compaction-jump';
   import {
     Chat,
@@ -45,7 +44,6 @@
     connection,
     waking = false,
     reason = null,
-    compacting = false,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -53,8 +51,6 @@
     waking?: boolean;
     /** Why, when it does. */
     reason?: string | null;
-    /** A compaction in flight, which the newest turn draws a line for. */
-    compacting?: boolean;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -89,10 +85,10 @@
    *
    * **Measured in rows rather than pixels** (the terminal's rule, and
    * `anchor.ts` carries the reasoning): the layout moves under a reader who is
-   * not at the foot - a lane re-sorts to whichever took the latest row, a row
-   * measures taller once drawn - and an offset that stays put reads as the page
-   * sliding under them (Ved, 2026-10-03). It goes the moment the follow is back
-   * on, because the foot is where that reader wants to be.
+   * not at the foot - a row measures taller once drawn, a stretch is corrected
+   * as frames land - and an offset that stays put reads as the page sliding
+   * under them (Ved, 2026-10-03). It goes the moment the follow is back on,
+   * because the foot is where that reader wants to be.
    */
   let anchor: Anchor | null = null;
   let working: Chat | null = null;
@@ -120,7 +116,7 @@
   const newestTurn = $derived(
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
-  /** The newest turn's key: the row a compaction in flight belongs under. */
+  /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
 
   /**
@@ -501,26 +497,16 @@
   });
 
   /**
-   * What the follow pass runs on: the seat, the newest turn, and the line that
-   * grows it.
+   * What the follow pass runs on: the seat and the turn count.
    *
-   * **The compaction line is part of the last row and arrives as a PROP**, not
-   * as a frame, so a flip alone grows that row by its height with no scroll
-   * behind it - and nothing else re-runs the follow until some later frame
-   * happens to land, which on a session with no hooks is never. The line then
-   * draws with its baseline below the fold for the whole compaction. Keyed
-   * here so the follow re-sticks when the line appears.
-   *
-   * **And the seat travels in the key as consistency, not as the mechanism**:
+   * **The seat travels in the key as consistency, not as the mechanism**:
    * what re-runs the pass on a switch is the arriving conversation's own
    * record being published to the column, which the effect watches (measured:
    * six constructions tried, none where the key decides) - so the seat is in
    * the key so two seats with the same number of turns cannot collide, belt
    * and braces beside the publish that does the work (#1673).
    */
-  const follows = $derived(
-    held.turns.length === 0 ? null : `${seat}:${held.turns.length}:${compacting}`,
-  );
+  const follows = $derived(held.turns.length === 0 ? null : `${seat}:${held.turns.length}`);
 
   /**
    * The newest turn's own report row - the unit, and the figures in it -
@@ -875,9 +861,6 @@
          the empty copy here would say the seat has no history when the truth
          is that nothing has answered yet. -->
     <p class="hold">Reading the conversation...</p>
-    {#if compacting}
-      <Compacting />
-    {/if}
   </div>
 {:else if held.turns.length === 0}
   <div class="conv">
@@ -891,9 +874,6 @@
         Nothing said yet
         <span class="sub">this seat has no history: what is said here starts it</span>
       </div>
-    {/if}
-    {#if compacting}
-      <Compacting />
     {/if}
   </div>
 {:else}
@@ -918,12 +898,7 @@
   >
     {#snippet children(turn: HeldTurn)}
       <div class="turn">
-        <Turn
-          {turn}
-          {slot}
-          compacting={compacting && turn.key === newest}
-          carried={turn.key === newest ? (pinned?.key ?? null) : null}
-        />
+        <Turn {turn} {slot} carried={turn.key === newest ? (pinned?.key ?? null) : null} />
         <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or
              joins, so nothing moves when the send is taken. -->

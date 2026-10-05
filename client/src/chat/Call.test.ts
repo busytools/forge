@@ -28,9 +28,9 @@ const boxes = (body: string): string[] =>
 describe('the row one call draws', () => {
   /**
    * **The row carries the fold's own name, not the wire id.** Two id-less
-   * `tool_use` calls leave the wire id empty, so the lane hands the fold's key
-   * down and the row draws that: keys stay unique, which is what the column's
-   * anchor would need of them.
+   * `tool_use` calls leave the wire id empty, so the leaves list hands the
+   * fold's key down and the row draws that: keys stay unique, which is what
+   * the column's anchor would need of them.
    */
   it("carries the fold's key on the row", () => {
     const named = render(Call, { props: { call: backgrounded(null), k: 'f7' } }).body;

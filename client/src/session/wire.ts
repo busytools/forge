@@ -158,9 +158,9 @@ export interface Conversation {
 /**
  * What the seat's composer is doing.
  *
- * `compacting` is narrowed because the conversation column draws a line for
- * it; the other three are the composer's own states and are left as they came,
- * for the component that owns them rather than for every reader to re-narrow.
+ * `compacting` is narrowed because the composer draws a line for it; the
+ * other three are the composer's own states and are left as they came, for
+ * the component that owns them rather than for every reader to re-narrow.
  */
 export interface ComposerState {
   take: unknown;

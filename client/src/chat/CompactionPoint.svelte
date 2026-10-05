@@ -5,9 +5,10 @@
 
   /**
    * The compaction point: where the conversation was cut and the transcript
-   * replaced. It is what the in-flight `Compacting context...` line settles
-   * into, and it sits in the conversation at the boundary rather than in the
-   * header - the header's count says how many, this says where.
+   * replaced. It is the settled record of the compaction whose in-flight form
+   * the composer draws, and it sits in the conversation at the boundary
+   * rather than in the header - the header's count says how many, this says
+   * where.
    *
    * A hint rather than a block: a hairline across the column carrying the word,
    * the count read before the cut, and a handle onto the trigger behind it.

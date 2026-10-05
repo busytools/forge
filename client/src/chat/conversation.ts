@@ -592,6 +592,17 @@ export class Chat {
    * says the CLI took the prompt.
    */
   private drained = new Map<string, unknown>();
+  /**
+   * Whether a drop was seen, and whether a snapshot ever reconciled.
+   *
+   * **The two states that make a snapshot authoritative**: the first one
+   * after a subscribe (the attacher's only word) and the first one after a
+   * socket drop (the frames of anything that settled in the gap are gone).
+   * Every later snapshot is only a picture, and a picture the server built
+   * before a send can be delivered after it - see {@link armed}.
+   */
+  private missed = false;
+  private reconciled = false;
 
   constructor(connection: Connection, slot: SessionSlot) {
     this.connection = connection;
@@ -725,6 +736,10 @@ export class Chat {
       // answers with an ask of its own - so an ask this conversation was told
       // to forget is answered by nothing, and its count must not outlive it.
       if (status !== 'open') {
+        // Anything the queue settles while the socket is down dies unheard,
+        // so the next snapshot is the only word on those holds - `armed`
+        // reads this rather than trusting every snapshot's listing.
+        this.missed = true;
         const held = this.inFlight !== null;
         this.inFlight = null;
         this.abandoned = 0;
@@ -1169,6 +1184,13 @@ export class Chat {
       const words = textIn(update, 'prompt_queued', 'text');
       if (uuid !== null) {
         this.waiting.set(uuid, { since: Date.now(), text: words ?? '' });
+        // **The card is what carries a waiting prompt's words, so the send's
+        // own mark goes with them.** The mark stands in for the row the words
+        // will occupy, and while the prompt waits the pile's card IS that row -
+        // left up, the mark draws the words a second time, in the chat, saying
+        // "sending" over a card already showing them (Ved, 2026-10-04). Ids
+        // only: two sends of the same text compare equal by words.
+        if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
         // **The two frames race, and this side of the race is the retraction.**
         // The dispatcher emits the user turn as it routes the prompt; the
         // task's queue announcement follows it, so a frame often arrives before
@@ -1273,6 +1295,17 @@ export class Chat {
    * the hold, the same way the live retraction pulls one.
    */
   private armed(data: unknown): void {
+    // **Only the snapshots that are the ONLY word on a uuid reconcile it: the
+    // first after a start (a fresh attacher is handed no `prompt_queued`
+    // backlog) and the first after a drop (the lifecycle frames of anything
+    // that settled in the gap died with the socket).** A later healthy
+    // snapshot can be older than the live frames it meets - a read the server
+    // built before a send can be delivered after it - and acting on its
+    // listing would undo what the frames just settled: releasing a hold draws
+    // a row the pile is still drawing, and arming one retracts a row that
+    // already started.
+    const fresh = !this.reconciled || this.missed;
+    this.reconciled = true;
     // `state` is the wire's own record inside the snapshot, the same nesting
     // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.
     const root = (data ?? {}) as { state?: unknown };
@@ -1284,6 +1317,7 @@ export class Chat {
       const entry = row as { uuid?: unknown; text?: unknown } | null;
       if (typeof entry?.uuid !== 'string' || entry.uuid === '') continue;
       listed.add(entry.uuid);
+      if (!fresh) continue;
       if (this.waiting.has(entry.uuid) || this.drained.has(entry.uuid)) continue;
       this.waiting.set(entry.uuid, {
         since: Date.now(),
@@ -1293,12 +1327,14 @@ export class Chat {
       // unfiltered; arming now pulls that copy back into the hold.
       this.retract(entry.uuid);
     }
+    if (!fresh) return;
     for (const uuid of [...this.waiting.keys()]) {
       if (!listed.has(uuid)) this.release(uuid);
     }
     for (const uuid of [...this.drained.keys()]) {
       if (!listed.has(uuid)) this.release(uuid);
     }
+    this.missed = false;
   }
 
   /**

@@ -2,11 +2,11 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { describe, expect, it } from 'vitest';
 
-import Group from './Group.svelte';
-import { fold, type Lane } from './units';
+import Leaves from './Leaves.svelte';
+import { fold, type WorkRow } from './units';
 
 /**
- * The lane's rows as MOUNTED DOM, which the server-rendered file cannot pin.
+ * The list's rows as MOUNTED DOM, which the server-rendered file cannot pin.
  *
  * A duplicate key is a client-runtime refusal - it aborts the render rather
  * than drawing something wrong - so it only shows up in a mount.
@@ -29,12 +29,12 @@ describe('a family of calls, mounted', () => {
     });
     const units = fold([idLess('a1'), idLess('a2')]);
     const group = units[0];
-    if (group?.kind !== 'group') throw new Error('the fold drew no group to draw');
+    if (group?.kind !== 'leaves') throw new Error('the fold drew no rows to draw');
 
-    const app = mount(Group, { target: document.body, props: { lanes: group.lanes } });
+    const app = mount(Leaves, { target: document.body, props: { rows: group.rows } });
     try {
       flushSync();
-      expect(document.querySelectorAll('.lane .leaf').length, 'both calls drew').toBe(2);
+      expect(document.querySelectorAll('.leaves .leaf').length, 'both calls drew').toBe(2);
     } finally {
       void unmount(app);
       document.body.innerHTML = '';
@@ -46,41 +46,39 @@ describe('a family of calls, mounted', () => {
     // unfiltered `agents__list` - the documented health check - carries two
     // rows with that word. Keyed by the label they are one key, and Svelte
     // refuses a duplicate key at mount: the whole turn stops drawing.
-    const lanes: Lane[] = [
+    const rows: WorkRow[] = [
       {
-        tag: 'message',
-        cards: [
-          {
-            id: 'm-1',
-            row: 'list',
-            peer: 'list',
-            body: '',
-            org: null,
-            status: 'completed',
-            ack: null,
-            seat: null,
-            seats: [
-              {
-                org: 'Busytools',
-                label: 'lead',
-                project: 'forge',
-                what: 'this session',
-                liveness: '',
-              },
-              {
-                org: 'Gateway',
-                label: 'lead',
-                project: 'gateway-backend',
-                what: 'another project',
-                liveness: '',
-              },
-            ],
-          },
-        ],
+        tag: 'card',
+        card: {
+          id: 'm-1',
+          row: 'list',
+          peer: 'list',
+          body: '',
+          org: null,
+          status: 'completed',
+          ack: null,
+          seat: null,
+          seats: [
+            {
+              org: 'Busytools',
+              label: 'lead',
+              project: 'forge',
+              what: 'this session',
+              liveness: '',
+            },
+            {
+              org: 'Gateway',
+              label: 'lead',
+              project: 'gateway-backend',
+              what: 'another project',
+              liveness: '',
+            },
+          ],
+        },
       },
     ];
 
-    const app = mount(Group, { target: document.body, props: { lanes } });
+    const app = mount(Leaves, { target: document.body, props: { rows } });
     try {
       flushSync();
       expect(document.querySelectorAll('details.leaf .kv').length, 'both seat rows drew').toBe(2);

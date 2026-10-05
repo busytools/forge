@@ -151,3 +151,15 @@ describe("the conversation draws at the terminal's density", () => {
     }
   });
 });
+
+describe("an icon's optical alignment", () => {
+  it('carries the one-pixel lift in the shared .ic rule, so every site inherits it', () => {
+    // An icon centered against a text line box reads low, because the box
+    // carries the descender space the ink does not. The lift lives in the one
+    // rule every icon wears, so a new site inherits the alignment - and a
+    // restyle that drops it misaligns every glyph in the app at once.
+    const rule = /(^|\})\.ic \{[^}]*\}/m.exec(SHEET)?.[0] ?? '';
+    expect(rule, 'the base .ic rule').not.toBe('');
+    expect(rule, 'carries the lift').toContain('top: -1px');
+  });
+});

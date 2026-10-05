@@ -5,6 +5,7 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import { iconOf } from './families';
   import { languageFor, type CallBody, type ToolLeaf } from './leaves';
   import Prose from './Prose.svelte';
   import { searchHits } from './text';
@@ -13,7 +14,7 @@
    * One call: what it was, whether it came back, and what it came back with.
    *
    * The group above keys this row by the row's own key, which for a call is
-   * the id the wire gave it. A place in a lane is not a key: a page landing
+   * the id the wire gave it. A place in the list is not a key: a page landing
    * with its copy of the turn can put a block above this row, and every place
    * below it shifts - which remounts the row and closes what the reader had
    * open in it.
@@ -33,8 +34,8 @@
      * The fold's own name for this row, which the row draws in `data-k`.
      *
      * **Required, and the wire id would not do**: an id-less `tool_use` leaves
-     * it empty, and two such rows would carry one key. The lane hands the
-     * fold's key down.
+     * it empty, and two such rows would carry one key. The leaves list hands
+     * the fold's key down.
      *
      * **The column's anchor does not look this far down today**: its scan
      * takes the first row whose box crosses the viewport's top, and the unit
@@ -159,6 +160,19 @@
       ? null
       : `${call.mutation.hunks} ${call.mutation.hunks === 1 ? 'hunk' : 'hunks'} \u{b7} +${call.mutation.added} \u{2212}${call.mutation.removed}`,
   );
+
+  /**
+   * The tone the kind's glyph takes once the call settles - green came back,
+   * red failed - and nothing while it still runs: the loader is what says so
+   * then.
+   */
+  const tone = $derived(
+    call.status === 'completed'
+      ? ' ok'
+      : call.status === 'failed' || call.status === 'killed'
+        ? ' err'
+        : '',
+  );
 </script>
 
 <details
@@ -168,11 +182,8 @@
   data-k={`call-${k}`}
 >
   <summary>
-    {#if call.status === 'completed'}
-      <Icon name="check" class="st" />
-    {:else if call.status === 'failed' || call.status === 'killed'}
-      <Icon name="x" class="st err" />
-    {:else}
+    <Icon name={iconOf(call.row)} class={`gl${tone}`} />
+    {#if call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'}
       <span class="st"><span class="ring"></span></span>
     {/if}
     <span class="tn">{call.title}</span>

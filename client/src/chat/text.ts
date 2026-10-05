@@ -266,11 +266,12 @@ export function searchHits(text: string): SearchHit[] | null {
 }
 
 /**
- * A tool's own name, with the server it belongs to taken off.
+ * A tool's own name, with the wire's prefix taken off.
  *
- * An MCP tool is named `mcp__<server>__<tool>` on the wire, and the row it
- * sits on already says the server: the family lane is named for it. Repeating
- * it in the title spends the row's width on a word the reader has just read.
+ * An MCP tool is named `mcp__<server>__<tool>` on the wire, and the server is
+ * not this function's to drop: the row's title wears it in front of this
+ * (`titleOf`), so what comes off here is the plumbing between the two, never
+ * the name a reader needs.
  */
 export function toolName(name: string): string {
   if (!name.startsWith('mcp__')) return name;

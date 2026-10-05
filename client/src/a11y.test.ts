@@ -303,11 +303,9 @@ describe('axe over the rendered pages', () => {
         },
       },
     }).body;
-    // The peer lane is the one place these marks are drawn, and each row kind
-    // carries its own - so together they say every row was really there for
-    // the check.
+    // Every kind of row carries its own mark, so together they say the rows
+    // were really there for the check.
     for (const [mark, what] of [
-      ['i-bot', 'the lane'],
       ['i-inbox', 'the arrival'],
       ['i-plane', 'the send and the failure'],
       ['i-badge', 'whoami'],

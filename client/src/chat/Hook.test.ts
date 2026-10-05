@@ -59,8 +59,8 @@ describe('the hook run row', () => {
     const body = draw();
     const said = summaryWords(body);
 
-    // The row leads with the name: the lane above it says the kind, so a row
-    // repeating "hook" would be the second telling the lane exists to end.
+    // The row leads with the name: the glyph says the kind, so a row
+    // repeating "hook" would be the second telling the glyph already gives.
     expect(said, 'the name, and nothing ahead of it').toMatch(/^SessionStart:startup/);
     expect(said, 'the hook the CLI matched, under its own name').toContain('SessionStart:startup');
     expect(said, 'and what it printed, joined, without opening it').toContain('capture-line-1');
@@ -180,16 +180,20 @@ describe('the hook run row', () => {
    */
   it('marks a run that failed on the closed row', () => {
     const failed = summaryOf(draw({ failed: true }));
-    expect(failed, 'the failure mark a failed call, turn or run leads with').toContain('#i-x');
-    expect(failed, 'drawn as the shared state mark').toContain('class="ic st err"');
-    expect(summaryOf(draw()), 'and a run that exited clean carries no mark').not.toContain('#i-x');
+    expect(failed, 'the failure rides the run mark a failed row leads with').toContain(
+      'class="ic gl err"',
+    );
+    expect(failed, 'and carries no second mark').not.toContain('#i-x');
+    expect(summaryOf(draw()), 'a run that exited clean settles green').toContain(
+      'class="ic gl ok"',
+    );
 
     for (const [what, sheet] of sheets()) {
       // The selector alone proves nothing, so the rule and the declaration are
-      // pinned together: dropping the mark's class or swapping the token is what
+      // pinned together: dropping the glyph's tone or swapping the token is what
       // turns a failed run green.
-      expect(sheet, `${what} colours the failed row's mark`).toMatch(
-        /details\.leaf > summary \.st\.err \{[^}]*color: var\(--bad\)/,
+      expect(sheet, `${what} colours the failed row's glyph`).toMatch(
+        /details\.leaf > summary \.gl\.err \{[^}]*color: var\(--bad\)/,
       );
     }
   });
@@ -215,10 +219,9 @@ describe('the hook run row', () => {
   /**
    * **A bare class name reaches further than the row it was written for.**
    * Drawn as `.kind`, the thinking row inherited the family-tree disclosure's
-   * 3px margins - the trap the sheet's `.knd` and `.tkind` were both split out
-   * of. So every class this row wears must have no BARE rule of that name, and
-   * the row's own box is one letter from the chip's `.hooks`, which is why
-   * `.hook` is not it.
+   * 3px margins, and every class this row has worn since has been split out
+   * of that trap. The row's own box is one letter from the chip's `.hooks`,
+   * which is why `.hook` is not it.
    *
    * **Bare is what this reads**: a rule for the same name under another
    * component's ancestor (`details.kind > summary .nm`) is a different rule and

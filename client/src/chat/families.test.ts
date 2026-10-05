@@ -1,35 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import { aggregateStatus, familyOf, iconOf, labelOf, rowOf, taskStatus } from './families';
+import { familyOf, iconOf, rowOf, taskStatus } from './families';
 
 describe('the row a call is summarised under', () => {
-  it('keys a family tool on its family, and the row draws the family word', () => {
+  it('keys a family tool on its family', () => {
     expect(rowOf('Read')).toEqual({ kind: 'family', family: 'read' });
-    expect(labelOf('Read')).toBe('read');
     expect(familyOf('Grep')).toBe('search');
-    expect(labelOf('Grep')).toBe('search');
   });
 
   it('gives every mutation the one edit row', () => {
     // The wire's own answer gives each of the four tools a row of its own,
-    // which draws two rows both labelled `edit` with the second out of order
+    // which draws two rows both reading `edit` with the second out of order
     // behind the first.
     for (const name of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
       expect(rowOf(name), `${name} is a mutation`).toEqual({ kind: 'family', family: 'edit' });
-      expect(labelOf(name), `${name} draws the fold's own word`).toBe('edit');
     }
   });
 
-  it('gives each MCP server a lane named for the server', () => {
-    // Two servers are two rows, and a server's name is only known at runtime,
-    // which is why the row carries a label rather than a family alone.
+  it('keys every MCP call to the mcp row', () => {
+    // A server's name is known only at runtime, and the row draws the mcp
+    // glyph rather than the server: two servers are two rows of one kind.
     expect(rowOf('mcp__playwright__browser_click')).toEqual({ kind: 'mcp' });
-    expect(labelOf('mcp__playwright__browser_click')).toBe('playwright');
-    expect(labelOf('mcp__forge__agents__list')).toBe('forge');
+    expect(rowOf('mcp__forge__agents__list')).toEqual({ kind: 'mcp' });
   });
 
-  it('gives the systemone decisions their own lane, word and fork', () => {
-    // The three decisions are the one MCP group with a lane of its own: a
+  it('gives the systemone decisions their own row and fork', () => {
+    // The three decisions are the one MCP group with a class of its own: a
     // reader scanning for what the session decided must not find them mixed
     // among the cron and peer calls that share the forge server.
     for (const name of [
@@ -38,24 +34,21 @@ describe('the row a call is summarised under', () => {
       'mcp__forge__systemone__ask_score',
     ]) {
       expect(rowOf(name), `${name} is a decision call`).toEqual({ kind: 'systemone' });
-      expect(labelOf(name), `${name} draws the family word`).toBe('systemone');
       expect(iconOf(rowOf(name)), `${name} draws the fork`).toBe('decide');
     }
   });
 
-  it('keeps every other forge tool in the forge lane', () => {
+  it('keeps every other forge tool on the mcp row', () => {
     expect(rowOf('mcp__forge__cron__create')).toEqual({ kind: 'mcp' });
-    expect(labelOf('mcp__forge__cron__create')).toBe('forge');
     expect(iconOf(rowOf('mcp__forge__cron__create'))).toBe('mcp');
-    // The family is the three names, not the server prefix: a future
-    // `systemone__*` tool that is not one of the decisions stays a forge row.
+    // The class is the three names, not the server prefix: a future
+    // `systemone__*` tool that is not one of the decisions stays an mcp row.
     expect(rowOf('mcp__forge__systemone__something_else')).toEqual({ kind: 'mcp' });
   });
 
   it('draws a tool the table has no row for as the generic one', () => {
     expect(rowOf('brand_new_tool')).toEqual({ kind: 'family', family: 'tool' });
-    expect(labelOf('brand_new_tool')).toBe('tool');
-    expect(labelOf('Monitor')).toBe('tool');
+    expect(rowOf('Monitor')).toEqual({ kind: 'family', family: 'tool' });
   });
 
   it('names the sprite each row draws', () => {
@@ -63,6 +56,12 @@ describe('the row a call is summarised under', () => {
     expect(iconOf(rowOf('Edit'))).toBe('edit');
     expect(iconOf(rowOf('mcp__forge__agents__list'))).toBe('mcp');
     expect(iconOf(rowOf('brand_new_tool'))).toBe('tool');
+    // Three families draw a symbol of a nearer name than their own: the boxed
+    // terminal, the settings gear and the git branch - the family words name
+    // no sprite.
+    expect(iconOf(rowOf('Bash'))).toBe('square-terminal');
+    expect(iconOf(rowOf('Config'))).toBe('settings');
+    expect(iconOf(rowOf('EnterWorktree'))).toBe('git');
   });
 });
 
@@ -82,20 +81,5 @@ describe('the status word a task frame carries', () => {
     // keeps the status the call already had.
     expect(taskStatus('half-done')).toBeNull();
     expect(taskStatus(null)).toBeNull();
-  });
-});
-
-describe('what a run reports', () => {
-  it('reports a failure in the run, and the calls keep their own status', () => {
-    expect(aggregateStatus(['completed', 'failed', 'completed'])).toBe('failed');
-  });
-
-  it('reports a run still going as in progress', () => {
-    expect(aggregateStatus(['completed', 'in_progress'])).toBe('in_progress');
-  });
-
-  it('reports a run with nothing back yet as pending', () => {
-    expect(aggregateStatus(['completed', 'pending'])).toBe('pending');
-    expect(aggregateStatus(['completed', 'completed'])).toBe('completed');
   });
 });

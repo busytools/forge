@@ -113,19 +113,25 @@ export function rowOf(name: string): KindRow {
 }
 
 /**
- * The word a row draws.
+ * The sprite each family draws.
  *
- * A family draws its own name, a mutation draws `edit` whatever tool it was,
- * and a server draws its own name rather than a generic word: two servers are
- * two lanes, and the lane a call sits in says which one ran it.
+ * Three families draw a symbol of a nearer name than their own, because the
+ * family words name no sprite: bash is the boxed terminal, config the settings
+ * gear, and worktree a git branch.
  */
-export function labelOf(name: string): string {
-  if (isDecisionTool(name)) return 'systemone';
-  const mcp = mcpParts(name);
-  if (mcp !== null) return mcp.server;
-  if (isEdit(name)) return 'edit';
-  return familyOf(name);
-}
+const FAMILY_GLYPH: Record<Family, string> = {
+  read: 'read',
+  search: 'search',
+  bash: 'square-terminal',
+  web: 'web',
+  lsp: 'lsp',
+  skill: 'skill',
+  toolsearch: 'toolsearch',
+  config: 'settings',
+  worktree: 'git',
+  tool: 'tool',
+  edit: 'edit',
+};
 
 /** The sprite a row draws, by the class it belongs to. */
 export function iconOf(row: KindRow): string {
@@ -138,7 +144,7 @@ export function iconOf(row: KindRow): string {
     case 'outbound':
       return 'in';
     case 'family':
-      return row.family === 'edit' ? 'edit' : row.family;
+      return FAMILY_GLYPH[row.family];
   }
 }
 
@@ -169,24 +175,4 @@ export function taskStatus(wire: string | null): CallStatus | null {
     default:
       return null;
   }
-}
-
-/**
- * What a run of calls reports.
- *
- * The roll-up says the run has a failure in it and never which call: the
- * per-call status is what says that, and it rides every row. A run still going
- * is in progress whatever else is in it, because the thing a reader wants to
- * know about a run in flight is that it is in flight.
- */
-export function aggregateStatus(statuses: readonly CallStatus[]): CallStatus {
-  let failed = false;
-  let pending = false;
-  for (const status of statuses) {
-    if (status === 'in_progress') return 'in_progress';
-    if (status === 'failed' || status === 'killed') failed = true;
-    if (status === 'pending') pending = true;
-  }
-  if (failed) return 'failed';
-  return pending ? 'pending' : 'completed';
 }

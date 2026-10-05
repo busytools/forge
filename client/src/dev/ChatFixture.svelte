@@ -105,11 +105,8 @@
     }
 
     /**
-     * One thought arriving in the turn already open, which is the regrouping
-     * case: a turn's lanes sort by the latest row each one took, so the whole
-     * thinking lane moves to the end of the order whenever a thought lands -
-     * rows move under a reader who is not at the foot, and their offset does
-     * not.
+     * One thought arriving in the turn already open: a row that lands at the
+     * foot like any other, with the bubble leading it.
      */
     function think(): number {
       nth += 1;
@@ -140,8 +137,8 @@
     }
 
     /**
-     * One tool call and its result, landing in the turn already open: a family
-     * lane of its own, which is what a later thought re-sorts past.
+     * One tool call and its result, landing in the turn already open: a row of
+     * its own at the foot, with the family's glyph leading it.
      */
     function call(): number {
       nth += 1;
@@ -191,11 +188,9 @@
      * watching for a button, and what the page has to survive is a turn
      * arriving while they are reading something else.
      *
-     * **The cycle is the regrouping, in order**: a thought opens the thinking
-     * lane, a call opens a family lane after it, and the next thought takes the
-     * lane back to the end of the order - which moves the family's rows UP
-     * under a reader parked among them. That drift is what the column's anchor
-     * is for, and this is its repro.
+     * The cycle mixes the arrivals a live turn produces - a turn below, a
+     * thought and a call into the turn already open - so the column is under
+     * load from every direction a frame comes in.
      */
     function every(ms: number): () => void {
       let at = 0;

@@ -1,10 +1,9 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
-  import Compacting from './Compacting.svelte';
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
-  import Group from './Group.svelte';
+  import Leaves from './Leaves.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
@@ -22,19 +21,16 @@
    * neither re-measures it nor closes what the reader has open.
    *
    * **The fold is not this component's.** `fold` decides what the turn's
-   * messages are - one group per stretch of work, a lane per family and per
-   * kind of peer traffic, a card for a question, a notice for a delivery - and
-   * this draws what it is given.
+   * messages are - one flat list of rows per stretch of work, a card for a
+   * question, a notice for a delivery - and this draws what it is given.
    */
   let {
     turn,
     slot = null,
-    compacting = false,
     carried = null,
   }: {
     turn: HeldTurn;
     slot?: Self | null;
-    compacting?: boolean;
     /**
      * The key of this turn's report row that the pin above the box is drawing,
      * or `null` where the pin is drawing none of them.
@@ -64,7 +60,7 @@
   /** A reader's own words on their own, or a run of everything else in one block. */
   type Block =
     | { mine: true; unit: Extract<Unit, { kind: 'user' }> }
-    | { mine: false; nth: number; units: Unit[]; footer: number; trailing: boolean };
+    | { mine: false; nth: number; units: Unit[] };
 
   /**
    * What identifies a block: a reader's own words by their own key, a run of
@@ -99,58 +95,19 @@
       }
       const last = out[out.length - 1];
       if (last !== undefined && !last.mine) last.units.push(unit);
-      else out.push({ mine: false, nth: 0, units: [unit], footer: 0, trailing: false });
+      else out.push({ mine: false, nth: 0, units: [unit] });
     }
-    // Where the turn's footer begins: the hooks chip, the report row and a
-    // hook's own run, which the compaction line sits ABOVE - the order the
-    // terminal settled, and the one the book's page and the approved mockup
-    // both draw.
     return out.map((block, nth) => {
       if (block.mine) return block;
-      const footer = footerOf(block.units);
       // Which run of its kind this is, which is what it is keyed by: a run's
       // own units can grow at either end, so neither end names it.
       const runs = out.slice(0, nth).filter((before) => !before.mine).length;
-      return { ...block, nth: runs, footer, trailing: footer === block.units.length };
+      return { ...block, nth: runs };
     });
   });
-
-  /**
-   * The index the turn's trailing furniture starts at: the hooks chip and the
-   * report row.
-   *
-   * **The chip belongs here, and the state where that decides anything is
-   * captured.** In `compact.jsonl` a `SessionStart:compact` run's frames land
-   * between the `status: compacting` frame and the one that clears it, so
-   * frames arriving while a compaction is in flight is a shape the corpus
-   * holds - and that is the state where this set decides where the line
-   * draws. Left out, the line's place would depend on whether a hook happened
-   * to fire.
-   *
-   * **Whether a Stop hook's frames also arrive after the result that settled
-   * the turn is open**, and none of the above rests on it: no capture holds
-   * one.
-   */
-  function footerOf(units: readonly Unit[]): number {
-    let at = units.length;
-    while (at > 0) {
-      const kind = units[at - 1]?.kind;
-      if (kind !== 'hooks' && kind !== 'report') break;
-      at -= 1;
-    }
-    return at;
-  }
-
-  /**
-   * Whether the compaction line needs a block of its own.
-   *
-   * A block of its own is for a turn that ends on the reader's own words,
-   * where the line would otherwise sit inside their attribution.
-   */
-  const loose = $derived(compacting && layout.at(-1)?.mine !== false);
 </script>
 
-{#each layout as block, at (blockKey(block))}
+{#each layout as block (blockKey(block))}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
     <div class="mine" data-k={`${turn.key}:${blockKey(block)}`}>
@@ -170,10 +127,7 @@
     </div>
   {:else}
     <div class="work">
-      {#each block.units as unit, index (unit.key)}
-        {#if compacting && at === layout.length - 1 && index === block.footer}
-          <Compacting />
-        {/if}
+      {#each block.units as unit (unit.key)}
         <!-- The unit's own key, in the DOM, for the one reader that has to
              find the row again after the layout moves: the column's anchor
              (`chat/anchor.ts`). **Prefixed with the turn's key** because the
@@ -184,8 +138,8 @@
         <div class="unit" data-k={`${turn.key}:${unit.key}`}>
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
-          {:else if unit.kind === 'group'}
-            <Group lanes={unit.lanes} />
+          {:else if unit.kind === 'leaves'}
+            <Leaves rows={unit.rows} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}
@@ -206,12 +160,6 @@
           {/if}
         </div>
       {/each}
-      {#if compacting && at === layout.length - 1 && block.trailing}
-        <Compacting />
-      {/if}
     </div>
   {/if}
 {/each}
-{#if loose}
-  <div class="work"><Compacting /></div>
-{/if}
