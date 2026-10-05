@@ -724,16 +724,9 @@ export interface InboundLeaf {
   elevated: boolean;
 }
 
-/** One lane of inbound deliveries: a kind's own lines, in arrival order. */
-export interface InboundLane {
-  tag: 'inbound';
-  kind: InboundKind;
-  rows: InboundLeaf[];
-}
-
 /**
- * What an envelope's prose turned into: a peer message, an inbound lane's
- * row, or a line nobody typed.
+ * What an envelope's prose turned into: a peer message, an inbound row, or a
+ * line nobody typed.
  */
 type Envelope =
   | { kind: 'peer'; card: PeerCard }
