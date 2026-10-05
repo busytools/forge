@@ -2622,6 +2622,45 @@ mod tests {
         );
     }
 
+    /// **A window that begins on the row just below the cursor grows.** Its
+    /// rows are all at or above the cursor, so it holds nothing to serve - and
+    /// answering that as an empty span would hand the client a cursor it
+    /// cannot use, ending the history where it merely stopped. The window
+    /// that holds the row below the cursor is one step away.
+    #[test]
+    fn a_span_read_grows_when_the_window_begins_below_the_cursor() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let body = a_transcript(40);
+        write_session_jsonl(&dir, session, &body);
+        let len = body.len() as u64;
+        // The window begins exactly where the tenth row does: its first byte
+        // is that row's, and the anchor thirty rows in sits twenty rows along
+        // it - the same count as the rows between the cursor and the anchor.
+        let step = len - a_transcript(10).len() as u64;
+
+        let span = read_span_with(
+            config.path(),
+            session,
+            Some(cwd),
+            &anchored("u30", 30),
+            10,
+            &[],
+            100,
+            step,
+            len,
+        )
+        .expect("the read grows to a window that holds the rows below the cursor");
+
+        assert!(!span.messages.is_empty(), "an empty span here would end the walk");
+        assert_eq!(span.first, 0, "the span is the rows the cursor asked for");
+        assert_eq!(span.messages.len(), 10, "every row below the cursor, none above it");
+        assert_eq!(said(span.messages.last().expect("a last")), "turn 9");
+    }
+
     /// The span a page below the window asks for: every row below the cursor,
     /// in the session's own numbering, with the caller's anchor turning the
     /// window's rows into that numbering.
