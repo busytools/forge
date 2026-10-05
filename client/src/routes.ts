@@ -61,6 +61,17 @@ export function hrefForSlot(slot: SessionSlot): string {
 }
 
 /**
+ * The tab's title: the project of the seat being shown, then a worker's own
+ * label. A slot's project is already the name `forge.toml` declares, so it
+ * crosses as it stands; everywhere else keeps the plain `forge`.
+ */
+export function titleFor(route: Route): string {
+  if (route.name !== 'session') return 'forge';
+  const { project, label } = route.slot;
+  return label === 'lead' ? project : `${project} \u{b7} ${label}`;
+}
+
+/**
  * Move the app to `route` in place.
  *
  * A push plus the event the shell listens for, which is the path a link

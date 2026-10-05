@@ -207,6 +207,41 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * The tab's name is the shell's own effect, so only a mounted shell shows
+   * it: the server-rendered Router suite never runs effects. A lead's seat
+   * names its project, a worker's adds the worker's label.
+   */
+  it('names the tab after the seat the route holds', async () => {
+    server = await stubServer(sessionFixture);
+    connection = connect(server.url);
+    const props = {
+      settings: DEFAULT_SETTINGS,
+      address: server.url,
+      home: { wire: homeWire, refused: null },
+      failure: null,
+      connected: true,
+      connection,
+      notice: null,
+      onconnect: () => undefined,
+    };
+    app = mount(Router, {
+      target: document.body,
+      props: { ...props, route: { name: 'session', slot: LEAD } },
+    });
+    await settle();
+    expect(document.title, "a lead's tab is its project").toBe('proj');
+
+    await unmount(app);
+    document.body.innerHTML = '';
+    app = mount(Router, {
+      target: document.body,
+      props: { ...props, route: { name: 'session', slot: { ...LEAD, label: 'w1' } } },
+    });
+    await settle();
+    expect(document.title, 'a worker adds its own label').toBe('proj \u{b7} w1');
+  });
+
+  /**
    * **The count is the conversation's, so the header reads it off
    * `conversation` and not off `header`** - and the terminal draws it on the
    * row that carries the context figure, which is this one. A page that stops

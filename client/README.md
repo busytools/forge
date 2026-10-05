@@ -176,8 +176,8 @@ sprite stops being dead weight.
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
   client-side reader of `forge.toml` by any path.
-- `src/assets/` - `web.css`, `sprite.svg` and the fonts, taken from
-  `crates/forge-web` before that crate is deleted.
+- `src/assets/` - `web.css` and `sprite.svg`, taken from `crates/forge-web`
+  before that crate is deleted. The fonts live in `public/fonts/`.
 
 `forge.toml` is the server's, and the client never reads it: `[web] mark`,
 `[web] theme` and `[web] font` arrive in the greeting. `ClientSettings`

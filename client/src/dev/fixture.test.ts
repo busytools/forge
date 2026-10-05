@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,5 +50,16 @@ describe('the shipped bundle', () => {
 
     expect(bundle.length, 'the build produced nothing to read').toBeGreaterThan(0);
     expect(bundle, 'the fixture reached the production bundle').not.toContain(MARKER);
+
+    // The tab's mark and the link to it: a build that loses either ships a
+    // dangling link with nothing else failing.
+    const dist = path.join(CLIENT, 'dist');
+    expect(existsSync(path.join(dist, 'favicon.png')), 'the built bundle carries no favicon').toBe(
+      true,
+    );
+    expect(
+      readFileSync(path.join(dist, 'index.html'), 'utf8'),
+      'the built page carries no link to the mark',
+    ).toContain('/favicon.png');
   }, 60_000);
 });

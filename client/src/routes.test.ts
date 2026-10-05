@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { goTo, hrefFor, hrefForSlot, parseRoute } from './routes';
+import { goTo, hrefFor, hrefForSlot, parseRoute, titleFor } from './routes';
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
@@ -64,6 +64,21 @@ describe('the URLs the server serves', () => {
       name: 'session',
       slot: { org: 'O', project: 'P', label: '100%' },
     });
+  });
+});
+
+describe("the tab's title", () => {
+  it('names the seat being shown, the project first and a worker by its label', () => {
+    expect(titleFor({ name: 'home' }), 'the home is the forge itself').toBe('forge');
+    expect(titleFor({ name: 'connect' })).toBe('forge');
+    expect(
+      titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),
+      "a lead's seat is its project",
+    ).toBe('core-v1');
+    expect(
+      titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'w1' } }),
+      'a worker adds its own label',
+    ).toBe('core-v1 \u{b7} w1');
   });
 });
 
