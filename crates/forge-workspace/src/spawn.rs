@@ -451,6 +451,15 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
     if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
 }
 
+/// Where a spawned worker runs, as the spawn reply states it: a git
+/// project's worker gets its worktree, and a non-git one runs in the
+/// project root and has no worktree to name.
+fn spawn_worktree(project_root: &std::path::Path, label: &str, is_git: bool) -> Option<String> {
+    is_git.then(|| {
+        crate::mcp::workers::types::worker_tag_dir(project_root, label, true).display().to_string()
+    })
+}
+
 /// Deliver a due cron's prompt into its OWNER's session as a plain user
 /// turn AND echo it as a cron block. `team_role` `None` routes to the
 /// project lead, `Some(label)` to that worker. A live owner gets a
@@ -1663,6 +1672,11 @@ pub(crate) fn handle_spawn_worker(
                 // re-spawn paths drop the reply, so they read the warn
                 // instead.
                 durability_warning,
+                // Where the worker runs, which this handler decided above:
+                // a git project's worker gets `<root>/.claude/worktrees/
+                // <label>`, and everything else runs in the project root
+                // and has no worktree to name.
+                worktree: spawn_worktree(&view.path, label, is_git),
                 // What the arguments say, which is all this handler
                 // knows: a `resume_session` spawn whose lookup found
                 // nothing arrives here as a fresh spawn like any other,
@@ -2429,6 +2443,22 @@ mod tests {
     /// path, so tests write where forge reads (not the legacy fallback).
     fn forge_toml_path(config_dir: &std::path::Path) -> std::path::PathBuf {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
+    }
+
+    /// The spawn reply's worktree names a git worker's own directory and
+    /// says nothing for a worker that runs in the project root: a path
+    /// pointing at the project root would name a worktree that is not one.
+    #[test]
+    fn a_git_spawn_names_its_worktree_and_a_plain_project_names_none() {
+        assert_eq!(
+            spawn_worktree(std::path::Path::new("/repo"), "reviewer", true).as_deref(),
+            Some("/repo/.claude/worktrees/reviewer"),
+        );
+        assert_eq!(
+            spawn_worktree(std::path::Path::new("/repo"), "reviewer", false),
+            None,
+            "a non-git project's worker runs in the project root, not a worktree",
+        );
     }
 
     /// A fatal error is an App-level event with no state behind it, so a
