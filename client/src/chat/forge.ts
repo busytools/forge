@@ -1243,7 +1243,9 @@ function namedBy(input: unknown, changed: boolean): [string, string][] {
   const names = Object.keys(stated).filter(
     (key) => key !== 'id' && stated[key] !== undefined && stated[key] !== null,
   );
-  return names.length === 0 ? [] : [['changed', names.map(spaced).join(', ')]];
+  // Raw, the way the update card's own chips spell a field: one spelling for
+  // a field name across the family, and it is the server's.
+  return names.length === 0 ? [] : [['changed', names.join(', ')]];
 }
 
 /** The record's own facts, as pairs: what it estimates, points at, and when it moved. */
@@ -1326,11 +1328,6 @@ function stamp(utc: string | null): string | null {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(
     at.getHours(),
   )}:${pad(at.getMinutes())}`;
-}
-
-/** A field name as a row spells it: `active_form` is "active form". */
-function spaced(name: string): string {
-  return name.replaceAll('_', ' ');
 }
 
 /** A whole number off the wire, or null for anything else. */
