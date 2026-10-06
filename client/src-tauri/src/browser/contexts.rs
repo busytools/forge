@@ -51,9 +51,18 @@ pub(super) struct DriverStart<'a> {
     /// The live endpoint, which a browser relaunch moves: a driver built
     /// against the old one is stale even while its own transport stays open.
     pub endpoint: &'a str,
+    /// The browser's own identity - the `/devtools/browser/<uuid>` its port
+    /// file names - which a relaunch changes even when it lands on the same
+    /// port. The endpoint string alone would compare equal there.
+    pub identity: &'a str,
     pub output: &'a Path,
     /// The named context's storage file; `None` for the browser's own.
     pub storage: Option<&'a Path>,
+    /// The named context's saved tabs, reopened through a driver built fresh:
+    /// a build that skipped them would let the save that follows write the
+    /// empty page over them, so a browser change would eat the context's
+    /// pages. `None` for the browser's own context, which reopens nothing.
+    pub tabs: Option<&'a Path>,
 }
 
 impl DriverStart<'_> {
@@ -62,9 +71,9 @@ impl DriverStart<'_> {
     }
 }
 
-/// The driver a context holds, and the endpoint it was built against.
+/// The driver a context holds, and the browser identity it was built against.
 struct Held {
-    endpoint: String,
+    identity: String,
     driver: Option<Arc<Driver>>,
 }
 
@@ -78,7 +87,7 @@ pub struct Context {
 
 impl Context {
     pub(super) fn new() -> Self {
-        Self { held: Mutex::new(Held { endpoint: String::new(), driver: None }) }
+        Self { held: Mutex::new(Held { identity: String::new(), driver: None }) }
     }
 
     /// Whether a driver is there to answer. **The browser's own liveness is a
@@ -129,22 +138,32 @@ impl Context {
 /// The driver to run with: rebuilt when there is none, when it died, or when
 /// the browser moved out from under it.
 ///
-/// **The endpoint comparison is the browser half of liveness.** The driver
+/// **The identity comparison is the browser half of liveness.** The driver
 /// child is tied to the browser only by CDP, so a browser that dies closes
 /// the socket while the driver's own transport stays open - `is_running()`
 /// keeps saying yes, and a call would re-run `connectOverCDP` against a port
-/// nobody listens on. The host hands the endpoint the browser answers on
-/// right now; a mismatch is the one thing that rebuilds a live-looking
+/// nobody listens on. The host hands the browser's own identity (the port
+/// file's `/devtools/browser/<uuid>`, which a relaunch replaces even on the
+/// same port); a mismatch is the one thing that rebuilds a live-looking
 /// driver.
+///
+/// **A build reopens the context's saved tabs.** An isolated driver's browser
+/// context is its own, so a rebuilt driver starts on a blank page and the
+/// save that follows every call would write that blank over the saved tabs -
+/// which is why the reopen belongs here, on every build, rather than only on
+/// the attach path: a browser that died under a context is a build too.
 async fn live_driver(held: &mut Held, start: &DriverStart<'_>) -> Result<Arc<Driver>, String> {
-    if held.endpoint == start.endpoint
+    if held.identity == start.identity
         && let Some(driver) = held.driver.as_ref()
         && driver.is_running()
     {
         return Ok(Arc::clone(driver));
     }
     let fresh = Arc::new(start.start().await?);
-    held.endpoint = start.endpoint.to_owned();
+    if let Some(tabs) = start.tabs {
+        reopen_tabs(&fresh, tabs).await;
+    }
+    held.identity = start.identity.to_owned();
     held.driver = Some(Arc::clone(&fresh));
     Ok(fresh)
 }
@@ -229,10 +248,10 @@ async fn save(driver: &Driver, storage: &Path, tabs: &Path) -> Result<(), String
 ///
 /// A tab that will not open is logged and the rest go on: one dead URL is not
 /// a reason to refuse the whole context.
-pub(super) async fn reopen_tabs(context: &Context, start: &DriverStart<'_>, urls: &[String]) {
-    for url in urls {
+async fn reopen_tabs(driver: &Driver, tabs: &Path) {
+    for url in saved_tabs(tabs) {
         if let Err(why) =
-            context.call(start, "browser_tabs", json!({ "action": "new", "url": url })).await
+            routed_call(driver, "browser_tabs", &json!({ "action": "new", "url": url })).await
         {
             tauri_plugin_log::log::warn!("a saved browser tab did not reopen ({url}): {why}");
         }

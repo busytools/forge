@@ -242,3 +242,88 @@ async fn a_named_context_refuses_another_session_and_reopens_from_its_save() {
         "and with the tabs it had open, as URLs: {tabs}",
     );
 }
+
+/// **A rebuild reopens the tabs a browser death took.** The follow-the-browser
+/// rebuild starts a driver whose isolated context holds a blank page, and the
+/// save after every call would write that blank over the tabs file - so a
+/// browser killed under a named context would silently lose its pages. This
+/// kills the browser for real and reads the tabs back.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn a_rebuilt_context_reopens_the_tabs_a_browser_death_took() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let first_port = active.port;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let page_port = listener.local_addr().expect("the bound port").port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        for _ in 0..24 {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await;
+            let body = "<title>ctx</title>ok";
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    let page = format!("http://127.0.0.1:{page_port}/");
+    let seat = Seat {
+        org: "Busytools".to_owned(),
+        project: "forge".to_owned(),
+        label: "alpha".to_owned(),
+    };
+
+    host.call(&seat, "browser_navigate", json!({ "url": page, "context": "hunt" }))
+        .await
+        .unwrap_or_else(|why| panic!("alpha could not open the context: {why}"));
+
+    // The browser dies under the context, by pid - the same death a crash is.
+    let pid = std::fs::read_to_string(paths.profile.join("browser.pid"))
+        .expect("the launch wrote its pid")
+        .trim()
+        .parse::<u32>()
+        .expect("the pid file is a pid");
+    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    for _ in 0..100 {
+        if !forge_client::browser::chromium::probe(first_port).await {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !forge_client::browser::chromium::probe(first_port).await,
+        "precondition: the browser really died",
+    );
+
+    // The next call brings a new browser up and rebuilds the driver against
+    // it; the context must come back with the tab it had open.
+    let tabs = host
+        .call(&seat, "browser_tabs", json!({ "action": "list", "context": "hunt" }))
+        .await
+        .map(|parts| text_of(&parts))
+        .unwrap_or_else(|why| panic!("the rebuilt context could not list its tabs: {why}"));
+    browser.reap();
+    assert!(
+        tabs.contains(&page),
+        "the rebuilt context reopened the tab the saved file named: {tabs}",
+    );
+}

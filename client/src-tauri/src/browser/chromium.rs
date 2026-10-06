@@ -374,13 +374,23 @@ fn pid_file(profile: &Path) -> PathBuf {
 /// is the exact outcome the pid file exists to avoid. So the pid is killed
 /// only when it holds THIS port; otherwise, what holds the port is - by the
 /// PORT and never by a pattern or a name, because this machine runs other
-/// browsers and one of them belongs to the person sitting at it. The wires go
-/// only once nothing answers, because a port file deleted under a live
-/// browser is a launch nothing can ever find again.
+/// browsers and one of them belongs to the person sitting at it. **And only
+/// after the port answers AS this profile's launch**: a port the launch let go
+/// and something else took over is a stranger, and the wires go without a
+/// kill. The wires go only once the port is really free, because a port file
+/// deleted under a live browser is a launch nothing can ever find again.
 async fn close(profile: &Path, port: u16) {
+    if !answers_as(profile, port).await {
+        // Nothing on that port is this profile's launch - a browser that died
+        // and a stranger on the port, or a profile no launch touched. The
+        // wires name a launch that is gone; nothing else here is ours.
+        forget_launch(profile);
+        return;
+    }
     let listeners = port_pids(port).await;
     if listeners.is_empty() {
-        forget_launch(profile);
+        // Our launch answers and nothing owns the port: a moment rather than a
+        // state, and the wires stay - they still name a browser that is up.
         return;
     }
     let named = std::fs::read_to_string(pid_file(profile))
@@ -391,7 +401,6 @@ async fn close(profile: &Path, port: u16) {
             kill_pid(pid, false).await;
             if !port_frees(port).await {
                 kill_pid(pid, true).await;
-                let _ = port_frees(port).await;
             }
         }
         None => {
@@ -402,11 +411,12 @@ async fn close(profile: &Path, port: u16) {
                 for pid in &listeners {
                     kill_pid(*pid, true).await;
                 }
-                let _ = port_frees(port).await;
             }
         }
     }
-    forget_launch(profile);
+    if port_frees(port).await {
+        forget_launch(profile);
+    }
 }
 
 /// Drop the wires a launch leaves. Called only once nothing answers - and by

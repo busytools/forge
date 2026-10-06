@@ -172,8 +172,10 @@ impl BrowserHost {
                     node: &node,
                     cli: &cli,
                     endpoint: &endpoint,
+                    identity: &active.path,
                     output: &paths.output,
                     storage: None,
+                    tabs: None,
                 };
                 let outcome = context.call(&start, tool, args).await;
                 self.forget_a_dead_browser(&paths, &context, active.port, outcome.is_err()).await;
@@ -185,8 +187,10 @@ impl BrowserHost {
                     node: &node,
                     cli: &cli,
                     endpoint: &endpoint,
+                    identity: &active.path,
                     output: &paths.output,
                     storage: Some(&named.storage),
+                    tabs: Some(&named.tabs),
                 };
                 let outcome = named.call(&start, tool, args).await;
                 self.forget_a_dead_browser(&paths, &named.context, active.port, outcome.is_err())
@@ -221,28 +225,43 @@ impl BrowserHost {
     /// **The human's door, and no seat.** A session drives only the context it
     /// opened - the verdict refuses the rest - but the row is the person's, and
     /// a context whose owning session is GONE is exactly what this is for.
-    /// **The save lands before the name is free** - the map's lock is held
-    /// across it - so a second session opening the name can never read the
-    /// file mid-write.
+    /// **The save lands before the name is free, and the map's lock is not
+    /// held across it**: a save drives the browser and answers on a call's own
+    /// clock, while the lock is only for the map. The name goes only once the
+    /// save landed - a close that could not persist keeps the context, so a
+    /// failed save is not also a lost name.
     pub async fn close(&self, name: &str) -> Result<(), String> {
         let paths = self.paths.clone()?;
-        let mut named = self.named.lock().await;
-        let Some(entry) = named.get(name) else {
-            return Err(format!("no browser context is open under '{name}'"));
+        let entry = {
+            let named = self.named.lock().await;
+            let Some(entry) = named.get(name).map(Arc::clone) else {
+                return Err(format!("no browser context is open under '{name}'"));
+            };
+            entry
         };
-        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
+        let active = self.active_browser(&paths).await?;
+        let endpoint = format!("http://127.0.0.1:{}", active.port);
         let node = driver::node_path(&paths.stack);
         let cli = driver::cli_path(&paths.stack);
         let start = DriverStart {
             node: &node,
             cli: &cli,
             endpoint: &endpoint,
+            identity: &active.path,
             output: &paths.output,
             storage: Some(&entry.storage),
+            tabs: Some(&entry.tabs),
         };
-        let saved = entry.save(&start).await;
-        named.remove(name);
-        saved
+        entry.save(&start).await?;
+        // Compared before it goes: a name that was re-opened while the save
+        // ran belongs to the new context, not to what was just saved.
+        let mut named = self.named.lock().await;
+        if let Some(held) = named.get(name)
+            && Arc::ptr_eq(held, &entry)
+        {
+            named.remove(name);
+        }
+        Ok(())
     }
 
     /// Bring the browser up, without any driver.
@@ -334,20 +353,11 @@ impl BrowserHost {
                 Ok(entry)
             }
             contexts::Verdict::Open => {
+                // The saved tabs are reopened by the context's first CALL,
+                // where its driver is built: opening the name here costs
+                // nothing, and a session that names a context and never
+                // drives it holds no driver at all.
                 let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
-                let endpoint =
-                    format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
-                let node = driver::node_path(&paths.stack);
-                let cli = driver::cli_path(&paths.stack);
-                let start = DriverStart {
-                    node: &node,
-                    cli: &cli,
-                    endpoint: &endpoint,
-                    output: &paths.output,
-                    storage: Some(&fresh.storage),
-                };
-                contexts::reopen_tabs(&fresh.context, &start, &contexts::saved_tabs(&fresh.tabs))
-                    .await;
                 named.insert(name.to_owned(), Arc::clone(&fresh));
                 Ok(fresh)
             }
