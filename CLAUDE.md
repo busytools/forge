@@ -1071,3 +1071,7 @@ that build leaves off.
 
 - `.claude/skills/claude-cli-upgrade/` - CLI version bumps, baseline
   regeneration, and the wire-conformance cheatsheet.
+- `.claude/skills/dev-stack/` - the per-feature scratch stack: a second
+  `forge` under `/tmp` with its own config, ports and store, plus a dev
+  client pointed at it, for feature-scale work the maintainer verifies
+  before merge.
