@@ -2161,14 +2161,17 @@ docs: Render the message body into rows.</div>
                every other row draws - a glyph, a name, a row that opens. -->
           <details class="leaf inboundrow">
             <!-- A cron fire is titled by the SCHEDULE that fired it, read off
-                 the same update the prompt arrives with; a fire whose frame
-                 the page never saw titles by the prompt's first line, which is
-                 then the title and no tail. -->
+                 the same update the prompt arrives with. The tail is the
+                 prompt's first line - the invariant the row hangs on - so a
+                 fire the frame named reads `Morning summary` over its prompt.
+                 A fire falls back to that first line as its TITLE in two
+                 cases: a frame the page never saw, and a schedule registered
+                 with no description, which names nothing to draw. -->
             <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">Morning summary</span>
               <span class="ev">summarise overnight CI and open PRs</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body"><div class="prose">
-              <p>morning sweep</p></div></div>
+              <p>summarise overnight CI and open PRs</p></div></div>
           </details>
           <details class="leaf inboundrow">
             <summary><svg class="ic gl"><use href="#i-slack"/></svg><span class="tn">Trust Machines &#183; #alerts &#183; ved</span>

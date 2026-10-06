@@ -144,15 +144,25 @@ function sheets(): Array<[string, string]> {
 /**
  * **And the drawing shows the rule rather than only the sheet spelling it.**
  * A cron fire is titled by its SCHEDULE when the frame named one, with the
- * prompt as its tail - the shape the drawing has to carry, since nothing else
- * reads that markup.
+ * prompt's first line as its tail - and the tail is THAT line and not some
+ * other, which is what the pair has to be compared for: a specimen whose tail
+ * is words the body never carried draws a row the app cannot produce.
  */
 describe("the drawing's own inbound rows", () => {
-  it('titles the cron row by its schedule, with the prompt as the tail', () => {
+  it('titles the cron row by its schedule, its tail the body first line', () => {
     const rows = PAGE.match(/<details class="leaf inboundrow"[\s\S]*?<\/details>/g) ?? [];
     expect(rows.length, 'the drawing carries inbound rows').toBeGreaterThan(0);
     const cron = rows.find((one) => one.includes('Morning summary'));
     expect(cron, 'the cron row is drawn, by its schedule').toBeDefined();
-    expect(cron ?? '', 'with the prompt under it').toContain('class="ev"');
+    const held = cron ?? '';
+
+    const tail = /<span class="ev">([^<]*)<\/span>/.exec(held)?.[1] ?? null;
+    expect(tail, 'the prompt rides the row as its tail').not.toBeNull();
+    const body = /<div class="prose">\s*<p>([^<]*)<\/p>/.exec(held)?.[1] ?? null;
+    expect(body, 'and the row carries the prompt whole').not.toBeNull();
+    expect(
+      body?.split('\n')[0]?.trim(),
+      'the tail is the BODY first line, which is the invariant the row hangs on',
+    ).toBe(tail);
   });
 });

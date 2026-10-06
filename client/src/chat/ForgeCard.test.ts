@@ -38,11 +38,16 @@ interface Rule {
  * Every `selector { declarations }` in a block, comments out and the rules
  * sorted by selector.
  *
- * **Sorted rather than in order, unlike `Hook.test.ts`'s pin**, because the
- * order these rules sit in decides nothing: they are all distinct selectors,
- * so no two of them compete for one property at one specificity. What the pin
- * is for is a rule whose DECLARATIONS drifted from the sheet's, which sorting
- * catches exactly.
+ * **Sorted rather than in order, and that is a deliberate divergence from
+ * `Hook.test.ts`'s order-sensitive pin.** Ordering is not free there and it
+ * is here: 126 pairs of these selectors carry equal specificity and do share
+ * properties, so a reorder COULD decide a rendering in principle - but no two
+ * of them can match one element (a summary cannot be both the bare chip and
+ * its `.info` arm, nor a list row both its state and its when), so no order
+ * among them is observable on this block. What this pin is for is a rule whose
+ * DECLARATIONS drifted from the sheet's, which sorting catches exactly; a
+ * moved rule is the case it gives up, and the drawing's own specimens are
+ * where that would show.
  *
  * A rule this walk leaves out is a rule the comparison passes over in BOTH
  * sheets, so the count it read is asserted where it is used.
