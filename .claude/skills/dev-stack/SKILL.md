@@ -106,7 +106,14 @@ history is the record.
      when the stack dies.
    - App shell (when the feature needs one - browser hosting, dictation
      capture): the Tauri debug shell from the worktree, same connect screen,
-     same address.
+     same address. **A scratch shell is a rebuilt BUNDLE with its own
+     identifier** (the browser E2E rebuilt under `dev.vedhavyas.forge.e2ebrowser`)
+     - and it must be the built bundle, not `tauri dev`: an unbundled dev
+     shell's storage is keyed by process name rather than by identifier, so
+     every client on this Mac shares it, a scratch window auto-connects to
+     the LIVE forge, and no in-app door leads back to the connect screen.
+     (The built bundle is also the client that does not collide when another
+     stack already holds the ports.)
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
@@ -132,7 +139,11 @@ history is the record.
    never a pattern), confirm the port and pid are gone, then
    `find $STACK -depth -delete` (rm -rf is permission-blocked on this
    machine; find -delete passes). The lock sits inside `$STACK` under the
-   HOME redirect, so the tree delete covers it.
+   HOME redirect, so the tree delete covers it. **The stack's windows and
+   browser processes are its own to reap**: whoever brought the stack up
+   closes its app windows and kills its own browser processes by port or
+   PID - nothing of the stack outlives it, and another worker's windows are
+   theirs, never yours.
 10. **Teardown invariants (prove, don't assume)**: the live forge's PID and
    start time unchanged; the real store's holder unchanged; `~/.claude` read,
    never written (checksum the config if anything is in doubt).
