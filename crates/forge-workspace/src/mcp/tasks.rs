@@ -341,8 +341,8 @@ impl Tool for Delete {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
          that is over; nothing is archived. An unknown id is an error, not a no-op. Returns the \
-         removed task and how many children went with it. Any session in the project may call \
-         this."
+         removed task and how many descendants went with it. Any session in the project may \
+         call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -365,7 +365,7 @@ impl Tool for Delete {
             Ok(Some(removed)) => {
                 let mut envelope =
                     crate::mcp::deleted::removed_record(&task_to_json(&removed.task));
-                envelope["children_removed"] = serde_json::json!(removed.children_removed);
+                envelope["descendants_removed"] = serde_json::json!(removed.descendants_removed);
                 match serde_json::to_string_pretty(&envelope) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -473,22 +473,28 @@ mod tests {
 
     /// A delete echoes what went, in the adopted envelope: the record as
     /// it stood, plus the cascade's own count - the row has to say how
-    /// much of the tree went with it.
+    /// much of the tree went with it. The record is compared to
+    /// `task_to_json` whole, so an echo trimmed to a couple of fields
+    /// cannot read as the record.
     #[tokio::test]
     async fn delete_echoes_the_removed_record_and_the_cascade_count() {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.delete_result.lock() =
-            Some(RemovedTaskTree { task: sample_task(), children_removed: 2 });
+            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 2 });
         let out = Delete { facade, slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1" })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
+        assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
             serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
-        assert_eq!(json["removed"]["id"], "t-1");
-        assert_eq!(json["removed"]["subject"], "Merge peers and workers");
-        assert_eq!(json["children_removed"], 2);
+        assert_eq!(
+            json["removed"],
+            task_to_json(&sample_task()),
+            "the echo is the whole record, not a hand-picked subset: {json}",
+        );
+        assert_eq!(json["descendants_removed"], 2);
     }
 
     /// The count is always there: a leaf delete says zero rather than
@@ -498,14 +504,14 @@ mod tests {
     async fn a_delete_with_no_children_still_states_the_count() {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.delete_result.lock() =
-            Some(RemovedTaskTree { task: sample_task(), children_removed: 0 });
+            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 0 });
         let out = Delete { facade, slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1" })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         let json: serde_json::Value =
             serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
-        assert_eq!(json["children_removed"], 0, "a leaf states its count: {json}");
+        assert_eq!(json["descendants_removed"], 0, "a leaf states its count: {json}");
     }
 
     #[tokio::test]

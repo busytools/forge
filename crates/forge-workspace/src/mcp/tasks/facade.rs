@@ -52,7 +52,7 @@ pub(crate) struct TaskDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemovedTaskTree {
     pub task: Task,
-    pub children_removed: usize,
+    pub descendants_removed: usize,
 }
 
 /// The fields `tasks__update` may change. An absent field is left alone.
@@ -227,7 +227,7 @@ impl TasksFacade for ProdTasksFacade {
         let Some(task) = removed.iter().find(|t| t.id == *id).cloned() else {
             return Ok(None);
         };
-        Ok(Some(RemovedTaskTree { task, children_removed: removed.len() - 1 }))
+        Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
     }
 }
 
@@ -337,6 +337,23 @@ mod prod_facade_tests {
         }
     }
 
+    fn seeded_task(id: &str, subject: &str) -> Task {
+        Task {
+            id: TaskId::from(id),
+            project_name: "myproj".to_owned(),
+            subject: subject.to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            parent: None,
+            artifact: None,
+            estimate: None,
+            created_at: SystemTime::UNIX_EPOCH,
+            updated_at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
     fn draft(subject: &str, owner: Option<&str>, parent: Option<&str>) -> TaskDraft {
         TaskDraft {
             subject: subject.to_owned(),
@@ -431,28 +448,31 @@ mod prod_facade_tests {
     /// The update hands back the record it wrote, so the tool can echo a
     /// task rather than an id: the moved field, the row's own words, and
     /// the stamp the write just set.
+    ///
+    /// **The seeded row carries an epoch `updated_at`**, so a record
+    /// echoed without the write's own stamp reads as a pass on a fresh
+    /// task and fails here.
     #[test]
     fn update_returns_the_record_it_wrote() {
         let (ws, facade, lead, _worker) = fixture();
-        let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
+        ws.seed_test_task(seeded_task("t-1", "before"));
 
         let updated = facade
             .update_task(
                 &lead,
-                &task.id,
+                &TaskId::from("t-1"),
                 TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
             )
             .expect("update")
             .expect("the task is there to move");
 
-        assert_eq!(updated.id, task.id, "the echoed record is the task that moved");
+        assert_eq!(updated.id, TaskId::from("t-1"), "the echoed record is the task that moved");
         assert_eq!(updated.subject, "before", "carrying the row's own words");
         assert_eq!(updated.status, TaskStatus::Completed, "and the state it now holds");
         assert!(
-            updated.updated_at >= task.updated_at,
-            "stamped by the write itself: {:?} < {:?}",
+            updated.updated_at > SystemTime::UNIX_EPOCH,
+            "the write stamps `updated_at`; a record echoed without it keeps the epoch: {:?}",
             updated.updated_at,
-            task.updated_at,
         );
         assert_eq!(
             ws.tasks_for_project("myproj")[0].status,
@@ -464,25 +484,40 @@ mod prod_facade_tests {
     /// The delete hands back the tree it removed: the named task as it
     /// stood and how many descendants went with it, so the tool can echo
     /// both rather than a bare id.
+    ///
+    /// **The store is insertion-ordered and the named task is created
+    /// last of its tree on purpose.** `c` (the delete target) is created
+    /// after `b`, and `b` is then re-parented under `c`, so the records
+    /// removed are `[b, c, d]` - an implementation that answers with "the
+    /// first thing removed" instead of the id the call named reads `b`
+    /// here, which is reachable through the tool surface alone.
     #[test]
     fn delete_returns_the_tree_it_removed() {
         let (_ws, facade, lead, _worker) = fixture();
-        let epic = facade.create_task(&lead, draft("epic", None, None)).expect("epic");
-        let child =
-            facade.create_task(&lead, draft("child", None, Some(epic.id.as_str()))).expect("child");
-        facade
-            .create_task(&lead, draft("grandchild", None, Some(child.id.as_str())))
-            .expect("grandchild");
         facade.create_task(&lead, draft("sibling", None, None)).expect("sibling");
+        let b = facade.create_task(&lead, draft("b", None, None)).expect("b");
+        let c = facade.create_task(&lead, draft("c", None, None)).expect("c");
+        facade.create_task(&lead, draft("d", None, Some(b.id.as_str()))).expect("d, b's child");
+        facade
+            .update_task(
+                &lead,
+                &b.id,
+                TaskPatch { parent: Some(c.id.as_str().to_owned()), ..TaskPatch::default() },
+            )
+            .expect("re-parent b under c")
+            .expect("b is there to move");
 
         let removed = facade
-            .delete_task(&lead, &epic.id)
+            .delete_task(&lead, &c.id)
             .expect("delete")
-            .expect("the epic is there to remove");
+            .expect("the task the call named is there to remove");
 
-        assert_eq!(removed.task.id, epic.id, "the record is the task named by the call");
-        assert_eq!(removed.task.subject, "epic", "as it stood just before removal");
-        assert_eq!(removed.children_removed, 2, "and the cascade's own count");
+        assert_eq!(
+            removed.task.id, c.id,
+            "the record is the task named by the call, not the first record the cascade removed",
+        );
+        assert_eq!(removed.task.subject, "c", "as it stood just before removal");
+        assert_eq!(removed.descendants_removed, 2, "b and d went with it, and the count says so");
         assert_eq!(facade.list_tasks(&lead, None, None).len(), 1, "only the sibling survives");
     }
 
