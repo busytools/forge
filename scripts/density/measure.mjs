@@ -371,7 +371,7 @@ async function main() {
   const fixture = readFileSync(fixturePath, 'utf8');
   const { html, tokens, stack, fallback } = await renderProse(fixture);
   const root = rootStyle(tokens, stack);
-  // The control is the same page under `[web] font = "system"` - a setting
+  // The control is the same page under `[client] font = "system"` - a setting
   // forge really has, and the one the original trap amounted to: same markup,
   // different face. If the two read the same advance, this instrument cannot
   // see the face and nothing it reports is worth anything.

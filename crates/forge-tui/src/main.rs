@@ -146,7 +146,7 @@ fn run() -> anyhow::Result<()> {
         // that moment, and a branch usually outlives its worker.
         workspace.start_review_branch_sweep();
 
-        // Serve the socket on the address `[web]` names. A view beside the
+        // Serve the socket on the address `[server]` names. A view beside the
         // TUI in the same process, which is the point: it starts no subsystem
         // of its own, so the cron scheduler and the connectors above stay the
         // only ones. A bind that fails still boots - the TUI is not
@@ -154,9 +154,9 @@ fn run() -> anyhow::Result<()> {
         //
         // It takes the port the web view served on, so that page is off from
         // here: one listener, and the socket is what holds it.
-        let config = workspace.web_config();
-        if config.enabled {
-            let addr = std::net::SocketAddr::new(config.bind, config.port);
+        let server = workspace.server_config();
+        if server.enabled {
+            let addr = std::net::SocketAddr::new(server.bind, server.port);
             let state = std::sync::Arc::new(forge_server::transport::TransportState {
                 surface: std::sync::Arc::new(forge_server::surface::ViewSurface::new(
                     std::sync::Arc::clone(&workspace),
@@ -169,7 +169,7 @@ fn run() -> anyhow::Result<()> {
                 // attachment count has to see it: a turn finishing on a seat
                 // this terminal is showing is one the reader watched.
                 live: std::sync::Mutex::new(forge_server::live::Live::new()),
-                config,
+                client: workspace.client_config(),
             });
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
@@ -202,7 +202,7 @@ fn run() -> anyhow::Result<()> {
             tracing::debug!(
                 target: forge_tui::logging::targets::APP_LIFECYCLE,
                 event_name = "server_socket_disabled",
-                "[web] enabled = false; nothing is serving this run",
+                "[server] enabled = false; nothing is serving this run",
             );
         }
 

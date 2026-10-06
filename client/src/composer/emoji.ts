@@ -275,16 +275,21 @@ export function matches(query: string): Emoji[] {
  * `http://`, `10:30` and `note:` open nothing, and everything between the `:`
  * and the end has to be shortcode characters - which a space is not, so a token
  * that is over closes it.
+ *
+ * **Scanned backwards over the string itself, never materialised**: the loop
+ * stops at the first character that cannot be in a shortcode, so a pasted draft
+ * costs a few reads rather than an array of its code points. A surrogate pair
+ * needs no special casing here - the set is ASCII, so a pair's low unit closes
+ * the token exactly as the whole character would.
  */
 export function shortcodeQuery(text: string): string | null {
-  const chars = [...text];
-  let at = chars.length;
+  let at = text.length;
   while (at > 0) {
     at -= 1;
-    const char = chars[at];
+    const char = text[at];
     if (char === ':') {
-      if (at > 0 && !/\s/.test(chars[at - 1] ?? '')) return null;
-      return chars.slice(at + 1).join('');
+      if (at > 0 && !/\s/.test(text[at - 1] ?? '')) return null;
+      return text.slice(at + 1);
     }
     if (char === undefined || !isShortcodeChar(char)) return null;
   }

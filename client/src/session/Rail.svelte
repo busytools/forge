@@ -8,7 +8,14 @@
   import { closeSeat } from './close';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
-  import { fleetCount, railFooter, railGroups, railMark, type RailProject } from './view';
+  import {
+    failedLine,
+    fleetCount,
+    railFooter,
+    railGroups,
+    railMark,
+    type RailProject,
+  } from './view';
 
   /**
    * The projects rail: every declared project, grouped by the strongest state
@@ -91,11 +98,19 @@
           <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
         {/if}
         {#each project.workers as worker (worker.slot.label)}
+          {@const failed = failedLine(worker)}
           <div class="wk" class:on={project.shown === worker.slot.label}>
             <span class="dot {railMark(worker.state)}"></span>
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
+          <!-- The failure draws under the row that failed, dim as the
+               terminal's sub-row draws it: the row's own failed dot carries
+               the colour, and on the project's line the diagnostic would
+               read as the lead's. -->
+          {#if failed !== null}
+            <div class="why">{failed}</div>
+          {/if}
         {/each}
         <!-- The seats this project has asleep, behind one row that counts
              them: they are rows a reader is not working in, and the count is

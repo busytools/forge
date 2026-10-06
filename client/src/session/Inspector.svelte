@@ -6,7 +6,6 @@
   import GotifySection from './sections/GotifySection.svelte';
   import McpSection from './sections/McpSection.svelte';
   import MonitorsSection from './sections/MonitorsSection.svelte';
-  import ProcessesSection from './sections/ProcessesSection.svelte';
   import SchedulesSection from './sections/SchedulesSection.svelte';
   import SlackSection from './sections/SlackSection.svelte';
   import TasksSection from './sections/TasksSection.svelte';
@@ -51,7 +50,6 @@
   const gotify = $derived(gotifySection(wire, project));
   const slack = $derived(slackSection(wire, project));
   const mcp = $derived(record === null ? null : mcpSection(record));
-  const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);
 </script>
 
@@ -90,9 +88,6 @@
     {/if}
     {#if mcp !== null}
       <McpSection view={mcp} />
-    {/if}
-    {#if walk !== null && walk.processes.length > 0}
-      <ProcessesSection {walk} {now} />
     {/if}
     {#if monitors.length > 0}
       <MonitorsSection {monitors} {now} />

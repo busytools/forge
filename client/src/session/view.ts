@@ -9,7 +9,7 @@
  * only when the record has something behind it - a section that is always
  * there says nothing when it is empty.
  *
- * Four of the nine sections do not read the seat's own record. A project's
+ * Four of the seven sections do not read the seat's own record. A project's
  * tasks, its schedules and the connector views are keyed by PROJECT on the
  * home's snapshot, and the home is the subscription the shell already holds
  * for the rest of the app.
@@ -31,14 +31,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import type {
-  McpServer,
-  MonitorRecord,
-  ProcessEntry,
-  ProcessSnapshot,
-  SessionHeader,
-  SessionRecord,
-} from './wire';
+import type { McpServer, MonitorRecord, SessionHeader, SessionRecord } from './wire';
 
 /** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
@@ -325,20 +318,6 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
   };
 }
 
-/**
- * One process as its row draws it, with the processes below it.
- *
- * The shape is the tree rather than a flat list with a depth on each row: the
- * depth IS the nesting, so a row does not have to carry a number that says
- * what its position already says.
- */
-export interface ProcessNode {
-  headline: string;
-  memory: string;
-  pid: number;
-  children: ProcessNode[];
-}
-
 /** One monitor as its card draws it. */
 export interface MonitorView {
   running: boolean;
@@ -452,14 +431,32 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
 }
 
 /**
+ * The line a failed row draws under itself: the core's recorded reason, or the
+ * fallback for a failure it left no text for.
+ *
+ * The fallback word follows the terminal's split: a failed row it holds no
+ * text for reads "spawn failed" there (its sub-row exists only on a failed
+ * worker), while a seat waiting on sign-in draws no sub-row at all and keeps
+ * the client's own words.
+ */
+export function failedLine(row: Row): string | null {
+  if (row.state.kind !== 'lifecycle') return null;
+  const lifecycle = row.state.lifecycle;
+  if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
+  return row.reason ?? (lifecycle === 'Failed' ? 'spawn failed' : 'not running');
+}
+
+/**
  * The reason line: what a person has to do about this project, in the row's
  * own words rather than a second vocabulary for the same two asks.
  *
  * A project whose worker is held reads as held, whether or not its lead is the
- * one held, so the workers are searched beside the lead.
+ * one held, so the workers are searched beside the lead. A failure is not
+ * shared that way: it stays on the seat that failed, drawn on that seat's own
+ * row ({@link failedLine}), so the project's line is the lead's alone.
  */
-function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
-  for (const row of rows) {
+function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null {
+  for (const row of [lead, ...workers]) {
     if (row.pending !== null) {
       return {
         line:
@@ -468,12 +465,8 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
       };
     }
   }
-  for (const row of rows) {
-    if (row.state.kind !== 'lifecycle') continue;
-    if (row.state.lifecycle !== 'Failed' && row.state.lifecycle !== 'AuthRequired') continue;
-    return { line: row.reason ?? 'not running', bad: true };
-  }
-  return null;
+  const failed = failedLine(lead);
+  return failed === null ? null : { line: failed, bad: true };
 }
 
 /**
@@ -517,7 +510,7 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
       row: lead,
       workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
       sleeping,
-      why: whyOf(all),
+      why: whyOf(lead, workers),
     });
     // The rows the heading hides when it folds: the project's own row and
     // every worker under it, drawn or folded.
@@ -1035,101 +1028,6 @@ export function toolSummary(count: number): string {
   return count === 1 ? '1 tool' : `${count} tools`;
 }
 
-/**
- * The processes section as a tree: parents before their children, and the
- * walk's own order within each sibling group.
- *
- * **The nesting is the tree rather than an indent counted onto a flat row.**
- * The terminal wrote two `&nbsp;` per level inside the row's key cell, which
- * is a character run standing in for hierarchy: no rule could reach it, it did
- * not wrap, and a space is not a layout step. A list inside a list is the
- * shape the section was drawing, and it is the shape the home's own nested
- * rows already use.
- *
- * The walk returns entries by memory rather than by parentage, so drawing them
- * in that order would nest a row under whatever happened to come before it. A
- * row whose parent the walk did not carry is a root of its own, which is what
- * makes a partial snapshot still list everything in it.
- */
-export function processTree(walk: ProcessSnapshot): ProcessNode[] {
-  const childrenOf = new Map<number, ProcessEntry[]>();
-  const present = new Set<number>();
-  for (const entry of walk.processes) {
-    const siblings = childrenOf.get(entry.parent_pid);
-    if (siblings === undefined) childrenOf.set(entry.parent_pid, [entry]);
-    else siblings.push(entry);
-    present.add(entry.pid);
-  }
-
-  const placed = new Set<number>();
-  const take = (entry: ProcessEntry): ProcessNode => {
-    const children: ProcessNode[] = [];
-    for (const child of childrenOf.get(entry.pid) ?? []) {
-      if (placed.has(child.pid)) continue;
-      placed.add(child.pid);
-      children.push(take(child));
-    }
-    return {
-      headline: processHeadline(entry),
-      memory: memoryLabel(entry.memory_bytes),
-      pid: entry.pid,
-      children,
-    };
-  };
-
-  const roots: ProcessNode[] = [];
-  for (const entry of walk.processes) {
-    if (present.has(entry.parent_pid) || placed.has(entry.pid)) continue;
-    placed.add(entry.pid);
-    roots.push(take(entry));
-  }
-  // A pid cycle reaches no root, and neither does a subtree hanging off one.
-  // Every row is still drawn, once.
-  for (const entry of walk.processes) {
-    if (placed.has(entry.pid)) continue;
-    placed.add(entry.pid);
-    roots.push(take(entry));
-  }
-  return roots;
-}
-
-/**
- * What a row calls its process: the command it is running, with the
- * executable's path stripped, and the command a shell wrapper wraps rather
- * than its own chrome.
- */
-export function processHeadline(entry: ProcessEntry): string {
-  const command = entry.command.trim();
-  const inner = extractInnerCommand(entry.command);
-  if (inner !== null) return basenameExe(inner);
-  if (command === '') return entry.name === '' ? '(process)' : entry.name;
-  return basenameExe(command);
-}
-
-/**
- * The command a shell wrapper wraps, or `null` when this is not one.
- *
- * It terminates at the OUTERMOST `' < /dev/null`, so a command that itself
- * contains that redirect does not cut off early, and reverses the POSIX escape
- * the wrapper applies to a single quote.
- */
-export function extractInnerCommand(cmdline: string): string | null {
-  const afterEval = cmdline.split("eval '")[1];
-  if (afterEval === undefined) return null;
-  const at = afterEval.lastIndexOf("' < /dev/null");
-  if (at < 0) return null;
-  return afterEval.slice(0, at).trim().replaceAll(`'"'"'`, "'");
-}
-
-/** The executable's directory stripped from a headline, args kept verbatim. */
-export function basenameExe(cmdline: string): string {
-  const trimmed = cmdline.trim();
-  const at = trimmed.search(/\s/);
-  const cut = (value: string): string => value.split('/').pop() ?? value;
-  if (at < 0) return cut(trimmed);
-  return `${cut(trimmed.slice(0, at))} ${trimmed.slice(at + 1)}`;
-}
-
 /** Resident memory, in the unit the reader thinks in. */
 export function memoryLabel(bytes: number): string {
   const KB = 1024;
@@ -1139,22 +1037,6 @@ export function memoryLabel(bytes: number): string {
   if (bytes < MB) return `${Math.floor(bytes / KB)} KB`;
   if (bytes < GB) return `${Math.floor(bytes / MB)} MB`;
   return `${Math.floor(bytes / GB)}.${Math.floor((bytes % GB) / (GB / 10))} GB`;
-}
-
-/**
- * When the walk behind these rows was taken.
- *
- * The walk is only ever performed for the session a view is looking at, so a
- * slot nobody is looking at serves the last tree left on it, and rows from an
- * hour ago drawn exactly like rows from a second ago would be a wrong answer
- * rather than an old one.
- */
-export function walkedNote(
-  scannedAt: { secs_since_epoch: number; nanos_since_epoch: number },
-  now: number,
-): string {
-  const age = elapsedLabel(scannedAt, now);
-  return age === 'now' ? 'walked just now' : `walked ${age} ago`;
 }
 
 /** The monitors section, as its cards draw it. */

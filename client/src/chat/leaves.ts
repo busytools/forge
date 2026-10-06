@@ -57,7 +57,7 @@ export interface MutationMarks {
  * the call's own clock and says whether it outlives its turn, `task_updated`
  * carries the ending, and `task_notification` carries what the harness said.
  */
-export interface BackgroundTask {
+export interface TaskFact {
   status: CallStatus;
   /**
    * Whether the wire said this task outlives its turn.
@@ -399,14 +399,24 @@ function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[]
     // By index, not by spreading the line: the spread costs one string per character.
     const mark = line.charAt(0);
     const kind = mark === '-' ? 'del' : mark === '+' ? 'add' : 'ctx';
+    // **Only the three line kinds carry a column to skip.** Anything else is
+    // the wire's own meta text - `\ No newline at end of file` is the one the
+    // captures carry, 46 of them across 30 hunks - and keeps every character:
+    // peeling any other line's first column would strip a leading tab. The
+    // terminal's diff draws the same distinction, and the counters below
+    // advance only for a real line, so the text after a marker keeps its
+    // numbers too.
+    const marked = mark === ' ' || mark === '+' || mark === '-';
     out.push({
       kind,
-      text: kind === 'ctx' ? line : line.slice(1),
+      text: marked ? line.slice(1) : line,
       old: kind === 'add' ? null : old,
       new: kind === 'del' ? null : next,
     });
-    if (kind !== 'add') old += 1;
-    if (kind !== 'del') next += 1;
+    if (marked) {
+      if (kind !== 'add') old += 1;
+      if (kind !== 'del') next += 1;
+    }
   }
   return out;
 }
@@ -558,7 +568,7 @@ export function leafOf(
   input: unknown,
   result: Block | undefined,
   record: unknown = undefined,
-  task: BackgroundTask | undefined = undefined,
+  task: TaskFact | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);

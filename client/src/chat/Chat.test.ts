@@ -1052,3 +1052,57 @@ describe('the reader own words before the core has them', () => {
     ).toBe(true);
   });
 });
+
+describe('the arrival mark', () => {
+  /** One page turn, whose text is all a row needs to draw. */
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  /**
+   * **The mark rides the item through the list's own `itemProps`.** Keyed on
+   * the turn's tail instead, the rule marks every mounted turn at once - and a
+   * stub that drops `itemProps` sees neither mistake.
+   */
+  it('marks the arriving item through the list, and only it', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t1'), turn('t2')]);
+      await painted();
+
+      const items = [...document.querySelectorAll('.conv > *')];
+      expect(items.length, 'the list drew no items').toBe(2);
+      expect(
+        items[1]?.classList.contains('arriving'),
+        "the arriving item's wrapper lost its mark",
+      ).toBe(true);
+      expect(
+        items[0]?.classList.contains('arriving'),
+        'a settled item carried the arrival mark',
+      ).toBe(false);
+
+      vi.advanceTimersByTime(300);
+      flushSync();
+
+      expect(
+        document.querySelector('.conv .arriving'),
+        'the mark outlived its window, and would replay on a remount',
+      ).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

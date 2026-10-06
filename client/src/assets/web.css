@@ -1,7 +1,7 @@
 /* The web view's one stylesheet, which both pages link: the home from
    docs/book/src/ui/client/web-home.html and the session page from
    docs/book/src/ui/client/web-session.html. The palette is not here: the
-   server injects it as the page's own :root from [web] theme, so a theme is
+   server injects it as the page's own :root from [client] theme, so a theme is
    one place to change, and a second copy of a row, a mark or a palette is
    the defect rule 21 names. */
 
@@ -94,7 +94,7 @@ html::-webkit-scrollbar-thumb:active,
 }
 
 :root {
-  /* --ui and --mono are injected from [web] font, not declared here: at
+  /* --ui and --mono are injected from [client] font, not declared here: at
      equal specificity a stack in this block lands after the injected one
      and wins, so the injected stack would silently do nothing. */
   --r: 10px;
@@ -588,8 +588,23 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
   background: none; border: 0; display: flex; align-items: center;
-  border-radius: 5px; padding: 2px 5px; cursor: pointer; }
-.pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+  border-radius: 5px; padding: 2px 5px; cursor: pointer;
+  opacity: 0; pointer-events: none; }
+/* The chip arrives with the pointer, like the chevron: a column of rail rows
+   carries no close marks it does not need. **Instant, not a fade**: crossing
+   rows leaves two fading chips on screen at once, which reads as a fragment
+   appearing and vanishing. **And it takes no pointer at rest** - opacity does
+   not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
+   would otherwise land on a chip nobody can see; the row's hover restores it
+   (the chip cannot restore it itself, `none` means it never hovers), as does
+   focus, and a touch-primary screen keeps it shown. `.banner .close` is
+   deliberately not one of these: it is the way out of a covering rail. */
+.pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
+  pointer-events: auto; }
+.pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .pr .x, .wk .x { opacity: 1; pointer-events: auto; }
+}
 /* The seat the page is showing, marked on its own row and nowhere else: the
    name takes the accent and the mark is recoloured rather than reshaped. Only
    the two marks drawn in a border take it, and the running ring's ARC is left
@@ -944,6 +959,13 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 
 /* The sub-agent segment of the strip: the count at the strip's right, and the
    way into each instance. `sg-` namespaced like the row's own fields. */
+/* The strip's segments share one right-hand fill: two rows each carrying
+   their own auto margin would split the free space between them. It WRAPS
+   rather than shrinking to fit: the rows are nowrap, so a fill compressed
+   below their width pushes the last one past the strip's edge instead of
+   moving it, and a narrow strip stacks the rows on their own lines. */
+.sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; row-gap: 2px; }
 .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
@@ -956,7 +978,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    belongs to a row and carries that row's leave. A padded panel leaves strips
    with no listener, and a pointer leaving through one never arms the close. */
 .sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  min-width: 330px; max-width: calc(100vw - 26px); max-height: 60vh;
+  overflow-y: auto; background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
 .sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
@@ -970,12 +993,16 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+/* A settled row is kept, not alive: its name drops to the muted tone while
+   the check in the mark slot says why it is still here. */
+.sg-list .sg-it.settled .nm { color: var(--muted); }
 @media (pointer: coarse) { .sg-list .sg-it { min-height: 44px; } }
 
 /* The one flash the reveal leaves on the row it lands on: a tint that arrives
-   and leaves. */
-details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
-@keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
+   and leaves. Long and gentle - the reader is moving their eyes across the
+   column, and the row has to still be lit when they arrive. */
+details.leaf.sg-hit { animation: sg-flash 6s ease-out 1; }
+@keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -1985,12 +2012,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sb .kv .k { flex: 1 1 auto; }
 .sb .kv .v { flex: 0 1 auto; }
 
-/* The processes section: a process's children are a list inside its own item,
-   so the indent is the browser's and a deeper tree is a deeper list rather
-   than twice as many characters in front of a command. */
-.sb .tree, .sb .tree ul { list-style: none; }
-.sb .tree ul { padding-left: 14px; }
-
 /* The slack section: a workspace, and the subscriptions under it as a list
    inside the workspace's own item rather than two spaces in front of a
    target. */
@@ -2037,6 +2058,22 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    changed, and a row that can start at zero makes the list jump every time a
    frame lands. */
 .turn { min-height: 24px; }
+/* ---------- arriving at the foot ----------
+   The newest turn's last row settles in as it arrives. The mark rides the
+   item's own wrapper (`itemProps` in the column, where each item is the last
+   child of its own wrapper) and is dropped after its window, so an item the
+   list recreates on a later scroll carries nothing to replay; the row a
+   stream grows into is not remounted, so nothing replays at 50Hz. Opacity
+   only, in place - no movement, so nothing can fight the follow's own
+   arithmetic. A row mid-reveal keeps its own flash. */
+@keyframes arrive {
+  from { opacity: .35; }
+  to { opacity: 1; }
+}
+.conv .arriving [data-k]:last-child:not(.sg-hit) { animation: arrive 150ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
+}
 
 /* A search hit is a location and the line it matched, on two lines. The design
    drew them as one run with a newline character in it, which becomes two lines

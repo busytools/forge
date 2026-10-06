@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
-import { DEFAULT_MARK, DEFAULT_WEB_PORT, MARK_NAMES } from '../wire/types';
+import { DEFAULT_MARK, DEFAULT_SERVER_PORT, MARK_NAMES } from '../wire/types';
 import {
   DEFAULT_ADDRESS,
   attempt,
@@ -74,8 +74,8 @@ describe('the address a person types', () => {
   });
 
   it('reads back the host and port the field would show', () => {
-    expect(displayAddress(`ws://127.0.0.1:${DEFAULT_WEB_PORT}/socket`)).toBe(
-      `127.0.0.1:${DEFAULT_WEB_PORT}`,
+    expect(displayAddress(`ws://127.0.0.1:${DEFAULT_SERVER_PORT}/socket`)).toBe(
+      `127.0.0.1:${DEFAULT_SERVER_PORT}`,
     );
   });
 
@@ -109,7 +109,7 @@ describe('one attempt', () => {
   it('answers a bad address as an address, not as an unreachable one', async () => {
     const answer = await attempt('::::');
     expect(answer.ok).toBe(false);
-    // `address` is the arm with no `[web] enabled` paragraph: the reader can
+    // `address` is the arm with no `[server] enabled` paragraph: the reader can
     // fix this one themselves, so pointing them at their config would be
     // wrong.
     expect(answer.ok === false && answer.kind).toBe('address');

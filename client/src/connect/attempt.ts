@@ -10,7 +10,7 @@
 
 import { readableProtocol, skewMessage, skewOf, type Skew } from '../protocol';
 import { connect, type Connection } from '../socket';
-import { DEFAULT_WEB_PORT, settingsFrom, type ClientSettings } from '../wire/types';
+import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
 import { rememberAddress } from './remembered';
 
 /**
@@ -23,7 +23,7 @@ import { rememberAddress } from './remembered';
 const HANDSHAKE_MS = 5000;
 
 /** The address the form opens on: the loopback port forge serves on. */
-export const DEFAULT_ADDRESS = `127.0.0.1:${DEFAULT_WEB_PORT}`;
+export const DEFAULT_ADDRESS = `127.0.0.1:${DEFAULT_SERVER_PORT}`;
 
 export type Attempt =
   /**

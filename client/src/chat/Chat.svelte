@@ -24,7 +24,7 @@
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
-  import { reachableIds, reveal, subagents } from './subagents.svelte';
+  import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -58,6 +58,8 @@
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /** How long the arrival mark stays on the newest item's wrapper. */
+  const ARRIVE_MS = 300;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
@@ -129,6 +131,24 @@
   );
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
+  /**
+   * The item whose arrival fade is owed, dropped again after the window.
+   *
+   * The mark cannot sit on `newest` itself: a CSS animation restarts per
+   * element insertion, and the list recreates items as they leave its
+   * window - a class still carried would replay the fade on the next scroll
+   * back to the foot. The window is twice the animation's length.
+   */
+  let arriving = $state<string | null>(null);
+  $effect(() => {
+    const key = newest;
+    if (key === null) return;
+    arriving = key;
+    const timer = setTimeout(() => {
+      if (arriving === key) arriving = null;
+    }, ARRIVE_MS);
+    return () => clearTimeout(timer);
+  });
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -728,8 +748,8 @@
     // A dispatch's row may sit in a turn the virtualised list has not drawn:
     // scroll to its turn first, then chase the row, which mounts a frame
     // after the scroll that asked for it.
-    if (ask?.what === 'dispatch' && ask.dispatch !== undefined) {
-      const wanted = ask.dispatch;
+    if (ask?.what === 'dispatch' && ask.call !== undefined) {
+      const wanted = ask.call;
       const at = turnOfDispatch(held.turns, wanted);
       if (at !== null) {
         asking = false;
@@ -738,8 +758,53 @@
         // draw: the chase runs on a wall-clock budget rather than frames, so
         // a slow mount is not mistaken for a dispatch that is not there.
         const until = Date.now() + 2500;
+        // A revealed row does not stay where it was put: the turn it lives in
+        // has just mounted with estimated heights and corrects itself as it
+        // measures, and the row's own open grows it. Both move the row AFTER
+        // the reveal's scroll - the reproduced "first click random, second
+        // click right". Re-place it, without re-opening or re-flashing, until
+        // it holds still.
+        //
+        // RECORDED ACCEPTANCE, not a pinned test: this loop and the anchor
+        // re-capture ride real layout - the virtualiser measuring, the row
+        // growing on open - and jsdom performs no layout, so the suite cannot
+        // distinguish it from a no-op. The class it leaves open is the
+        // landing's exactness under post-mount movement; the acceptance is
+        // Ved clicking a cold row on the live page (it did, and the fix is
+        // what he signed off), and the reintroduction would read exactly as
+        // "first click random, second click right" did. The unit-level half
+        // IS pinned: reveal's instant, nearest argument in subagents.test.
+        const settle = () => {
+          if (viewport === null) return;
+          const row = callRow(wanted, viewport);
+          if (row === null) return;
+          const box = row.getBoundingClientRect();
+          const seen = viewport.getBoundingClientRect();
+          // Only when the settle moved the row clean out of view: a small
+          // drift is left alone, because re-centring it here is the second
+          // step the reveal just stopped taking.
+          if (box.bottom < seen.top || box.top > seen.bottom) {
+            row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+            captureAnchor();
+          }
+        };
         const chase = () => {
-          if (reveal(wanted)) return;
+          // The reveal scrolled: re-capture the anchor HERE, so the column's
+          // own restorer (which runs on the layout mutations the reveal's
+          // open causes) holds this new place rather than pulling the reader
+          // back to the row they left.
+          if (reveal(wanted)) {
+            captureAnchor();
+            // The first pass waits a beat for the mount's own measurements to
+            // land; the rest catch whatever settled behind them.
+            const settleUntil = Date.now() + 1000;
+            const hold = () => {
+              settle();
+              if (Date.now() < settleUntil) setTimeout(hold, 120);
+            };
+            setTimeout(hold, 400);
+            return;
+          }
           if (Date.now() < until) setTimeout(chase, 60);
         };
         setTimeout(chase, 0);
@@ -993,6 +1058,8 @@
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
+    itemProps={({ item }: { item: HeldTurn }) =>
+      item.key === arriving ? { class: 'arriving' } : undefined}
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}

@@ -103,20 +103,40 @@ export function reachableIds(
 }
 
 /**
- * Reveal the chat row a dispatch drew: open it, bring it into view, and give
- * it one flash so the eye lands on it.
+ * The chat row a call drew, by the one of two names it wears.
+ *
+ * A dispatch's row carries `data-sg` (the card's id); every tool call's
+ * carries `data-k="call-c-<tool_use_id>"`. The card wins where both exist,
+ * and the plain call row is the fallback that lets a backgrounded bash
+ * answer the same ask.
+ */
+export function callRow(callId: string, root: ParentNode = document): HTMLDetailsElement | null {
+  // Escaped, because a wire id is interpolated into a selector and one with a
+  // quote or a backslash in it would throw rather than answer.
+  const escaped = callId.replace(/["\\]/g, '\\$&');
+  return (
+    root.querySelector<HTMLDetailsElement>(`details[data-sg="${escaped}"]`) ??
+    root.querySelector<HTMLDetailsElement>(`details[data-k="call-c-${escaped}"]`)
+  );
+}
+
+/**
+ * Reveal the chat row a call drew: open it, bring it into view, and give it
+ * one flash so the eye lands on it.
  *
  * **Focus is left alone** - the reader keeps whatever they were typing - and a
  * row the page does not hold answers false rather than throwing.
  */
-export function reveal(dispatchId: string, root: ParentNode = document): boolean {
-  // Escaped, because a wire id is interpolated into a selector and one with a
-  // quote or a backslash in it would throw rather than answer.
-  const escaped = dispatchId.replace(/["\\]/g, '\\$&');
-  const row = root.querySelector<HTMLDetailsElement>(`details[data-sg="${escaped}"]`);
+export function reveal(callId: string, root: ParentNode = document): boolean {
+  const row = callRow(callId, root);
   if (row === null) return false;
   row.open = true;
-  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // NEAREST, so a row the turn-scroll already put on screen is left exactly
+  // where it is - the column moved the reader once, to the turn, and moving
+  // again to centre the row read as two steps ("goes somewhere, then jumps
+  // to the right spot", seen live). A row the turn's height left below the
+  // fold is brought in with the smallest move that shows it.
+  row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   flash(row);
   return true;
 }
@@ -124,10 +144,16 @@ export function reveal(dispatchId: string, root: ParentNode = document): boolean
 /**
  * The one-flash, lit again when the scroll LANDS.
  *
- * A long smooth scroll outlives a flash lit at its start, so the reader
- * arrives at a row that has already stopped signalling. `scrollend` is the
- * precise signal; the timer covers engines without it.
+ * A long glide outlives a flash lit at its start, so the reader arrives at a
+ * row that has already stopped signalling. `scrollend` is the precise signal;
+ * the timer covers engines without it.
+ *
+ * The removal timer is kept PER ROW: a second reveal inside the first flash's
+ * six seconds must restart the window, not have its own flash cut short by
+ * the first timer firing.
  */
+const flashTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+
 function flash(row: HTMLDetailsElement): void {
   const light = () => {
     row.classList.remove('sg-hit');
@@ -140,7 +166,12 @@ function flash(row: HTMLDetailsElement): void {
     if (landed) return;
     landed = true;
     light();
-    setTimeout(() => row.classList.remove('sg-hit'), 1700);
+    const prior = flashTimers.get(row);
+    if (prior !== undefined) clearTimeout(prior);
+    flashTimers.set(
+      row,
+      setTimeout(() => row.classList.remove('sg-hit'), 6100),
+    );
   };
   const doc = row.ownerDocument;
   if (doc != null && typeof doc.addEventListener === 'function') {

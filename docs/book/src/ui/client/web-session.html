@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; session</title>
 <!-- For the design artifact only: production vendors the woff2 into
-     forge-web/assets and picks it by name from [web] font. -->
+     forge-web/assets and picks it by name from [client] font. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* One theme, the home's tokens, from [web] theme in forge.toml.
+  /* One theme, the home's tokens, from [client] theme in forge.toml.
      Shared with the home, so these lift into the one stylesheet as-is:
      the --tokens, .dot (all nine state marks), .ring (the work mark),
      .kv, .bar (a usage bar).
@@ -235,8 +235,23 @@
   .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
-    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer; }
-  .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer;
+    opacity: 0; pointer-events: none; }
+  /* The chip arrives with the pointer, like the chevron: a column of rail rows
+     carries no close marks it does not need. **Instant, not a fade**: crossing
+     rows leaves two fading chips on screen at once, which reads as a fragment
+     appearing and vanishing. **And it takes no pointer at rest** - opacity does
+     not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
+     would otherwise land on a chip nobody can see; the row's hover restores it
+     (the chip cannot restore it itself, `none` means it never hovers), as does
+     focus, and a touch-primary screen keeps it shown. `.banner .close` is
+     deliberately not one of these: it is the way out of a covering rail. */
+  .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
+    pointer-events: auto; }
+  .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
+  @media (hover: none) {
+    .pr .x, .wk .x { opacity: 1; pointer-events: auto; }
+  }
   /* The seat the page is showing, marked on its own row and nowhere else: the
      name takes the accent and the mark is recoloured rather than reshaped. Only
      the two marks drawn in a border take it, and the running ring's ARC is left
@@ -785,6 +800,9 @@
   .strip .ti > span { white-space: nowrap; }
   .strip .ti .sep { opacity: .5; }
   .strip .ti .st.err { color: var(--bad); }
+  /* The strip's rows share one right-hand fill, the sheet's own rule. */
+  .sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    row-gap: 2px; }
   /* The agents row: the count at the strip's right, and the way into each
      instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
   .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
@@ -1300,6 +1318,17 @@
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">spawn failed</div>
       </div>
+      <div class="pj">
+        <div class="pr"><span class="dot live"></span><span class="nm">granite-core</span>
+          <span class="org">Granite</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+        <!-- A failure is not shared: a worker's diagnostic draws under the
+             worker's own row, dim as the terminal's sub-row draws it - on the
+             project's line it would read as the lead having failed. -->
+        <div class="wk"><span class="dot failed" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">canary</span><button class="x" type="button" title="close">&#10005;</button></div>
+        <div class="why">connection to claude subprocess failed</div>
+      </div>
 
       <div class="state">working</div>
       <div class="pj">
@@ -1315,9 +1344,9 @@
           <summary class="wk"><span class="dot off"></span>
             <span class="nm">2 asleep</span><span class="arw">&#9656;</span></summary>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">chat-kinds</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">chat-kinds</span></div>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">rail-footer</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">rail-footer</span></div>
         </details>
       </div>
       <div class="pj">
@@ -1479,7 +1508,7 @@
 
       <div class="work">
         <div class="prose">
-          <p>Every call, message and thought on its own row, in the order it arrived, the kind's glyph leading it - and a call opens on its own. Edits are the exception: their diff is already there.</p>
+          <p>Every call, message and thought on its own row, in the order it arrived, the kind's glyph leading it - and a call opens on its own. Edits are the exception: their diff is already there. The newest turn's tail rows settle into place - a 150ms fade as they arrive, dropped after the window so a scroll back to them later carries none, and none at all under reduced motion.</p>
         </div>
 
         <!-- The units a message's markdown can carry, drawn: a heading, a
@@ -2371,10 +2400,24 @@ branch main, nothing to commit</div>
                chat row. The inspector has no subagents section. Drawn CLOSED
                here: the open list is runtime state, and the specimen draws
                the resting row. -->
+          <span class="sg-fill">
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-subagents"/></svg>
               <span class="ring"></span>2 running &#183; 1 finished</button>
+          </span>
+          <!-- The processes row, beside it: the seat's backgrounded calls.
+               Running is the whole live side - the count and the combined
+               memory of every call's process family, phrased like the
+               agents' own count. A hover opens the list; a click on a row
+               reveals that call's chat row. The inspector has no processes
+               section any more: this row is its home. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-processes"/></svg>
+              <span class="ring"></span>
+              2 running &#183; 1.8 GB</button>
+          </span>
           </span>
         </div>
       </div>
@@ -2622,18 +2665,6 @@ branch main, nothing to commit</div>
         <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
           <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-processes"/></svg> processes
-          <span class="c2">3</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">cargo nextest run</span><span class="v">412 MB &#183; 8842</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;cargo</span><span class="v">settled</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;rustc</span><span class="v">running</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;cc</span><span class="v">running</span></div>
         </div>
       </details>
 

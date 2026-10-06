@@ -18,6 +18,7 @@
     data = [],
     shift = false,
     getKey,
+    itemProps,
     onscroll,
     children,
     ...rest
@@ -33,6 +34,12 @@
      * like.
      */
     getKey?: (row: unknown) => string;
+    /**
+     * Where the real list lands per-item attributes, which THIS STUB HAS TO
+     * HONOUR for the same reason as `getKey`: a column marking an item
+     * through the list reaches no test a stub drops the call for.
+     */
+    itemProps?: (payload: { item: unknown; index: number }) => Record<string, unknown> | undefined;
     onscroll?: (offset: number) => void;
     children?: Snippet<[unknown]>;
   } = $props();
@@ -163,6 +170,8 @@
 
 <div class="conv" {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
-    <div class="turn">{@render children?.(row)}</div>
+    <div class="turn" {...itemProps?.({ item: row, index: at }) ?? {}}>
+      {@render children?.(row)}
+    </div>
   {/each}
 </div>

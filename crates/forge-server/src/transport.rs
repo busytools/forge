@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::{Message, SessionSlot, WebConfig};
+use forge_primitives::{ClientConfig, Message, SessionSlot};
 use tokio::net::TcpListener;
 
 use crate::SessionUpdate;
@@ -70,8 +70,7 @@ pub const PROTOCOL_VERSION: u32 = 5;
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
 /// the stream has seeded, the live state a late subscriber cannot
-/// reconstruct for itself, and the configuration the greeting carries the
-/// client's half of.
+/// reconstruct for itself, and the `[client]` settings the greeting carries.
 ///
 /// The conversations are here rather than on the surface because they are
 /// the TRANSPORT's: they exist so this socket stops reading a whole
@@ -82,7 +81,7 @@ pub struct TransportState {
     pub work: Arc<WorkCache>,
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
-    pub config: WebConfig,
+    pub client: ClientConfig,
 }
 
 /// Serve the socket on `listener` until the process ends.

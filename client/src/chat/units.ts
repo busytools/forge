@@ -44,7 +44,7 @@
 
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
-import { blocksOf, bodyOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
+import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -1292,7 +1292,7 @@ function turnFailure(frame: Frame): Notice | null {
  * finished, red only for one that failed or was killed, and no tone for a word
  * this page does not know, because an unknown word is not a failure.
  */
-function taskLine(summary: string | null, wire: string | null): BackgroundTask['note'] {
+function taskLine(summary: string | null, wire: string | null): TaskFact['note'] {
   if (summary === null || summary.trim() === '') return null;
   const said = wire !== null && !summary.includes(wire) ? `${summary} \u{b7} ${wire}` : summary;
   const tone =
@@ -1405,7 +1405,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    */
   let failedAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
-  const tasks = new Map<string, BackgroundTask>();
+  const tasks = new Map<string, TaskFact>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
   /**
@@ -1449,7 +1449,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         // none.
         const owner = call ?? (task === null ? null : (owners.get(task) ?? null));
         if (owner === null) continue;
-        const held: BackgroundTask = tasks.get(owner) ?? {
+        const held: TaskFact = tasks.get(owner) ?? {
           status: 'in_progress',
           note: null,
           backgrounded: false,

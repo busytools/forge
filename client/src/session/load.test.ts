@@ -31,8 +31,6 @@ vi.mock('./view', async (importOriginal) => {
     tasksSection: counting('tasksSection', real.tasksSection),
     schedulesSection: counting('schedulesSection', real.schedulesSection),
     monitorsSection: counting('monitorsSection', real.monitorsSection),
-    processTree: counting('processTree', real.processTree),
-    walkedNote: counting('walkedNote', real.walkedNote),
   };
 });
 
@@ -306,10 +304,7 @@ describe('what one arriving frame costs the inspector', () => {
     const called = (name: string): number => tally.find((row) => row.name === name)?.calls ?? 0;
 
     const measured = JSON.stringify({ tally, shut });
-    // `walkedNote` is the body's own: the walk's age is drawn under the tree
-    // and nowhere else, so a shut section has no reason to ask for it.
-    expect(called('walkedNote'), measured).toBe(0);
-    // And nothing behind any of them, so what is computed is not also drawn.
+    // Nothing behind any of them, so what is computed is not also drawn.
     expect(
       shut.reduce((total, section) => total + section.body, 0),
       `${measured} - a shut section built elements behind its summary`,
@@ -327,19 +322,18 @@ describe('what one arriving frame costs the inspector', () => {
 
     // The other half of the claim: the deferral is not a section that never
     // draws. Opening one draws the body it was holding back.
-    openSection('processes');
-    const opened = drawn().find((section) => section.key === 'sec-processes');
+    openSection('monitors');
+    const opened = drawn().find((section) => section.key === 'sec-monitors');
     expect(opened?.body, `opening drew nothing: ${JSON.stringify(drawn())}`).toBeGreaterThan(0);
-    expect(counts.countOf('walkedNote'), measured).toBeGreaterThan(0);
   });
 
   /**
-   * **The process walk reaches the section as a pushed row.** The walk used to
-   * reach it on the read's answer; now the seat's own hold sends it, so the
-   * section appearing on a frame - without the page asking anything - is the
-   * slice's user-visible claim.
+   * **A pushed walk no longer draws a section.** It used to be the inspector's
+   * processes section; the walk is the strip's row now, so the claim that
+   * survives the removal is the frame reaching the inspector as NOTHING - no
+   * section, and no re-read of the seat behind it.
    */
-  it('draws a section from a pushed walk', () => {
+  it('lets a pushed walk pass the inspector without drawing or re-reading', () => {
     const fields: Record<string, unknown> = {
       processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
     };
@@ -356,7 +350,7 @@ describe('what one arriving frame costs the inspector', () => {
     );
 
     const keys = drawn().map((section) => section.key);
-    expect(keys, `a pushed walk drew no section: ${JSON.stringify(keys)}`).toContain(
+    expect(keys, `a pushed walk drew a section again: ${JSON.stringify(keys)}`).not.toContain(
       'sec-processes',
     );
     expect(server.asked.length, 'the frame re-read the seat').toBe(0);
