@@ -245,6 +245,41 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }
 
+/// Showing a seat spends the marks the home carries for it - the diamond
+/// and the failure mark both clear by showing the seat - so the home is
+/// re-sent as part of the attach. Without it the row keeps a spent mark
+/// until the next unrelated redraw, which can be half a minute away.
+#[tokio::test]
+async fn showing_a_seat_re_sends_the_home_the_connection_holds() {
+    let (url, _fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        subject,
+        Subject::Home,
+        "and the attach re-sends the home, because showing the seat spent its marks",
+    );
+}
+
 /// The queue is a fact about the seat, so the read has to carry it: a client
 /// that attached mid-queue - a fresh load, a refresh, a seat switch - has
 /// nothing else to draw the waiting prompts from, and two attached clients
@@ -3037,6 +3072,12 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     )
     .await;
     snapshot_answering(&mut watched).await;
+    // The attach answers with the home too - showing the seat spends the
+    // marks the home's rows carry - and the re-send is part of the
+    // subscribe's own answer, consumed here so the turn's frames below are
+    // read against a clean stream.
+    let (subject, ..) = snapshot_answering(&mut watched).await;
+    assert_eq!(subject, Subject::Home, "the attach's home re-send");
 
     // The control: a connection that watches the home and no seat. The
     // fleet's classification is what keeps the conversation off this

@@ -43,6 +43,7 @@
       "pending_depth": 1,
       "last_activity": null,
       "reason": null,
+      "failed_turn": null,
       "work": {
         "branch": null,
         "changed": null,

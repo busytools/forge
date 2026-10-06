@@ -14,13 +14,13 @@
  * slot the update carries, so a store's contents are this seat's and nothing
  * else's.
  *
- * **The subscription belongs to the client rather than to the page showing
- * it.** A seat the client has visited stays subscribed: a page leaving gives
- * nothing back, the frames arriving while nothing is drawing the seat are
- * applied to it, and coming back draws what is held rather than reading the
- * whole seat again. That read is the burst this exists to delete, and holding
- * every seat's state is what the terminal has done for the life of its
- * process for the same reason.
+ * **The subscription follows the page, and the RECORD stays.** A page
+ * leaving gives its subscription back - a held subscription reads as a
+ * showing seat to the server, and showing spends the marks a seat earns -
+ * while the record it held stays for the return to draw. The return's
+ * subscribe answers with the whole record, the same one a reconnect gets, so
+ * the burst is paid on return rather than on every navigation, and a seat
+ * nobody is looking at marks like one nobody has looked at.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -129,20 +129,21 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 /**
  * Watch one seat.
  *
- * **The seat is the client's; a page only reads it.** The first page to show a
- * seat subscribes it - the subscription's own answer is what fills its history
- * - and every page after that is handed what the seat holds. Leaving gives
- * nothing back, so a return subscribes nothing and reads nothing.
+ * **The seat's record is the client's; its subscription follows the page.**
+ * The first page to show a seat subscribes it - the subscription's own answer
+ * is what fills its history - and every page after that is handed what the
+ * seat holds. The last reader leaving gives the subscription back; a return
+ * subscribes it again, and the record it held draws until that answer lands.
  *
  * **The subscribe happens at this call**, not when the returned store gets its
  * first subscriber. Taking the store and never subscribing to it therefore
- * leaves a subscription standing, and the only thing that releases a seat is a
- * refusal.
+ * leaves a subscription standing, and a refusal is what releases the seat
+ * outright.
  *
- * **A seat the server refused is that exception**, and it is let go with its
- * last reader: a refusal is an answer rather than a subscription ("a refused
- * subscribe leaves nothing to hear"), so holding one holds nothing, and a seat
- * that starts later would never be reached again.
+ * **A seat the server refused is let go with its last reader**: a refusal is
+ * an answer rather than a subscription ("a refused subscribe leaves nothing to
+ * hear"), so holding one holds nothing, and a seat that starts later would
+ * never be reached again.
  */
 export function watchSession(
   connection: Connection,
@@ -209,6 +210,18 @@ function createSeat(
    */
   function showing(): () => void {
     shown = true;
+    // A return: the page is back, and the subscription it gave up comes with
+    // it. Its answer is the whole record, exactly as the first subscribe's
+    // was, and the held record draws until it lands. `opened === 0` is the
+    // marker: a seat a page is meeting for the first time was subscribed by
+    // `watch()` before any reader could ask for it.
+    if (seat.opened === 0) {
+      seat.held = connection.subscribe(subject, { answering: seat.answering });
+      seat.opened += 1;
+      seat.asking = true;
+      seat.replaceWanted = false;
+      seat.askedAt = seat.frames;
+    }
     if (seat.wire === null) read();
     return leaving;
   }
@@ -219,7 +232,19 @@ function createSeat(
     // No frame paints for a page that has gone, so a record still waiting for
     // one is written now: it is what a return draws.
     if (queued !== null) flush();
-    if (seat.held?.state().kind === 'refused') release();
+    if (seat.held?.state().kind === 'refused') {
+      release();
+    } else if (seat.opened > 0) {
+      // **A held subscription reads as a SHOWING seat to the server**, and
+      // showing spends every mark the seat earns - the failure mark and the
+      // diamond both are cleared by it - so a page leaving gives its
+      // subscription back. Left held, a seat the reader had EVER opened could
+      // never mark again. The record and the held store stay: the return
+      // draws what it holds while the re-subscribe's answer - the whole
+      // record, as a reconnect's is - lands.
+      for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
+      seat.opened = 0;
+    }
   }
 
   const seat: Seat = {
@@ -330,9 +355,16 @@ function createSeat(
    * Nothing is asked while one ask is in flight - a full encode apiece, and a
    * second would queue behind the first - so a replacement wanted now is
    * recorded and asked for when the answer lands.
+   *
+   * **A seat with no page subscribes nothing back, it only leaks.** The ask
+   * is an unsubscribe-then-subscribe pair, and the subscribe re-attaches a
+   * seat no page is showing: the server reads it as shown (spending the
+   * marks every other reader would get) with no counter here owning it. The
+   * away refresh therefore does not go out; the return's own subscribe
+   * answers with the whole record, which covers everything it was for.
    */
   function reread(): void {
-    if (seat.asking) return;
+    if (seat.asking || seat.opened === 0) return;
     seat.asking = true;
     seat.replaceWanted = false;
     seat.askedAt = seat.frames;

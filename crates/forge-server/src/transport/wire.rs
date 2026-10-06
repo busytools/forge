@@ -176,6 +176,10 @@ pub struct AgentWire {
     pub pending_depth: usize,
     pub last_activity: Option<std::time::SystemTime>,
     pub reason: Option<String>,
+    /// When the seat's newest turn ended in failure, filtered by what has
+    /// been shown: `None` once the seat has been shown since the failure,
+    /// or while it is being shown now.
+    pub failed_turn: Option<std::time::SystemTime>,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
     /// Read through the same shared cache the project rows use, so a lead's
@@ -194,6 +198,7 @@ impl From<&AgentRow> for AgentWire {
             pending_depth: row.pending_depth,
             last_activity: row.last_activity,
             reason: row.reason.clone(),
+            failed_turn: row.failed_turn,
             work: None,
         }
     }
@@ -988,13 +993,19 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     // the project's path for a lead, the worktree for a git worker. A seat
     // forge holds no directory for keeps `None` rather than borrowing the
     // project's read, which is what the cell's blank has to mean.
+    //
+    // The live snapshot filters the failure mark by what has been shown:
+    // the same facts the diamond rides, read once for both.
+    let live = crate::live::Live::lock(&state.live).snapshot();
     let mut agent_rows = Vec::with_capacity(agents.all().len());
     for agent in agents.all() {
         let work = match roster.cwd_for(&agent.slot) {
             Some(cwd) => Some(state.work.snapshot(&agent.slot, cwd.as_path()).await),
             None => None,
         };
-        agent_rows.push(AgentWire { work, ..AgentWire::from(agent) });
+        let mut row = AgentWire { work, ..AgentWire::from(agent) };
+        row.failed_turn = row.failed_turn.and_then(|at| live.failed_mark(&agent.slot, at));
+        agent_rows.push(row);
     }
 
     HomeWire {
@@ -1053,15 +1064,12 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
         agents: agent_rows,
-        unseen: {
-            let live = crate::live::Live::lock(&state.live).snapshot();
-            agents
-                .all()
-                .iter()
-                .map(|row| row.slot.clone())
-                .filter(|slot| live.unseen.is_unseen(slot))
-                .collect()
-        },
+        unseen: agents
+            .all()
+            .iter()
+            .map(|row| row.slot.clone())
+            .filter(|slot| live.unseen.is_unseen(slot))
+            .collect(),
         projects,
     }
 }

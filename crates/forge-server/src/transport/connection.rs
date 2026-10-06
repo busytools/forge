@@ -620,11 +620,43 @@ async fn handle_client(
                     // A seat subscription is also this connection SHOWING the
                     // seat, which is what keeps a turn finishing on it from
                     // arming a mark nobody needs: the reader is looking at it.
-                    if let Subject::Session(slot) = &what {
+                    let seat = match &what {
+                        Subject::Session(slot) => Some(slot.clone()),
+                        _ => None,
+                    };
+                    if let Some(slot) = &seat {
                         Live::lock(&state.live).attach(slot);
                     }
                     watched.push(what.clone());
                     send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    // Showing a seat spends the marks the home carries for it
+                    // - the diamond and the failure mark - so a connection
+                    // that already holds the home gets a fresh one as part of
+                    // the attach, rather than keeping a spent mark until the
+                    // next unrelated redraw, which can be half a minute away.
+                    if let Some(slot) = &seat
+                        && watched.iter().any(|held| matches!(held, Subject::Home))
+                    {
+                        // A refresh that could not be encoded is not worth
+                        // dropping the connection for: the next redraw carries
+                        // the same news. Debug, because the marks reading spent
+                        // until then is forge working as it should.
+                        match encode_subject(state, &Subject::Home).await {
+                            Ok(home) => {
+                                send(
+                                    socket,
+                                    ServerMessage::Snapshot { subject: Subject::Home, data: home },
+                                )
+                                .await?;
+                            }
+                            Err(error) => tracing::debug!(
+                                event_name = "home_refresh_failed",
+                                slot = %slot.display(),
+                                %error,
+                                "the home refresh after a seat attach could not be encoded",
+                            ),
+                        }
+                    }
                     if grant_role {
                         return send(socket, ServerMessage::BrowserRole { hosting: true }).await;
                     }

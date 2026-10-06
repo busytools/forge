@@ -12,6 +12,7 @@ import {
   fleetCount,
   gitSection,
   headerFacts,
+  failedLine,
   mcpRows,
   mcpState,
   memoryLabel,
@@ -19,6 +20,7 @@ import {
   railFooter,
   railGroups,
   railMark,
+  rankOf,
   type RailGroup,
   type RailProject,
   seatConnectorRows,
@@ -234,6 +236,27 @@ describe('the rail', () => {
   });
 
   /**
+   * A failed turn is the seat's own failure, and both surfaces say so from
+   * one mapping: the row carries the line and the header takes the failure
+   * mark. Each half had its own way to fall silent - the line through
+   * `failedLine`, the mark through the promotion - so both are pinned.
+   */
+  it('names a failed turn on the row and marks it for the header', () => {
+    const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
+    const failed: AgentRow = { ...lead(), pending: null, failed_turn: at };
+    const home = withHome({ agents: [failed] });
+
+    const block = railGroups(home, LEAD, 0)[0]?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no block for the failed seat');
+    expect(failedLine(block.row), 'the row names the failure').toBe('a turn failed');
+    expect(block.why, 'and the line draws under the row').toEqual({
+      line: 'a turn failed',
+      bad: true,
+    });
+    expect(seatState(home, LEAD).mark, 'the header draws the failure mark').toBe('failed');
+  });
+
+  /**
    * **A failure line is the failing seat's own.** A worker's spawn diagnostic
    * searched onto the project's line put it under the lead's row, reading as
    * the lead having failed while the worker's own row said nothing.
@@ -396,6 +419,11 @@ describe('the rail', () => {
     expect(railMark({ kind: 'lifecycle', lifecycle: 'Sleeping' })).toBe('off');
     expect(railMark({ kind: 'never-started' })).toBe('off');
     expect(railMark({ kind: 'unseen' })).toBe('unseen');
+    // A failed turn is the same failure shape, and it ranks with the
+    // states that need the reader rather than with the completions.
+    expect(railMark({ kind: 'failed-turn' })).toBe('failed');
+    expect(rankOf({ kind: 'failed-turn' }, null)).toBe(0);
+    expect(rankOf({ kind: 'failed-turn' }, 'question')).toBe(0);
   });
 
   it('counts the fleet by its seats, not by the rows a group drew', () => {

@@ -192,6 +192,9 @@ export interface ComposerProps {
  */
 export function railMark(state: RowState): string {
   if (state.kind === 'unseen') return 'unseen';
+  // A failed turn draws the failure mark, the terminal's own answer: its
+  // cross replaces the state glyph until the seat is opened.
+  if (state.kind === 'failed-turn') return 'failed';
   if (state.kind === 'never-started') return 'off';
   switch (state.lifecycle) {
     case 'Running':
@@ -401,6 +404,9 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;
   if (state.kind === 'unseen') return 1;
+  // A failed turn is the seat's own version of a needed person, so it ranks
+  // with the attention states rather than with the completions.
+  if (state.kind === 'failed-turn') return 0;
   if (state.kind === 'never-started') return 2;
   switch (state.lifecycle) {
     case 'Attention':
@@ -425,6 +431,10 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
  * the client's own words.
  */
 export function failedLine(row: Row): string | null {
+  // A failed turn states itself: the row carries no reason text for it -
+  // the failure's own words are in the seat's conversation - so the line
+  // is the word alone.
+  if (row.state.kind === 'failed-turn') return 'a turn failed';
   if (row.state.kind !== 'lifecycle') return null;
   const lifecycle = row.state.lifecycle;
   if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;

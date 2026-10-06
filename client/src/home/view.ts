@@ -50,12 +50,14 @@ export interface BandCard {
 
 /**
  * The state a row draws: the core's lifecycle the snapshot carries, plus the
- * two states that are not the core's to know.
+ * three states that are not the core's to know.
  */
 export type RowState =
   | { kind: 'lifecycle'; lifecycle: Lifecycle }
   /** A turn finished on a seat this view was not showing. */
   | { kind: 'unseen' }
+  /** A seat whose newest turn failed, which the reader has not been shown. */
+  | { kind: 'failed-turn' }
   /** A project nothing has ever run in. */
   | { kind: 'never-started' };
 
@@ -106,6 +108,13 @@ export interface Row {
   pending: 'question' | 'permission' | null;
   reason: string | null;
   lastActivity: WireTime | null;
+  /**
+   * When the seat's newest turn failed, as this view's wire left it: `null`
+   * once the view has shown the seat since. Carried whole rather than as the
+   * promoted state, so a reader of the row can tell a failed turn from a
+   * session that failed to spawn.
+   */
+  failedTurn: WireTime | null;
 }
 
 /** One org's projects, in the order `forge.toml` declares them. */
@@ -148,13 +157,18 @@ export interface HomeView {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * Two promotions the core does not make, both about what the mark means: a
- * backgrounded task is work even after the turn that started it settled, and
- * a turn that finished while this view was not showing the seat is the one
- * state that answers "what changed while I was away". Neither is computed
- * here - `has_background_work` and `unseen` both cross on the snapshot.
+ * Three promotions the core does not make, all about what the mark means: a
+ * backgrounded task is work even after the turn that started it settled, a
+ * turn that finished while this view was not showing the seat answers "what
+ * changed while I was away", and a failed turn the view has not been shown
+ * since is the one state the reader has to act on. None is computed here -
+ * `has_background_work`, `unseen` and `failed_turn` all cross on the
+ * snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
+  // The failure outranks every other promotion, and the terminal orders it
+  // over the spinner and the diamond both.
+  if (row.failed_turn !== null) return { kind: 'failed-turn' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
   }
@@ -172,6 +186,9 @@ function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
 /** The mark a state draws: one class and one dot shape per meaning. */
 export function markOf(state: RowState): { class: string; dot: string } {
   if (state.kind === 'unseen') return { class: 'unseen', dot: 'ok' };
+  // The failed turn draws the same mark a failed session does: one failure
+  // vocabulary, and the seat's own page tells the two apart.
+  if (state.kind === 'failed-turn') return { class: 'failed', dot: 'bad' };
   if (state.kind === 'never-started') return { class: 'never', dot: 'off' };
   switch (state.lifecycle) {
     case 'Running':
@@ -556,6 +573,7 @@ function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: Session
     pending: agent.pending,
     reason: agent.reason,
     lastActivity: agent.last_activity,
+    failedTurn: agent.failed_turn,
   };
 }
 
@@ -578,6 +596,7 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
     pending: null,
     reason: null,
     lastActivity: lastRan,
+    failedTurn: null,
   };
 }
 
