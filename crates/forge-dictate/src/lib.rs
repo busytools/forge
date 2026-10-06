@@ -39,6 +39,7 @@
 
 mod audio;
 mod capture;
+pub mod catalogue;
 mod config;
 mod diagnostics;
 mod engine;
