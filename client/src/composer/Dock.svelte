@@ -242,9 +242,8 @@
     void ownKey;
     if (inFieldNow()) return;
     // The options where there are any, and the dock itself where there are not
-    // (a permission, a held post) - NOT the words row: focusing that would make
-    // this dock the destination for a take's words, and a landing sent to a row
-    // that unmounts with the prompt loses them.
+    // (a permission, a held post) - NOT the words row: the options are what
+    // the arrival is for, and the row is entered by the reader's own doing.
     const wanted = listbox ?? root;
     if (wanted !== null) wanted.focus({ preventScroll: true });
   });
@@ -270,20 +269,15 @@
     return field !== null && field.contains(document.activeElement);
   }
 
-  // The composer decides where a take's words land, and this dock is a
-  // destination once the reader has been in its words row - the analogy of the
-  // row being OPENED, which it used to be revealed by and now always is.
+  // Whether the reader has been in the words row - set by writing in it, by a
+  // mic press, by the custom row - which is sticky rather than tied to the
+  // caret, and is what the keyboard table reads for this surface. It is NOT
+  // set by the row merely being drawn: a prompt nobody has touched belongs to
+  // its options, and the caret-return below is for a reader who was writing.
   //
-  // So it is sticky rather than tied to the caret: a reader who wrote a line and
-  // then clicked away is still writing there, and a landing sent to the
-  // composer's draft instead would be a box they had left. It is NOT set by the
-  // row merely being drawn, because a landing sent to a row nobody has used
-  // goes down with the dock when the prompt resolves.
-  //
-  // The cleanup is load-bearing twice over: a seat can fail with a prompt still
-  // waiting, which puts the blocker in the slot and takes this dock off screen
-  // while the prompt stays, and a `true` left standing here would route a
-  // take's words to a box that is no longer there.
+  // The cleanup is load-bearing: a seat can fail with a prompt still waiting,
+  // which takes this dock off screen while the prompt stays, and a `true` left
+  // standing here would keep reporting a box that is no longer there.
   $effect(() => {
     const el = field;
     if (el === null) return;
@@ -297,7 +291,7 @@
     };
   });
 
-  // The destination itself, which outlives the field: a take drawing in the row
+  // The "used" flag itself, which outlives the field: a take drawing in the row
   // replaces the field while it runs, and a reader who was writing there is
   // still writing there when it comes back.
   $effect(() => {
@@ -515,7 +509,14 @@
    */
   function toggle(): void {
     const row = rows[marked];
-    if (!multi || answered || row === undefined || row.optionId === null) return;
+    if (!multi || answered || row === undefined) return;
+    if (row.custom) {
+      // Space on the custom row is the same door the other keys open: it is
+      // not a member of the set, so it cannot be turned on.
+      visited = true;
+      field?.focus();
+      return;
+    }
     toggled = toggled.includes(row.optionId)
       ? toggled.filter((id) => id !== row.optionId)
       : [...toggled, row.optionId];
@@ -785,8 +786,8 @@
           <span class="n" aria-hidden="true">{at + 1}</span>
           {#if !row.custom}
             {#if multi}
-              <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
-                {#if row.optionId !== null && toggled.includes(row.optionId)}
+              <span class="box2" class:on={toggled.includes(row.optionId)}>
+                {#if toggled.includes(row.optionId)}
                   <Icon name="check" />
                 {/if}
               </span>
@@ -853,10 +854,9 @@
           aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
           onclick={() => {
             // **Pressing the mic is being in the row.** It counts as use
-            // whether or not the caret follows it - without it the words a take
-            // lands would go to the composer's draft, which is not drawn while
-            // a prompt holds the slot, so the phone's only way to dictate an
-            // answer would lose the answer.
+            // whether or not the caret follows it, so the caret comes back to
+            // the words row when the take's card leaves - which a touch screen
+            // cannot reach any other way.
             visited = true;
             onmic();
           }}
