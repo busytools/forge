@@ -433,6 +433,32 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
   });
 
+  it('leaves a stamped heading with no matching call off a call that is waiting', () => {
+    // Only the nameless marked body pairs by position; a named frame that
+    // matches no waiting call must never ride one that happens to be waiting.
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const heading = heard([text('# Beta Report\n\nBeta body words.')], { isSynthetic: true });
+
+    const units = fold([load, heading]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the waiting call keeps waiting').toBeNull();
+    expect(kinds(units), 'and the heading falls through as an ordinary frame').toEqual([
+      'leaves',
+      'user',
+    ]);
+  });
+
+  it('claims nothing for a whitespace-only stamped frame', () => {
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const blank = heard([text('   \n\t  ')], { isSynthetic: true });
+
+    const units = fold([load, blank]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'a whitespace-only stamped frame claims nothing').toBeNull();
+  });
+
   it('takes the mark as the harness talking, and an unmarked frame as the reader', () => {
     const plain = heard([text('the reader typed this')]);
     const stamped = heard([text('a line nobody typed, and no family claims it')], {
@@ -709,10 +735,9 @@ describe('one turn folded into the units a view draws', () => {
 
   it("draws the harness skill reminder as a line of its own, not the reader's turn", () => {
     // The CLI tells the MODEL that a skill was already loaded; nobody typed it.
-    // The terminal drops it live (every wire user text is treated as an input
-    // echo there) and renders it as a user turn on resume, so this is the
-    // client's own shape rather than parity - a notice, because rule 25 says
-    // it still has to be drawn.
+    // The frame reaches the wire stamped, and the terminal draws every stamped
+    // user frame as an info row on both paths, live and resume - so this is
+    // parity, not the client's own shape, and rule 25 is why it draws at all.
     const reminder = heard([
       text(
         'Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation - follow those instructions now, including any setup steps.',
