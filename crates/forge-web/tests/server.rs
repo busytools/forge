@@ -2551,6 +2551,8 @@ async fn a_cron_delivery_is_drawn_as_the_turn_it_is() {
         key: SessionSlot::lead("Busytools", "forge"),
         text: "the nightly sweep is due".to_owned(),
         uuid: "cap-cron".to_owned(),
+        cron_id: "c1".to_owned(),
+        description: Some("Nightly sweep".to_owned()),
     });
     let region = next_session_event(stream).await.expect("the delivery redraws the region");
 

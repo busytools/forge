@@ -52,14 +52,22 @@ impl crate::Workspace {
     }
 
     /// Park a fired cron prompt for `slot`, missed-marked when it came
-    /// due while the owner was asleep.
-    pub(crate) fn park_cron(&self, slot: &SessionSlot, text: String, missed: bool) {
-        self.parked_by_slot
-            .lock()
-            .entry(slot.clone())
-            .or_default()
-            .cron
-            .push(crate::crons::PendingCron { text, missed });
+    /// due while the owner was asleep. The entry's identity rides along so
+    /// the drained echo can name the schedule it came from.
+    pub(crate) fn park_cron(
+        &self,
+        slot: &SessionSlot,
+        cron: &forge_primitives::CronEntry,
+        missed: bool,
+    ) {
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().cron.push(
+            crate::crons::PendingCron {
+                text: cron.prompt.clone(),
+                missed,
+                cron_id: cron.id.as_str().to_owned(),
+                description: cron.description.clone(),
+            },
+        );
     }
 
     /// Park a Gotify notification for `slot`.
@@ -149,6 +157,23 @@ mod tests {
         }
     }
 
+    /// A cron entry carrying what a park reads: the id, the prompt and a
+    /// description.
+    fn cron(id: &str, prompt: &str) -> forge_primitives::cron::CronEntry {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        CronEntry {
+            id: CronId::from(id),
+            project_name: "parked-proj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: Some(format!("{id} summary")),
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+        }
+    }
+
     /// A payload parked for a sleeping project is taken by the session
     /// that connects as that slot, and the take is a drain, not a read.
     #[test]
@@ -173,12 +198,14 @@ mod tests {
         let (ws, _rx) = crate::Workspace::testing_stub();
         let id = MessageId::mint();
         ws.park_peer_prompt(&slot(None), &sender(), wrapped(&id, "are you up?"));
-        ws.park_cron(&slot(None), "morning reminder".to_owned(), true);
+        ws.park_cron(&slot(None), &cron("c1", "morning reminder"), true);
 
         let taken: ParkedForSlot = ws.take_parked_for_slot(&slot(None));
         assert_eq!(taken.peer.len(), 1, "the peer prompt is here");
         assert_eq!(taken.cron.len(), 1, "and so is the cron");
         assert!(taken.cron[0].missed, "with its missed mark intact");
+        assert_eq!(taken.cron[0].cron_id, "c1", "and the entry it came from");
+        assert_eq!(taken.cron[0].description.as_deref(), Some("c1 summary"));
     }
 
     /// The label is half the address. A payload parked for a team worker

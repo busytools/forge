@@ -1067,6 +1067,8 @@ mod tests {
             key: a_seat(),
             text: "the cron fired".to_owned(),
             uuid: "cap-cron".to_owned(),
+            cron_id: "c1".to_owned(),
+            description: Some("Morning summary".to_owned()),
         });
 
         let conversation = held.get(&a_seat()).expect("the seat is held");

@@ -26,11 +26,14 @@ use crate::workspace::Workspace;
 const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
-/// this fire is overdue (delivered with a missed marker on drain).
+/// this fire is overdue (delivered with a missed marker on drain), and the
+/// entry's identity, which the drained echo names.
 #[derive(Debug)]
 pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
+    pub cron_id: String,
+    pub description: Option<String>,
 }
 
 impl Workspace {
@@ -237,13 +240,7 @@ impl Workspace {
             // scheduler's Skip-behaviour jitter so a same-window fire under
             // load is never mislabelled missed.
             let missed = now > cron.next_fire + CRON_TICK_INTERVAL * 2;
-            match crate::spawn::deliver_cron_prompt(
-                self,
-                &cron.project_name,
-                cron.team_role.as_deref(),
-                cron.prompt.clone(),
-                missed,
-            ) {
+            match crate::spawn::deliver_cron_prompt(self, cron, missed) {
                 // Delivered (or spawn kicked off): advance a recurring to
                 // its next slot, remove a fired run-once.
                 CronFireOutcome::Delivered => self.advance_or_remove_cron(id, now),
@@ -501,6 +498,23 @@ mod tests {
             next_fire: std::time::SystemTime::UNIX_EPOCH,
             team_role: owner.map(str::to_owned),
         }
+    }
+
+    /// One delivery as the fire router hands it to `deliver_cron_prompt`: a
+    /// cron entry carrying the project, owner and prompt the delivery
+    /// routes and reads. The id is fixed - these tests are about the route.
+    fn deliver_cron(
+        ws: &Arc<Workspace>,
+        project: &str,
+        owner: Option<&str>,
+        prompt: &str,
+        missed: bool,
+    ) -> crate::spawn::CronFireOutcome {
+        crate::spawn::deliver_cron_prompt(
+            ws,
+            &schedule("delivered-cron", project, prompt, owner),
+            missed,
+        )
     }
 
     /// The one `CronSchedulesChanged` on a test's update stream, as its key
@@ -927,8 +941,9 @@ mod tests {
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
-        let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
+        let mut fired = schedule("c1", "cronlead", "morning", None);
+        fired.description = Some("Morning summary".to_owned());
+        let outcome = crate::spawn::deliver_cron_prompt(&ws, &fired, false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
 
         // The running lead receives the raw cron prompt as a plain user turn.
@@ -948,21 +963,27 @@ mod tests {
         // AND the delivery echoes a CronPromptAppended so the chat shows a
         // block - under the SAME id the prompt runs under, which is what lets
         // a view hold the block's row while the prompt waits and pair it with
-        // the page's copy later.
-        let echoed_id = drain_updates(&mut rx).into_iter().find_map(|u| match u {
-            SessionUpdate::CronPromptAppended { key, text, uuid }
+        // the page's copy later. The echo names the entry that fired: a view
+        // reading only the prompt cannot say which schedule produced it, and
+        // a run-once entry is gone from the store by the time the row draws.
+        let echoed = drain_updates(&mut rx).into_iter().find_map(|u| match u {
+            SessionUpdate::CronPromptAppended { key, text, uuid, cron_id, description }
                 if key == lead_key && text == "morning" =>
             {
-                Some(uuid)
+                Some((uuid, cron_id, description))
             }
             _ => None,
         });
+        let (echoed_id, cron_id, description) =
+            echoed.expect("the delivery echoes a cron block for the fired prompt");
         assert_eq!(
-            echoed_id.as_deref(),
-            Some(wired_id.as_str()),
+            echoed_id.as_str(),
+            wired_id.as_str(),
             "the block and the fired prompt are one thing by id",
         );
         assert!(!wired_id.is_empty(), "and the id is real, not a blank");
+        assert_eq!(cron_id, "c1", "the echo names the entry that fired");
+        assert_eq!(description.as_deref(), Some("Morning summary"), "and its description");
     }
 
     #[test]
@@ -975,13 +996,7 @@ mod tests {
         ws.mark_session_connected_for_test(&worker_key, "worker-uuid");
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("reviewer"),
-            "review the diff".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "review the diff", false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -1006,13 +1021,7 @@ mod tests {
         seed_worker_row(&ws, &key, "reviewer");
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("reviewer"),
-            "nightly".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -1044,13 +1053,7 @@ mod tests {
         ws.register_domain_session(worker_key.clone(), None);
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("reviewer"),
-            "nightly".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -1080,13 +1083,7 @@ mod tests {
         ws.insert_live_worker(&key, live_worker_entry("proj", "reviewer"));
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("reviewer"),
-            "nightly".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::Delivered),
             "a worker still spawning is not unwakeable - its worktree is being created \
@@ -1112,13 +1109,7 @@ mod tests {
         ws.insert_live_worker(&key, failed);
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("reviewer"),
-            "nightly".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
             "a Failed entry is not a worker the wave will start, so its fire must not \
@@ -1144,13 +1135,7 @@ mod tests {
         seed_worker_row(&ws, &key, "scratch");
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("scratch"),
-            "hourly".to_owned(),
-            false,
-        );
+        let outcome = deliver_cron(&ws, "proj", Some("scratch"), "hourly", false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
@@ -1178,8 +1163,7 @@ mod tests {
         // and its cron must be collected rather than buffered into a
         // bucket nothing will ever drain.
         ws.seed_test_project("proj", "/tmp/wc-gone");
-        let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
+        let outcome = deliver_cron(&ws, "proj", Some("ghost"), "x", false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
             "a label with no row in the session store is conclusively gone",
@@ -1209,8 +1193,7 @@ mod tests {
         ws.record_worker_row(&key, "steward", "steward-uuid", "c", None, None, false, true, None)
             .expect("seed the worker's row");
 
-        let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
+        let outcome = deliver_cron(&ws, "proj", Some("steward"), "x", false);
         let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
             panic!("an owner whose worktree is gone cannot be woken, so its fire is not delivered");
         };
@@ -1230,8 +1213,7 @@ mod tests {
             project_dir.path().join(".claude").join("worktrees").join("steward"),
         )
         .expect("restore the worktree");
-        let delivered =
-            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("steward"), "x".to_owned(), false);
+        let delivered = deliver_cron(&ws, "proj", Some("steward"), "x", false);
         assert!(
             matches!(delivered, crate::spawn::CronFireOutcome::Delivered),
             "the same fire is delivered once the worktree is back, so the refusal above \
@@ -1251,8 +1233,7 @@ mod tests {
         // deleted as owner-gone.
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project("proj", "/tmp/wc-unknown");
-        let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("scratch"), "x".to_owned(), false);
+        let outcome = deliver_cron(&ws, "proj", Some("scratch"), "x", false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::DispatchFailed),
             "a failed owner check leaves the cron for the next tick, not TargetGone",
@@ -1271,7 +1252,7 @@ mod tests {
 
         // Control: with the listener bound this same fire is delivered, so
         // the refusal below is the map and not the owner check.
-        let bound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let bound = deliver_cron(&ws, "proj", None, "x", false);
         assert!(
             matches!(bound, crate::spawn::CronFireOutcome::Delivered),
             "the same fire with the listener bound is delivered",
@@ -1279,7 +1260,7 @@ mod tests {
         ws.drain_test_dispatch_buffer();
 
         ws.seed_test_gateway_ready(false);
-        let unbound = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let unbound = deliver_cron(&ws, "proj", None, "x", false);
         assert!(
             matches!(unbound, crate::spawn::CronFireOutcome::DispatchFailed),
             "an unbound listener is a transient refusal, not a delivered fire",
@@ -1303,7 +1284,7 @@ mod tests {
 
         // Nothing runs the account loader here, so the one account starts
         // `Loading`: the fire is left rather than parked.
-        let unsettled = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let unsettled = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&unsettled),
             "DispatchFailed",
@@ -1317,7 +1298,7 @@ mod tests {
         // Controls: the same fire is delivered once the map settles, so
         // the refusal above is the account map and not the owner check.
         ws.seed_test_ready_account("acct-a");
-        let ready = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let ready = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&ready),
             "Delivered",
@@ -1327,7 +1308,7 @@ mod tests {
         // `Bailed` is terminal too, so it settles the map as well, and the
         // walk falls back to it as the last resort rather than refusing.
         ws.seed_test_account_state("acct-a", forge_gateway::LoadingState::Bailed);
-        let bailed = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let bailed = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&bailed),
             "Delivered",
@@ -1351,7 +1332,7 @@ mod tests {
 
         // Control: with the one account serving and not cooling, the same
         // fire is delivered.
-        let served = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let served = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&served),
             "Delivered",
@@ -1367,7 +1348,7 @@ mod tests {
             + 60;
         ws.gateway
             .report_probe_limit(&forge_gateway::AccountKey("acct-a".to_owned()), Some(reset_at));
-        let cooling = crate::spawn::deliver_cron_prompt(&ws, "proj", None, "x".to_owned(), false);
+        let cooling = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&cooling),
             "DispatchFailed",
@@ -1453,8 +1434,8 @@ provider = "anthropic"
 
         ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
         ws.enable_test_dispatch_intercept();
-        crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), true);
-        crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), false);
+        deliver_cron(&ws, "proj", None, "standup", true);
+        deliver_cron(&ws, "proj", None, "standup", false);
         let dispatched = ws.drain_test_dispatch_buffer();
         let texts: Vec<String> = dispatched
             .iter()

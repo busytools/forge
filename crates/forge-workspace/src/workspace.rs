@@ -8932,7 +8932,7 @@ provider = "anthropic"
         ws.enable_test_dispatch_intercept();
 
         let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
+            crate::spawn::deliver_cron_prompt(&ws, &test_cron("c1", "cronlead", "morning"), false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         assert!(
             !drain_updates(&mut rx)
@@ -8943,7 +8943,7 @@ provider = "anthropic"
 
         ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
         let outcome =
-            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "again".to_owned(), false);
+            crate::spawn::deliver_cron_prompt(&ws, &test_cron("c2", "cronlead", "again"), false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         let signalled = drain_updates(&mut rx)
             .into_iter()
@@ -11034,6 +11034,23 @@ provider = "anthropic"
             || panic!("project '{name}' missing from workspace"),
             |p| p.path.to_string_lossy().into_owned(),
         )
+    }
+
+    /// A cron entry carrying what a delivery routes and reads: the id, the
+    /// project, the prompt and a description.
+    fn test_cron(id: &str, project: &str, prompt: &str) -> forge_primitives::cron::CronEntry {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        CronEntry {
+            id: CronId::from(id),
+            project_name: project.to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: Some(format!("{id} summary")),
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+        }
     }
 
     /// A message parked for a seat that never came up is acknowledged to

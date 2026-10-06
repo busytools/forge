@@ -1518,6 +1518,13 @@ pub enum SessionUpdate {
         /// The id the delivered prompt was dispatched under, which the drawn
         /// row carries - see `PeerEnvelopeAppended`.
         uuid: String,
+        /// The cron entry that fired, so a view can name the schedule the
+        /// prompt came from - the entry is gone from the store by the time
+        /// a run-once fire is drawn.
+        cron_id: String,
+        /// The entry's human summary; `None` when none was registered, and
+        /// the row falls back to the prompt's first line.
+        description: Option<String>,
     },
     /// A matched Slack message arrived at `key`. Carries the
     /// prose rather than the typed message: the prose builder is `pub(crate)`

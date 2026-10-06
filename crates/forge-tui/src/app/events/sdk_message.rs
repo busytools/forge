@@ -3845,6 +3845,8 @@ mod inbound_message_surfacing_tests {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
                 uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Queue check".to_owned()),
             },
         );
 
@@ -3893,6 +3895,8 @@ mod inbound_message_surfacing_tests {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
                 uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Queue check".to_owned()),
             },
         );
 
@@ -3929,6 +3933,8 @@ mod inbound_message_surfacing_tests {
                 key: forge_workspace::SessionSlot::from_str_for_test("session-b"),
                 text: "check the queue".to_owned(),
                 uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Queue check".to_owned()),
             },
         );
         assert!(
