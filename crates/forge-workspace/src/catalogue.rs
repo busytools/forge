@@ -53,6 +53,8 @@ pub struct DictateModelsSnapshot {
     pub bench: crate::bench::BenchState,
     /// What benches have measured on this machine, newest first.
     pub results: Vec<crate::bench::BenchResult>,
+    /// The read-aloud set: whether this machine has one, and its passage.
+    pub read_aloud: crate::bench::ReadAloudState,
 }
 
 /// What the last catalogue check did.
@@ -414,6 +416,7 @@ impl crate::Workspace {
             installed: self.installed_models(),
             bench: self.dictate_bench(),
             results: self.bench_results(),
+            read_aloud: crate::Workspace::read_aloud_state(),
         }
     }
 

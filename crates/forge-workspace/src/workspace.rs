@@ -4496,6 +4496,9 @@ impl Workspace {
                 Command::DictateBenchStop => {
                     return self.stop_bench();
                 }
+                Command::DictateReadAloudArm => {
+                    return self.arm_read_aloud();
+                }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);
                     tokio::spawn(async move {

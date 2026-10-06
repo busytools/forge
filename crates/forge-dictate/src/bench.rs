@@ -241,6 +241,17 @@ const KNOWN_TERMS: [&str; 11] = [
     "whisper",
 ];
 
+/// The passage the read-aloud set is recorded from: the one document whose
+/// words are known, so a run over it can be scored rather than compared.
+/// Read aloud once, kept like a model artifact, and re-used for every
+/// future candidate.
+///
+/// It carries several of the known terms - the words a dictation model
+/// actually gets wrong - so the figure it yields moves for the reason it
+/// exists.
+pub const READ_ALOUD_PASSAGE: &str = "\
+I want the forge session to pick up where it left off, so open the rail and check which agents are still running. The Tauri client talks to the socket on port 8790, and the transcript is folded into turns before the page draws it. Push the Playwright suite after the redb migration lands, then run the gate once more against main. The MCP server hands the tool list to the session at startup, and the GGUF weights are checked by size before any load. If the gateway cannot bind, the accounts card says so and the spawn is refused.";
+
 /// The passage's own terms: every word in it the vocabulary knows, whole
 /// words only, deduplicated, in the passage's order.
 pub fn terms(passage: &str) -> Vec<String> {
@@ -647,6 +658,17 @@ mod tests {
     /// lands in the middle of an otherwise perfect sentence - the shape a
     /// misheard proper noun actually has - and moves the figure; nothing
     /// else does.
+    /// The passage carries terms, and enough of them: a gold set whose
+    /// text has nothing a model can get wrong would measure nothing.
+    #[test]
+    fn the_read_aloud_passage_carries_terms_worth_scoring() {
+        let found = terms(READ_ALOUD_PASSAGE);
+
+        assert!(found.len() >= 5, "the passage must carry several known terms, found: {found:?}");
+        assert!(found.contains(&"playwright".to_owned()));
+        assert!(found.contains(&"gguf".to_owned()));
+    }
+
     #[test]
     fn term_accuracy_counts_the_passages_terms_that_survived() {
         let truth = "Push the Playwright suite and then check redb.";

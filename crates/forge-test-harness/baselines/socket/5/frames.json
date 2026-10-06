@@ -105,6 +105,7 @@
     "DictateCatalogueCheck": "dictate_catalogue_check",
     "DictateDeactivate": "dictate_deactivate",
     "DictateInstall": "dictate_install",
+    "DictateReadAloudArm": "dictate_read_aloud_arm",
     "DictateStart": "dictate_start",
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",

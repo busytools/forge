@@ -398,6 +398,10 @@ pub enum Command {
     /// Stop the bench in flight. What ran so far is discarded: a partial
     /// corpus is not a result.
     DictateBenchStop,
+    /// Store the NEXT finished take as the read-aloud set, replacing any
+    /// set already there. App-level; the set's own state rides the models
+    /// read.
+    DictateReadAloudArm,
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -727,6 +731,7 @@ impl Command {
             | Self::DictateDeactivate { .. }
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
+            | Self::DictateReadAloudArm
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -881,6 +886,7 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
+            Self::DictateReadAloudArm => f.write_str("DictateReadAloudArm"),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
@@ -2193,6 +2199,9 @@ pub enum DispatchError {
     /// A stop arrived and nothing was running to stop.
     #[error("no bench is running")]
     BenchNotRunning,
+    /// The read-aloud set could not be armed, in the core's own words.
+    #[error("the read-aloud set could not be armed: {reason}")]
+    ReadAloudUnavailable { reason: String },
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

@@ -613,6 +613,7 @@ pub(crate) fn preflight_config(
         Ok(dir) => {
             cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
             cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
+            cfg.read_aloud_dir = Some(dir.join("dictate-read-aloud"));
         }
         Err(error) => tracing::warn!(
             event_name = "dictate_state_dir_unresolved",

@@ -67,6 +67,20 @@ pub struct BenchResult {
 /// How many saved results the page reads.
 const RESULTS_SHOWN: usize = 50;
 
+/// The read-aloud set as the page reads it: whether this machine has one,
+/// and the passage it was read from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReadAloudState {
+    pub recorded: bool,
+    pub passage: String,
+}
+
+/// The directory the read-aloud set lives under, beside forge's other
+/// machine-local stores; `None` when no app-support dir resolves.
+pub(crate) fn read_aloud_dir() -> Option<std::path::PathBuf> {
+    forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-read-aloud"))
+}
+
 /// The config one target runs under: the base with the target's file in
 /// its role's slot.
 ///
@@ -102,6 +116,41 @@ impl Workspace {
     /// The bench's state, for the page's read.
     pub fn dictate_bench(&self) -> BenchState {
         self.dictate_bench.lock().clone()
+    }
+
+    /// The read-aloud set, as the page draws it: whether one exists here,
+    /// and the passage it was read from. The set is the machine's rather
+    /// than the workspace's, so this needs no handle to answer.
+    pub fn read_aloud_state() -> ReadAloudState {
+        let recorded = read_aloud_dir().is_some_and(|dir| dir.join("passage.txt").is_file());
+        ReadAloudState { recorded, passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned() }
+    }
+
+    /// Arm the read-aloud set: the NEXT finished take is stored as the
+    /// passage's own reading, and a later arming replaces it.
+    ///
+    /// The marker is the passage itself, written where the engine's take
+    /// path looks for it - so the take that answers an arming is the very
+    /// take being captured, never a neighbour's.
+    pub(crate) fn arm_read_aloud(&self) -> Result<(), DispatchError> {
+        if !self.config.dictate.enabled {
+            return Err(DispatchError::DictateOff);
+        }
+        let Some(dir) = read_aloud_dir() else {
+            return Err(DispatchError::ReadAloudUnavailable {
+                reason: "no app-support directory resolves".to_owned(),
+            });
+        };
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(%error, dir = %dir.display(), "read-aloud: the set directory is not writable");
+            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        }
+        let marker = dir.join("armed.txt");
+        if let Err(error) = std::fs::write(&marker, forge_dictate::bench::READ_ALOUD_PASSAGE) {
+            tracing::warn!(%error, path = %marker.display(), "read-aloud: the arming was not written");
+            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        }
+        Ok(())
     }
 
     /// Every saved result, newest first, capped at what the page draws.

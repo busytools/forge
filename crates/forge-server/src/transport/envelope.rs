@@ -286,6 +286,10 @@ mod tests {
                 installed: Vec::new(),
                 bench: forge_workspace::bench::BenchState::Idle,
                 results: Vec::new(),
+                read_aloud: forge_workspace::bench::ReadAloudState {
+                    recorded: false,
+                    passage: String::new(),
+                },
             },
         };
 
