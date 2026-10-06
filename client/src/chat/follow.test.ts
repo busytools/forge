@@ -84,6 +84,10 @@ function layOut(height: number, leader = height): void {
     // reorders with its key keeps its element (the list is keyed), so a
     // position captured here would go stale the moment the order moved.
     row.getBoundingClientRect = () => {
+      // **Counted, because a box read is what a parked pass COSTS** - the
+      // same measurement the perf rig takes (its gbcr counter) - and the
+      // "not on every frame" half of #1734's acceptance is pinned on it.
+      rectReads += 1;
       const at = live().indexOf(row);
       const tall = at === 0 ? leader : height;
       const top = at * height + (at === 0 ? 0 : leader - height);
@@ -101,6 +105,9 @@ function layOut(height: number, leader = height): void {
     };
   });
 }
+
+/** How many row boxes the column has read, reset with the suite's records. */
+let rectReads = 0;
 
 /**
  * A console a thousand pixels tall, so a reader can be anywhere in it.
@@ -283,6 +290,7 @@ afterEach(async () => {
 beforeEach(() => {
   clear();
   clearObservers();
+  rectReads = 0;
 });
 
 describe('whether the column follows the newest end', () => {
@@ -467,7 +475,7 @@ describe('whether the column follows the newest end', () => {
     // The frame's own pass reads the height once - the pin's land; the
     // post-layout look is the observer's now (#1734) - and the echo reads it
     // none. Were the echo read, this would count two.
-    expect(layout.reads - before, 'the echo read the layout back').toBe(1);
+    expect(layout.reads - before, 'a read the frame did not owe').toBe(1);
   });
 
   it('leaves a reader parked a few pixels short of the end alone', async () => {
@@ -1019,10 +1027,6 @@ describe('whether the column follows the newest end', () => {
     layOut(40);
     readerAt(50);
     await settle();
-    // A frame after the capture, so the pass has recorded the order it will
-    // compare against - the capture itself takes the signature fresh.
-    server.frame();
-    await settle();
     clear();
 
     // The reorder as a page that carries it would: the anchor's turn and its
@@ -1033,7 +1037,7 @@ describe('whether the column follows the newest end', () => {
     layOut(40);
     await settle();
 
-    expect(element.offset, "the reader's row carried them with it").toBe(90);
+    expect(element.offset, "the reader's row carried them through the reorder").toBe(90);
   });
 
   /**
@@ -1064,7 +1068,33 @@ describe('whether the column follows the newest end', () => {
     layOut(40);
     await settle();
 
-    expect(element.offset, "the reader's row carried them with it").toBe(90);
+    expect(element.offset, "the reader's row carried them through both publishes").toBe(90);
+  });
+
+  /**
+   * **The negative half of the acceptance: a frame that changed nothing above
+   * the anchor pays for no pass.** The parked pass's whole cost is the row box
+   * it reads, so the observable is the box reads themselves - the same number
+   * the perf rig counts - and a slice running wider than "above the anchor"
+   * would schedule for churn that moved nothing above them.
+   */
+  it('reads no row box for a frame that changed nothing above the anchor', async () => {
+    const server = stub();
+    await draw(server);
+    server.page([spoken('a'), spoken('b'), spoken('c'), spoken('d')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+    rectReads = 0;
+
+    // The stream's own frame: it appends under the newest turn, so nothing
+    // above the parked anchor moved.
+    server.frame();
+    await settle();
+
+    expect(rectReads, 'a quiet frame paid for a parked pass').toBe(0);
   });
 
   /**
