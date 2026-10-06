@@ -281,6 +281,88 @@ describe('the forge card row', () => {
     expect(drawn, 'with the changed field named').toContain('changed');
   });
 
+  it('draws every kind of piece a card body can carry', () => {
+    // The body's arms past the meta line - the tag, the quote, the warning
+    // line, the list and the empty row - are what every list-bearing card
+    // resolves to (tasks, cron, gotify recent, Slack hits, review comments),
+    // so an arm losing its words takes them all down together.
+    const drawn = render(Call, {
+      props: {
+        k: 't14',
+        call: tasksUpdate({
+          forge: {
+            title: 'task sweep',
+            chips: [],
+            figure: null,
+            pieces: [
+              { kind: 'tag', text: 'tag-words' },
+              { kind: 'quote', text: 'quote-words' },
+              { kind: 'warnline', label: 'blocked', text: 'warn-words' },
+              {
+                kind: 'list',
+                items: [
+                  {
+                    id: 'abcdef',
+                    state: { text: 'open', tone: 'bad' },
+                    text: 'list-words',
+                    tag: 'tag-row-words',
+                    when: 'when-words',
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      },
+    }).body;
+
+    expect(drawn, 'the tag draws').toContain('fam-tag');
+    expect(drawn, 'with its words').toContain('tag-words');
+    expect(drawn, 'the quote draws').toContain('fam-quote');
+    expect(drawn, 'with its words').toContain('quote-words');
+    expect(drawn, 'the warning line draws').toContain('fam-warnline');
+    expect(drawn, 'with its label and words').toContain('warn-words');
+    expect(drawn, 'the list draws').toContain('fam-list');
+    expect(drawn, 'with the row state as its own word').toContain('open');
+    expect(drawn, 'the row text').toContain('list-words');
+    expect(drawn, 'the row tag').toContain('tag-row-words');
+    expect(drawn, 'the trailing fact').toContain('when-words');
+
+    const empty = render(Call, {
+      props: {
+        k: 't15',
+        call: tasksUpdate({
+          forge: {
+            title: 'tasks',
+            chips: [],
+            figure: null,
+            pieces: [{ kind: 'empty', text: 'empty-words' }],
+          },
+        }),
+      },
+    }).body;
+    expect(empty, 'the empty row draws its own words').toContain('empty-words');
+  });
+
+  it('draws a completed result the page cannot read as its own text', () => {
+    // A completed call whose result is not JSON draws the text it came back
+    // with: the row is a forge row, the card is null, and the text is the one
+    // thing a reader has.
+    const drawn = render(Call, {
+      props: {
+        k: 't16',
+        call: tasksUpdate({
+          status: 'completed',
+          forge: null,
+          body: [{ kind: 'text', text: 'not json at all' }],
+        }),
+      },
+    }).body;
+
+    expect(drawn, 'the raw text draws').toContain('not json at all');
+    expect(drawn, 'and no card chrome is invented for it').not.toContain('fam-meta');
+  });
+
   it('states a failed forge call reason on the row itself', () => {
     const drawn = render(Call, {
       props: {
