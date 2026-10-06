@@ -4,6 +4,7 @@
   import {
     candidateFacts,
     checkLine,
+    entryUrl,
     inUseRowFacts,
     modelChip,
     roleWord,
@@ -27,18 +28,15 @@
   }: { wire: DictateModelsWire; oncheck: () => void; mark?: string | null } = $props();
 
   let query = $state('');
-  let asked = $state('');
 
-  const results = $derived(search(wire.rows, asked));
+  // Filtering follows the box: the whole feed is already here, so a search
+  // that waited for a button would be a second step over data this side
+  // already holds.
+  const results = $derived(search(wire.rows, query));
   const line = $derived(checkLine(wire.check, wire.updates.length, wire.enabled));
   const placeholder = $derived(
     `search ${wire.rows.length} variants - parakeet, granite, whisper, moonshine...`,
   );
-
-  function findModels(event: SubmitEvent): void {
-    event.preventDefault();
-    asked = query;
-  }
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -61,9 +59,7 @@
   </header>
 
   <section class="block">
-    <h2 class="hd4">
-      In use <span class="why">the models every take runs through, pinned by file and digest</span>
-    </h2>
+    <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
 
     {#if wire.in_use.length === 0}
       <!-- Dictation off is its own state: an empty list here would read as a
@@ -102,9 +98,7 @@
 
   <section class="block">
     <h2 class="hd4">
-      Updates <span class="why"
-        >the transcribe.cpp catalogue is the feed; a pinned file never moves on its own</span
-      >
+      Updates <span class="why">whether a better model is on the feed</span>
     </h2>
 
     <div class="status {line.mark === 'ok' ? '' : line.mark}" role="status">
@@ -122,22 +116,22 @@
       <div class="status warn">
         <span class="dot warn"></span>
         <span class="t">{update.candidate.display_name}</span>
-        <span class="when">for {roleWord(update.role)}</span>
-        <span class="detail">{@render facts(updateFacts(update))}</span>
+        <span class="when">replaces the {roleWord(update.role)} model</span>
+        <span class="detail">
+          {@render facts(updateFacts(update))}
+        </span>
+        <span class="detail">
+          Faster and more accurate than the model in use, on the feed's own test set. Taking it
+          means pinning it here and opening a pull request - the bench that checks a candidate on
+          your own recordings is not built yet.
+        </span>
       </div>
     {/each}
-
-    <p class="note">
-      an adoption is never silent: a better model becomes a pull request with this page's numbers
-      beside it, and you merge it
-    </p>
   </section>
 
   <section class="block">
     <h2 class="hd4">
-      Find a model <span class="why"
-        >reads the catalogue the runtime already publishes, from this machine alone</span
-      >
+      Find a model <span class="why">search the catalogue the runtime publishes</span>
     </h2>
 
     {#if !wire.enabled}
@@ -150,57 +144,70 @@
         forge, and the catalogue loads here
       </p>
     {:else}
-      <form class="searchbar" onsubmit={findModels}>
-        <!-- `nowhere` is the editors table's name for a box a take's words are
-             not routed to: this one takes typing, and the reader's dictation
-             stays where it was. -->
-        <input
-          type="search"
-          bind:value={query}
-          data-editor="nowhere"
-          aria-label="Search the model catalogue"
-          {placeholder}
-        />
-        <button class="chip go" type="submit">Search</button>
-      </form>
+      <!-- `nowhere` is the editors table's name for a box a take's words are
+           not routed to: this one takes typing, and the reader's dictation
+           stays where it was. -->
+      <input
+        class="find"
+        type="search"
+        bind:value={query}
+        data-editor="nowhere"
+        aria-label="Search the model catalogue"
+        {placeholder}
+      />
 
-      {#if asked === ''}
-        <p class="note">
-          nothing searched yet &middot; the feed's whole catalogue is already here, so a search
-          reads nothing off the network
-        </p>
-      {:else if results.length === 0}
-        <p class="note">no entry matches <code>{asked}</code> &middot; try a family name</p>
-      {:else}
-        <ul class="list" aria-label="Catalogue results">
-          {#each results as entry (entry.variant)}
-            {@const face = candidateFacts(entry)}
-            <li class="cand">
-              <span class="nm">{entry.variant}</span>
-              <span class="col">{@render facts(face.spec)}</span>
-              <span class="col">{@render facts(face.kind)}</span>
-            </li>
-          {/each}
-        </ul>
-        <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
-      {/if}
+      <div aria-live="polite">
+        {#if query.trim() === ''}
+          <p class="note">
+            type a name &middot; the feed's whole catalogue is already here, so this reads nothing
+            off the network
+          </p>
+        {:else if results.length === 0}
+          <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
+        {:else}
+          <p class="note">
+            {results.length} of {wire.rows.length} entries &middot; each opens its catalogue entry
+          </p>
+          <ul class="list" aria-label="Catalogue results">
+            {#each results as entry (entry.variant)}
+              {@const face = candidateFacts(entry)}
+              <li>
+                <a
+                  class="cand"
+                  href={entryUrl(entry.variant)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="the catalogue entry, on github"
+                >
+                  <span class="nm">{entry.variant}</span>
+                  <span class="col">{@render facts(face.spec)}</span>
+                  <span class="col">{@render facts(face.kind)}</span>
+                  <span class="go" aria-hidden="true">&#8599;</span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+          <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+        {/if}
+      </div>
     {/if}
   </section>
 
   <section class="block">
     <h2 class="hd4">
-      Benchmark <span class="why">your corpus, your mic: term accuracy first, speed second</span>
+      Benchmark <span class="why">score a model on your own recordings</span>
     </h2>
 
     <!-- The RUN is its own piece of work: the corpus it scores against is the
          takes this machine has recorded plus the read-aloud set, and none of it
          exists yet. No control here names a run that cannot start. -->
     <div class="empty">
-      <p class="t">no benchmark has run on this machine yet</p>
+      <p class="t">the benchmark is not built yet</p>
       <p class="d">
-        The bench will take the takes forge has recorded here, plus the read-aloud set, and score
-        each candidate on your own words. Until it lands, the numbers above are the catalogue's
-        measurements and not this machine's.
+        It will score each candidate on the takes forge has already recorded here, plus a read-aloud
+        set - term accuracy first, speed second - and that score is what decides an update. Until it
+        lands, every number on this page is the feed's own, measured on an m4 max and not on your
+        machine.
       </p>
     </div>
   </section>

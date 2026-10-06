@@ -241,6 +241,18 @@ export function updateFacts(update: ModelUpdate): FactPart[] {
   return parts;
 }
 
+/**
+ * Where one catalogue entry can be read.
+ *
+ * The feed's own tree, which is where the server fetches the same documents
+ * from (`forge-dictate`'s `CatalogueSource`); this is the page a person can
+ * open to see one. The client asks for no read for it, and the link is the
+ * entry's own document rather than a search.
+ */
+export function entryUrl(variant: string): string {
+  return `https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/${encodeURIComponent(variant)}.json`;
+}
+
 /** Find a model: the whole feed is already here, so the search is this side's. */
 export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
   const needle = query.trim().toLowerCase();

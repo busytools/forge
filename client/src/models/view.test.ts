@@ -5,6 +5,7 @@ import {
   candidateFacts,
   checkLine,
   clock,
+  entryUrl,
   inUseRowFacts,
   languagesLabel,
   modelChip,
@@ -235,6 +236,24 @@ describe('the update line', () => {
 });
 
 describe('finding a model', () => {
+  /**
+   * A result opens somewhere real. The one place a catalogue entry can be
+   * read by a person is the feed's own tree, and the row is a link to it:
+   * a list of rows that go nowhere is what a reader tries first and finds
+   * nothing behind.
+   */
+  it('points a row at its catalogue entry, wherever it is clicked from', () => {
+    expect(entryUrl('granite-speech-5.0-470m-turboctc')).toBe(
+      'https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/granite-speech-5.0-470m-turboctc.json',
+    );
+    // The page serves whatever the feed names: a variant is an address
+    // segment, so a name carrying a slash or a space is escaped rather than
+    // silently pointing at another document.
+    expect(entryUrl('a/b c')).toBe(
+      'https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/a%2Fb%20c.json',
+    );
+  });
+
   const rows = [
     row(),
     row({

@@ -23,8 +23,8 @@ either.
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | In use | one row per pinned model: its role, its file, the facts the pin declares - size, quant, parameters, digest, licence - and the feed's own measurement when it has one, with the live state as a chip | `in_use` |
 | Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal, each a comparison against the model in use | `check`, `updates` |
-| Find a model | a search over the feed's rows: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes | `rows` |
-| Benchmark | the section and its corpus note; the run itself is a separate piece of work | - |
+| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes. Each row links to the entry's own document | `rows` |
+| Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
 
 **A pin is drawn from the pin.** The first fact line comes off the pinned
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -41,15 +41,22 @@ server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
 the rows the last fetch left stand.
 
-**Nothing is adopted silently.** The proposal line draws the comparison the
-server admitted it on - the candidate's speed and error against the model in
-use - and the note under it says what an adoption is: a pull request with
-these numbers beside it.
+**An update line says what to do with it, because there is nothing to press
+yet.** It names the model it would replace, draws the comparison the server
+admitted it on - the candidate's speed and error against the model in use -
+and says in words what taking it means: pinning it here and opening a pull
+request. The bench that checks a candidate on this machine's own recordings
+is the piece that is not built, and the line says so rather than leaving a
+reader to look for a control that is not there.
 
-**The search is the client's.** The whole feed arrives with the read, so a
-search filters what is already here and asks the server for nothing. The
-rows are the feed's own figures, and the note says so: they are measured on
-an m4 max, not on this machine.
+**The search is the client's, and it filters as the box is typed.** The
+whole feed arrives with the read, so there is no button to press and nothing
+is asked of the server. The rows are the feed's own figures; the note says
+they are measured on an m4 max, not on this machine. **Each row is a link to
+its catalogue entry** - the feed's own document, in the same tree the server
+fetches from - because a list of rows that goes nowhere is what a reader
+clicks first, and the marker that says so is drawn at rest rather than
+uncovered by the pointer.
 
 ## The states the page can be in
 

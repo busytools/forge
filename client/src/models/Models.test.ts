@@ -108,22 +108,22 @@ describe('the models page as it draws', () => {
 
   /**
    * Finding a model is this side's: the whole feed arrives with the read, so
-   * a search filters what is here and asks the server for nothing.
+   * the box filters what is here as it is typed and asks the server for
+   * nothing. Each match is a LINK to the entry's own document - a row that
+   * goes nowhere is what a reader clicks first and finds nothing behind.
    */
-  it('filters the feed on a search', () => {
+  it('filters the feed as the box is typed in, and each row opens its entry', () => {
     const host = open();
     const input = host.querySelector('input');
     expect(input).not.toBeNull();
-    // Nothing searched yet: the list is not drawn at all.
-    expect(host.textContent).toContain('nothing searched yet');
+    // Nothing typed: no list at all.
+    expect(host.textContent).toContain('type a name');
 
     if (input !== null) {
       input.value = 'parakeet';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
     }
-    host.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }));
-    flushSync();
 
     expect(host.textContent).toContain('parakeet-unified-en-0.6b');
     expect(host.textContent, 'a row nothing matched was drawn').not.toContain(
@@ -131,6 +131,11 @@ describe('the models page as it draws', () => {
     );
     expect(host.textContent).toContain('English only');
     expect(host.textContent).toContain('streaming');
+
+    const row = host.querySelector<HTMLAnchorElement>('.cand');
+    expect(row?.tagName, 'a result is not a link').toBe('A');
+    expect(row?.getAttribute('href')).toContain('/catalog/parakeet-unified-en-0.6b.json');
+    expect(row?.getAttribute('target')).toBe('_blank');
   });
 
   it('says so when nothing matches', () => {
@@ -141,10 +146,9 @@ describe('the models page as it draws', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
     }
-    host.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }));
-    flushSync();
 
     expect(host.textContent).toContain('no entry matches');
+    expect(host.querySelector('.cand')).toBeNull();
   });
 
   /**
