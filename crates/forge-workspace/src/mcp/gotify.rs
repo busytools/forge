@@ -425,7 +425,7 @@ mod tests {
         assert!(!out.is_error, "valid subscribe succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the outcome stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is the structured row");
+            serde_json::from_str(text_of(&out)).expect("the result is the structured row");
         assert_eq!(json["id"], id.to_string());
         assert_eq!(json["applications"], serde_json::json!(["alerts"]));
         assert_eq!(json["min_priority"], 5);
@@ -457,7 +457,7 @@ mod tests {
 
         assert!(!out.is_error, "the subscription was created, so this is not an error");
         let json: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is the structured row");
+            serde_json::from_str(text_of(&out)).expect("the result is the structured row");
         assert_eq!(json["id"], id.to_string(), "the id still comes back");
         assert_eq!(json["applications"], serde_json::json!(["phone-agent"]));
         assert!(
@@ -493,8 +493,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
         assert!(
-            text_of(&out).contains(&a.to_string())
-                && text_of(&out).contains(&b.to_string()),
+            text_of(&out).contains(&a.to_string()) && text_of(&out).contains(&b.to_string()),
             "both subscription ids appear in the list output",
         );
     }
@@ -514,7 +513,7 @@ mod tests {
         assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],

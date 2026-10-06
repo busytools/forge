@@ -1414,7 +1414,7 @@ mod tests {
         assert!(!out.is_error, "a valid subscribe succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the rows stay one text block: {out:?}");
         let rows: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is one row per record");
+            serde_json::from_str(text_of(&out)).expect("the result is one row per record");
         assert_eq!(rows[0], sub_to_row(&dm), "the DM class's row, whole");
         assert_eq!(rows[1], sub_to_row(&channel), "the conversation's row, name and mode included");
         assert_eq!(
@@ -1450,7 +1450,7 @@ mod tests {
         assert!(!out.is_error, "a two-kind subscribe succeeds: {}", text_of(&out));
         assert_eq!(mock.subscribe_calls.lock().len(), 2, "both kinds reach the facade");
         let rows: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is one row per record");
+            serde_json::from_str(text_of(&out)).expect("the result is one row per record");
         assert_eq!(rows.as_array().expect("a row list").len(), 2, "and both answers are kept");
     }
 
@@ -1468,7 +1468,7 @@ mod tests {
 
         assert!(!out.is_error, "nothing new to watch is not an error: {}", text_of(&out));
         let rows: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the answer is a row list");
+            serde_json::from_str(text_of(&out)).expect("the answer is a row list");
         assert_eq!(rows, serde_json::json!([]), "an empty list, not prose");
     }
 
@@ -1494,7 +1494,7 @@ mod tests {
         assert!(!out.is_error, "the post succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the record stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is the posted record");
+            serde_json::from_str(text_of(&out)).expect("the result is the posted record");
         assert_eq!(
             json["ts"],
             serde_json::json!(["1790186552.442169", "1790186552.442170"]),
@@ -1618,11 +1618,7 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(!out.is_error, "a configured workspace succeeds: {}", text_of(&out));
-        assert!(
-            text_of(&out).contains("C1"),
-            "the row reaches the output: {}",
-            text_of(&out)
-        );
+        assert!(text_of(&out).contains("C1"), "the row reaches the output: {}", text_of(&out));
         assert_eq!(
             mock.conversations_calls.lock().as_slice(),
             [Some("acme".to_owned())],
@@ -1730,7 +1726,7 @@ mod tests {
         assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],
@@ -1760,7 +1756,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(!out.is_error, "list succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the output is JSON");
+            serde_json::from_str(text_of(&out)).expect("the output is JSON");
         let by_id = |id: &str| {
             listed["conversations"]
                 .as_array()
@@ -1793,7 +1789,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
         assert!(!out.is_error, "a known kind succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(&text_of(&out)).expect("the output is JSON");
+            serde_json::from_str(text_of(&out)).expect("the output is JSON");
         let ids: Vec<&str> = listed["conversations"]
             .as_array()
             .expect("an array of rows")
@@ -1930,11 +1926,7 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(out.is_error, "a failed read is an error, not an empty list");
-        assert!(
-            text_of(&out).contains("boom"),
-            "the cause reaches the LLM: {}",
-            text_of(&out),
-        );
+        assert!(text_of(&out).contains("boom"), "the cause reaches the LLM: {}", text_of(&out));
     }
 
     #[tokio::test]
@@ -2003,10 +1995,6 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error, "a failed fetch is an error, not an empty list");
-        assert!(
-            text_of(&out).contains("boom"),
-            "the cause reaches the LLM: {}",
-            text_of(&out)
-        );
+        assert!(text_of(&out).contains("boom"), "the cause reaches the LLM: {}", text_of(&out));
     }
 }
