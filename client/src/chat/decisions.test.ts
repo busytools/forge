@@ -341,6 +341,59 @@ describe('a structured value, read the way the block draws it', () => {
     });
   });
 
+  it('names the row by the first naming field that can, in the sheet order', () => {
+    // The head of the order matters: a value carrying both a label and a
+    // question is a label first, and the row must read that one.
+    const text = JSON.stringify({ model: 'm', answer: { type: 'choice', choice: 'billing' } });
+    const choice = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      {
+        instructions: 'Which team?',
+        criteria: {
+          billing: { label: 'the label words', question: 'the question words' },
+        },
+      },
+      result(text),
+    );
+
+    expect(choice?.criteria['billing'], 'label leads the order, question follows').toEqual({
+      text: 'the label words',
+      raw: { label: 'the label words', question: 'the question words' },
+    });
+  });
+
+  it('draws a primitive criterion or level as the fallback rather than dropping it', () => {
+    // The API types no number or boolean value, but the tools take any JSON -
+    // a caller can send one, and it must not vanish.
+    const text = JSON.stringify({ model: 'm', answer: { type: 'choice', choice: 'billing' } });
+    const choice = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      { instructions: 'Which team?', criteria: { billing: 7, frontend: false } },
+      result(text),
+    );
+
+    expect(choice?.criteria, 'a number and a boolean both keep their row and their value').toEqual({
+      billing: { text: 'structured value', raw: 7 },
+      frontend: { text: 'structured value', raw: false },
+    });
+  });
+
+  it('drops an empty or whitespace criterion, which names nothing', () => {
+    const text = JSON.stringify({ model: 'm', answer: { type: 'choice', choice: 'billing' } });
+    const choice = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      {
+        instructions: 'Which team?',
+        criteria: { billing: '   ', frontend: '', infra: 'the words' },
+      },
+      result(text),
+    );
+
+    expect(choice?.criteria, 'only the value with words draws').toEqual({
+      infra: { text: 'the words', raw: null },
+    });
+  });
+
   it('keeps the whole distribution when a level is not a string', () => {
     // One structured level used to take every row with it: `levelsOf` refused
     // the criteria array and the block drew a bare number.
