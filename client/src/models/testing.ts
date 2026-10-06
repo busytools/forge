@@ -1,12 +1,18 @@
 /**
- * The models page's wire, built by hand for tests.
+ * The models page's wire and a connection that drives it, both for tests.
  *
  * **Nothing the shipped app imports may import this file.** It is mock data
- * standing where a server's answer stands; the app's only input is the server
- * URL, and `fixture.test.ts` builds the bundle and fails if a fixture reaches
- * it.
+ * and a fake server standing where real ones stand, and the app's only input
+ * is the server URL. `fixture.test.ts` builds the bundle and fails on a
+ * fixture reaching it - by a marker string, and this file carries none (the
+ * models wire names no org). So the rule here is checked directly instead:
+ * `testing.test.ts` sweeps the tree and fails if anything outside a test
+ * imports this module.
  */
 
+import type { Command, ServerMessage, Subject } from '../protocol';
+import type { Connection, ConnectionStatus } from '../socket';
+import { Stores } from '../stores';
 import { modelsFrom, type DictateModelsWire } from '../wire/models';
 
 /** One catalogue row, from the feed's own published figures. */
@@ -136,3 +142,87 @@ export const modelsWire: DictateModelsWire = modelsFrom({
     ),
   ],
 } as unknown as DictateModelsWire);
+
+/**
+ * A connection a test drives by hand: what the page asked it to do, and a way
+ * to hand it a frame.
+ *
+ * The stores are the real ones, because a subscription's lifecycle is what
+ * this fakes around rather than anything about a store - and `arrive` writes
+ * a snapshot into its store the way the socket does, so a read through the
+ * store is the answer the server gave.
+ */
+export function fakeConnection() {
+  const stores = new Stores();
+  const subscribed: Subject[] = [];
+  const unsubscribed: Subject[] = [];
+  const refreshed: Subject[] = [];
+  const dispatched: Command[] = [];
+  const messages = new Set<(message: ServerMessage) => void>();
+  const statuses = new Set<(status: ConnectionStatus) => void>();
+
+  const connection: Connection = {
+    subscribe(what) {
+      subscribed.push(what);
+      return stores.open(what);
+    },
+    unsubscribe(what) {
+      unsubscribed.push(what);
+      return stores.close(what);
+    },
+    refresh(what) {
+      refreshed.push(what);
+    },
+    dispatch(command: Command) {
+      dispatched.push(command);
+      return null;
+    },
+    onMessage(fn) {
+      messages.add(fn);
+      return () => {
+        messages.delete(fn);
+      };
+    },
+    onStatus(fn) {
+      statuses.add(fn);
+      return () => {
+        statuses.delete(fn);
+      };
+    },
+    more: () => false,
+    devices: () => false,
+    frame: () => false,
+    store: () => undefined,
+    settings: () => null,
+    skew: () => null,
+    status: () => 'open',
+    close: () => {},
+  };
+
+  return {
+    connection,
+    subscribed,
+    unsubscribed,
+    refreshed,
+    dispatched,
+    /** Everything still attached to the connection. */
+    listening: () => messages.size + statuses.size,
+    /**
+     * One frame as the server sent it: the store is written the way the
+     * socket writes it first, so a read of it is the answer the server gave,
+     * and then every listener hears it.
+     */
+    arrive(message: ServerMessage) {
+      if (message.kind === 'snapshot') {
+        stores.get(message.subject)?.set(message.data);
+      }
+      if (message.kind === 'error' && message.what === 'subscribe') {
+        stores.get(MODELS)?.refuse(message.why);
+      }
+      for (const fn of [...messages]) fn(message);
+    },
+  };
+}
+
+/** The models page's subject, which only this page watches. */
+export const MODELS: Subject = 'dictate_models';

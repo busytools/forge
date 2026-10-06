@@ -110,14 +110,18 @@ export interface CheckLine {
  * the two are one state of the same thing, and splitting them would draw a
  * healthy `up to date` beside a named candidate.
  */
-export function checkLine(check: CatalogueCheck, updates: number): CheckLine {
+export function checkLine(check: CatalogueCheck, updates: number, enabled = true): CheckLine {
   switch (check.state) {
     case 'never':
+      // The feed is read only while the section is on, so an off forge's
+      // `never` is not "not yet": nothing will fetch until the key is set.
       return {
         mark: 'off',
         title: 'not checked yet',
         when: null,
-        detail: 'the feed refreshes at the next boot, or when you check it',
+        detail: enabled
+          ? 'the feed refreshes at the next boot, or when you check it'
+          : 'the feed is read only with [dictate] enabled set',
       };
     case 'checking':
       return { mark: 'live', title: 'checking the catalogue', when: null, detail: null };

@@ -146,6 +146,16 @@ describe('the catalogue check line', () => {
     );
   });
 
+  /**
+   * **An off forge's `never` is not "not yet".** The feed is read only while
+   * `[dictate] enabled` is set, so the detail names the key that would fetch
+   * it rather than promising a boot refresh that will not come.
+   */
+  it('says the feed is not read while the section is off', () => {
+    expect(checkLine({ state: 'never' }, 0, false).detail).toContain('[dictate] enabled');
+    expect(checkLine({ state: 'never' }, 0, true).detail).toContain('check');
+  });
+
   /** The feed's own skipped count is a fact about the parse, and it is said. */
   it('says how many entries the feed carried that did not parse', () => {
     const line = checkLine(
@@ -251,8 +261,27 @@ describe('finding a model', () => {
 });
 
 describe('the check clock', () => {
-  it("reads the server's stamp as a time, or nothing when it cannot", () => {
-    expect(clock('2026-10-06T06:12:00Z')).toMatch(/^\d{2}:\d{2}$/);
+  /**
+   * **The stamp is a time, not the text a slice would take from it.** The
+   * server writes RFC 3339 in UTC and the page draws the reader's own clock.
+   * The offset pair is the assertion that holds in every timezone: the same
+   * instant written two ways reads the same, which `at.slice(11, 16)` cannot
+   * do - it would print each stamp's own text - and the value equals what the
+   * platform makes of the stamp.
+   */
+  it("reads the server's stamp as the local time of that instant", () => {
+    const stamp = '2026-10-06T06:12:00Z';
+    const rendered = new Date(stamp).toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    expect(clock(stamp)).toBe(rendered);
+    expect(
+      clock('2026-10-06T11:42:00+05:30'),
+      'the same instant at another offset read differently',
+    ).toBe(rendered);
     expect(clock('whenever')).toBeNull();
   });
 });

@@ -420,15 +420,26 @@ describe('axe over the rendered pages', () => {
     expect(await idsOf(html)).toEqual([]);
   });
 
-  /** Dictation off: the off state, with the feed's rows still behind the search. */
+  /**
+   * Dictation off: no pins, no check, and no rows - the catalogue is read
+   * only while the section is on, so the search's own off state draws there.
+   */
   it('draws the models page with dictation off, with no violations', async () => {
     const html = render(ModelsBody, {
       props: {
-        wire: { ...modelsWire, enabled: false, in_use: [], updates: [], check: { state: 'never' } },
+        wire: {
+          ...modelsWire,
+          enabled: false,
+          in_use: [],
+          updates: [],
+          check: { state: 'never' },
+          rows: [],
+        },
         oncheck: () => {},
       },
     }).body;
     expect(html).toContain('dictation is off');
+    expect(html).toContain('read only with');
     expect(await idsOf(html)).toEqual([]);
   });
 

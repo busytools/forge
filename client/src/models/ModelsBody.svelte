@@ -30,7 +30,10 @@
   let asked = $state('');
 
   const results = $derived(search(wire.rows, asked));
-  const line = $derived(checkLine(wire.check, wire.updates.length));
+  const line = $derived(checkLine(wire.check, wire.updates.length, wire.enabled));
+  const placeholder = $derived(
+    `search ${wire.rows.length} variants - parakeet, granite, whisper, moonshine...`,
+  );
 
   function findModels(event: SubmitEvent): void {
     event.preventDefault();
@@ -137,39 +140,50 @@
       >
     </h2>
 
-    <form class="searchbar" onsubmit={findModels}>
-      <!-- `nowhere` is the editors table's name for a box a take's words are
-           not routed to: this one takes typing, and the reader's dictation
-           stays where it was. -->
-      <input
-        type="search"
-        bind:value={query}
-        data-editor="nowhere"
-        aria-label="Search the model catalogue"
-        placeholder="search {wire.rows.length} variants - parakeet, granite, whisper, moonshine..."
-      />
-      <button class="chip go" type="submit">Search</button>
-    </form>
-
-    {#if asked === ''}
+    {#if !wire.enabled}
+      <!-- The feed is read only while the section is on, so an off forge has
+           no catalogue at all: a search box here would answer every query
+           with "no entry matches", which reads as a feed that found nothing
+           rather than one that was never fetched. -->
       <p class="note">
-        nothing searched yet &middot; the feed's whole catalogue is already here, so a search reads
-        nothing off the network
+        the feed is read only with <code>[dictate] enabled</code> set &middot; switch it on and restart
+        forge, and the catalogue loads here
       </p>
-    {:else if results.length === 0}
-      <p class="note">no entry matches <code>{asked}</code> &middot; try a family name</p>
     {:else}
-      <ul class="list" aria-label="Catalogue results">
-        {#each results as entry (entry.variant)}
-          {@const face = candidateFacts(entry)}
-          <li class="cand">
-            <span class="nm">{entry.variant}</span>
-            <span class="col">{@render facts(face.spec)}</span>
-            <span class="col">{@render facts(face.kind)}</span>
-          </li>
-        {/each}
-      </ul>
-      <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+      <form class="searchbar" onsubmit={findModels}>
+        <!-- `nowhere` is the editors table's name for a box a take's words are
+             not routed to: this one takes typing, and the reader's dictation
+             stays where it was. -->
+        <input
+          type="search"
+          bind:value={query}
+          data-editor="nowhere"
+          aria-label="Search the model catalogue"
+          {placeholder}
+        />
+        <button class="chip go" type="submit">Search</button>
+      </form>
+
+      {#if asked === ''}
+        <p class="note">
+          nothing searched yet &middot; the feed's whole catalogue is already here, so a search
+          reads nothing off the network
+        </p>
+      {:else if results.length === 0}
+        <p class="note">no entry matches <code>{asked}</code> &middot; try a family name</p>
+      {:else}
+        <ul class="list" aria-label="Catalogue results">
+          {#each results as entry (entry.variant)}
+            {@const face = candidateFacts(entry)}
+            <li class="cand">
+              <span class="nm">{entry.variant}</span>
+              <span class="col">{@render facts(face.spec)}</span>
+              <span class="col">{@render facts(face.kind)}</span>
+            </li>
+          {/each}
+        </ul>
+        <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+      {/if}
     {/if}
   </section>
 

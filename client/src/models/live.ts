@@ -89,6 +89,10 @@ export function watchModels(connection: Connection): Readable<ModelsRead> {
           report('a catalogue check landed carrying no models', message.update);
           return;
         }
+        // The landing is the read an availability flip may have asked for, so
+        // it frees the pacing: leaving it set would latch the one-read gate
+        // and no later flip would ever be answered.
+        reading = false;
         view.set({ wire: modelsFrom(payload.models), refused: null });
         return;
       }

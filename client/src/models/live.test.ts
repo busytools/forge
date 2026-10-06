@@ -1,13 +1,9 @@
 import { get } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
 
-import type { ServerMessage, Subject } from '../protocol';
-import type { Connection, ConnectionStatus } from '../socket';
-import { Stores } from '../stores';
 import type { DictateModelsWire } from '../wire/models';
 import { watchModels } from './live';
-
-const MODELS: Subject = 'dictate_models';
+import { fakeConnection, MODELS } from './testing';
 
 /** A payload as `Subject::DictateModels` is answered with. */
 const SNAPSHOT = {
@@ -18,77 +14,6 @@ const SNAPSHOT = {
   updates: [],
   rows: [],
 } as unknown as DictateModelsWire;
-
-/**
- * A connection a test drives by hand, the same shape the home's own live test
- * fakes: the real stores, and a way to hand it a frame.
- */
-function fakeConnection() {
-  const stores = new Stores();
-  const subscribed: Subject[] = [];
-  const unsubscribed: Subject[] = [];
-  const refreshed: Subject[] = [];
-  const messages = new Set<(message: ServerMessage) => void>();
-  const statuses = new Set<(status: ConnectionStatus) => void>();
-
-  const connection: Connection = {
-    subscribe(what) {
-      subscribed.push(what);
-      return stores.open(what);
-    },
-    unsubscribe(what) {
-      unsubscribed.push(what);
-      return stores.close(what);
-    },
-    refresh(what) {
-      refreshed.push(what);
-    },
-    onMessage(fn) {
-      messages.add(fn);
-      return () => {
-        messages.delete(fn);
-      };
-    },
-    onStatus(fn) {
-      statuses.add(fn);
-      return () => {
-        statuses.delete(fn);
-      };
-    },
-    dispatch: () => null,
-    more: () => false,
-    devices: () => false,
-    frame: () => false,
-    store: () => undefined,
-    settings: () => null,
-    skew: () => null,
-    status: () => 'open',
-    close: () => {},
-  };
-
-  return {
-    connection,
-    subscribed,
-    unsubscribed,
-    refreshed,
-    /** Everything still attached to the connection. */
-    listening: () => messages.size + statuses.size,
-    /**
-     * One frame as the server sent it: the store is written the way the
-     * socket writes it first, so a read of it is the answer the server gave,
-     * and then every listener hears it.
-     */
-    arrive(message: ServerMessage) {
-      if (message.kind === 'snapshot') {
-        stores.get(message.subject)?.set(message.data);
-      }
-      if (message.kind === 'error' && message.what === 'subscribe') {
-        stores.get(MODELS)?.refuse(message.why);
-      }
-      for (const fn of [...messages]) fn(message);
-    },
-  };
-}
 
 /** Give a timer a chance to fire, for everything it would have set off to show. */
 async function settle(): Promise<void> {
@@ -185,6 +110,29 @@ describe('the models page over a connection', () => {
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
     await settle();
     expect(forge.refreshed).toEqual([MODELS, MODELS]);
+  });
+
+  /**
+   * **A landing IS a read, so it frees the pacing.** A check that lands while
+   * an availability read is out carries the whole snapshot that read was
+   * asked for; if the landing left `reading` set, the pacing would latch -
+   * that read's answer aside, no later flip could ever ask again, and the
+   * page would stop following loads silently.
+   */
+  it('frees the read pacing when a check lands', async () => {
+    const forge = fakeConnection();
+    const view = watchModels(forge.connection);
+    view.subscribe(() => {});
+
+    forge.arrive({ kind: 'update', update: 'dictate_availability' });
+    await settle();
+    expect(forge.refreshed).toEqual([MODELS]);
+
+    forge.arrive({ kind: 'update', update: { dictate_models_changed: { models: SNAPSHOT } } });
+    forge.arrive({ kind: 'update', update: 'dictate_availability' });
+    await settle();
+
+    expect(forge.refreshed, 'a landing left the pacing latched').toEqual([MODELS, MODELS]);
   });
 
   /** A refusal is the server's own words, and the page draws them. */
