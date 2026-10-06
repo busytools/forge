@@ -37,6 +37,9 @@ function toAnswerPart(part: HostReply['parts'][number]): BrowserAnswerPart {
     : part;
 }
 
+/** The seat every ask in these tests is made for. */
+const SEAT = { org: 'o', project: 'p', label: 'lead' };
+
 /** A connection that records what the host registered, and can be asked. */
 function fakeConnection() {
   let handler: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
@@ -57,7 +60,7 @@ function fakeConnection() {
      */
     ask: async (tool: string, args: unknown = {}): Promise<BrowserAnswer> => {
       if (handler === null) throw new Error('the host registered no handler');
-      return await handler({ id: 1, seat: { org: 'o', project: 'p', label: 'lead' }, tool, args });
+      return await handler({ id: 1, seat: SEAT, tool, args });
     },
   };
 }
@@ -81,14 +84,17 @@ describe('the shell as the browser host', () => {
     expect(await ask('browser_navigate')).toEqual({ error: 'the vendored browser is not there' });
   });
 
-  /** The tool and its arguments cross to the shell verbatim. */
-  it('hands the shell the tool and the arguments the ask carried', async () => {
+  /** The tool, its arguments and the asking seat cross to the shell verbatim:
+   * the shell is what decides a named context's owner, so it has to know who
+   * asked. */
+  it('hands the shell the tool, the arguments and the seat the ask carried', async () => {
     const invoke = vi.fn().mockResolvedValue({ parts: [] });
     const { connection, ask } = fakeConnection();
     hostTheBrowser(connection, invoke);
 
     await ask('browser_navigate', { url: 'https://example.com' });
     expect(invoke).toHaveBeenCalledWith('browser_call', {
+      seat: SEAT,
       tool: 'browser_navigate',
       args: { url: 'https://example.com' },
     });

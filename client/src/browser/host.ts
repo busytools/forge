@@ -64,6 +64,7 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
   return connection.onBrowserAsk(async (ask: BrowserAsk): Promise<BrowserAnswer> => {
     try {
       const reply = (await invoke('browser_call', {
+        seat: ask.seat,
         tool: ask.tool,
         args: ask.args,
       })) as HostReply;

@@ -20,7 +20,20 @@
 //! the driver would refuse, so the added ones are **stripped** on the way
 //! through: what reaches upstream is its own shape, always.
 
+use std::path::Path;
+
 use serde_json::Value;
+
+/// The snippet that saves a named context: its cookies go to `storage`, which
+/// the driver reads back when the context is opened again, and the open tab
+/// URLs come back one per line.
+pub(super) fn save_session(storage: &Path) -> String {
+    format!(
+        "async (page) => {{ await page.context().storageState({{ path: {} }}); \
+         return page.context().pages().map((p) => p.url()).join('\\n'); }}",
+        js_string(&storage.to_string_lossy()),
+    )
+}
 
 /// What to do with one call: hand it to the driver as upstream's tool, or
 /// answer it with a snippet of this host's own.
@@ -99,7 +112,9 @@ pub(super) fn route(tool: &str, args: &Value) -> Result<Routed, String> {
                 }
                 return as_upstream(stripped);
             };
-            if args.get("text").is_some() || args.get("textGone").is_some() || args.get("time").is_some()
+            if args.get("text").is_some()
+                || args.get("textGone").is_some()
+                || args.get("time").is_some()
             {
                 return Err(
                     "`expression` waits on its own: pass it without `text`, `textGone` or `time`"
@@ -115,7 +130,9 @@ pub(super) fn route(tool: &str, args: &Value) -> Result<Routed, String> {
             let target = target_of(args)?;
             let settle = args.get("settleMs").and_then(Value::as_f64).unwrap_or(1500.0);
             if !(0.0..=30_000.0).contains(&settle) {
-                return Err("`settleMs` is milliseconds to keep listening, at most 30000".to_owned());
+                return Err(
+                    "`settleMs` is milliseconds to keep listening, at most 30000".to_owned()
+                );
             }
             Ok(Routed::Snippet(format!(
                 "async (page) => {{\
@@ -135,7 +152,9 @@ pub(super) fn route(tool: &str, args: &Value) -> Result<Routed, String> {
         }
         "browser_form_state" => {
             let scope = match args.get("target").and_then(Value::as_str) {
-                Some(target) => format!("page.locator({})", js_string(&format!("aria-ref={target}"))),
+                Some(target) => {
+                    format!("page.locator({})", js_string(&format!("aria-ref={target}")))
+                }
                 None => "page.locator('form')".to_owned(),
             };
             // Read in the PAGE, one handle at a time: a locator is not a
@@ -217,6 +236,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The save snippet writes the context's cookies to the file it is given -
+    /// escaped, since the path lands inside a JavaScript literal - and hands
+    /// its open tab URLs back one per line.
+    #[test]
+    fn the_save_snippet_names_its_storage_file_and_the_tab_urls() {
+        let snippet = save_session(Path::new("/data/ctx/a\"b.json"));
+        assert!(snippet.contains("storageState({ path: \"/data/ctx/a\\\"b.json\" })"), "{snippet}",);
+        assert!(snippet.contains("pages()"), "{snippet}");
+        assert!(snippet.contains("join('\\n')"), "{snippet}");
+    }
+
     /// Upstream's own calls pass through untouched, and the two added
     /// arguments are STRIPPED when they are not in use: an argument the
     /// driver's schema does not declare is a call it refuses.
@@ -280,8 +310,7 @@ mod tests {
             &json!({ "target": "e12", "force": true, "doubleClick": true, "button": "right",
                      "modifiers": ["Shift", "ControlOrMeta"] }),
         )
-        .expect("routes")
-        else {
+        .expect("routes") else {
             panic!("a forced double click is a snippet");
         };
         assert!(double.contains(".dblclick("), "{double}");

@@ -93,15 +93,23 @@ knowing before changing them:
   from the shell and never from a page opened outside it, because an ask
   routed to a client that cannot serve it arrives as a session's tool call
   failing.
+- **A named context is a driver of its own.** Upstream multiplexes nothing:
+  attached to a CDP endpoint it drives the browser's own context unless
+  `--isolated` makes it create one. So `context: "name"` on a tool call picks
+  a separate driver, owned by the session that opened it (another session is
+  refused by name until it is released) and saved after every call - cookies
+  into its storage file, open tab URLs beside it - so opening it again reopens
+  what it had.
 
 `client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
 driver, `browser_navigate` and `browser_snapshot` - against the vendored
-stack. It is `#[ignore]`d because that stack is half a gigabyte and absent
-from a fresh checkout; run it where it is vendored:
+stack, and `tests/contexts_live.rs` proves the contexts layer: two drivers
+over one browser with separate cookies, and the ownership-release-reopen
+walk. They are `#[ignore]`d because that stack is half a gigabyte and absent
+from a fresh checkout; run them where it is vendored:
 
 ```sh
-cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
-    --run-ignored ignored-only -E 'test(a_session_drives_a_page)'
+cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only
 ```
 
 A start has no terminal to report to, so it writes to

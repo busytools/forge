@@ -18,16 +18,25 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use forge_client::browser::contexts::Seat;
 use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
+
+/// The seat these calls are made for: one session, as an ask carries it.
+fn seat() -> Seat {
+    Seat {
+        org: "Busytools".to_owned(),
+        project: "forge".to_owned(),
+        label: "browser-live".to_owned(),
+    }
+}
 
 /// Kill the browser this test launched, by the PORT it holds - never by a
 /// pattern: this machine runs other browsers, and one of them belongs to the
 /// person sitting at it.
 fn kill_the_browser_on(port: u16) {
-    let Ok(listed) = Command::new("lsof")
-        .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
-        .output()
+    let Ok(listed) =
+        Command::new("lsof").args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"]).output()
     else {
         return;
     };
@@ -50,6 +59,7 @@ async fn a_session_drives_a_page() {
         stack,
         profile: dir.path().join("profile"),
         output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
     };
     let host = BrowserHost::new(paths.clone());
 
@@ -67,7 +77,7 @@ async fn a_session_drives_a_page() {
     );
 
     let page = "data:text/html,<h1>forge browser host</h1>";
-    let navigated = host.call("browser_navigate", json!({ "url": page })).await;
+    let navigated = host.call(&seat(), "browser_navigate", json!({ "url": page })).await;
     let port = forge_client::browser::chromium::read_active_port(&paths.profile)
         .expect("the launch wrote its port file")
         .port;
@@ -80,7 +90,7 @@ async fn a_session_drives_a_page() {
     };
     assert!(!parts.is_empty(), "a navigate answers with something");
 
-    let snapshot = match host.call("browser_snapshot", json!({})).await {
+    let snapshot = match host.call(&seat(), "browser_snapshot", json!({})).await {
         Ok(parts) => parts,
         Err(why) => {
             kill_the_browser_on(port);
@@ -122,7 +132,9 @@ fn ref_of(snapshot: &str, needle: &str) -> String {
             let end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
             Some(rest[..end].to_owned())
         })
-        .unwrap_or_else(|| panic!("the snapshot names no element containing {needle:?}: {snapshot}"))
+        .unwrap_or_else(|| {
+            panic!("the snapshot names no element containing {needle:?}: {snapshot}")
+        })
 }
 
 /// **The additions beyond upstream's surface, driven against a real page.**
@@ -169,6 +181,7 @@ async fn the_additions_drive_a_real_page() {
         stack,
         profile: dir.path().join("profile"),
         output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
     };
     let host = BrowserHost::new(paths.clone());
     let browser_port = {
@@ -185,24 +198,24 @@ async fn the_additions_drive_a_real_page() {
     }
 
     let page = format!("http://127.0.0.1:{port}/");
-    if let Err(why) = host.call("browser_navigate", json!({ "url": page })).await {
+    if let Err(why) = host.call(&seat(), "browser_navigate", json!({ "url": page })).await {
         finish(browser_port, format!("the page would not navigate: {why}"));
     }
-    let snapshot = match host.call("browser_snapshot", json!({})).await {
+    let snapshot = match host.call(&seat(), "browser_snapshot", json!({})).await {
         Ok(parts) => text_of(&parts),
         Err(why) => finish(browser_port, format!("the page would not snapshot: {why}")),
     };
     let button = ref_of(&snapshot, "Fetch");
 
     // A forced click: Playwright's own click with the actionability gate off.
-    match host.call("browser_click", json!({ "target": button, "force": true })).await {
+    match host.call(&seat(), "browser_click", json!({ "target": button, "force": true })).await {
         Ok(parts) => assert!(text_of(&parts).contains("clicked"), "{:?}", text_of(&parts)),
         Err(why) => finish(browser_port, format!("a forced click did not run: {why}")),
     }
 
     // The click's responses come back with the click itself.
     let captured = match host
-        .call("browser_click_and_capture", json!({ "target": button, "settleMs": 1200 }))
+        .call(&seat(), "browser_click_and_capture", json!({ "target": button, "settleMs": 1200 }))
         .await
     {
         Ok(parts) => text_of(&parts),
@@ -217,7 +230,7 @@ async fn the_additions_drive_a_real_page() {
 
     // An expression wait: a condition no text can state.
     match host
-        .call("browser_wait_for", json!({ "expression": "document.title === 'fetched'" }))
+        .call(&seat(), "browser_wait_for", json!({ "expression": "document.title === 'fetched'" }))
         .await
     {
         Ok(parts) => assert!(text_of(&parts).contains("condition holds"), "{:?}", text_of(&parts)),
@@ -226,7 +239,7 @@ async fn the_additions_drive_a_real_page() {
 
     // The form's state: the values, what is marked invalid, and the control's
     // own text.
-    let form = match host.call("browser_form_state", json!({})).await {
+    let form = match host.call(&seat(), "browser_form_state", json!({})).await {
         Ok(parts) => text_of(&parts),
         Err(why) => finish(browser_port, format!("form_state did not run: {why}")),
     };

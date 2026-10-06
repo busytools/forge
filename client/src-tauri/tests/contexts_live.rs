@@ -27,6 +27,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use forge_client::browser::contexts::Seat;
 use forge_client::browser::driver::{Driver, ReplyPart};
 use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
@@ -71,6 +72,7 @@ async fn two_named_contexts_share_one_browser_and_see_different_cookies() {
         stack,
         profile: dir.path().join("profile"),
         output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
     };
     let host = BrowserHost::new(paths.clone());
     host.start().await.expect("the browser comes up");
@@ -166,5 +168,131 @@ async fn two_named_contexts_share_one_browser_and_see_different_cookies() {
     assert!(
         seen.contains("[]"),
         "and beta's read is an empty cookie list rather than an error: {seen}",
+    );
+}
+
+/// The whole named-context contract over the real stack, in the shape the
+/// spec's own acceptance names it: two sessions, one context name, the second
+/// refused - and then the release, which saves the context, kills its driver
+/// and frees the name, so the next session to open it finds the cookies and
+/// the open tabs it left.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn a_named_context_refuses_another_session_and_reopens_from_its_save() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    host.start().await.expect("the browser comes up");
+    let browser_port = forge_client::browser::chromium::read_active_port(&paths.profile)
+        .expect("the start wrote its port file")
+        .port;
+    /// Out through the browser's port, so a panic never leaves a browser
+    /// behind, and diverging so a match arm reads as an arm.
+    fn finish(browser_port: u16, why: String) -> ! {
+        kill_the_browser_on(browser_port);
+        panic!("{why}");
+    }
+
+    // A page with a path, so a reopened tab is recognisable by its URL.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let page_port = listener.local_addr().expect("the bound port").port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        for _ in 0..24 {
+            let Ok((mut socket, _)) = listener.accept().await else { continue };
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await;
+            let body = "<title>ctx</title>ok";
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = socket.write_all(answer.as_bytes()).await;
+        }
+    });
+    let page = format!("http://127.0.0.1:{page_port}/");
+    let second = format!("http://127.0.0.1:{page_port}/second");
+    let seat = |label: &str| Seat {
+        org: "Busytools".to_owned(),
+        project: "forge".to_owned(),
+        label: label.to_owned(),
+    };
+    let (alpha, beta) = (seat("alpha"), seat("beta"));
+
+    // Alpha opens the context on first use, and leaves it with a cookie and a
+    // second tab someone will have to find again.
+    if let Err(why) =
+        host.call(&alpha, "browser_navigate", json!({ "url": page, "context": "hunt" })).await
+    {
+        finish(browser_port, format!("alpha could not open the context: {why}"));
+    }
+    let set = format!(
+        "async (page) => {{ await page.context().addCookies([{{ name: 'who', value: 'alpha', \
+         url: '{page}' }}]); return 'set'; }}"
+    );
+    if let Err(why) = host
+        .call(&alpha, "browser_run_code_unsafe", json!({ "code": set, "context": "hunt" }))
+        .await
+    {
+        finish(browser_port, format!("alpha could not set its cookie: {why}"));
+    }
+    if let Err(why) = host
+        .call(&alpha, "browser_tabs", json!({ "action": "new", "url": second, "context": "hunt" }))
+        .await
+    {
+        finish(browser_port, format!("alpha could not open its second tab: {why}"));
+    }
+
+    // Beta naming the context is refused by name, with alpha's slot in the
+    // reason so it can tell who holds it.
+    let refused = host.call(&beta, "browser_snapshot", json!({ "context": "hunt" })).await;
+    let Err(refusal) = refused else {
+        finish(browser_port, "beta was let into a context it did not open".to_owned());
+    };
+    assert!(refusal.contains("'hunt'"), "the refusal names the context: {refusal}");
+    assert!(refusal.contains("Busytools/forge/alpha"), "and the session holding it: {refusal}",);
+
+    // The release saves the context and frees the name; the driver goes with
+    // it, so what beta opens next is a fresh driver over the saved files.
+    if let Err(why) = host.release(&alpha, "hunt").await {
+        finish(browser_port, format!("alpha could not release its context: {why}"));
+    }
+    let read = "async (page) => JSON.stringify(await page.context().cookies())";
+    let seen = match host
+        .call(&beta, "browser_run_code_unsafe", json!({ "code": read, "context": "hunt" }))
+        .await
+    {
+        Ok(parts) => text_of(&parts),
+        Err(why) => {
+            finish(browser_port, format!("beta could not open the released context: {why}"))
+        }
+    };
+    assert!(
+        seen.contains("who") && seen.contains("alpha"),
+        "the released context reopens with the cookies it saved: {seen}",
+    );
+
+    let tabs = match host
+        .call(&beta, "browser_tabs", json!({ "action": "list", "context": "hunt" }))
+        .await
+    {
+        Ok(parts) => text_of(&parts),
+        Err(why) => finish(browser_port, format!("beta could not list the context's tabs: {why}")),
+    };
+    kill_the_browser_on(browser_port);
+    assert!(
+        tabs.contains(&page) && tabs.contains("/second"),
+        "and with the tabs it had open, as URLs: {tabs}",
     );
 }

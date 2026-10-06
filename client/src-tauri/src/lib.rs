@@ -13,10 +13,7 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(desktop)]
 fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    app.updater_builder()
-        .timeout(UPDATE_TIMEOUT)
-        .build()
-        .map_err(|err| err.to_string())
+    app.updater_builder().timeout(UPDATE_TIMEOUT).build().map_err(|err| err.to_string())
 }
 
 use tauri::Manager as _;
@@ -31,9 +28,7 @@ pub fn run() {
     let log_file = log_file(&context.config().identifier);
 
     let builder = tauri::Builder::default().plugin(
-        tauri_plugin_log::Builder::new()
-            .level(tauri_plugin_log::log::LevelFilter::Info)
-            .build(),
+        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info).build(),
     );
 
     // The updater plugin stops at the desktop, and these commands are the
@@ -43,16 +38,20 @@ pub fn run() {
     // add to it - and the host itself is the client's on both platforms, so
     // the mobile arm registers it too.
     #[cfg(desktop)]
-    let builder = builder
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
+        tauri::generate_handler![
             browser::browser_call,
+            browser::browser_context_release,
             check_update,
             install_update,
             restart_app
-        ]);
+        ],
+    );
     #[cfg(not(desktop))]
-    let builder = builder.invoke_handler(tauri::generate_handler![browser::browser_call]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        browser::browser_call,
+        browser::browser_context_release
+    ]);
 
     let run = builder
         .setup(|app| {
@@ -121,13 +120,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     // `timeout: None` and the download only bounds itself when this is set -
     // so the bound is put back on before the download runs.
     update.timeout = Some(UPDATE_TIMEOUT);
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|err| {
-            tauri_plugin_log::log::warn!("the client update failed to install: {err}");
-            err.to_string()
-        })
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|err| {
+        tauri_plugin_log::log::warn!("the client update failed to install: {err}");
+        err.to_string()
+    })
 }
 
 /// Restart into the installed update.
