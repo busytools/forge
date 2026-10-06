@@ -28,6 +28,7 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
 
 import { get, writable } from 'svelte/store';
 
+import { cronNames } from '../chat/cron-names.svelte';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
@@ -779,6 +780,36 @@ describe('the record a page holds over an update stream', () => {
     expect(page.read().wire, 'the update never reached the record').not.toBe(before);
     expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
     expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
+    page.stop();
+  });
+
+  /**
+   * **A fired cron's schedule is on the frame and on no field of the record.**
+   * The row's prose carries the prompt alone, so the pump keeps the pairing
+   * the frame states - and it has to do so where the record's own early return
+   * cannot skip it, since this update is one the record ignores.
+   */
+  it('keeps the schedule a fired cron named, which no record field carries', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const before = page.read().wire;
+
+    page.land(
+      updateOf({
+        cron_prompt_appended: {
+          key: LEAD,
+          text: 'summarise overnight CI',
+          uuid: 'p-cron-1',
+          cron_id: 'c1',
+          description: 'Morning summary',
+        },
+      }),
+    );
+    paint();
+
+    expect(cronNames.nameFor('p-cron-1'), 'the frame named its schedule').toBe('Morning summary');
+    expect(page.read().wire, 'and the record itself is untouched by it').toBe(before);
     page.stop();
   });
 

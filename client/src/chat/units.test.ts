@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import {
   fold,
@@ -950,6 +951,24 @@ describe('one turn folded into the units a view draws', () => {
       'the morning sweep',
     );
     expect(rows[1]?.body, 'no leading blank line').toBe('the morning sweep');
+  });
+
+  it('names a fired cron by its schedule when the delivery frame said which', () => {
+    // The prose carries the prompt and never the schedule, so the name can
+    // only come from the frame the delivery arrives with - joined here by the
+    // prompt's own id, which both carry.
+    const fired = heard([text('[Cron]\n\nsummarise overnight CI')], { uuid: 'p-77aa' });
+    cronNames.remember('p-77aa', 'Morning summary');
+    const named = inboundsOf(fold([fired])[0])[0];
+
+    expect(named?.title, 'the schedule, not the prompt').toBe('Morning summary');
+    expect(named?.body, 'and the whole prompt stays the body').toBe('summarise overnight CI');
+
+    const unknown = heard([text('[Cron]\n\nsweep the queue')], { uuid: 'p-9901' });
+    expect(
+      inboundsOf(fold([unknown])[0])[0]?.title,
+      'a fire whose frame was never seen falls back to the prompt first line',
+    ).toBe('sweep the queue');
   });
 
   it('reads a Slack id the way the server reads one', () => {

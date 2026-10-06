@@ -42,6 +42,7 @@
  * they duplicate that surface inside every turn that used one.
  */
 
+import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
 import { firstLine, stripEscapes } from './text';
@@ -1916,11 +1917,17 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
               // A delivery by cron, Slack or Gotify joins the work as a row
               // of its own kind, the way a family's calls do - one shape for
               // every row, so a new external kind is a row and a glyph.
+              //
+              // A cron fire is titled by the SCHEDULE when the frame that
+              // delivered it named one: the prose carries the prompt alone, so
+              // the name is the one thing only the frame's own pairing can
+              // say.
+              const named = envelope.inbound === 'cron' ? cronNames.nameFor(frame.uuid) : null;
               pending.push({
                 tag: 'inbound',
                 kind: envelope.inbound,
                 key: keyOf(at, frame, blockAt),
-                title: envelope.title,
+                title: named ?? envelope.title,
                 body: envelope.body,
                 elevated: envelope.elevated,
               });
