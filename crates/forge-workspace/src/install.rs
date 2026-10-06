@@ -33,6 +33,20 @@ pub enum InstallState {
     Failed { file: String, reason: String },
 }
 
+/// Where an activation is, as the page draws it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ActivateState {
+    #[default]
+    Idle,
+    /// A new engine for `file` is building; the old one still serves until
+    /// the swap.
+    Activating { role: DictateRole, file: String },
+    /// The new engine could not load. The previous one still serves, and
+    /// the active record still names it.
+    Failed { role: DictateRole, file: String, reason: String },
+}
+
 /// One model this machine has downloaded from the feed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstalledModel {
@@ -252,6 +266,22 @@ impl Workspace {
     }
 }
 
+/// Build and load one engine off the runtime thread, answering it or the
+/// reason it could not serve.
+///
+/// Building before swapping is the order: a model that will not load
+/// leaves the previous engine serving rather than the role with nothing.
+async fn build_engine(cfg: forge_dictate::Config) -> Result<Arc<forge_dictate::Engine>, String> {
+    tokio::task::spawn_blocking(move || {
+        let engine = forge_dictate::Engine::new(cfg)?;
+        engine.wait_ready()?;
+        Ok::<Arc<forge_dictate::Engine>, forge_dictate::Error>(engine)
+    })
+    .await
+    .map_err(|join| join.to_string())?
+    .map_err(|error| error.to_string())
+}
+
 /// The spec one feed entry's doc describes for the quant a row draws: the
 /// doc's own URL for the file, the entry's own byte length, and the facts
 /// both carry.
@@ -449,6 +479,227 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// The activation's state, for the page's read.
+    pub fn dictate_activate(&self) -> ActivateState {
+        self.dictate_activate.lock().clone()
+    }
+
+    /// Make one installed model the role's active model on the running
+    /// forge: build the new engine while the old still serves, swap, then
+    /// drop the old.
+    ///
+    /// A role `forge.toml` pins is refused by name - the page can still
+    /// download and bench it, but the runtime cannot move it - and a live
+    /// take refuses the swap rather than being dropped under.
+    pub(crate) fn start_activate(
+        self: &Arc<Self>,
+        role: DictateRole,
+        file: String,
+    ) -> Result<(), DispatchError> {
+        if !self.config.dictate.enabled {
+            return Err(DispatchError::DictateOff);
+        }
+        if let Some(key) = self.pinning_key(role) {
+            return Err(DispatchError::PinnedRole { key });
+        }
+        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+            return Err(DispatchError::TakeLive { holder });
+        }
+        {
+            let mut state = self.dictate_activate.lock();
+            if matches!(*state, ActivateState::Activating { .. }) {
+                return Err(DispatchError::Activating);
+            }
+            *state = ActivateState::Activating { role, file: file.clone() };
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let runner = Arc::clone(&this);
+            runner.run_activate(role, file).await;
+            this.push_models();
+        });
+        Ok(())
+    }
+
+    /// Return one role to its `[dictate]` key or compiled default: clear
+    /// the runtime pick and swap the engine back, in activation's own
+    /// build-then-swap order.
+    pub(crate) fn start_deactivate(
+        self: &Arc<Self>,
+        role: DictateRole,
+    ) -> Result<(), DispatchError> {
+        if !self.config.dictate.enabled {
+            return Err(DispatchError::DictateOff);
+        }
+        if let Some(key) = self.pinning_key(role) {
+            return Err(DispatchError::PinnedRole { key });
+        }
+        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+            return Err(DispatchError::TakeLive { holder });
+        }
+        let Some(pin) = self.pin_for(role) else {
+            return Err(DispatchError::DictateOff);
+        };
+        {
+            let mut state = self.dictate_activate.lock();
+            if matches!(*state, ActivateState::Activating { .. }) {
+                return Err(DispatchError::Activating);
+            }
+            *state = ActivateState::Activating { role, file: pin.file.clone() };
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let runner = Arc::clone(&this);
+            runner.run_deactivate(role, pin).await;
+            this.push_models();
+        });
+        Ok(())
+    }
+
+    /// The `[dictate]` key that pins one role, when one does.
+    fn pinning_key(&self, role: DictateRole) -> Option<String> {
+        let settings = &self.config.dictate;
+        let pinned = match role {
+            DictateRole::Transcribing => settings.transcribe_model.as_ref(),
+            DictateRole::Normalization => settings.cleanup_model.as_ref(),
+        };
+        pinned.map(|_| key_for_role(role).to_owned())
+    }
+
+    /// The compiled default one role runs, when it has one: the cleanup
+    /// role has none while `normalizer` is off.
+    fn pin_for(&self, role: DictateRole) -> Option<ModelSpec> {
+        self.config
+            .dictate
+            .model_specs()
+            .into_iter()
+            .find(|(spec_role, _)| *spec_role == role)
+            .map(|(_, spec)| spec)
+    }
+
+    /// Load one installed model and swap the role onto it.
+    async fn run_activate(self: Arc<Self>, role: DictateRole, file: String) {
+        let Some(installed) = self.installed_models().into_iter().find(|model| model.file == file)
+        else {
+            return self.fail_activate(role, file, "no installed model has that file".to_owned());
+        };
+        let variant = installed.variant.clone();
+        let spec = ModelSpec {
+            file: installed.file,
+            url: installed.url,
+            size: installed.size,
+            sha256: None,
+            facts: installed.facts,
+        };
+        match self
+            .swap_role_to(role, spec, ActiveFrom::Installed { variant: variant.clone() })
+            .await
+        {
+            Ok(at) => {
+                self.record_pick(role, &variant, &at);
+                *self.dictate_activate.lock() = ActivateState::Idle;
+            }
+            Err(reason) => self.fail_activate(role, file, reason),
+        }
+    }
+
+    /// Swap the role back to its compiled default and drop the pick.
+    async fn run_deactivate(self: Arc<Self>, role: DictateRole, pin: ModelSpec) {
+        let file = pin.file.clone();
+        match self.swap_role_to(role, pin, ActiveFrom::Pin).await {
+            Ok(_) => {
+                self.clear_pick(role);
+                *self.dictate_activate.lock() = ActivateState::Idle;
+            }
+            Err(reason) => self.fail_activate(role, file, reason),
+        }
+    }
+
+    /// Build the engine the role's new model needs while the old one still
+    /// serves, swap the `Arc`, then drop the old - never drop first, which
+    /// would leave the role with no engine at all if the new load fails.
+    ///
+    /// Answers the RFC 3339 stamp the pick is recorded with, or the reason
+    /// the load failed; a failure changes nothing.
+    async fn swap_role_to(
+        &self,
+        role: DictateRole,
+        spec: ModelSpec,
+        from: ActiveFrom,
+    ) -> Result<String, String> {
+        let current = self.active_models();
+        if current.iter().any(|(r, model)| *r == role && model.spec.file == spec.file) {
+            // The role already runs this file: nothing to build, and a
+            // rebuild would cost a second model load for no change.
+            return Ok(rfc3339_now());
+        }
+        let at = rfc3339_now();
+        let next: Vec<(DictateRole, ActiveModel)> = current
+            .into_iter()
+            .map(|(r, model)| {
+                if r == role {
+                    (role, ActiveModel {
+                        role,
+                        spec: spec.clone(),
+                        from: from.clone(),
+                        at: Some(at.clone()),
+                    })
+                } else {
+                    (r, model)
+                }
+            })
+            .collect();
+
+        let cfg = crate::dictate::preflight_config(&self.config.dictate, &next);
+        let engine = build_engine(cfg).await?;
+        let previous = self.dictate.engine.lock().replace(engine);
+        drop(previous);
+
+        self.dictate.set_active(&next);
+        self.dictate.mark_all(crate::dictate::DictateModelState::Ready);
+        Ok(at)
+    }
+
+    fn fail_activate(&self, role: DictateRole, file: String, reason: String) {
+        *self.dictate_activate.lock() = ActivateState::Failed { role, file, reason };
+    }
+
+    /// Record one role's runtime pick, so the next boot answers it.
+    fn record_pick(&self, role: DictateRole, variant: &str, at: &str) {
+        let db = self.db.lock();
+        if let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::dictate_models::record_active(
+                db,
+                role,
+                &ActiveChoice { variant: variant.to_owned(), at: at.to_owned() },
+            )
+        {
+            tracing::warn!(
+                event_name = "dictate_active_record_failed",
+                %error,
+                %variant,
+                "the runtime pick was not recorded; the next boot answers the previous model"
+            );
+        }
+    }
+
+    /// Drop one role's runtime pick, so the role answers its config key or
+    /// its compiled pin again.
+    fn clear_pick(&self, role: DictateRole) {
+        let db = self.db.lock();
+        if let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::dictate_models::clear_active(db, role)
+        {
+            tracing::warn!(
+                event_name = "dictate_active_clear_failed",
+                %error,
+                "the runtime pick was not cleared; the next boot answers it again"
+            );
+        }
+    }
+}
+
 /// A `SystemTime` as RFC 3339, the stamp a result is comparable by.
 fn rfc3339_now() -> String {
     time::OffsetDateTime::now_utc()
@@ -507,14 +758,22 @@ mod tests_install {
 
     /// [`fixture`] with the `[dictate]` model keys a resolution test needs.
     fn fixture_with(transcribe_model: Option<&str>, cleanup_model: Option<&str>) -> Fixture {
+        fixture_built(|config| {
+            config.dictate.transcribe_model = transcribe_model.map(str::to_owned);
+            config.dictate.cleanup_model = cleanup_model.map(str::to_owned);
+        })
+    }
+
+    /// [`fixture`] with anything else a test needs set on the config before
+    /// the workspace is built.
+    fn fixture_built(configure: impl FnOnce(&mut crate::config::LoadedConfig)) -> Fixture {
         let config_dir = tempfile::tempdir().expect("a config dir");
         let models = tempfile::tempdir().expect("a models dir");
         let store = tempfile::tempdir().expect("a store dir");
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.dictate.enabled = true;
         config.dictate.models_dir = Some(models.path().to_string_lossy().into_owned());
-        config.dictate.transcribe_model = transcribe_model.map(str::to_owned);
-        config.dictate.cleanup_model = cleanup_model.map(str::to_owned);
+        configure(&mut config);
         let (ws, updates) =
             Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
                 .expect("the stub builds");
@@ -902,5 +1161,182 @@ mod tests_install {
 
         assert_eq!(second.installed.len(), 1, "the record is replaced, not duplicated");
         assert_eq!(second.installed[0].file, file);
+    }
+
+    /// A file of bytes that are not a model, where the engine would look
+    /// for one.
+    fn write_unloadable_model(ws: &Workspace, file: &str) {
+        let path = ws.config.dictate.models_dir().expect("the fixture sets one").join(file);
+        std::fs::write(&path, b"these bytes are not a model")
+            .unwrap_or_else(|error| panic!("write {path:?}: {error}"));
+    }
+
+    /// Review Focus 3: an activation whose model will not load lands
+    /// failed, and the engine slot and the roles are left as they were.
+    #[tokio::test]
+    async fn an_activation_that_cannot_load_leaves_the_previous_engine_in_place() {
+        // The cleanup role off, so the engine build names exactly one
+        // model - the one under test - and the failure cannot come from
+        // another model's file being missing. The whole fixture is bound:
+        // destructuring the tempdirs away would delete the models dir
+        // under the test.
+        let mut fixture = fixture_built(|config| config.dictate.normalizer = false);
+        record_installed_model(&fixture.ws, "broken");
+        write_unloadable_model(&fixture.ws, "broken-Q4_K_M.gguf");
+
+        fixture
+            .ws
+            .dispatch(Command::DictateActivate {
+                role: DictateRole::Transcribing,
+                file: "broken-Q4_K_M.gguf".to_owned(),
+            })
+            .expect("the activation dispatches");
+
+        let landed = await_models(&mut fixture.updates).await;
+        let ActivateState::Failed { role, file, reason } = &landed.activate else {
+            panic!("an unloadable model must land failed, got {:?}", landed.activate);
+        };
+        assert_eq!(*role, DictateRole::Transcribing);
+        assert_eq!(file, "broken-Q4_K_M.gguf");
+        assert!(
+            reason.contains("broken-Q4_K_M.gguf"),
+            "the failure must be about the model that was activated, got: {reason}"
+        );
+        assert!(fixture.ws.dictate.engine.lock().is_none(), "nothing was swapped in");
+        assert_eq!(
+            role_model(&fixture.ws.active_models(), DictateRole::Transcribing).from,
+            ActiveFrom::Pin,
+            "and the role still answers what it did before"
+        );
+    }
+
+    /// Review Focus 4: a live take refuses the swap by name - the seat it
+    /// is on - and nothing starts.
+    #[tokio::test]
+    async fn an_activation_refuses_while_a_take_is_live() {
+        let fixture = fixture_with(None, None);
+        record_installed_model(&fixture.ws, "candidate");
+        let (stop, _stop_rx) = tokio::sync::mpsc::channel(1);
+        fixture.ws.dictate_runtime.lock().recordings.insert(
+            crate::SessionSlot::new("Busytools", "forge", "worker"),
+            crate::dictate::LiveRecording { stop, sink: None, initiator: None },
+        );
+
+        let err = fixture
+            .ws
+            .dispatch(Command::DictateActivate {
+                role: DictateRole::Transcribing,
+                file: "candidate-Q4_K_M.gguf".to_owned(),
+            })
+            .expect_err("a live take refuses the swap");
+
+        assert!(
+            matches!(&err, DispatchError::TakeLive { holder } if holder == "Busytools/forge/worker"),
+            "the refusal names the seat whose take is live, got: {err:?}"
+        );
+        assert_eq!(fixture.ws.dictate_activate(), ActivateState::Idle, "and nothing started");
+    }
+
+    /// A failed activation changes nothing a restart would answer: the
+    /// runtime pick still names the model the machine was running.
+    #[tokio::test]
+    async fn a_failed_activation_leaves_the_record_and_the_running_model_alone() {
+        let mut fixture = fixture_built(|config| config.dictate.normalizer = false);
+        record_installed_model(&fixture.ws, "broken");
+        record_installed_model(&fixture.ws, "picked");
+        record_active(&fixture.ws, DictateRole::Transcribing, "picked");
+        write_unloadable_model(&fixture.ws, "broken-Q4_K_M.gguf");
+
+        fixture
+            .ws
+            .dispatch(Command::DictateActivate {
+                role: DictateRole::Transcribing,
+                file: "broken-Q4_K_M.gguf".to_owned(),
+            })
+            .expect("the activation dispatches");
+        let landed = await_models(&mut fixture.updates).await;
+        assert!(
+            matches!(landed.activate, ActivateState::Failed { .. }),
+            "got {:?}",
+            landed.activate
+        );
+
+        let resolved =
+            fixture.ws.resolve_active(&settings_of(&fixture.ws)).await.expect("the pick resolves");
+        assert_eq!(
+            role_model(&resolved, DictateRole::Transcribing).spec.file,
+            "picked-Q4_K_M.gguf",
+            "a restart still answers the model the machine was running"
+        );
+    }
+
+    /// The config pin refuses activation by name; downloads and benchmarks
+    /// stay allowed, but the runtime cannot move the role.
+    #[tokio::test]
+    async fn an_activation_on_a_pinned_role_is_refused_by_name() {
+        let fixture = fixture_with(Some("keyed"), None);
+        record_installed_model(&fixture.ws, "keyed");
+
+        let err = fixture
+            .ws
+            .dispatch(Command::DictateActivate {
+                role: DictateRole::Transcribing,
+                file: "keyed-Q4_K_M.gguf".to_owned(),
+            })
+            .expect_err("forge.toml pins the role");
+
+        assert!(
+            matches!(&err, DispatchError::PinnedRole { key } if key == "transcribe_model"),
+            "the refusal names the [dictate] key, got: {err:?}"
+        );
+    }
+
+    /// A deactivation that cannot load the default keeps the pick: the
+    /// record is dropped only after the swap lands, so the page's rows,
+    /// the next boot and the running engine never disagree.
+    #[tokio::test]
+    async fn a_deactivation_whose_swap_fails_keeps_the_pick() {
+        let mut fixture = fixture_built(|config| config.dictate.normalizer = false);
+        record_installed_model(&fixture.ws, "picked");
+        record_active(&fixture.ws, DictateRole::Transcribing, "picked");
+        // The role runs the pick, and the compiled default is not on disk.
+        fixture.ws.dictate.set_active(&[(
+            DictateRole::Transcribing,
+            ActiveModel {
+                role: DictateRole::Transcribing,
+                spec: ModelSpec {
+                    file: "picked-Q4_K_M.gguf".to_owned(),
+                    url: "https://weights.invalid/picked-Q4_K_M.gguf".to_owned(),
+                    size: 6,
+                    sha256: None,
+                    facts: ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
+                },
+                from: ActiveFrom::Installed { variant: "picked".to_owned() },
+                at: Some("2026-10-06T01:00:00Z".to_owned()),
+            },
+        )]);
+
+        fixture
+            .ws
+            .dispatch(Command::DictateDeactivate { role: DictateRole::Transcribing })
+            .expect("the deactivation dispatches");
+
+        let landed = await_models(&mut fixture.updates).await;
+        assert!(
+            matches!(landed.activate, ActivateState::Failed { .. }),
+            "got {:?}",
+            landed.activate
+        );
+        let db = fixture.ws.db.lock();
+        let choice = crate::store::dictate_models::active(
+            db.as_ref().expect("the fixture installs a store"),
+            DictateRole::Transcribing,
+        )
+        .expect("the store reads");
+        assert_eq!(
+            choice.map(|choice| choice.variant),
+            Some("picked".to_owned()),
+            "the pick is dropped only once the swap lands"
+        );
     }
 }

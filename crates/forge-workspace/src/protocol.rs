@@ -375,6 +375,18 @@ pub enum Command {
     DictateInstall {
         variant: String,
     },
+    /// Load one installed model and make it the role's active model on the
+    /// running forge. App-level, and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`].
+    DictateActivate {
+        role: crate::dictate::DictateRole,
+        file: String,
+    },
+    /// Return one role to its `[dictate]` key or its compiled default.
+    /// App-level, same outcome channel as activation.
+    DictateDeactivate {
+        role: crate::dictate::DictateRole,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -700,6 +712,8 @@ impl Command {
             | Self::DeliverGotifyMessage { .. }
             | Self::DictateCatalogueCheck
             | Self::DictateInstall { .. }
+            | Self::DictateActivate { .. }
+            | Self::DictateDeactivate { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -843,6 +857,14 @@ impl std::fmt::Debug for Command {
             Self::DictateCatalogueCheck => f.write_str("DictateCatalogueCheck"),
             Self::DictateInstall { variant } => {
                 f.debug_struct("DictateInstall").field("variant", variant).finish()
+            }
+            Self::DictateActivate { role, file } => f
+                .debug_struct("DictateActivate")
+                .field("role", role)
+                .field("file", file)
+                .finish(),
+            Self::DictateDeactivate { role } => {
+                f.debug_struct("DictateDeactivate").field("role", role).finish()
             }
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
@@ -2137,6 +2159,18 @@ pub enum DispatchError {
     /// An install is already running: one at a time, like a check.
     #[error("a model install is already running")]
     Installing,
+    /// An activation is already running; a second engine build would race
+    /// the first one's swap.
+    #[error("a model activation is already running")]
+    Activating,
+    /// A take is in flight on `holder` (a slot's display string), so the
+    /// engine cannot be swapped under it.
+    #[error("a dictation take is live on {holder}; wait for it to finish")]
+    TakeLive { holder: String },
+    /// `forge.toml` pins this role, so the runtime cannot move it; `key`
+    /// is the `[dictate]` key that does.
+    #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
+    PinnedRole { key: String },
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

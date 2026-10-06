@@ -282,6 +282,7 @@ mod tests {
                 updates: Vec::new(),
                 rows: Vec::new(),
                 install: forge_workspace::install::InstallState::Idle,
+                activate: forge_workspace::install::ActivateState::Idle,
                 installed: Vec::new(),
             },
         };

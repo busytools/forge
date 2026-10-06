@@ -352,6 +352,7 @@ impl Workspace {
             dictate_device_pick: Mutex::new(None),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
+            dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]

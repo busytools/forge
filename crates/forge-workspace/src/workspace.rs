@@ -295,6 +295,10 @@ pub struct Workspace {
     /// `Command::DictateInstall`, read by the models page through
     /// `dictate_install`.
     pub(crate) dictate_install: Mutex<crate::install::InstallState>,
+    /// Where the last model activation got to. Set by
+    /// `Command::DictateActivate`, read by the models page through
+    /// `dictate_activate`.
+    pub(crate) dictate_activate: Mutex<crate::install::ActivateState>,
     /// A test's own catalogue source, so a check can run against a
     /// loopback server instead of GitHub. Not present in production
     /// builds.
@@ -1502,6 +1506,7 @@ impl Workspace {
             dictate_device_pick: Mutex::new(None),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
+            dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -4473,6 +4478,12 @@ impl Workspace {
                 }
                 Command::DictateInstall { variant } => {
                     return self.start_install(variant);
+                }
+                Command::DictateActivate { role, file } => {
+                    return self.start_activate(role, file);
+                }
+                Command::DictateDeactivate { role } => {
+                    return self.start_deactivate(role);
                 }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);

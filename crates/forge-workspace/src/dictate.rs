@@ -575,6 +575,15 @@ impl DictateState {
         }
     }
 
+    /// Move every row to one state: preflight's Loading and Ready points,
+    /// and the same Ready after a runtime swap, where every role's model
+    /// is loaded by the engine that just came up.
+    pub(crate) fn mark_all(&self, state: DictateModelState) {
+        for model in &mut self.snapshot.lock().models {
+            model.state = state.clone();
+        }
+    }
+
     pub(crate) fn fail(&self, failure: DictateFailure, file: Option<&str>) {
         if let Some(file) = file {
             self.set_state(file, DictateModelState::Failed(failure.clone()));
@@ -638,9 +647,7 @@ pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc
         }
     }
 
-    for model in &mut state.snapshot.lock().models {
-        model.state = DictateModelState::Loading;
-    }
+    state.mark_all(DictateModelState::Loading);
 
     // `Engine::new` returns in microseconds having handed the load to a
     // worker; `wait_ready` is the part that takes the second.
@@ -655,11 +662,7 @@ pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc
     .await;
 
     match loaded {
-        Ok(Ok(())) => {
-            for model in &mut state.snapshot.lock().models {
-                model.state = DictateModelState::Ready;
-            }
-        }
+        Ok(Ok(())) => state.mark_all(DictateModelState::Ready),
         Ok(Err(error)) => state.fail(failure_for(&load_cfg, &error), failing_file(&error)),
         Err(source) => state.fail(DictateFailure::Other { message: source.to_string() }, None),
     }
@@ -895,6 +898,18 @@ impl DictateRuntime {
             .iter()
             .find(|take| &take.key == key && take.initiator == initiator)
             .map(|take| take.stop.clone())
+    }
+
+    /// The seat holding a live take, when one is: a recording still
+    /// capturing, or a submitted take still transcribing. A model swap is
+    /// refused while one is, and the refusal names this holder.
+    pub(crate) fn live_holder(&self) -> Option<String> {
+        let slot = self
+            .recordings
+            .keys()
+            .next()
+            .or_else(|| self.finishing.first().map(|take| &take.key))?;
+        Some(slot.display())
     }
 
     /// The live take a socket's frame belongs to, if `key` has one that is

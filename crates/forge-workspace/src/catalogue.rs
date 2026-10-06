@@ -44,6 +44,8 @@ pub struct DictateModelsSnapshot {
     pub rows: Vec<CatalogueRow>,
     /// Where the last model install got to.
     pub install: crate::install::InstallState,
+    /// Where the last model activation got to.
+    pub activate: crate::install::ActivateState,
     /// Every model downloaded from the feed on this machine, oldest first.
     pub installed: Vec<crate::install::InstalledModel>,
 }
@@ -399,6 +401,7 @@ impl crate::Workspace {
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
             install: self.dictate_install(),
+            activate: self.dictate_activate(),
             installed: self.installed_models(),
         }
     }
