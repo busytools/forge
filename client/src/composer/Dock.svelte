@@ -682,10 +682,9 @@
             aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
             onclick={() => {
               // **Pressing the mic is being in the row.** It counts as use
-              // whether or not the caret follows it - without it the words a
-              // take lands would go to the composer's draft, which is not
-              // drawn while a prompt holds the slot, so the phone's only way
-              // to dictate an answer would lose the answer.
+              // whether or not the caret follows it, so the caret comes back to
+              // the words row when the take's card leaves - which a touch screen
+              // cannot reach any other way.
               visited = true;
               onmic();
             }}
