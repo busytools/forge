@@ -7,7 +7,12 @@
 #
 # The base is the unprivileged nginx: it already runs as 101 and listens on
 # 8080, which are the two facts hub-modules' compose is written against.
-FROM nginxinc/nginx-unprivileged:1.31-alpine3.24
+# The digest pins the index the tag pointed at when this was written
+# (2026-10-06) - the tag itself moves along the minor line. To bump: read the
+# tag's `digest` from
+# https://hub.docker.com/v2/repositories/nginxinc/nginx-unprivileged/tags/<tag>
+# and replace both halves below.
+FROM nginxinc/nginx-unprivileged:1.31-alpine3.24@sha256:b9241c6e7b8e9a862f129d8d4199ab64b10390949a78bdd5603379b32c844083
 
 # curl fetches and jq reads the manifest; that is the poller's whole
 # dependency list. `--no-cache` keeps the index out of the layer.
