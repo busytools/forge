@@ -47,9 +47,9 @@ pub struct StackPaths {
 impl StackPaths {
     /// Resolve from the running app.
     ///
-    /// The stack is the bundle's own resource directory, and in a DEV build
-    /// - where no resources are copied - the checkout the binary was built
-    /// from. Both are places this build knows, never the directory the client
+    /// The stack is the bundle's own resource directory, and in a DEV build,
+    /// where no resources are copied, the checkout the binary was built from.
+    /// Both are places this build knows, never the directory the client
     /// happened to be launched from.
     ///
     /// The two directories are the app's own data directory, and their
