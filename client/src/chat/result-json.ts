@@ -23,6 +23,17 @@ export function parsedText(content: unknown): unknown {
   return null;
 }
 
+/** The first text block's own words, for a result that is a sentence. */
+export function firstText(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  for (const held of content) {
+    const block = held as { type?: unknown; text?: unknown } | null;
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+    return block.text;
+  }
+  return null;
+}
+
 /** `value` as a plain record, or an empty one for everything else. */
 export function obj(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};

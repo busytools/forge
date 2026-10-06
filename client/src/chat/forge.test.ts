@@ -349,6 +349,61 @@ describe('the slack card', () => {
     expect(card?.chips, 'one part is not worth a word').toEqual([]);
   });
 
+  it('cards a write from its input, whose result is only one word', () => {
+    // `slack__edit` and `slack__react` answer with a bare acknowledgement, so
+    // the subject comes from the input: the message's id, and the shortcode.
+    const edited = forgeCardOf(
+      'mcp__forge__slack__edit',
+      { conversation: 'C1', ts: '179.1', text: 'Deploy is green now.' },
+      result('updated'),
+    );
+    expect(edited?.title).toBe('updated a message in C1');
+    expect(edited?.pieces).toEqual([{ kind: 'quote', text: 'Deploy is green now.' }]);
+
+    const deleted = forgeCardOf(
+      'mcp__forge__slack__edit',
+      { conversation: 'C1', ts: '179.1', delete: true },
+      result('deleted'),
+    );
+    expect(deleted?.title).toBe('deleted a message in C1');
+    expect(deleted?.pieces, 'a deletion has no replacement body to draw').toEqual([]);
+
+    const reacted = forgeCardOf(
+      'mcp__forge__slack__react',
+      { conversation: 'C1', ts: '179.1', name: 'white_check_mark' },
+      result('reaction applied'),
+    );
+    expect(reacted?.title).toBe('reacted :white_check_mark: in C1');
+
+    const removed = forgeCardOf(
+      'mcp__forge__slack__react',
+      { conversation: 'C1', ts: '179.1', name: 'x', remove: true },
+      result('reaction applied'),
+    );
+    expect(removed?.title, 'removing is not reacting').toBe('removed :x: in C1');
+  });
+
+  it('lists pins by their text and bookmarks by their title, either fallback to the link', () => {
+    const pins = forgeCardOf(
+      'mcp__forge__slack__pins',
+      { conversation: 'C1', workspace: 'acme' },
+      result(JSON.stringify([{ ts: '1.0', user: 'U1', text: 'standup at 9' }])),
+    );
+    expect(pins?.title).toBe('pins in C1 \u{b7} acme');
+    expect(itemsOf(pins)[0]).toMatchObject({ text: 'standup at 9', when: 'U1' });
+
+    const bookmarks = forgeCardOf(
+      'mcp__forge__slack__bookmarks',
+      { conversation: 'C1', workspace: 'acme' },
+      result(JSON.stringify([{ id: 'B1', title: null, link: 'https://runbook' }])),
+    );
+    expect(bookmarks?.title).toBe('bookmarks in C1 \u{b7} acme');
+    expect(
+      itemsOf(bookmarks)[0],
+      'an untitled bookmark draws the link as its own words',
+    ).toMatchObject({ text: 'https://runbook' });
+  });
+
   it('names an unsubscribe by the workspace and the target that stopped', () => {
     const removed = subscription('41a2', {
       kind: 'conversation',

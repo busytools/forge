@@ -12,7 +12,7 @@
 
 import { untilOf } from '../session/view';
 import { forgeFamilyOf } from './families';
-import { obj, parsedText, str } from './result-json';
+import { firstText, obj, parsedText, str } from './result-json';
 
 /** One word on a forge row. The tone colours the word; the word carries it. */
 export interface ForgeChip {
@@ -408,6 +408,11 @@ export function forgeCardOf(
   // approval, where the wait is itself what the row must say.
   if (result === undefined) return pendingCard(verbOf(name), input);
   if (result.is_error === true) return null;
+  // A write whose result is one word: the subject is in the input, and the
+  // result only confirms that the write went through.
+  if (family === 'slack' && (verbOf(name) === 'edit' || verbOf(name) === 'react')) {
+    return firstText(result.content) === null ? null : acknowledgementCard(verbOf(name), input);
+  }
   const answer = parsedText(result.content);
   if (family === 'tasks') return tasksCard(verbOf(name), input, answer);
   if (family === 'cron') return cronCard(verbOf(name), answer);
@@ -470,7 +475,54 @@ function pendingCard(verb: string, input: unknown): ForgeCard | null {
       pieces: [],
     };
   }
+  if (verb === 'react') {
+    const channel = str(held, 'conversation');
+    const name = str(held, 'name');
+    if (channel === null || name === null) return null;
+    const removed = held['remove'] === true;
+    return {
+      title: `${removed ? 'removing' : 'reacting'} :${name}: in ${channel}`,
+      chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
   return null;
+}
+
+/**
+ * A Slack write whose own result is one word.
+ *
+ * The message it touched and the reaction it set are in the input, so the row
+ * is built from those: the result carries no subject at all. The input holds
+ * an id and never a name, so the title spells it as given.
+ */
+function acknowledgementCard(verb: string, input: unknown): ForgeCard | null {
+  const held = obj(input);
+  const channel = str(held, 'conversation');
+  if (channel === null) return null;
+  if (verb === 'edit') {
+    const dropped = held['delete'] === true;
+    const said = str(held, 'text');
+    return {
+      title: `${dropped ? 'deleted' : 'updated'} a message in ${channel}`,
+      chips: [],
+      figure: null,
+      pieces: dropped || said === null || said.trim() === '' ? [] : [{ kind: 'quote', text: said }],
+    };
+  }
+  const name = str(held, 'name');
+  if (name === null) return null;
+  const removed = held['remove'] === true;
+  const pieces: ForgePiece[] = [];
+  const ts = str(held, 'ts');
+  if (ts !== null) pieces.push({ kind: 'kv', pairs: [['ts', ts]] });
+  return {
+    title: `${removed ? 'removed' : 'reacted'} :${name}: in ${channel}`,
+    chips: [],
+    figure: null,
+    pieces,
+  };
 }
 
 function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
@@ -828,6 +880,30 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     }
     return {
       title: withWorkspace('conversations', str(obj(input), 'workspace')),
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length}`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'pins' || verb === 'bookmarks') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const row = obj(held);
+      const text = str(row, verb === 'pins' ? 'text' : 'title') ?? str(row, 'link');
+      if (text === null) continue;
+      items.push({
+        id: null,
+        state: null,
+        text,
+        tag: null,
+        when: verb === 'pins' ? str(row, 'user') : str(row, 'link'),
+      });
+    }
+    const where = str(obj(input), 'conversation');
+    const title = where === null ? verb : `${verb} in ${where}`;
+    return {
+      title: withWorkspace(title, str(obj(input), 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
       pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
