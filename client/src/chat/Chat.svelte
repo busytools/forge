@@ -710,9 +710,9 @@
    * The header's ask: reveal the latest compaction.
    *
    * Through the list's handle rather than the element, because the row may
-   * not be drawn - and the scroll it performs fires the same scroll event a
-   * reader's own wheel does, so the follow turns off exactly the way it does
-   * when anyone scrolls away from the foot. Nothing else has to remember it.
+   * not be drawn - and the jump it performs lands past the notch, so the
+   * follow turns off the way it does when anyone scrolls away from the foot.
+   * Nothing else has to remember it.
    *
    * **The cut is often older than what is loaded**, so the ask walks the
    * history: each page that lands re-runs this effect, and it stops asking
