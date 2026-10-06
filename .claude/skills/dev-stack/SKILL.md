@@ -89,7 +89,10 @@ history is the record.
    hold the forge pid; `$STACK/home/Library/Application Support/forge-tui/`
    carries a fresh `db.redb`; the log has no store-failure line; the first
    session connects ~3s in (the boot spawn is held until the account's usage
-   probe settles - that is normal).
+   probe settles - that is normal). **Confirm it is YOUR stack**: the build
+   stamp on the home (it rides the greeting too) is the invariant check, and
+   the roster's org is the cross-check - together they catch a wrong-forge
+   connect in one read.
 5. **The client** - judgment call per feature:
    - Browser tab (default): the dev client from the worktree - hot reload, the
      maintainer's own browser. Point it at the stack through its own connect
@@ -151,9 +154,14 @@ history is the record.
    read the boot log's stamp with that in mind.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
-4. Both default ports are the live forge's (8790/8787); a taken gateway port
-   is the worse collision - it holds the spawn gate shut. Allocate the next
-   free pair (8791/8788, then 8792/8789, ...) and keep one pair per stack.
+4. Both default ports are the live forge's (8790/8787). A taken gateway port
+   holds the spawn gate shut and is drawn with the port named; **a taken
+   SOCKET port fails invisibly**: the log carries
+   `server_socket_bind_failed` / "the socket is not serving" while the ports
+   read bound (the other stack's listeners) and the handshake answers you
+   with ANOTHER stack's roster. **lsof the pair before booting** and take
+   the next one; a bind-failure line is a collision to fix the pair for, not
+   to investigate. One pair per stack.
 5. `[web]` is refused by name; scratch configs use `[server]` + `[client]`.
 6. A fresh config dir has no trust record; the CLI then ignores the project's
    permission-allow entries and says so with the exact remedy
