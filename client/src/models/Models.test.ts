@@ -253,6 +253,23 @@ describe('the models page as it draws', () => {
     );
   });
 
+  /**
+   * **A catalogue that never landed is its own state.** With dictation on and
+   * no rows - a first enable offline, or the boot fetch still out - the
+   * discovery area drew "pick a family below" over ZERO chips, a pointer at
+   * nothing beside an Updates line already saying the feed could not be
+   * reached. The box and its helpers are for a feed that is here.
+   */
+  it('names an unread catalogue rather than offering nothing to browse', () => {
+    const host = open({ ...modelsWire, rows: [] });
+
+    expect(host.textContent).toContain('the catalogue has not been read yet');
+    expect(host.querySelector('.models .chips'), 'chips drew with no rows behind them').toBeNull();
+    expect(host.textContent, 'the page pointed at families that are not there').not.toContain(
+      'pick a family below',
+    );
+  });
+
   it('says so when nothing matches', () => {
     const host = open();
     const input = host.querySelector('input');

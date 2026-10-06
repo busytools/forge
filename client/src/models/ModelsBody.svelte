@@ -123,7 +123,7 @@
       <p class="note">
         a check reads the catalogue the transcribe.cpp runtime publishes - every variant with its
         sizes, licences, and the speeds and error rates its maintainers measured - and compares it
-        with the two models pinned here. It measures nothing on this machine.
+        with the models pinned here. It measures nothing on this machine.
       </p>
     {/if}
 
@@ -138,7 +138,7 @@
         <span class="detail">
           Proposed because it beats the model in use on both of the feed's own measurements - fewer
           errors on its English test set, and a faster realtime factor on an m4-max - and its
-          licence allows forge to ship it. Taking it means pinning it here and opening a pull
+          licence is not marked non-commercial. Taking it means pinning it here and opening a pull
           request; the bench that re-checks a candidate on your own recordings is not built yet.
         </span>
       </div>
@@ -173,7 +173,16 @@
       />
 
       <div aria-live="polite">
-        {#if query.trim() === ''}
+        {#if wire.rows.length === 0}
+          <!-- Enabled, and the feed has not answered: a first enable offline,
+               or the boot fetch still out. Its own state, because a box here
+               would answer every query with "no entry matches" and the
+               discovery chips would point at nothing. -->
+          <p class="note">
+            the catalogue has not been read yet &middot; the check above is what reads it, and its
+            rows land here
+          </p>
+        {:else if query.trim() === ''}
           <p class="note">
             type a name, or pick a family below &middot; the feed's whole catalogue is already here,
             so this reads nothing off the network

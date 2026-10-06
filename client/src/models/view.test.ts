@@ -277,9 +277,37 @@ describe('what can be searched', () => {
   });
 
   /**
-   * The feed names no dates, so "latest" is not a thing this page can say.
-   * What it does carry is its own measurement, so the recommendation is the
-   * fastest rows - and one the feed measured no speed for is not among them.
+   * **The number on a chip is the number the click will show.** `search`
+   * matches a substring, so a family whose NAME is a substring of a
+   * sibling's catches the sibling's rows too - the feed's `moonshine` and
+   * `moonshine-streaming` are the live pair - and a chip counting exact
+   * family membership would promise 14 and then draw 17. The count comes
+   * from the same predicate the box uses, so the two cannot disagree.
+   */
+  it('counts a chip the way the box will, substring siblings included', () => {
+    const withSibling = [
+      row({ variant: 'moonshine-a', family: 'moonshine', display_name: 'Moonshine A' }),
+      row({ variant: 'moonshine-b', family: 'moonshine', display_name: 'Moonshine B' }),
+      row({
+        variant: 'moonshine-streaming-a',
+        family: 'moonshine-streaming',
+        display_name: 'Moonshine Streaming A',
+      }),
+    ];
+
+    const moonshine = families(withSibling).find((entry) => entry.name === 'moonshine');
+    expect(moonshine?.count, 'the chip promised rows the click will not draw').toBe(
+      search(withSibling, 'moonshine').length,
+    );
+    expect(moonshine?.count).toBe(3);
+  });
+
+  /**
+   * The feed carries no date for a variant, and nothing this page reads
+   * carries one either (`SpeedRow` drops its `measured_on`), so "latest" is
+   * not something the recommendation can say. What the read does carry is
+   * the feed's own measurement, so the recommendation is the fastest rows -
+   * and one the feed measured no speed for is not among them.
    */
   it('recommends the fastest rows, and only ones the feed measured', () => {
     const measured = [

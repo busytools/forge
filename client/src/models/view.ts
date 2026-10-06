@@ -275,21 +275,29 @@ export interface Family {
  *
  * The box is blind on its own - a reader who does not already know a model
  * name has nothing to type - and the family is the feed's own word for what
- * a thing is. Every name returned here matches its own rows through
- * `search`, which is what makes a chip a way in rather than a label.
+ * a thing is.
+ *
+ * **Each count is `search`'s own answer for that name**, so the number on a
+ * chip is always the number the click will draw. Counting exact family
+ * membership instead would promise fewer rows than the click shows wherever
+ * one family's name is a substring of a sibling's - the feed's `moonshine`
+ * and `moonshine-streaming` are the live pair. A familyless row contributes
+ * no chip: its name matches nothing, so a chip for it would be a control
+ * that does nothing.
  */
 export function families(rows: CatalogueRow[]): Family[] {
-  const counts = new Map<string, number>();
-  for (const row of rows) counts.set(row.family, (counts.get(row.family) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([name, count]) => ({ name, count }))
+  const names = new Set(rows.map((row) => row.family).filter((name) => name !== ''));
+  return [...names]
+    .map((name) => ({ name, count: search(rows, name).length }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 /**
- * The fastest entries the feed measured, which is the only ranking it
- * carries: it names no dates, so "latest" is not a thing this page can say,
- * and a row with no measured speed is not a recommendation.
+ * The fastest entries the feed measured, which is the ranking this page can
+ * stand on: the feed's documents do carry `measured_on` dates, but nothing
+ * forge reads keeps one - `SpeedRow` drops them - so "latest" is not
+ * something this read can say, and a row with no measured speed is not a
+ * recommendation either.
  */
 export function fastest(rows: CatalogueRow[], take: number): CatalogueRow[] {
   return rows
