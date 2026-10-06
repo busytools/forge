@@ -265,13 +265,21 @@ function listBody(items: ForgeListItem[], empty: string): ForgePiece[] {
   return items.length === 0 ? [{ kind: 'empty', text: empty }] : [{ kind: 'list', items }];
 }
 
-/** The class subscriptions a list answer carries: the DM class, the mentions target. */
+/**
+ * The class subscriptions a list answer carries, each with the id it is
+ * removed by: no conversation row covers the DM class or the mentions target,
+ * so `slack__unsubscribe` cannot be reached for them from the list alone
+ * without the handle being on the card.
+ */
 function classSubscriptions(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
   for (const held of value) {
-    const target = str(obj(held), 'target');
-    if (target !== null && target.trim() !== '') out.push(target);
+    const row = obj(held);
+    const target = str(row, 'target');
+    if (target === null || target.trim() === '') continue;
+    const id = str(row, 'id');
+    out.push(id === null ? target : `${target} (${shortId(id)})`);
   }
   return out;
 }
@@ -454,9 +462,12 @@ export function forgeCardOf(
   if (result === undefined) return pendingCard(family, verbOf(name), input);
   if (result.is_error === true) return null;
   // A write whose result is one word: the subject is in the input, and the
-  // result only confirms that the write went through.
+  // result only confirms that the write went through. A result that said MORE
+  // than that word - which nothing emits today - would fall back to the raw
+  // text rather than being read for its first block alone.
   if (family === 'slack' && (verbOf(name) === 'edit' || verbOf(name) === 'react')) {
-    return firstText(result.content) === null ? null : acknowledgementCard(verbOf(name), input);
+    if (firstText(result.content) === null || trailingTexts(result.content).length > 0) return null;
+    return acknowledgementCard(verbOf(name), input);
   }
   const answer = parsedText(result.content);
   const card =
@@ -512,7 +523,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
 export function forgeRowTitle(
   name: string,
   input: unknown,
-  outcome: 'running' | 'failed' = 'running',
+  outcome: 'running' | 'failed',
 ): string | null {
   const family = forgeFamilyOf(name);
   if (family === null) return null;
@@ -707,15 +718,15 @@ function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     const comments = detail['comments'];
     if (number === null || !Array.isArray(comments)) return null;
     const chips: ForgeChip[] = [];
+    // The tally is counted from the comments here and read off the row's own
+    // fields for a list, so the two go through ONE order - a detail and a list
+    // of the same review must chip their states in the same sequence.
     const counts: Record<string, number> = {};
     for (const held of comments) {
       const status = str(obj(held), 'status') ?? 'unknown';
       counts[status] = (counts[status] ?? 0) + 1;
     }
-    for (const status of ['open', 'addressed', 'outdated', 'resolved']) {
-      const count = counts[status] ?? 0;
-      if (count > 0) chips.push({ text: `${count} ${status}`, tone: statusTone(status) });
-    }
+    chips.push(...tallyChips(counts));
     // Each comment is its own block, the way the mock draws one: the spot, the
     // code it was filed against, and the thread the exchange happened in.
     const blocks: ForgeComment[] = [];
@@ -742,7 +753,10 @@ function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     return {
       title: `review #${number}${tallyPhrase(chips) === '' ? '' : ` - ${tallyPhrase(chips)}`}`,
       chips,
-      figure: comments.length === 0 ? null : `${comments.length} comments`,
+      figure:
+        comments.length === 0
+          ? null
+          : `${comments.length} comment${comments.length === 1 ? '' : 's'}`,
       pieces,
     };
   }
@@ -985,7 +999,7 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
       title: workspace === null ? 'subscribed in Slack' : `subscribed in ${workspace}`,
       chips,
       figure: items.length === 0 ? null : `${items.length}`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces: listBody(items, 'nothing was subscribed'),
     };
   }
   if (verb === 'unsubscribe') {

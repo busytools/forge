@@ -89,14 +89,6 @@ function endOfSequence(text: string, at: number): number {
 }
 
 /**
- * `text` with the sequences a terminal would have obeyed taken out.
- *
- * Tab and newline survive, because they are layout the writer meant.
- * Carriage return does not: it is an instruction to overwrite a line the page
- * is not drawing line by line, so obeying it would need a terminal and
- * printing it would leave a control character in the text.
- */
-/**
  * A Slack id is not a name to print.
  *
  * The server's own heuristic, ported as it stands: an uppercase initial and
@@ -115,6 +107,14 @@ export function isSlackId(value: string): boolean {
   return rest.every((letter) => /^[A-Z0-9]$/.test(letter));
 }
 
+/**
+ * `text` with the sequences a terminal would have obeyed taken out.
+ *
+ * Tab and newline survive, because they are layout the writer meant.
+ * Carriage return does not: it is an instruction to overwrite a line the page
+ * is not drawing line by line, so obeying it would need a terminal and
+ * printing it would leave a control character in the text.
+ */
 export function stripEscapes(text: string): string {
   let out = '';
   let at = 0;

@@ -1137,6 +1137,7 @@
   details.leaf > summary .fam-chip.dim { color: var(--dim); }
   details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: none;
     font-family: var(--mono); font-size: var(--fs-data); }
+  details.leaf > summary .fam-fig + .arw { margin-left: 8px; }
   details.leaf > summary .fam-tail { color: var(--bad); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   details.leaf > summary .fam-tail::before { content: 'failed: '; color: var(--dim); }
@@ -1157,16 +1158,15 @@
     margin-top: 6px; }
   .fam-warnline { display: flex; gap: 9px; align-items: baseline; color: var(--warn);
     font-size: var(--fs-base); margin: 4px 0; }
-  .fam-warnline .fam-lb { color: var(--dim); font-family: var(--mono);
-    font-size: var(--fs-label); }
+  .fam-warnline .fam-lb { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--warn); flex: none; }
   .fam-list { display: grid; gap: 3px; margin: 5px 0 2px; }
-  .fam-item { display: flex; align-items: baseline; gap: 9px; min-width: 0;
-    font-size: var(--fs-base); color: var(--muted); }
-  .fam-item .fam-id { color: var(--dim); font-family: var(--mono);
-    font-size: var(--fs-label); flex: none; }
-  .fam-item .fam-state { font-family: var(--mono); font-size: var(--fs-label); flex: none; }
-  .fam-item .fam-state.info { color: var(--blue); }
+  .fam-item { display: flex; align-items: center; gap: 9px; font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--muted); }
+  .fam-item .fam-id { color: var(--dim); min-width: 34px; }
+  .fam-item .fam-state { flex: none; min-width: 82px; }
   .fam-item .fam-state.ok { color: var(--ok); }
+  .fam-item .fam-state.info { color: var(--accent); }
   .fam-item .fam-state.warn { color: var(--warn); }
   .fam-item .fam-state.bad { color: var(--bad); }
   .fam-item .fam-state.dim { color: var(--dim); }
@@ -1180,7 +1180,11 @@
   .fam-cm .fam-hd .fam-where { font-family: var(--mono); font-size: var(--fs-data);
     overflow-wrap: anywhere; }
   .fam-cm .fam-hd .fam-tag { margin-top: 0; }
-  .fam-cm .fam-hd .fam-chip { color: var(--muted); border: 1px solid var(--line); }
+  .fam-cm .fam-hd .fam-chip { color: var(--muted); }
+  .fam-cm .fam-hd .fam-chip.info { color: var(--blue); }
+  .fam-cm .fam-hd .fam-chip.ok { color: var(--ok); }
+  .fam-cm .fam-hd .fam-chip.bad { color: var(--bad); }
+  .fam-cm .fam-hd .fam-chip.warn { color: var(--warn); }
   .fam-cm .fam-ctx { font-family: var(--mono); font-size: var(--fs-data);
     color: var(--muted); padding: 7px 12px; margin: 0; white-space: pre-wrap;
     overflow-wrap: anywhere; }
@@ -1192,6 +1196,8 @@
   .fam-empty { display: flex; align-items: center; gap: 8px; padding: 7px 0 3px;
     color: var(--dim); font-size: var(--fs-base); }
   .fam-empty-glyph { width: 13px; height: 13px; flex: none; }
+  .fam-text { color: var(--muted); font-size: var(--fs-base); margin: 5px 0;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* ---------- the chevron arrives with the pointer ----------
      Hidden at rest, so a column of rows carries no marks it does not need;
@@ -1873,14 +1879,14 @@ docs: Render the message body into rows.</div>
             <summary><svg class="ic gl ok"><use href="#i-schedules"/></svg><span class="tn">schedules</span><span class="fam-fig">1 registered</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="fam-list">
-                <div class="fam-item"><span class="fam-sub">Morning summary</span><span class="fam-tag">0 9 * * *</span><span class="fam-when">next 8h 48m</span></div>
+                <div class="fam-item"><span class="fam-sub">Morning summary</span><span class="fam-tag">0 9 * * *</span><span class="fam-when">next in 8h</span></div>
               </div>
             </div>
           </details>
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-gotify"/></svg><span class="tn">watching notifications</span><span class="fam-chip">Backups, Alerts</span><span class="fam-chip">priority &#8805; 5</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="fam-meta"><span class="lb">subscription</span>7e29&#8230;</div>
+              <div class="fam-meta"><span class="lb">subscription</span>7e29&#8230;<span class="sep">&#183;</span><span class="lb">delivers</span>as a turn, waking this session</div>
             </div>
           </details>
           <details class="leaf">
@@ -2156,8 +2162,10 @@ docs: Render the message body into rows.</div>
           <details class="leaf inboundrow">
             <!-- A cron fire is titled by the SCHEDULE that fired it, read off
                  the same update the prompt arrives with; a fire whose frame
-                 the page never saw falls back to the prompt's first line. -->
+                 the page never saw titles by the prompt's first line, which is
+                 then the title and no tail. -->
             <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">Morning summary</span>
+              <span class="ev">summarise overnight CI and open PRs</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body"><div class="prose">
               <p>morning sweep</p></div></div>

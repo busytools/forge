@@ -2150,6 +2150,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .fam-item .fam-id { color: var(--dim); min-width: 34px; }
 .fam-item .fam-state { flex: none; min-width: 82px; }
 .fam-item .fam-state.ok { color: var(--ok); }
+.fam-item .fam-state.bad { color: var(--bad); }
 .fam-item .fam-state.info { color: var(--accent); }
 .fam-item .fam-state.warn { color: var(--warn); }
 .fam-item .fam-state.dim { color: var(--dim); }

@@ -142,8 +142,11 @@ describe('a forge call the page cannot dress', () => {
     const unreadable = named('mcp__forge__cron__list', [
       { id: 'c1', prompt: 'sweep', schedule: {} },
     ]);
-    expect(unreadable?.chips, 'an unreadable schedule still draws a word').toEqual([]);
-    expect(itemsOf(unreadable)[0]?.tag).toBe('scheduled');
+    expect(unreadable?.chips).toEqual([]);
+    expect(
+      itemsOf(unreadable)[0]?.tag,
+      'an unreadable schedule still draws a word, not a dropped entry',
+    ).toBe('scheduled');
   });
 });
 
@@ -151,7 +154,9 @@ describe('the tasks card', () => {
   it('names an update by the subject the echo carries, and says what moved', () => {
     const card = forgeCardOf(
       'mcp__forge__tasks__update',
-      { id: 't-1', status: 'in_progress' },
+      // One field with an underscore, which is the one the meta line's own
+      // spelling check turns on: the server's name, not a spaced-out version.
+      { id: 't-1', status: 'in_progress', active_form: 'Building' },
       result(JSON.stringify(RECORD)),
     );
     expect(card, 'the record reads as a card').not.toBeNull();
@@ -164,7 +169,10 @@ describe('the tasks card', () => {
     // and not its value: a fixed value here would pass in one zone and fail
     // in the next.
     const pairs = pairsOf(card);
-    expect(pairs[0], 'the patch the record cannot show').toEqual(['changed', 'status']);
+    expect(pairs[0], "the patch the record cannot show, in the server's own spelling").toEqual([
+      'changed',
+      'status, active_form',
+    ]);
     expect(pairs.slice(1, 3), "then the record's own facts").toEqual([
       ['owner', 'lead'],
       ['estimate', '2h'],
@@ -715,9 +723,17 @@ describe('the reads that draw a list or a fact', () => {
         JSON.stringify({
           conversations: [
             { id: 'C1', name: 'ops', kind: 'public', subscribed: true, subscription_ids: ['s1'] },
-            { id: 'C2', name: 'general', kind: 'public', subscribed: false, subscription_ids: [] },
+            // A DM's name falls back to the partner's user id, which is an id
+            // and never a channel to be dressed with a marker.
+            { id: 'D1', name: 'U0AE0CBJ77G', kind: 'im', subscribed: false, subscription_ids: [] },
           ],
-          subscriptions: [],
+          subscriptions: [
+            {
+              id: 'e5b1aaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+              workspace: 'acme',
+              target: 'direct messages',
+            },
+          ],
         }),
       ),
     );
@@ -728,7 +744,15 @@ describe('the reads that draw a list or a fact', () => {
       tag: 'public',
       state: { text: 'watching', tone: 'ok' },
     });
-    expect(itemsOf(card)[1]?.state, 'an unwatched conversation carries no mark').toBeNull();
+    expect(itemsOf(card)[1], 'a user id is left as the id it is').toMatchObject({
+      text: 'U0AE0CBJ77G',
+    });
+    // The class subscriptions cover no conversation row, and their ids are the
+    // only handles `slack__unsubscribe` takes for them: the card carries both.
+    expect(
+      pairsOf(card)[0],
+      'the class subscription draws with the handle it is removed by',
+    ).toEqual(['also watching', 'direct messages (e5b1\u{2026})']);
   });
 
   it('draws a Slack user as its own facts', () => {

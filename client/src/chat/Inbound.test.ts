@@ -47,8 +47,10 @@ const summaryWords = (body: string): string =>
 
 describe('the inbound delivery row', () => {
   it("renders a cron fire's own line rather than showing its marks", () => {
-    // **A cron fire's title IS its body's first line** (#1708), so it carries
-    // the prompt's markdown - drawn raw it showed the marks as themselves.
+    // **A cron fire whose schedule was not named titles by its prompt's first
+    // line** (#1708), so it carries the prompt's markdown - drawn raw it showed
+    // the marks as themselves. A fire the frame named is titled by the
+    // schedule instead, which is a name and not prose.
     const raw = '**nightly** sweep: re-run the `bench`';
     const marked = draw({ title: raw, body: `${raw}\nand then report` });
     expect(marked, 'emphasis renders').toContain('<strong>nightly</strong>');
@@ -63,8 +65,15 @@ describe('the inbound delivery row', () => {
   });
 
   it('draws a tail that adds to the title, and none that repeats it', () => {
-    // A cron fire: the fold makes the title the body's first line, so the tail
-    // would be the same sentence twice (Ved, 2026-10-03).
+    // A cron fire named by its schedule: the title is the schedule and the
+    // tail is the prompt, which is the one thing the row can add.
+    const fired = draw({ title: 'Morning summary', body: 'summarise overnight CI' });
+    expect(summaryWords(fired), 'the schedule leads').toContain('Morning summary');
+    expect(fired, 'and the prompt follows as the tail').toContain('class="ev"');
+    expect(summaryWords(fired), 'with the prompt in it').toContain('summarise overnight CI');
+
+    // A fire the frame never named: the fold makes the title the body's first
+    // line, so the tail would be the same sentence twice (Ved, 2026-10-03).
     const doubled = draw();
     expect(summaryWords(doubled), 'the fire leads with its prompt').toContain('the morning sweep');
     expect(doubled, 'and the same line is not drawn twice').not.toContain('class="ev"');
@@ -134,16 +143,16 @@ function sheets(): Array<[string, string]> {
 
 /**
  * **And the drawing shows the rule rather than only the sheet spelling it.**
- * The cron row on the session page carried the doubled title for as long as the
- * app did; a re-added tail there is what this fails on, since nothing else
+ * A cron fire is titled by its SCHEDULE when the frame named one, with the
+ * prompt as its tail - the shape the drawing has to carry, since nothing else
  * reads that markup.
  */
 describe("the drawing's own inbound rows", () => {
-  it('draws no tail on the cron row, whose title is its first line', () => {
+  it('titles the cron row by its schedule, with the prompt as the tail', () => {
     const rows = PAGE.match(/<details class="leaf inboundrow"[\s\S]*?<\/details>/g) ?? [];
     expect(rows.length, 'the drawing carries inbound rows').toBeGreaterThan(0);
-    const cron = rows.find((one) => one.includes('morning sweep'));
-    expect(cron, 'the cron row is drawn').toBeDefined();
-    expect(cron ?? '', 'no tail repeating the title').not.toContain('class="ev"');
+    const cron = rows.find((one) => one.includes('Morning summary'));
+    expect(cron, 'the cron row is drawn, by its schedule').toBeDefined();
+    expect(cron ?? '', 'with the prompt under it').toContain('class="ev"');
   });
 });
