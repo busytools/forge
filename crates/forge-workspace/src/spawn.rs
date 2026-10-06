@@ -2951,7 +2951,18 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_fresh_worker_is_keyed_by_the_id_it_runs_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        // A repo of this test's own, because it reads the worktree the reply
+        // names: the fixture project's gitness must not depend on where the
+        // suite runs, and a fixed home path is a git repo on one machine and
+        // a plain directory on a runner.
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+        write_forge_toml(dir.path(), &repo.path().to_string_lossy());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
