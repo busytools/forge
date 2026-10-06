@@ -435,13 +435,18 @@
     {#if conversation !== null}
       {@render conversation(conversationProps)}
     {:else if seat.waking}
-      <!-- The seat's own state, which this column owns: a seat nothing is
-           running behind says so rather than drawing an empty page. -->
+      <!-- The seat's own state, which this column owns: a lead is being
+           woken (the spawn this page dispatches on open), while a worker's
+           seat has no spawn coming and says so. -->
       <div class="conv">
-        <div class="hold off">
-          not running
-          <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
-        </div>
+        {#if slot.label === 'lead'}
+          <div class="hold"><span class="shimmer">waking up agent</span></div>
+        {:else}
+          <div class="hold off">
+            not running
+            <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
+          </div>
+        {/if}
       </div>
     {/if}
   </main>

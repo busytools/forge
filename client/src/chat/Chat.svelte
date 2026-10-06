@@ -960,13 +960,18 @@
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
   <div class="conv">
-    <!-- A seat with no session behind it. It claims nothing about a spawn:
-         this page cannot start one, and a line saying one is coming would be
-         a promise no code keeps. -->
-    <div class="hold off">
-      not running
-      <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
-    </div>
+    <!-- A seat the roster does not name. A LEAD here is being woken: its
+         page dispatches the spawn on open, so the ring carries a promise
+         the code keeps. A worker's seat has no spawn coming toward it -
+         only its lead can start it - and its line claims nothing. -->
+    {#if slot.label === 'lead'}
+      <div class="hold"><span class="shimmer">waking up agent</span></div>
+    {:else}
+      <div class="hold off">
+        not running
+        <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+      </div>
+    {/if}
   </div>
 {:else if held.refused !== null && held.turns.length === 0}
   <!-- A refusal with nothing drawn under it is the column in that state. With

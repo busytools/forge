@@ -269,9 +269,20 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the reader own words drew above it').toContain('go');
   });
 
-  it('draws the seat that has no session behind it as its own state', () => {
+  it('wakes a lead rather than drawing it as one nothing runs', () => {
+    // A lead's page dispatches the spawn on open, so this state is a wait
+    // with a keeper: the waking line sweeps rather than refusing.
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);
+
+    expect(drawn()).toContain('waking up agent');
+    expect(document.querySelector('.hold .shimmer'), 'the wake does not sweep').not.toBeNull();
+    expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
+  });
+
+  it('draws a seat that has no session behind it as its own state', () => {
+    const server = stub();
+    draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);
 
     expect(drawn()).toContain('not running');
     expect(drawn()).toContain('no model declared');
