@@ -73,7 +73,6 @@ function sections(body: string): string[] {
   return [...body.matchAll(/data-k="sec-([a-z ]+)"/g)].map((match) => match[1] ?? '');
 }
 
-const withMcp = (servers: SessionRecord['mcp']): SessionRecord => ({ ...record, mcp: servers });
 const withWork = (work: SessionRecord['work'], pr: SessionRecord['pr'] = null): SessionRecord => ({
   ...record,
   work,
@@ -98,14 +97,26 @@ describe('the inspector as it draws', () => {
   it('leads with git, above every other section', () => {
     const drawn = sections(
       draw({
-        record: withMcp({
-          servers: [{ name: 'forge', status: 'connected', tools: [] }],
-          error: null,
-        }),
+        record: {
+          ...record,
+          monitors: [
+            {
+              tool_use_id: 'm1',
+              task_id: null,
+              description: 'ci-watch',
+              command: 'gh run watch 18234567',
+              persistent: true,
+              timeout_ms: 0,
+              status: 'running',
+              output_file: null,
+              ended_at: null,
+            },
+          ],
+        },
       }),
     );
     expect(drawn[0]).toBe('git');
-    expect(drawn).toContain('mcp servers');
+    expect(drawn).toContain('monitors');
   });
 
   it('draws the branch and the pull request the record carries', () => {
@@ -145,14 +156,6 @@ describe('the inspector as it draws', () => {
     expect(body).toContain('ci-watch');
     expect(body).toContain('persistent');
     expect(body).toContain('gh run watch 18234567');
-  });
-
-  it('draws an empty MCP read as the failure it is, with the reason', () => {
-    draw({ record: withMcp({ servers: [], error: 'the CLI refused' }) });
-    openSection('mcp servers');
-    const body = drawn();
-    expect(body).toContain('failed');
-    expect(body).toContain('the CLI refused');
   });
 
   it('draws the tasks a project holds, in the order a person reads them', () => {

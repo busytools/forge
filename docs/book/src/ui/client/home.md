@@ -145,9 +145,10 @@ difference is the cost of holding a seat rather than re-reading it on
 every return, filed as #1439.
 
 Two things the home subject carries and this page does not draw are the
-schedules a project holds and the account a row chips. Both belong to
-surfaces that do not exist yet - the inspector's schedules section and the
-launchpad's account walk - and neither is a gap in this page.
+schedules a project holds and the account a row chips. Each is drawn
+elsewhere: the schedules on the session page's strip, whose schedules row
+keeps the seat's own set (a cron names the seat that created it), and the
+account on the launchpad's account walk. Neither is a gap in this page.
 
 ## The two widths
 

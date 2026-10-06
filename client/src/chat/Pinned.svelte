@@ -1,6 +1,8 @@
 <script lang="ts">
   import ConnectorsSegment from './ConnectorsSegment.svelte';
+  import McpSegment from './McpSegment.svelte';
   import ProcessesSegment from './ProcessesSegment.svelte';
+  import SchedulesSegment from './SchedulesSegment.svelte';
   import Strip from './Strip.svelte';
   import BrowserSegment from './BrowserSegment.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
@@ -31,7 +33,7 @@
       <Strip {info} />
       <span class="sg-fill"
         ><BrowserSegment {connection} /><SubagentSegment /><ProcessesSegment /><ConnectorsSegment
-        /></span
+        /><SchedulesSegment /><McpSegment /></span
       >
     </div>
   </div>

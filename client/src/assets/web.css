@@ -1067,6 +1067,10 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .ic.ok { color: var(--ok); }
 .sg-list .sg-it .ic.bad { color: var(--bad); }
 .sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
+/* A row that LEADS with its name: the accent name takes what is left and
+   elides, so a long key gives way instead of pushing the right figure out. */
+.sg-list .sg-it .nm.lead { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
@@ -1074,6 +1078,14 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    the check in the mark slot says why it is still here. */
 .sg-list .sg-it.settled .nm { color: var(--muted); }
 @media (pointer: coarse) { .sg-seg .sg-tog, .sg-list .sg-it { min-height: 44px; } }
+/* The status depth under a server row: the tools it offers and what backs it,
+   wrapping rather than eliding - the panel is where the detail lives now, so
+   a long tool list is the thing a reader came for. The strip is nowrap, so
+   the wrap has to be asked for here. */
+.sg-list .sg-sub { padding: 0 13px 7px 26px; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--muted); white-space: normal;
+  overflow-wrap: anywhere; }
+.sg-list .sg-sub.bad { color: var(--bad); }
 
 /* The one flash the reveal leaves on the row it lands on: a tint that arrives
    and leaves. Long and gentle - the reader is moving their eyes across the

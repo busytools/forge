@@ -56,8 +56,9 @@ const draw = (props: { wire?: HomeWire; slot?: SessionSlot } = {}): string =>
 /**
  * The `data-k` of every section the page drew, in the order it drew them.
  *
- * The space matters: one section is named `mcp servers`, and a class that
- * stops at the first word answers a narrower question than the one asked.
+ * A no-record server render draws none of them, which is the case below: the
+ * `data-k` names are the inspector's, and the page that draws the record's
+ * rows is reached over a socket.
  */
 function sections(body: string): string[] {
   return [...body.matchAll(/data-k="sec-([a-z ]+)"/g)].map((match) => match[1] ?? '');

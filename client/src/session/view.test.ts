@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
-import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
+import type { AgentRow, CronEntry, HomeWire, ProjectWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
@@ -12,6 +12,7 @@ import {
   fleetCount,
   gitSection,
   headerFacts,
+  mcpRows,
   mcpState,
   memoryLabel,
   monitorLabel,
@@ -20,8 +21,8 @@ import {
   railMark,
   type RailGroup,
   type RailProject,
-  schedulesSection,
   seatConnectorRows,
+  seatScheduleRows,
   seatState,
   tasksSection,
   untilOf,
@@ -476,51 +477,14 @@ describe('the git section', () => {
   });
 });
 
-describe('the inbox sections', () => {
-  it('says which of the two an empty MCP read is', () => {
-    expect(mcpState({ name: 'forge', status: 'failed', error: '  ' })).toBe('failed');
-    expect(mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' })).toBe(
-      'the CLI refused',
-    );
-    expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
-    expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
-  });
-});
-
-describe('the schedules section', () => {
+describe('the schedule countdown', () => {
   it('reads a time already past as due rather than counting into the past', () => {
-    expect(untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000)).toBe('in a minute');
+    expect(
+      untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000),
+      'a passed fire read as future',
+    ).toBe('due now');
     expect(untilOf({ secs_since_epoch: 1_700_003_600 }, 1_700_000_000_000)).toBe('in 1h');
     expect(untilOf(null, 0)).toBe('due now');
-  });
-
-  it('names a schedule by its description, else its prompt', () => {
-    const now = 1_700_000_000_000;
-    const view = schedulesSection(
-      [
-        {
-          id: 'c1',
-          project_name: 'proj',
-          kind: { Recurring: '0 9 * * *' },
-          prompt: 'sweep the deps\nand more',
-          description: 'deps sweep',
-          created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
-        },
-        {
-          id: 'c2',
-          project_name: 'proj',
-          kind: { Once: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
-          prompt: 'plugin audit\nand more',
-          created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
-        },
-      ],
-      now,
-    );
-    expect(view.rows.map((row) => row.k)).toEqual(['deps sweep', 'plugin audit']);
-    expect(view.rows[1]?.v).toBe('in 1h \u{b7} one-shot');
-    expect(view.summary).toBe('2');
   });
 });
 
@@ -818,6 +782,86 @@ describe('the dictation overrides', () => {
   });
 });
 
+describe('the MCP rows the strip draws', () => {
+  it('states the state, and leaves the reason to the row line beneath', () => {
+    expect(mcpState({ name: 'forge', status: 'failed', error: '  ' })).toBe('failed');
+    expect(
+      mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' }),
+      'the reason drew in the state cell as well as its own line',
+    ).toBe('failed');
+    expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
+    expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
+  });
+
+  it('carries the status detail a server row draws: tools, command, reason', () => {
+    const held = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: {
+        error: null,
+        servers: [
+          {
+            name: 'context7',
+            status: 'connected',
+            config: { type: 'stdio', command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+            tools: [
+              { name: 'query-docs', description: 'Ask the docs' },
+              { name: 'resolve-library-id' },
+            ],
+          },
+          {
+            name: 'forge',
+            status: 'failed',
+            error: ' the CLI refused ',
+            config: { type: 'http', url: 'https://mcp.example.test' },
+          },
+        ],
+      },
+    });
+
+    const rows = mcpRows(held);
+
+    expect(rows, 'one row per server').toHaveLength(2);
+    expect(rows[0], 'a connected server names its tools and its backing command').toMatchObject({
+      name: 'context7',
+      k: 'context7 \u{b7} session',
+      v: '2 tools',
+      tools: ['query-docs', 'resolve-library-id'],
+      command: 'npx -y @upstash/context7-mcp',
+      reason: null,
+      synthetic: false,
+    });
+    expect(rows[1], 'a failed server carries its reason and reaches its URL').toMatchObject({
+      name: 'forge',
+      k: 'forge \u{b7} session',
+      v: 'failed',
+      command: 'https://mcp.example.test',
+      reason: 'the CLI refused',
+    });
+  });
+
+  it('draws nothing for a session that reported nothing, and the failure for a read that failed', () => {
+    const bare = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: { error: null, servers: [] },
+    });
+    expect(mcpRows(bare), 'no servers and no failure: no rows at all').toEqual([]);
+    expect(mcpRows(null), 'a record that has not landed draws nothing').toEqual([]);
+
+    const refused = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: { error: 'the CLI refused', servers: [] },
+    });
+    const rows = mcpRows(refused);
+    expect(rows, 'an empty read that failed is a state of its own').toHaveLength(1);
+    expect(rows[0], 'and it draws as itself, with the reason').toMatchObject({
+      k: 'servers',
+      v: 'failed',
+      reason: 'the CLI refused',
+      synthetic: true,
+    });
+  });
+});
+
 describe("a seat's own connector rows", () => {
   const WORKER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'builder' };
 
@@ -1028,5 +1072,105 @@ describe("a seat's own connector rows", () => {
     expect(rows[1]?.value, 'an unconnected workspace reads on its row').toBe(
       'mentions anywhere \u{b7} mentions only \u{b7} not connected',
     );
+  });
+});
+
+describe("the project's schedule rows", () => {
+  const NOW = 1_700_000_000_000;
+  const cron = (over: Partial<CronEntry> = {}): CronEntry => ({
+    id: 'c-1',
+    project_name: 'proj',
+    kind: { Recurring: '0 9 * * *' },
+    prompt: 'sweep the rules',
+    description: 'rules sweep',
+    created_at: { secs_since_epoch: 1_699_000_000, nanos_since_epoch: 0 },
+    // 27 days past NOW: the countdown in the assertions below.
+    next_fire: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 },
+    ...over,
+  });
+
+  it('names a schedule by its description and states its countdown and kind', () => {
+    const home = withProject({ crons: [cron()] });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'one schedule').toHaveLength(1);
+    expect(rows[0], 'the description leads, the countdown and kind follow').toEqual({
+      id: 'c-1',
+      key: 'rules sweep',
+      value: 'in 27d \u{b7} recurring',
+    });
+  });
+
+  it("falls back to the prompt's first line, and reads a one-shot as one", () => {
+    // No description at all, which is the legacy shape the fallback is for.
+    const bare = cron({
+      id: 'c-2',
+      prompt: 'audit the plugins\nand then report',
+      // `Once` carries the instant, so it crosses as an object rather than a
+      // bare variant name.
+      kind: { Once: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 } },
+    });
+    delete bare.description;
+    const home = withProject({ crons: [bare] });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows[0]?.key, 'the first line of the prompt, not all of it').toBe('audit the plugins');
+    expect(rows[0]?.value, 'a one-shot is a one-shot').toBe('in 27d \u{b7} one-shot');
+  });
+
+  /**
+   * **A cron names the seat that created it** (`team_role`, absent for the
+   * lead), so the page keeps its own label's set - the same ownership rule
+   * the connector row applies.
+   */
+  it("keeps another seat's crons off this page, and this seat's own on it", () => {
+    const home = withProject({
+      crons: [cron(), cron({ id: 'c-w1', description: 'the worker sweep', team_role: 'w1' })],
+    });
+
+    const lead = seatScheduleRows(home, LEAD, NOW);
+    expect(
+      lead.map((row) => row.key),
+      "a worker's cron drew on the lead's page",
+    ).toEqual(['rules sweep']);
+
+    const worker = seatScheduleRows(home, { ...LEAD, label: 'w1' }, NOW);
+    expect(
+      worker.map((row) => row.key),
+      "the lead's cron drew on a worker's page",
+    ).toEqual(['the worker sweep']);
+  });
+
+  it('keeps two schedules reading the same words apart by their ids', () => {
+    const home = withProject({
+      crons: [cron(), cron({ id: 'c-9' })],
+    });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'both schedules draw').toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size, 'with distinct ids to key by').toBe(2);
+  });
+
+  it('reads only the seat project, whatever the order on the home', () => {
+    // The OTHER project comes first on purpose, so a lookup that took
+    // `projects[0]` would read the wrong schedules.
+    const home = withHome({
+      projects: [
+        {
+          ...project(),
+          project: { ...project().project, name: 'other', key: 'TestOrg-other' },
+          crons: [cron({ id: 'c-x', description: 'the other project' })],
+        },
+        { ...project(), crons: [cron()] },
+      ],
+    });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'one row, from the seat project').toHaveLength(1);
+    expect(rows[0]?.key, "another project's schedule drew on this seat").toBe('rules sweep');
   });
 });

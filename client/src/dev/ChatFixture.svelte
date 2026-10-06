@@ -1,9 +1,12 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
   import { connectors } from '../chat/connectors.svelte';
+  import { mcp } from '../chat/mcp.svelte';
   import { processes } from '../chat/processes.svelte';
+  import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import type { ServerMessage } from '../protocol';
+  import type { McpRow } from '../session/view';
   import { backgroundTaskFrom, processesFrom, subagentCardFrom } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -44,6 +47,10 @@
     background_tasks?: unknown[];
     /** The seat's own connector subscriptions, already in row shape. */
     connectors?: { kind: 'gotify' | 'slack'; id: string; key: string; value: string }[];
+    /** The project's schedules, already in row shape. */
+    schedules?: { id: string; key: string; value: string }[];
+    /** The session's MCP servers, already in row shape. */
+    mcp?: McpRow[];
   }
 
   /**
@@ -261,6 +268,12 @@
       // strip's third row reads this store, and nothing else here would fill
       // it.
       connectors.sync(page.connectors ?? null);
+      // The project's schedules, seeded the same way: the strip's fourth row
+      // reads this store, and nothing else here would fill it.
+      schedules.sync(page.schedules ?? null);
+      // The session's MCP servers, seeded the same way: the strip's fifth row
+      // reads this store, and nothing else here would fill it.
+      mcp.sync(page.mcp ?? null);
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

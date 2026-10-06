@@ -8,9 +8,9 @@
    * One inspector section: an icon, a name, a summary of what is behind it,
    * and the body it opens on.
    *
-   * `data-k` is the sheet's own handle on a section - the schedules rules read
-   * it - and it is the name the reader's open state is held against, which is
-   * why it is the section's name rather than an index.
+   * `data-k` is the sheet's own handle on a section - the page's tests read it
+   * to name each one - and it is the name the reader's open state is held
+   * against, which is why it is the section's name rather than an index.
    */
   let {
     name,
