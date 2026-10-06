@@ -361,6 +361,12 @@ client-release version:
     # client started inside that window would be replaced just as quietly.
     refuse_if_in_use
 
+    # The update tarball and its signature from any earlier build, removed so
+    # what the read-back below finds was produced by THIS build: a stale pair
+    # satisfies an existence check exactly as well as a fresh one.
+    rm -f client/src-tauri/target/release/bundle/macos/forge.app.tar.gz \
+        client/src-tauri/target/release/bundle/macos/forge.app.tar.gz.sig
+
     # `createUpdaterArtifacts` signs the app bundle's update tarball, so the
     # release key is required here the way the Android half requires its
     # keystore. Both halves of the keypair live outside the repo
@@ -389,6 +395,11 @@ client-release version:
         echo "[ERROR] the built client is version $got, expected {{version}}" >&2
         exit 1
     fi
+
+    # The CLI signs with whatever key the environment names and only warns
+    # when it is not the pinned one, so the pair is read back here - before
+    # anything is swapped in - the way the Android half reads its signer back.
+    ./scripts/check_updater_signature.py . {{version}}
 
     # Staged beside the target, and the old bundle moved aside rather than
     # deleted, so a failed copy leaves the installed client untouched and the

@@ -1040,9 +1040,11 @@ this fails quietly. The bundle also carries the update tarball the desktop
 updater installs from, signed with the minisign keypair under `~/.tauri/`
 that the client README documents (nothing in the repo) - losing that
 private key ends updates for every installed desktop, which would then
-need a manual reinstall onto a new key. It then stages the Android release
-APK, through `client-android-release`: arm64, release-signed from the local
-keystore the client README documents (nothing in the repo), at
+need a manual reinstall onto a new key. The signed pair is read back
+against the pinned pubkey before anything is swapped in, the way the
+Android half reads its APK's signer back. It then stages the Android
+release APK, through `client-android-release`: arm64, release-signed from
+the local keystore the client README documents (nothing in the repo), at
 `client/src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`,
 to attach when the tag is published. The Android half fails rather than
 skipping when its toolchain or keystore is missing, and reads the version,
