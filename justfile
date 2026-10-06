@@ -18,6 +18,16 @@ fmt-check:
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
+# The release scripts' own tests. `update_manifest.py` writes the one file
+# every installed client reads for updates, and nothing else in the gate
+# exercises it: a hash taken from the wrong archive, or a block dropped
+# outright, would otherwise ship silently. Stdlib python, like the Unicode
+# gate's own script.
+#
+# Run the release scripts' tests.
+script-tests:
+    python3 scripts/test_update_manifest.py
+
 # Rewrite files to match rustfmt.
 fmt:
     cargo fmt
@@ -802,7 +812,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check client-format client-lint client-typecheck client-test clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test clippy test-all doctest doc)
     verdict=""
 
     on_exit() {
@@ -1000,10 +1010,11 @@ release version: check-release check-feature-configs
 # Publish a tagged release: the assets the update path reads - the app tarball
 # and its signature, the arm64 APK, the web archive, and latest.json.
 #
-# Requires the tag to be on origin, because a GitHub release cannot exist for
-# a tag that is not (`--verify-tag` is the belt behind the check). Run it
-# alone to finish a release that failed after its tag was cut: push first
-# with `git push --follow-tags origin main`.
+# Requires the tag to be on origin. `gh release create` would otherwise make
+# one at the default branch head, so a release could appear for a commit
+# nothing was built from - this check and `--verify-tag` are what stop that.
+# Run it alone to finish a release that failed after its tag was cut: push
+# first with `git push --follow-tags origin main`.
 #
 # The signature is re-read against the pinned key here as well as in
 # `client-release`: the release is the last place a mismatched pair could
