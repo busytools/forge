@@ -335,6 +335,7 @@ describe('the forge card row', () => {
             figure: '1 free',
             pieces: [],
             meter: { fill: 7, of: 8 },
+            glyph: 'gauge',
           },
         }),
         k: 't11',
@@ -344,6 +345,7 @@ describe('the forge card row', () => {
     expect(drawn, 'the bar draws').toContain('fam-meter');
     expect(drawn, 'filled to the count against the cap').toContain('width: 88%');
     expect(drawn, 'with both numbers still stated in words').toContain('7 live');
+    expect(drawn, "the card's own mark, not the family's").toContain('href="#i-gauge"');
   });
 
   it('keeps the reason off every other failed row', () => {

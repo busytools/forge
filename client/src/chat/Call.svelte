@@ -242,6 +242,9 @@
   /** The proportion the card asks the row to meter, if it asks for one. */
   const meter = $derived(forge?.meter ?? null);
 
+  /** The row's mark: the card's own where it named one, else its family's. */
+  const glyph = $derived(forge?.glyph ?? iconOf(call.row));
+
   /**
    * Whether the row's text brightens, which is the narrower condition the
    * group's own rule uses: a call that has a frame in hand. A dispatch takes
@@ -310,7 +313,7 @@
   data-sg={card?.dispatch_id}
 >
   <summary>
-    <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
+    <Icon name={card === undefined ? glyph : 'subagents'} class={`gl${shownTone}`} />
     {#if card !== undefined && card.failed}
       <!-- A shape, not the glyph's tint alone: a failed instance and a clean
            one must not differ by colour only on a closed row - and the cross
@@ -463,7 +466,7 @@
          failed forge call carries no card, so its reason draws below the way
          every failure draws. -->
     <div class="body">
-      <Forge card={call.forge} glyph={iconOf(call.row)} />
+      <Forge card={call.forge} {glyph} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">

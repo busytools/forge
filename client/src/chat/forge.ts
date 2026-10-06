@@ -58,6 +58,12 @@ export interface ForgeCard {
    * the row, where a failed CALL says its reason there too.
    */
   tail?: { text: string; tone: 'warn' | 'bad' } | null;
+  /**
+   * The mark this row draws instead of its family's, for a card whose subject
+   * is not the family's: a capacity reads as a gauge, not as the worker glyph
+   * every other agents row carries.
+   */
+  glyph?: string | null;
 }
 
 /**
@@ -731,6 +737,7 @@ function capacityCard(answer: unknown): ForgeCard | null {
     figure: available === null ? null : `${available} free`,
     pieces: pairs.length === 0 ? [] : [{ kind: 'kv', pairs }],
     meter: { fill: live, of: cap },
+    glyph: 'gauge',
   };
 }
 
