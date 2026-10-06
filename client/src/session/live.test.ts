@@ -359,22 +359,26 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * **The count is the property.** A seat's subscription belongs to the client
-   * rather than to the page showing it, so a visit, a leave and a return is
-   * ONE subscribe and no unsubscribe - where a subscription owned by the page
-   * makes a subscribe and an unsubscribe on every leg. Everything else here is
-   * what that buys; this is the number it is bought with.
+   * **The count is the property, and it is a pair per visit.** The
+   * subscription follows the page - a held one reads as a SHOWING seat to
+   * the server, and showing spends the marks a seat earns - so a visit, a
+   * leave and a return is a subscribe, an unsubscribe and a subscribe. What
+   * the client keeps is the record, which is what the return draws from.
    */
-  it('subscribes a seat once across a visit, a leave and a return', async () => {
+  it('subscribes on each visit and gives the seat back between them', async () => {
     await open(sessionFixture);
     expect(seatSubscribes(), 'precondition: the first visit subscribed the seat').toBe(1);
 
     await leave();
+    // The leave sends its unsubscribe over a real socket, so the frame has
+    // a hop to make before the server has it.
+    await settle();
+    expect(server?.gone.length, 'the leave took the seat away from the socket').toBe(1);
+
     revisit();
     await settle();
 
-    expect(seatSubscribes(), 'the return subscribed the seat a second time').toBe(1);
-    expect(server?.gone, 'the leave took the seat away from the socket').toEqual([]);
+    expect(seatSubscribes(), 'the return subscribed the seat again').toBe(2);
   });
 
   /**
@@ -413,7 +417,10 @@ describe('the session page over a socket', () => {
       server?.received[1]?.answering,
       'the escalation did not declare the answering role',
     ).toBe(true);
-    expect(server?.gone, 'the escalation gave a subscription back').toEqual([]);
+    // The leave between the visits gave the seat back (the subscription
+    // follows the page), and the escalation is the return's own subscribe -
+    // so the one unsubscribe here is the leave's, not the escalation's.
+    expect(server?.gone.length, 'the escalation gave a subscription back of its own').toBe(1);
   });
 });
 
@@ -877,29 +884,25 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * **A page leaving a seat is the page leaving, not the seat ending.** The
-   * record and the frames arriving after the reader has gone stay with the
-   * seat, which is the whole change: a subscription owned by the page re-reads
-   * the seat on the way back in, and one owned by the client draws what it
-   * held.
+   * **A page leaving gives its subscription back, and the record it held
+   * stays.** A held subscription reads as a SHOWING seat to the server, and
+   * showing spends every mark the seat earns - the failure mark and the
+   * diamond both - so the subscription follows the page while the record
+   * stays for the return to draw until the return's own subscribe answers
+   * with the whole seat.
    */
-  it('keeps the seat after the last reader has gone', () => {
+  it('gives the subscription back when the last reader leaves, keeping the record', () => {
     const connection = drivable();
     const away = watch(connection);
     away.land(snapshotOf(LEAD));
     away.stop();
-    const asked = connection.reads();
-
-    connection.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(connection.unsubscribes(), 'the leave gave the seat back').toBe(1);
 
     const back = watch(connection);
-    expect(
-      back.read().wire?.conversation.turns,
-      'a frame that landed while nobody was showing the seat was lost',
-    ).toHaveLength(1);
-    expect(connection.reads(), 'the return asked the server for the seat again').toBe(asked);
-    expect(connection.subscribes(), 'the return subscribed the seat a second time').toBe(1);
+    expect(connection.subscribes(), 'and the return subscribed it again').toBe(2);
+    expect(back.read().wire, 'the held record draws until the answer lands').not.toBeNull();
     back.stop();
+    expect(connection.unsubscribes(), 'the second leave gives it back too').toBe(2);
   });
 
   /**
