@@ -172,6 +172,67 @@ names and only warns when that is not the pinned one, so
 `tauri.conf.json`'s pubkey and the signed version with the release's, the way
 `client-android-release` reads the APK's signer back.
 
+A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
+APK, the web archive, and `latest.json` - the manifest all three halves read.
+`scripts/update_manifest.py` writes the manifest with the `.sig`'s content
+(only its trailing newline trimmed, because the plugin base64-decodes the
+value whole), the web archive's sha256, and the release URLs; the `android`
+and `web` blocks sit at the top level rather than inside `platforms`, because
+every `platforms` entry must carry both a `url` and a `signature` or the
+whole file fails to parse. `just publish <version>` creates the release for a
+tag already on origin, and `just release` runs it itself as its last step.
+
+The phone updates from the same manifest. Its top-level `version` is what the
+app compares against its own, and the `android` block beside `platforms`
+carries the APK's `url` (the desktop parser ignores that key). The download
+is checked before it can reach the installer - its signer against this
+install's own signer, which is the release keystore's on a release build and
+is exactly the identity the system installer checks anyway, and its
+`versionName` against the manifest's version. A file that fails is deleted
+rather than reused; a file that passes is kept in the cache, so handing it to
+the installer again is a tap with no second download. `REQUEST_INSTALL_PACKAGES`
+is what the handoff needs, the installer prompt is the confirmation, and no
+silent path exists for a sideloaded app. The Android side is
+`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt` plus the manifest
+permission, both project source that `tauri android init` would regenerate
+away - re-apply them the way the section below describes.
+
+## The web image
+
+The same build, served to browsers: a client-only image under `client/docker/`
+that carries the built `dist/` and serves it from a volume. There is no server
+half in it - a page connects to a forge somewhere else.
+
+```sh
+npm --prefix client run build
+docker build -f client/docker/Dockerfile -t forge-web client
+docker run -p 8080:8080 -v forge-web:/srv/forge-web forge-web
+```
+
+The image ships with the build inside it, so an empty volume is seeded on
+first start. A small poller then keeps the volume at the published release:
+it reads the same `latest.json` every other half reads, takes the `web`
+block's version, url and sha256, verifies the archive before extracting it,
+and flips a `current` symlink - an update lands on the next request and
+nothing ever restarts. A failed poll is not fatal; the container keeps
+serving what it has. The manifest is written beside the app, and the page
+reads it same-origin to draw which build it is serving and what is published.
+
+`Cache-Control: no-cache` plus an ETag is a rule, not a default: a swapped
+build must not hide behind a cache. It is pinned in `docker/nginx.conf` and
+in `docker/test_serving.sh`, which runs against the built image;
+`docker/test_poller.sh` pins the poller's swap, its same-version skip and its
+refusal of an archive that does not match the manifest's sha256.
+
+The image is published to `ghcr.io/busytools/forge-web` on a release tag,
+under `v<version>` and a moving `latest`. The org's packages start private
+and a workflow token cannot change that, so the first publish needs one
+manual step before an unauthenticated pull works: the package's settings
+(Package settings -> Change visibility) set to public.
+
+One poller per volume: two would fight over the same symlink and staging
+directory, and the one-container contract is the shape this ships in.
+
 ## The Android target
 
 The same shell builds for Android through Tauri's own CLI. It wants the
@@ -193,12 +254,14 @@ genuinely cannot.
 
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
-Gradle files are project source rather than build output, so its three
-local edits - the manifest's mic permissions, the activity's back handling
-and the release signing block in `app/build.gradle.kts` - survive a clean
-clone. Re-running `tauri android init` overwrites them, so re-apply them
-after one. The debug APK is one command, and it builds the frontend first
-the same way the desktop build does:
+Gradle files are project source rather than build output, so its four
+local edits - the manifest's mic permissions and its
+`REQUEST_INSTALL_PACKAGES`, the activity's back handling, the update plugin
+(`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and the release
+signing block in `app/build.gradle.kts` - survive a clean clone. Re-running
+`tauri android init` overwrites them, so re-apply them after one. The debug
+APK is one command, and it builds the frontend first the same way the
+desktop build does:
 
 ```sh
 npm run tauri -- android build --debug --apk --ci
@@ -217,8 +280,8 @@ missing from the manifest denies the whole request.
 
 `just release <version>` stages a release-signed APK at
 `src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`, and
-`just client-android-release <version>` runs that half alone - attach the
-file to the GitHub release when the tag is published. Release builds sign
+`just client-android-release <version>` runs that half alone; the release's
+publish step attaches the file. Release builds sign
 with a keystore at `~/.android/forge-release.keystore`, minted once:
 
 ```sh

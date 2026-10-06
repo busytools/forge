@@ -49,11 +49,30 @@ describe('checkForUpdate', () => {
 });
 
 describe('installUpdate', () => {
-  it('asks the shell to install the found update', async () => {
-    mockInvoke.mockResolvedValue(undefined);
+  it('asks the shell to install the found update, and answers the stage that finishes it', async () => {
+    mockInvoke.mockResolvedValue('restart');
 
-    await installUpdate();
+    await expect(installUpdate()).resolves.toBe('restart');
     expect(mockInvoke).toHaveBeenCalledWith('install_update');
+  });
+
+  it('carries the phone installer stage through', async () => {
+    mockInvoke.mockResolvedValue('install');
+
+    await expect(installUpdate()).resolves.toBe('install');
+  });
+
+  /**
+   * The one place the stage is narrowed, and it is loud: a value with no
+   * words would otherwise become a restart control the platform answers with
+   * nothing.
+   */
+  it('refuses a stage it has no words for', async () => {
+    mockInvoke.mockResolvedValue('something-else');
+
+    await expect(installUpdate()).rejects.toThrow(
+      'the shell answered an unknown update stage: something-else',
+    );
   });
 
   it('propagates a failed install for the surface to draw', async () => {

@@ -1017,11 +1017,14 @@ them:
 
 ## Releases
 
-`just release <version>` bumps the workspace version and the client's own
-manifest to the same number, commits and tags them together, then installs
-the server binary first, through `install` (the same `scripts/install.sh`
-`just install` runs), and the client over `/Applications/forge.app`. One
-number and one tag name both halves.
+`just release <version>` is the whole release, and running it is the
+maintainer's act: it bumps the workspace version and the client's own
+manifest to the same number, commits and tags them together, installs the
+server binary first, through `install` (the same `scripts/install.sh`
+`just install` runs), installs the client over `/Applications/forge.app`,
+stages the Android release APK and the web archive, then pushes `main` with
+the tag and publishes the GitHub release with every asset the update path
+reads. One number and one tag name every half.
 
 The server install goes first, so the client's refusal - the one that
 names `just client-release` as its recovery - cannot leave the binary
@@ -1029,8 +1032,11 @@ behind. It is unconditional and fails rather than skipping: an install
 that cannot complete aborts the recipe with the tag cut and no OK line,
 and each half re-runs alone with the tree still at the tag (`just
 install`, `just client-release <version>`,
-`just client-android-release <version>`), while a fresh `just release`
-refuses on the existing tag.
+`just client-android-release <version>`, `just client-web-release
+<version>`); a release that failed after its tag was cut finishes with
+`git push --follow-tags origin main` and `just publish <version>`, while a
+fresh `just release` refuses on the existing tag. The push and the publish
+come last, because they are the only irreversible steps.
 
 The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
@@ -1042,15 +1048,19 @@ that the client README documents (nothing in the repo) - losing that
 private key ends updates for every installed desktop, which would then
 need a manual reinstall onto a new key. The signed pair is read back
 against the pinned pubkey before anything is swapped in, the way the
-Android half reads its APK's signer back. It then stages the Android
-release APK, through `client-android-release`: arm64, release-signed from
-the local keystore the client README documents (nothing in the repo), at
-`client/src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`,
-to attach when the tag is published. The Android half fails rather than
-skipping when its toolchain or keystore is missing, and reads the version,
-the ABI and the signer back off the built APK, so one that never built, or
-was signed by anything else, cannot read as a released half. Pushing a tag
-and cutting a release stay the maintainer's call, and `just check-release`
+Android half reads its APK's signer back. `client-android-release` then
+stages the release APK: arm64, release-signed from the local keystore the
+client README documents (nothing in the repo), at
+`client/src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`.
+It fails rather than skipping when its toolchain or keystore is missing,
+and reads the version, the ABI and the signer back off the built APK, so
+one that never built, or was signed by anything else, cannot read as a
+released half. `client-web-release` stages the web archive at the bundle
+root, and then `publish` writes `latest.json` - the manifest the desktop,
+the phone and the web half each read - and creates the release with the
+five assets. The tag push also triggers the image workflow, which builds
+the web client's image from the same tree and publishes it to ghcr under
+the release version and `latest`. `just check-release`
 and `just check-feature-configs` gate the recipe because `cargo install`
 builds in release mode and would otherwise find the error after the tag
 exists. The second is the one that compiles the configuration `install.sh`

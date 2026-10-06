@@ -24,7 +24,7 @@ afterEach(() => {
 describe("the home header's update line", () => {
   it('installs from the available line, and the restart line finishes it', async () => {
     updateState.set({ stage: 'available', version: '9.9.9' });
-    mockInstall.mockResolvedValue(undefined);
+    mockInstall.mockResolvedValue('restart');
     mockRestart.mockResolvedValue(undefined);
 
     const target = document.createElement('div');
@@ -49,9 +49,30 @@ describe("the home header's update line", () => {
     }
   });
 
+  it('hands the update to the installer again from its line, without restarting', async () => {
+    updateState.set({ stage: 'install', version: '9.9.9' });
+    mockInstall.mockResolvedValue('install');
+
+    const target = document.createElement('div');
+    document.body.append(target);
+    const app = mount(Home, { target, props: { wire: homeWire } });
+    try {
+      target.querySelector('button.upd')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      await vi.waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+      expect(
+        mockRestart,
+        'the install line restarted instead of installing',
+      ).not.toHaveBeenCalled();
+    } finally {
+      await unmount(app);
+      target.remove();
+    }
+  });
+
   it('retries an install from the failed line, and nothing restarts', async () => {
     updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the download failed' });
-    mockInstall.mockResolvedValue(undefined);
+    mockInstall.mockResolvedValue('restart');
 
     const target = document.createElement('div');
     document.body.append(target);

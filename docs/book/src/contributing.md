@@ -11,8 +11,9 @@ pointers.
 just check
 ```
 
-`cargo fmt --check`, the Unicode punctuation gate, the client's Prettier
-check, ESLint, `svelte-check` and `tsc --noEmit` and then its vitest run,
+`cargo fmt --check`, the Unicode punctuation gate, the release scripts'
+tests, the client's Prettier check, ESLint, `svelte-check` and
+`tsc --noEmit` and then its vitest run,
 clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
 minus its `cargo check --release` and feature-configs jobs. Green before
@@ -26,7 +27,9 @@ The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
 punctuation gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-check` builds the shipping configuration and `just
-client-tauri-bundle` adds the bundles.
+client-tauri-bundle` adds the bundles. `just client-android-check`
+compiles the Kotlin half and runs its unit tests, because nothing else
+reaches that code; it needs the Android SDK and a JDK.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later

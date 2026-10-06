@@ -2,7 +2,7 @@
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import Row from '../components/Row.svelte';
-  import { PROTOCOL_VERSION } from '../protocol';
+  import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
   import { countsOf, homeView } from './view';
@@ -73,10 +73,21 @@
         {' \u{b7} '}<button class="upd" onclick={restart}
           >client v{$updateState.version} ready - restart to finish</button
         >
+      {:else if $updateState.stage === 'install'}
+        {' \u{b7} '}<button class="upd" onclick={install}
+          >client v{$updateState.version} ready - install it</button
+        >
       {:else if $updateState.stage === 'failed'}
         {' \u{b7} '}<button class="upd" onclick={install} title={$updateState.detail}
           >client v{$updateState.version} - update failed, retry</button
         >
+      {:else if $updateState.stage === 'web'}
+        <!-- The browser build names itself and, when the image it was served
+             with carries a manifest naming a newer release, that release -
+             text rather than a control, because the next load carries it. -->
+        {' \u{b7} '}client v{CLIENT_VERSION}
+        {#if $updateState.latest}{' \u{b7} '}<span class="upd">latest v{$updateState.latest}</span
+          >{/if}
       {/if}
     </div>
     <div class="totals">

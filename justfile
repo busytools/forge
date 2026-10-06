@@ -18,6 +18,16 @@ fmt-check:
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
+# The release scripts' own tests. `update_manifest.py` writes the one file
+# every installed client reads for updates, and nothing else in the gate
+# exercises it: a hash taken from the wrong archive, or a block dropped
+# outright, would otherwise ship silently. Stdlib python, like the Unicode
+# gate's own script.
+#
+# Run the release scripts' tests.
+script-tests:
+    python3 scripts/test_update_manifest.py
+
 # Rewrite files to match rustfmt.
 fmt:
     cargo fmt
@@ -326,6 +336,47 @@ client-tauri-bundle: vendor-browser-stack
 vendor-browser-stack:
     ./scripts/vendor_browser_stack.sh
 
+
+# The Android half's own gate. Neither `just check` nor `client-tauri-check`
+# reaches it: the shell crate is its own workspace root, and the Kotlin lives
+# in the Gradle project, so without this the update plugin and its version
+# compare are compiled only at release time. The Kotlin compile and its unit
+# tests need the SDK and a JDK; a device and the release keystore are not.
+#
+# The target has to be installed (`rustup target add aarch64-linux-android`)
+# for the shell check.
+client-android-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    sdk=""
+    for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" /opt/homebrew/share/android-commandlinetools; do
+        [ -n "$candidate" ] || continue
+        if [ -d "$candidate/platforms" ] || [ -d "$candidate/ndk" ]; then
+            sdk="$candidate"
+            break
+        fi
+    done
+    if [ -z "$sdk" ]; then
+        echo "[ERROR] no Android SDK found - set ANDROID_HOME, or install one (client/README.md, The Android target)" >&2
+        exit 1
+    fi
+    if ! command -v java >/dev/null 2>&1; then
+        echo "[ERROR] no java on PATH - the Kotlin compile needs a JDK 17 or newer" >&2
+        exit 1
+    fi
+    export ANDROID_HOME="$sdk"
+
+    # The gradle glue (tauri.settings.gradle, app/tauri.build.gradle.kts,
+    # .tauri/) is gitignored and only the CLI writes it, so a fresh clone has
+    # none of it and gradle alone dies at settings evaluation. The CLI's own
+    # build generates it (and compiles the Kotlin and the Rust); the unit
+    # tests then run alone, because a build success prints no test count.
+    npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
+    # Universal is the variant `--target aarch64` builds (the release APK too).
+    (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
+    RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
+
 # Bundle the client as an app and install it over /Applications/forge.app.
 # It does not bump anything, so it can be re-run after a failed build -
 # while no source has changed since the tag, which is what records the
@@ -615,6 +666,54 @@ client-android-release version:
     cp "$built" "$out/forge-{{version}}-arm64.apk"
     echo "[OK] staged the Android release: $out/forge-{{version}}-arm64.apk (arm64, release-signed)"
 
+# The third staged half: the web build the hub image serves. Its contents sit
+# at the archive's root, so the image's puller extracts it straight into the
+# volume it serves from, and the manifest's sha256 is what the puller trusts.
+#
+# Fails rather than skipping when the build produced no dist: a release whose
+# manifest names a web archive that was never built is a web image that
+# cannot update.
+#
+# Stage the web release archive.
+client-web-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    npm --prefix client run build
+
+    dist=client/dist
+    if [ ! -e "$dist/index.html" ]; then
+        echo "[ERROR] the web build produced no dist at $dist" >&2
+        exit 1
+    fi
+
+    out=client/src-tauri/target/release/bundle
+    mkdir -p "$out"
+    tar -C "$dist" -czf "$out/forge-web-{{version}}.tar.gz" .
+    echo "[OK] staged the web release: $out/forge-web-{{version}}.tar.gz"
+
+# The web image's own gate. Neither `just check` nor the cargo jobs reach any
+# of it: the scripts run inside the image, and the image workflow builds and
+# exercises it on a pull request that touches client/docker. This is the same
+# pair of scripts for a local run - the poller test wants jq, curl and
+# python3, and the image half wants docker, so a machine without a daemon is
+# told what did not run rather than being told a pass.
+#
+# Run the web image's checks.
+web-image-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ./client/docker/test_poller.sh
+
+    if ! docker info > /dev/null 2>&1; then
+        echo "[WARN] no docker daemon - the image build and its serving test did not run" >&2
+        exit 0
+    fi
+    npm --prefix client run build
+    docker build -f client/docker/Dockerfile -t forge-web client
+    ./client/docker/test_serving.sh forge-web
+
 # Run the app: the debug webview over the Vite dev server, with a frontend edit
 # reloading into the open window. Nothing is installed and no disk image is
 # produced - `client-tauri-check` is the one that builds what ships.
@@ -751,7 +850,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check client-format client-lint client-typecheck client-test clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test clippy test-all doctest doc)
     verdict=""
 
     on_exit() {
@@ -880,21 +979,22 @@ install-no-perf:
 remove-cert:
     ./scripts/remove-cert.sh
 
-# Does NOT push - that's gated per CLAUDE.md and stays explicit.
-# Requires cargo-edit (`cargo install cargo-edit`) for `cargo set-version`.
-# Gates on check-release and check-feature-configs because the ordering
-# is what turns a caught error into a public one: `cargo install` builds
-# release, and it runs after this recipe has already tagged. The second
-# is the one that predicts the install - `check-release`'s
+# The maintainer's own act, start to finish: it pushes and publishes as well
+# as builds. Requires cargo-edit (`cargo install cargo-edit`) for
+# `cargo set-version`. Gates on check-release and check-feature-configs
+# because the ordering is what turns a caught error into a public one:
+# `cargo install` builds release, and it runs after this recipe has already
+# tagged. The second is the one that predicts the install - `check-release`'s
 # `--all-features` cannot, since it enables the test-only features the
 # install build leaves off.
 # Usage: `just release 0.17.0`
 #
-# One number names both halves: this bumps the workspace and the client's
-# own manifest to `version`, commits and tags them together, and only then
-# installs the server binary, through `install`, and the client, through
-# `client-release`, and stages the Android APK, through
-# `client-android-release`.
+# One number names every half: this bumps the workspace and the client's own
+# manifest to `version`, commits and tags them together, then installs the
+# server binary, through `install`, installs the client, through
+# `client-release`, and stages the Android APK and the web archive, through
+# `client-android-release` and `client-web-release`. The push and the publish
+# come last, because they are the only irreversible steps.
 #
 # The server install goes first, so the client's refusal - the one that
 # names `just client-release` as its recovery - cannot leave the binary
@@ -902,10 +1002,12 @@ remove-cert:
 # build that cannot produce the binary aborts the recipe with the tag cut
 # and no OK line, so the server cannot be left behind silently. Each half
 # re-runs alone (`just install`, `just client-release <version>`,
-# `just client-android-release <version>`), while re-running
-# `just release` refuses on the existing tag.
+# `just client-android-release <version>`, `just client-web-release
+# <version>`), a release that failed after its tag was cut finishes with
+# `git push --follow-tags origin main` and `just publish <version>`, and
+# re-running `just release` refuses on the existing tag.
 #
-# Cut a release: bump the workspace and client versions, commit, tag, install the server binary and the client, stage the APK.
+# Cut a release: bump, commit, tag, install, stage, push, publish.
 release version: check-release check-feature-configs
     @if ! cargo set-version --help >/dev/null 2>&1; then \
         echo "[ERROR] cargo set-version not available - run: cargo install cargo-edit" >&2; \
@@ -935,6 +1037,49 @@ release version: check-release check-feature-configs
     "{{just_executable()}}" --justfile "{{justfile()}}" install
     "{{just_executable()}}" --justfile "{{justfile()}}" client-release {{version}}
     "{{just_executable()}}" --justfile "{{justfile()}}" client-android-release {{version}}
+    "{{just_executable()}}" --justfile "{{justfile()}}" client-web-release {{version}}
+    # The only irreversible steps, so they come last: everything above this
+    # line can be re-run with the tree still at the tag.
+    git push --follow-tags origin main
+    "{{just_executable()}}" --justfile "{{justfile()}}" publish {{version}}
     @echo
-    @echo "[OK] released v{{version}}: tagged locally, server binary installed, client installed at /Applications/forge.app, APK staged under client/src-tauri/target/release/bundle/android/"
-    @echo "     To publish: git push --follow-tags origin main (attach the APK to the release when cutting it)"
+    @echo "[OK] released v{{version}}: tagged and pushed, server binary installed, client installed at /Applications/forge.app, APK and web archive staged, and the release published with its five assets"
+
+# Publish a tagged release: the assets the update path reads - the app tarball
+# and its signature, the arm64 APK, the web archive, and latest.json.
+#
+# Requires the tag to be on origin. `gh release create` would otherwise make
+# one at the default branch head, so a release could appear for a commit
+# nothing was built from - this check and `--verify-tag` are what stop that.
+# Run it alone to finish a release that failed after its tag was cut: push
+# first with `git push --follow-tags origin main`.
+#
+# The signature is re-read against the pinned key here as well as in
+# `client-release`: the release is the last place a mismatched pair could
+# still get out.
+#
+# Publish the release for a tag that is already on origin.
+publish version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! git ls-remote --exit-code --tags origin "v{{version}}" >/dev/null 2>&1; then
+        echo "[ERROR] tag v{{version}} is not on origin - push it first:" >&2
+        echo "        git push --follow-tags origin main" >&2
+        exit 1
+    fi
+
+    ./scripts/check_updater_signature.py . {{version}}
+    ./scripts/update_manifest.py . {{version}}
+
+    bundle=client/src-tauri/target/release/bundle
+    gh release create "v{{version}}" \
+        --verify-tag \
+        --title "v{{version}}" \
+        --generate-notes \
+        "$bundle/macos/forge.app.tar.gz" \
+        "$bundle/macos/forge.app.tar.gz.sig" \
+        "$bundle/android/forge-{{version}}-arm64.apk" \
+        "$bundle/forge-web-{{version}}.tar.gz" \
+        "$bundle/latest.json"
+    echo "[OK] published v{{version}}: the app tarball, its signature, the APK, the web archive and latest.json"

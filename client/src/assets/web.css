@@ -985,6 +985,21 @@ details.leaf.running > summary { color: var(--text); }
 .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
   border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
 .dec .foot .sep { opacity: .5; }
+/* A structured value's disclosure, under the row's own words: the value in
+   full, its chevron turned and accented by the sheet's own open rules. */
+.dec details.raw { margin-top: 2px; }
+.dec > details.raw { margin: 2px 14px 0; }
+.dec details.raw > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: center; gap: 5px; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.dec details.raw > summary::-webkit-details-marker { display: none; }
+.dec details.raw > summary:hover { color: var(--muted); }
+.dec details.raw > summary .arw { width: 11px; height: 11px; flex: 0 0 11px; }
+.dec details.raw[open] > summary .arw { color: var(--accent); }
+.dec details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--s1); font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
+  overflow-wrap: anywhere; }
 /* A source file a call read or wrote. Its token classes are the
    highlighter's own (`hljs-*`), coloured by the theme that ships beside the
    module: the `.k` / `.s` / `.f` rules that stood here read three tokens the
@@ -1764,6 +1779,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+/* The take's card is built for the composer - top left, its draft below it -
+   and `align-self: flex-start` with the trailing margin is what that shape
+   reserves. In the dock's row there is no draft under it and the mic stands
+   beside it, so left alone the card pins to the row's top and the mic centres
+   against the card's margin box: four pixels below the card's own centre, and
+   the recording dot's. Centred here instead, with the margin the composer's
+   shape reserved dropped. */
+.dock .custom .tc { align-self: center; margin-bottom: 0; }
 .dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
