@@ -47,6 +47,14 @@ pub(crate) struct TaskDraft {
     pub estimate: Option<String>,
 }
 
+/// The tree a `tasks__delete` removed: the named task as it stood, and how
+/// many descendants went with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemovedTaskTree {
+    pub task: Task,
+    pub children_removed: usize,
+}
+
 /// The fields `tasks__update` may change. An absent field is left alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct TaskPatch {
@@ -115,20 +123,24 @@ pub(crate) trait TasksFacade: Send + Sync {
         parent: Option<&TaskId>,
     ) -> Vec<Task>;
 
-    /// Apply `patch` to the task `id` in the caller's project. `Ok(true)`
-    /// if it was found, `Ok(false)` if no such task is there. Open to
-    /// every session in the project.
+    /// Apply `patch` to the task `id` in the caller's project and return
+    /// the record as the write left it. `Ok(None)` if no such task is
+    /// there. Open to every session in the project.
     fn update_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<bool, TasksError>;
+    ) -> Result<Option<Task>, TasksError>;
 
     /// Remove the task `id` and its descendants within the caller's
-    /// project. `Ok(true)` if anything was removed, `Ok(false)` if no
-    /// such task is there.
-    fn delete_task(&self, caller: &SessionSlot, id: &TaskId) -> Result<bool, TasksError>;
+    /// project, returning the named task as it stood and how many
+    /// descendants went with it. `Ok(None)` if no such task is there.
+    fn delete_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<Option<RemovedTaskTree>, TasksError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -190,7 +202,7 @@ impl TasksFacade for ProdTasksFacade {
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<bool, TasksError> {
+    ) -> Result<Option<Task>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         Ok(ws.update_task(&cx.project_name, id, |task| {
@@ -198,16 +210,24 @@ impl TasksFacade for ProdTasksFacade {
         }))
     }
 
-    fn delete_task(&self, caller: &SessionSlot, id: &TaskId) -> Result<bool, TasksError> {
+    fn delete_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<Option<RemovedTaskTree>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         // The named task itself has to be there. The cascade also collects
         // orphans pointing at the id, so "something was removed" would be
         // true for an id that never existed.
         if !ws.tasks_for_project(&cx.project_name).iter().any(|t| t.id == *id) {
-            return Ok(false);
+            return Ok(None);
         }
-        Ok(ws.remove_task_tree(&cx.project_name, id))
+        let removed = ws.remove_task_tree(&cx.project_name, id);
+        let Some(task) = removed.iter().find(|t| t.id == *id).cloned() else {
+            return Ok(None);
+        };
+        Ok(Some(RemovedTaskTree { task, children_removed: removed.len() - 1 }))
     }
 }
 
@@ -224,9 +244,9 @@ pub(crate) struct MockTasksFacade {
     pub created: parking_lot::Mutex<Vec<CreateCall>>,
     pub tasks: parking_lot::Mutex<Vec<Task>>,
     pub updated: parking_lot::Mutex<Vec<(SessionSlot, TaskId, TaskPatch)>>,
-    pub update_result: parking_lot::Mutex<Option<bool>>,
+    pub update_result: parking_lot::Mutex<Option<Task>>,
     pub deleted: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
-    pub delete_result: parking_lot::Mutex<Option<bool>>,
+    pub delete_result: parking_lot::Mutex<Option<RemovedTaskTree>>,
 }
 
 #[cfg(test)]
@@ -278,14 +298,18 @@ impl TasksFacade for MockTasksFacade {
         caller: &SessionSlot,
         id: &TaskId,
         patch: TaskPatch,
-    ) -> Result<bool, TasksError> {
+    ) -> Result<Option<Task>, TasksError> {
         self.updated.lock().push((caller.clone(), id.clone(), patch));
-        Ok(self.update_result.lock().unwrap_or(false))
+        Ok(self.update_result.lock().clone())
     }
 
-    fn delete_task(&self, caller: &SessionSlot, id: &TaskId) -> Result<bool, TasksError> {
+    fn delete_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+    ) -> Result<Option<RemovedTaskTree>, TasksError> {
         self.deleted.lock().push((caller.clone(), id.clone()));
-        Ok(self.delete_result.lock().unwrap_or(false))
+        Ok(self.delete_result.lock().clone())
     }
 }
 
@@ -393,7 +417,7 @@ mod prod_facade_tests {
             .create_task(&lead, draft("orphan", None, Some("ghost")))
             .expect("a child pointing at a parent that never existed");
         assert!(
-            !facade.delete_task(&lead, &TaskId::from("ghost")).expect("delete"),
+            facade.delete_task(&lead, &TaskId::from("ghost")).expect("delete").is_none(),
             "an id that was never there is not a successful delete, even with orphans pointing \
              at it",
         );
@@ -402,6 +426,64 @@ mod prod_facade_tests {
             1,
             "the orphan is not collected under a name nothing owns",
         );
+    }
+
+    /// The update hands back the record it wrote, so the tool can echo a
+    /// task rather than an id: the moved field, the row's own words, and
+    /// the stamp the write just set.
+    #[test]
+    fn update_returns_the_record_it_wrote() {
+        let (ws, facade, lead, _worker) = fixture();
+        let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
+
+        let updated = facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
+            )
+            .expect("update")
+            .expect("the task is there to move");
+
+        assert_eq!(updated.id, task.id, "the echoed record is the task that moved");
+        assert_eq!(updated.subject, "before", "carrying the row's own words");
+        assert_eq!(updated.status, TaskStatus::Completed, "and the state it now holds");
+        assert!(
+            updated.updated_at >= task.updated_at,
+            "stamped by the write itself: {:?} < {:?}",
+            updated.updated_at,
+            task.updated_at,
+        );
+        assert_eq!(
+            ws.tasks_for_project("myproj")[0].status,
+            TaskStatus::Completed,
+            "and it is the stored record, not a copy the write left behind",
+        );
+    }
+
+    /// The delete hands back the tree it removed: the named task as it
+    /// stood and how many descendants went with it, so the tool can echo
+    /// both rather than a bare id.
+    #[test]
+    fn delete_returns_the_tree_it_removed() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let epic = facade.create_task(&lead, draft("epic", None, None)).expect("epic");
+        let child =
+            facade.create_task(&lead, draft("child", None, Some(epic.id.as_str()))).expect("child");
+        facade
+            .create_task(&lead, draft("grandchild", None, Some(child.id.as_str())))
+            .expect("grandchild");
+        facade.create_task(&lead, draft("sibling", None, None)).expect("sibling");
+
+        let removed = facade
+            .delete_task(&lead, &epic.id)
+            .expect("delete")
+            .expect("the epic is there to remove");
+
+        assert_eq!(removed.task.id, epic.id, "the record is the task named by the call");
+        assert_eq!(removed.task.subject, "epic", "as it stood just before removal");
+        assert_eq!(removed.children_removed, 2, "and the cascade's own count");
+        assert_eq!(facade.list_tasks(&lead, None, None).len(), 1, "only the sibling survives");
     }
 
     /// Every field `tasks__update` can state moves, not just the two the
@@ -426,7 +508,8 @@ mod prod_facade_tests {
                         estimate: Some("2d".to_owned()),
                     },
                 )
-                .expect("update"),
+                .expect("update")
+                .is_some(),
             "the task is there to move",
         );
         let stored = &ws.tasks_for_project("myproj")[0];
@@ -455,7 +538,8 @@ mod prod_facade_tests {
                         ..TaskPatch::default()
                     }
                 )
-                .expect("update"),
+                .expect("update")
+                .is_some(),
             "the lead completes a worker's task",
         );
         let stored = ws.tasks_for_project("myproj");
