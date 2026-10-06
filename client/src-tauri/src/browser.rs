@@ -182,17 +182,17 @@ impl BrowserHost {
     /// start at all says so in the app's log at startup instead of as a
     /// failed tool call. The drivers stay lazy - they exist to serve calls,
     /// and one with no calls to serve is a child process held for nothing.
-    pub async fn start(&self) -> Result<(), String> {
+    /// The launched browser's id comes back with its port, so a caller that
+    /// must reap it (a test that launched it) can; the app ignores both.
+    pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
-        self.endpoint(&paths).await.map(|_| ())
+        self.active_browser(&paths).await
     }
 
-    /// The live browser's CDP endpoint, launching it when nothing is up.
-    async fn endpoint(&self, paths: &StackPaths) -> Result<String, String> {
+    /// The live browser, launched when nothing is up.
+    async fn active_browser(&self, paths: &StackPaths) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
-        let active =
-            chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await?;
-        Ok(format!("http://127.0.0.1:{}", active.port))
+        chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
     /// The browser's own context's driver, started when it is not up.
@@ -206,7 +206,7 @@ impl BrowserHost {
         if let Some(context) = default.as_ref().filter(|context| context.is_alive()) {
             return Ok(Arc::clone(context));
         }
-        let endpoint = self.endpoint(&paths).await?;
+        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
         let driver = Driver::start(
             &driver::node_path(&paths.stack),
             &driver::cli_path(&paths.stack),
@@ -263,7 +263,7 @@ impl BrowserHost {
         owner: &Seat,
         name: &str,
     ) -> Result<Named, String> {
-        let endpoint = self.endpoint(paths).await?;
+        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(paths).await?.port);
         let named = Named::start(owner.clone(), name, &endpoint, paths).await?;
         contexts::reopen_tabs(&named.context, &contexts::saved_tabs(&named.tabs)).await;
         Ok(named)

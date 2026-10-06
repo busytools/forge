@@ -15,12 +15,14 @@
 //! `browser_snapshot` answer through the host - which is exactly what an ask
 //! from a session rides.
 
+mod support;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 use forge_client::browser::contexts::Seat;
 use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
+use support::Launched;
 
 /// The seat these calls are made for: one session, as an ask carries it.
 fn seat() -> Seat {
@@ -28,21 +30,6 @@ fn seat() -> Seat {
         org: "Busytools".to_owned(),
         project: "forge".to_owned(),
         label: "browser-live".to_owned(),
-    }
-}
-
-/// Kill the browser this test launched, by the PORT it holds - never by a
-/// pattern: this machine runs other browsers, and one of them belongs to the
-/// person sitting at it.
-fn kill_the_browser_on(port: u16) {
-    let Ok(listed) =
-        Command::new("lsof").args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"]).output()
-    else {
-        return;
-    };
-    let pids = String::from_utf8_lossy(&listed.stdout);
-    for pid in pids.split_whitespace() {
-        let _ = Command::new("kill").arg(pid).status();
     }
 }
 
@@ -66,39 +53,28 @@ async fn a_session_drives_a_page() {
     // **The app's own start**: the browser is up before any call asks for it,
     // and a second start ATTACHES to that launch rather than making another
     // one - one browser for the app, however many times it is ensured.
-    host.start().await.expect("the browser comes up with the app");
-    let launched = forge_client::browser::chromium::read_active_port(&paths.profile)
-        .expect("the start wrote its port file");
-    host.start().await.expect("a second start attaches");
+    let launched = host.start().await.expect("the browser comes up with the app");
+    let browser = Launched::new(launched.pid, launched.port);
+    let attached = host.start().await.expect("a second start attaches");
     assert_eq!(
-        forge_client::browser::chromium::read_active_port(&paths.profile).map(|active| active.port),
-        Some(launched.port),
+        attached.port, launched.port,
         "the second start attached to the launch that was already there",
     );
+    assert_eq!(attached.pid, None, "and it launched nothing of its own");
 
     let page = "data:text/html,<h1>forge browser host</h1>";
-    let navigated = host.call(&seat(), "browser_navigate", json!({ "url": page })).await;
-    let port = forge_client::browser::chromium::read_active_port(&paths.profile)
-        .expect("the launch wrote its port file")
-        .port;
-    let parts = match navigated {
-        Ok(parts) => parts,
-        Err(why) => {
-            kill_the_browser_on(port);
-            panic!("the host could not navigate: {why}");
-        }
-    };
+    let parts = host
+        .call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .unwrap_or_else(|why| panic!("the host could not navigate: {why}"));
     assert!(!parts.is_empty(), "a navigate answers with something");
 
-    let snapshot = match host.call(&seat(), "browser_snapshot", json!({})).await {
-        Ok(parts) => parts,
-        Err(why) => {
-            kill_the_browser_on(port);
-            panic!("the host could not snapshot: {why}");
-        }
-    };
+    let snapshot = host
+        .call(&seat(), "browser_snapshot", json!({}))
+        .await
+        .unwrap_or_else(|why| panic!("the host could not snapshot: {why}"));
     let text = text_of(&snapshot);
-    kill_the_browser_on(port);
+    browser.reap();
 
     assert!(
         text.contains("forge browser host"),
@@ -184,43 +160,33 @@ async fn the_additions_drive_a_real_page() {
         contexts: dir.path().join("contexts"),
     };
     let host = BrowserHost::new(paths.clone());
-    let browser_port = {
-        host.start().await.expect("the browser comes up");
-        forge_client::browser::chromium::read_active_port(&paths.profile)
-            .expect("the start wrote its port file")
-            .port
-    };
-    /// Out through the browser's port, so a panic never leaves a browser
-    /// behind, and diverging so a match arm reads as an arm.
-    fn finish(browser_port: u16, why: String) -> ! {
-        kill_the_browser_on(browser_port);
-        panic!("{why}");
-    }
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port);
 
     let page = format!("http://127.0.0.1:{port}/");
-    if let Err(why) = host.call(&seat(), "browser_navigate", json!({ "url": page })).await {
-        finish(browser_port, format!("the page would not navigate: {why}"));
-    }
-    let snapshot = match host.call(&seat(), "browser_snapshot", json!({})).await {
-        Ok(parts) => text_of(&parts),
-        Err(why) => finish(browser_port, format!("the page would not snapshot: {why}")),
-    };
+    host.call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .unwrap_or_else(|why| panic!("the page would not navigate: {why}"));
+    let snapshot = host
+        .call(&seat(), "browser_snapshot", json!({}))
+        .await
+        .map(|parts| text_of(&parts))
+        .unwrap_or_else(|why| panic!("the page would not snapshot: {why}"));
     let button = ref_of(&snapshot, "Fetch");
 
     // A forced click: Playwright's own click with the actionability gate off.
-    match host.call(&seat(), "browser_click", json!({ "target": button, "force": true })).await {
-        Ok(parts) => assert!(text_of(&parts).contains("clicked"), "{:?}", text_of(&parts)),
-        Err(why) => finish(browser_port, format!("a forced click did not run: {why}")),
-    }
+    let clicked = host
+        .call(&seat(), "browser_click", json!({ "target": button, "force": true }))
+        .await
+        .unwrap_or_else(|why| panic!("a forced click did not run: {why}"));
+    assert!(text_of(&clicked).contains("clicked"), "{:?}", text_of(&clicked));
 
     // The click's responses come back with the click itself.
-    let captured = match host
+    let captured = host
         .call(&seat(), "browser_click_and_capture", json!({ "target": button, "settleMs": 1200 }))
         .await
-    {
-        Ok(parts) => text_of(&parts),
-        Err(why) => finish(browser_port, format!("click_and_capture did not run: {why}")),
-    };
+        .map(|parts| text_of(&parts))
+        .unwrap_or_else(|why| panic!("click_and_capture did not run: {why}"));
     // The driver's own report carries the snippet's JSON as an escaped
     // string, so the pieces are asserted, not a quoted shape.
     assert!(
@@ -229,21 +195,20 @@ async fn the_additions_drive_a_real_page() {
     );
 
     // An expression wait: a condition no text can state.
-    match host
+    let waited = host
         .call(&seat(), "browser_wait_for", json!({ "expression": "document.title === 'fetched'" }))
         .await
-    {
-        Ok(parts) => assert!(text_of(&parts).contains("condition holds"), "{:?}", text_of(&parts)),
-        Err(why) => finish(browser_port, format!("the expression wait did not run: {why}")),
-    }
+        .unwrap_or_else(|why| panic!("the expression wait did not run: {why}"));
+    assert!(text_of(&waited).contains("condition holds"), "{:?}", text_of(&waited));
 
     // The form's state: the values, what is marked invalid, and the control's
     // own text.
-    let form = match host.call(&seat(), "browser_form_state", json!({})).await {
-        Ok(parts) => text_of(&parts),
-        Err(why) => finish(browser_port, format!("form_state did not run: {why}")),
-    };
-    kill_the_browser_on(browser_port);
+    let form = host
+        .call(&seat(), "browser_form_state", json!({}))
+        .await
+        .map(|parts| text_of(&parts))
+        .unwrap_or_else(|why| panic!("form_state did not run: {why}"));
+    browser.reap();
     // Escaped by the driver's own report, so the pieces are asserted.
     assert!(form.contains("email"), "the empty required input is read: {form}");
     assert!(form.contains("invalid") && form.contains("true"), "and it is marked invalid: {form}");

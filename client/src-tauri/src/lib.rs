@@ -79,7 +79,9 @@ pub fn run() {
             let starting = std::sync::Arc::clone(&host);
             tauri::async_runtime::spawn(async move {
                 match starting.start().await {
-                    Ok(()) => tauri_plugin_log::log::info!("the browser is up"),
+                    Ok(active) => {
+                        tauri_plugin_log::log::info!("the browser is up on port {}", active.port)
+                    }
                     Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
                 }
             });

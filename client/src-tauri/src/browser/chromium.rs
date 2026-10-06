@@ -67,6 +67,13 @@ pub struct ActivePort {
     pub port: u16,
     /// The browser target's path, `/devtools/browser/<uuid>`.
     pub path: String,
+    /// The process's id, when THIS call started it.
+    ///
+    /// A browser this process launched can be reaped by pid, which is what a
+    /// run that ends without finishing - a failed test, a cancelled one -
+    /// needs: `None` for one found rather than launched, which is nobody's
+    /// child here and is meant to outlive the client.
+    pub pid: Option<u32>,
 }
 
 /// Read the port file a launch writes into the profile.
@@ -81,7 +88,7 @@ pub fn read_active_port(profile: &Path) -> Option<ActivePort> {
     if !path.starts_with("/devtools/browser/") {
         return None;
     }
-    Some(ActivePort { port, path: path.to_owned() })
+    Some(ActivePort { port, path: path.to_owned(), pid: None })
 }
 
 /// Whether the port a launch asked for is answered.
@@ -183,11 +190,13 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let child = command
-        .spawn()
-        .map_err(|why| format!("the vendored browser would not start: {why}"))?;
-    // Dropped rather than waited on: the browser is meant to outlive this
-    // call, and this process reaps nothing it did not spawn as its own work.
+    let child =
+        command.spawn().map_err(|why| format!("the vendored browser would not start: {why}"))?;
+    // The id before the handle goes: the browser is meant to outlive this
+    // call, and this process reaps nothing it did not spawn as its own work -
+    // but a caller that must reap it needs the id, and the handle is what
+    // carries it.
+    let pid = child.id();
     drop(child);
 
     let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
@@ -195,7 +204,7 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
         if let Some(active) = read_active_port(profile)
             && probe(active.port).await
         {
-            return Ok(active);
+            return Ok(ActivePort { pid, ..active });
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
@@ -236,7 +245,11 @@ mod tests {
         let dir = profile_with("9333\n/devtools/browser/9d1f-77aa\n");
         assert_eq!(
             read_active_port(dir.path()),
-            Some(ActivePort { port: 9333, path: "/devtools/browser/9d1f-77aa".to_owned() }),
+            Some(ActivePort {
+                port: 9333,
+                path: "/devtools/browser/9d1f-77aa".to_owned(),
+                pid: None,
+            }),
         );
     }
 
@@ -293,7 +306,11 @@ mod tests {
         let odd_case = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
         assert_eq!(whole_body_len(odd_case), Some(odd_case.len()));
 
-        assert_eq!(whole_body_len(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"), None, "no body yet");
+        assert_eq!(
+            whole_body_len(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"),
+            None,
+            "no body yet"
+        );
         assert_eq!(whole_body_len(b"HTTP/1.1 200 OK\r\n\r\nhello"), None, "no length named");
     }
 
