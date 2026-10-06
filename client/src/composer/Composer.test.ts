@@ -4949,7 +4949,7 @@ describe('the dictation panel', () => {
     await settled();
     expect(walk, "one walk, which is the browser's own list").toHaveBeenCalledTimes(1);
 
-    const row = [...document.querySelectorAll('.pop .row')].find((held) =>
+    const row = [...document.querySelectorAll('.pop .drow')].find((held) =>
       held.textContent?.includes('MacBook Pro Microphone'),
     );
     if (!(row instanceof HTMLElement)) throw new Error('the list drew no second device');
