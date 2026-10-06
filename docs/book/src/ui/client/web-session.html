@@ -494,7 +494,10 @@
   .term .fail { color: var(--bad); }
   /* A systemone decision's block: the question it answered, the answer, its
      distribution with each option's own description under it, and what it
-     cost. The winner's fill is the shipped teal, which no other rule uses. */
+     cost. The winner's fill is the shipped teal, which no other rule uses.
+     A structured value draws its own words where it has any, and the value
+     whole behind a disclosure under its row - the picked shape (2026-10-06),
+     the chevron the same one every other disclosure on the page carries. */
   .dec { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
     background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
   .dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
@@ -522,6 +525,20 @@
   .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
     border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
   .dec .foot .sep { opacity: .5; }
+  /* A structured value's disclosure, under the row's own words. */
+  .dec details.raw { margin-top: 2px; }
+  .dec > details.raw { margin: 2px 14px 0; }
+  .dec details.raw > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 5px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .dec details.raw > summary::-webkit-details-marker { display: none; }
+  .dec details.raw > summary:hover { color: var(--muted); }
+  .dec details.raw > summary .arw { width: 11px; height: 11px; flex: 0 0 11px; }
+  .dec details.raw[open] > summary .arw { color: var(--accent); }
+  .dec details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--s1); font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
+    overflow-wrap: anywhere; }
   .searchhit { font-family: var(--mono); font-size: var(--fs-data); padding: 3px 0 3px 13px;
     margin: 4px 0; border-left: 1px solid var(--line); }
   .searchhit .ln { color: var(--accent); }
@@ -1646,6 +1663,28 @@ docs: Render the message body into rows.</div>
                   <div class="opt"><div class="oline"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div><div class="crit">the module's consumers are mid-migration</div></div>
                 </div>
                 <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
+              </div>
+            </div>
+          </details>
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask choice - Which team owns `auth.rs`?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="dec">
+                <div class="q">Which team owns `auth.rs`?</div>
+                <div class="verdict"><span class="read">pick: <b>billing</b> - confidence 0.72</span></div>
+                <div class="dist">
+                  <div class="opt"><div class="oline"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div><div class="crit">the surface is the web client only</div></div>
+                  <div class="opt win"><div class="oline"><span class="name">billing</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div><div class="crit">owns the ledger and the settlement path</div>
+                    <details class="raw">
+                      <summary><svg class="ic arw"><use href="#i-chev"/></svg>structured value - 2 fields</summary>
+                      <pre>{
+  "label": "owns the ledger and the settlement path",
+  "files": ["a.rs", "ledger.rs"]
+}</pre>
+                    </details>
+                  </div>
+                </div>
+                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
               </div>
             </div>
           </details>
