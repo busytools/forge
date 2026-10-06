@@ -51,13 +51,21 @@ history is the record.
    - `mkdir -p $STACK/config/forge $STACK/home`
    - Write `$STACK/config/forge/forge.toml`:
      - `[[accounts]]` - ONE account, its flat `token` key copied read-only
-       from the main config (`~/.claude/forge/forge.toml`); name which
-       account in the worker's report.
+       from the main config (`~/.claude/forge/forge.toml`). **A non-Anthropic
+       one where the config carries one** (an `openrouter` provider block) -
+       a scratch must never spend the Anthropic pool; name which account in
+       the worker's report.
      - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `auto_start = true`,
        a `model`, `permission_mode = "auto"`.
      - `[server] enabled = true, bind = "127.0.0.1", port = 8791` and
        `[gateway] port = 8788` - a distinct port pair per stack (8791+idx /
        8788+idx for parallel stacks).
+     - **A dictation-touching stack points `models_dir` at the REAL cache,
+       spelled ABSOLUTELY** (the live config's value with `~` expanded to the
+       real home at setup time): a `~` in the scratch config re-expands under
+       the stack's HOME, and the default is the platform cache under that
+       same HOME - so anything but the absolute path silently fetches and
+       loads its own ~3 GB of models.
 2. **The binary**
    - **Always build from the tree** (the worker's worktree) -
      `nice -n 10 cargo build -p forge-tui --bin forge -p forge-server --bin forge-protocol-client`
@@ -136,9 +144,11 @@ history is the record.
 2. **The build stamp goes stale in a linked worktree** (measured): `build.rs`
    watches `../../.git/HEAD` and friends, but a worktree's `.git` is a FILE,
    so the watches never arm and the binary can report the wrong commit while
-   running another. Until the forge-side fix (#1829) lands, `touch` the build
-   script (mtime only) before a rebuild in a worktree, and read the boot log's
-   stamp with that in mind.
+   running another. Until the forge-side fix (#1829) lands, `touch`
+   `crates/forge-server/build.rs` (mtime only - the Rust workspace's one
+   build script; a bare `touch` on any other `build.rs` path creates an
+   empty file and the build dies on it) before a rebuild in a worktree, and
+   read the boot log's stamp with that in mind.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
 4. Both default ports are the live forge's (8790/8787); a taken gateway port
