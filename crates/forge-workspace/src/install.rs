@@ -231,12 +231,18 @@ impl Workspace {
         cfg.normalizer = None;
 
         self.set_install_file(&download.filename, download.size_bytes);
+        // The file is named: the page's line can say what is being fetched
+        // before the first byte moves.
+        self.push_models();
         let this = Arc::clone(&self);
         let file = download.filename.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             // The push rides the whole-percent change: a tick per progress
             // event would re-encode the page's snapshot thousands of times
             // over a 279 MB file, and a percent is what a reader sees move.
+            // The push itself matters as much as the throttle: a state the
+            // server records but never sends is a page that sits on `0 of 0`
+            // until the install is over.
             let last = Cell::new(u64::MAX);
             forge_dictate::prepare(&cfg, |progress| {
                 if let Progress::Downloading { downloaded, total, .. } = progress {
@@ -244,6 +250,7 @@ impl Workspace {
                     if percent != last.get() {
                         last.set(percent);
                         this.note_download(&file, downloaded, total);
+                        this.push_models();
                     }
                 }
                 std::ops::ControlFlow::Continue(())
@@ -987,15 +994,23 @@ mod tests_install {
         assert_eq!(installed[0].file, "picked-Q4_K_M.gguf", "the record the pick came from");
     }
 
-    /// The next re-read the install pushes, on the catalogue check's own
-    /// fifteen-second budget.
+    /// The next *settled* re-read the install or activation pushes, on the
+    /// catalogue check's own fifteen-second budget: a frame whose work has
+    /// finished (`idle`) or stopped (`failed`). The progress frames in
+    /// between are the page's, and a test that wants them collects its own.
     async fn await_models(
         updates: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
     ) -> DictateModelsSnapshot {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match updates.recv().await {
-                    Some(SessionUpdate::DictateModelsChanged { models }) => break models,
+                    Some(SessionUpdate::DictateModelsChanged { models }) => {
+                        let running = matches!(models.install, InstallState::Downloading { .. })
+                            || matches!(models.activate, ActivateState::Activating { .. });
+                        if !running {
+                            break models;
+                        }
+                    }
                     Some(_) => {}
                     None => panic!("the subscription must stay attached"),
                 }
@@ -1235,6 +1250,65 @@ mod tests_install {
 
         assert_eq!(second.installed.len(), 1, "the record is replaced, not duplicated");
         assert_eq!(second.installed[0].file, file);
+    }
+
+    /// **The page's progress line moves because the server pushes on it.**
+    /// A state the core records but never sends is a page that sits at
+    /// `0 of 0` until the install is over - measured live on the stack, and
+    /// the reason this test exists.
+    #[tokio::test]
+    async fn an_install_pushes_its_progress_while_it_downloads() {
+        let mut fixture = fixture();
+        fixture.ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry_under(
+            "candidate",
+            r#"["en"]"#,
+            300.0,
+            4.0,
+            6,
+            "mit",
+            "MIT",
+        )]));
+        let file = "candidate-Q4_K_M.gguf";
+        let base = serve_with(|base| {
+            vec![
+                ("/docs/candidate.md".to_owned(), 200, doc_body(base, "candidate", file)),
+                (format!("/weights/{file}"), 200, b"111111".to_vec()),
+            ]
+        });
+        *fixture.ws.test_catalogue_source.lock() = Some(source(&base));
+
+        fixture
+            .ws
+            .dispatch(Command::DictateInstall { variant: "candidate".to_owned() })
+            .expect("the install dispatches");
+
+        let mut downloading = false;
+        let mut named = 0;
+        let mut finished = false;
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            while let Some(update) = fixture.updates.recv().await {
+                let SessionUpdate::DictateModelsChanged { models } = update else { continue };
+                match &models.install {
+                    InstallState::Downloading { file: seen, .. } => {
+                        downloading = true;
+                        if seen == file {
+                            named += 1;
+                        }
+                    }
+                    InstallState::Idle => {
+                        finished = true;
+                        break;
+                    }
+                    InstallState::Failed { .. } => break,
+                }
+            }
+        })
+        .await
+        .expect("the install must land inside fifteen seconds");
+
+        assert!(downloading, "no frame carried the download while it ran");
+        assert!(named > 0, "the frames must name the file they are about");
+        assert!(finished, "the install must end in a frame");
     }
 
     /// A file of bytes that are not a model, where the engine would look

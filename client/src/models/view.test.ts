@@ -498,6 +498,22 @@ describe('the operation lines', () => {
     expect(activateLine({ state: 'unknown' })?.mark).toBe('off');
   });
 
+  /**
+   * The window between the press and the feed's doc answering: no name and
+   * no size yet. `0 of 0` here reads as a stalled download; the line says
+   * what is actually happening instead.
+   */
+  it('draws the unnamed window before the file is known', () => {
+    const reading = installLine({ state: 'downloading', file: '', got: 0, total: 0 });
+    expect(reading?.title).toBe('reading the catalogue entry');
+    expect(reading?.detail).toBeNull();
+    expect(reading?.percent).toBeNull();
+
+    const named = installLine({ state: 'downloading', file: 'granite.gguf', got: 0, total: 0 });
+    expect(named?.title).toBe('downloading granite.gguf');
+    expect(named?.detail).toBeNull();
+  });
+
   /** A failed activation says the current model is still running. */
   it('draws a failed activation with the model that keeps running', () => {
     const line = activateLine({

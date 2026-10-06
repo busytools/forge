@@ -331,11 +331,23 @@ export function installLine(install: InstallState): OpLine | null {
     case 'idle':
       return null;
     case 'downloading': {
-      const percent = install.total > 0 ? Math.floor((install.got / install.total) * 100) : null;
+      // Before the file is named - the moment between the press and the
+      // feed's doc answering - there is no size to draw and nothing honest
+      // to say about bytes; `0 of 0` would read as a stalled download.
+      if (install.total === 0) {
+        return {
+          mark: 'live',
+          title:
+            install.file === '' ? 'reading the catalogue entry' : `downloading ${install.file}`,
+          detail: null,
+          percent: null,
+        };
+      }
+      const percent = Math.floor((install.got / install.total) * 100);
       return {
         mark: 'live',
         title: `downloading ${install.file}`,
-        detail: `${percent === null ? '' : `${percent}% \u{b7} `}${sizeLabel(install.got)} of ${sizeLabel(install.total)}`,
+        detail: `${percent}% \u{b7} ${sizeLabel(install.got)} of ${sizeLabel(install.total)}`,
         percent,
       };
     }
