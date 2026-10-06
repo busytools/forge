@@ -3564,7 +3564,15 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
         ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
     )
     .await;
-    let (_, _, _) = snapshot_answering(&mut first).await;
+    let first_hello = loop {
+        match next_server_within(&mut first, 2000).await {
+            Some(ServerMessage::Snapshot { subject, data }) => break (subject, data),
+            Some(ServerMessage::Update { .. }) => {}
+            Some(other) => panic!("first subscribe answered with {other:?}"),
+            None => panic!("first subscribe said nothing"),
+        }
+    };
+    let _ = first_hello;
 
     let mut second = connect(&url).await;
     send(
@@ -3572,7 +3580,15 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
         ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
     )
     .await;
-    let (_, _, _) = snapshot_answering(&mut second).await;
+    let second_hello = loop {
+        match next_server_within(&mut second, 2000).await {
+            Some(ServerMessage::Snapshot { subject, data }) => break (subject, data),
+            Some(ServerMessage::Update { .. }) => {}
+            Some(other) => panic!("second subscribe answered with {other:?}"),
+            None => panic!("second subscribe said nothing"),
+        }
+    };
+    let _ = second_hello;
 
     send(&mut second, ClientMessage::BrowserTakeRole).await;
 
@@ -3611,7 +3627,212 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     let (id, _, _, _) = browser_ask(&mut second).await;
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
     send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
-    assert!(settled(asked, "the close").await.is_ok(), "the claimant's answer settles the call");
+    assert_eq!(
+        settled(asked, "the close").await,
+        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
+        "the claimant's own parts are what the call settles with",
+    );
+}
+
+/// **An ask in flight when a take lands fails loudly, not into the void.**
+/// The displaced holder stops reading asks, so the call it was carrying comes
+/// back as the relay's own host-gone failure - never a hang, and never an
+/// answer from a role nobody holds.
+#[tokio::test]
+async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    // The ask reaches the holder and is never answered there.
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (_id, _, _, _) = browser_ask(&mut first).await;
+
+    send(&mut second, ClientMessage::BrowserTakeRole).await;
+
+    let answer = settled(asked, "the displaced ask").await;
+    let Err(why) = answer else {
+        panic!("the displaced holder's ask cannot settle: {answer:?}");
+    };
+    assert!(
+        why.contains("went away before answering"),
+        "the failure names the holder going, not the tool: {why}",
+    );
+}
+
+/// **An ask waiting on an image when a take lands fails with its OWN
+/// sentence.** This is the one failure the relay writes for itself: the call
+/// was fine and the role moved, which is not the same news as a tool error or
+/// a dead holder.
+#[tokio::test]
+async fn an_image_waiting_ask_fails_naming_the_take() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut first).await;
+    // The answer declares an image; the frame that carries its bytes has not
+    // arrived when the take lands, so the wait is the transport's.
+    send(
+        &mut first,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![forge_primitives::browser::BrowserPart::Image {
+                mime_type: "image/png".to_owned(),
+                bytes: Vec::new(),
+            }],
+            error: None,
+        },
+    )
+    .await;
+
+    send(&mut second, ClientMessage::BrowserTakeRole).await;
+
+    let answer = settled(asked, "the image-waiting ask").await;
+    let Err(why) = answer else {
+        panic!("an ask waiting on an image cannot settle after a take: {answer:?}");
+    };
+    assert!(why.contains("took the browser role"), "{why}");
+}
+
+/// **The holder going mid-ask fails the call and frees the role.** Dropping
+/// the socket is the path a crashed client takes, and the ask it was carrying
+/// must come back as the host-gone failure rather than hanging.
+#[tokio::test]
+async fn an_ask_in_flight_fails_when_the_holder_drops() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (_id, _, _, _) = browser_ask(&mut first).await;
+
+    drop(first);
+
+    let answer = settled(asked, "the orphaned ask").await;
+    let Err(why) = answer else {
+        panic!("the dropped holder's ask cannot settle: {answer:?}");
+    };
+    assert!(why.contains("went away before answering"), "{why}");
+
+    // And the role is free: the next capable client is what gets asked.
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut second).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
+    assert_eq!(
+        settled(asked, "the close").await,
+        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
+        "the promoted client's parts are what the call settles with",
+    );
+}
+
+/// **A stray or repeated answer cannot settle an ask.** Pairing is by id AND
+/// by the role: a second capable client that is not the holder answering the
+/// holder's id is dropped, an id nobody asked under is dropped, and the
+/// holder's own answer is what settles the call.
+#[tokio::test]
+async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut first).await;
+
+    // A non-holder's answer for the holder's id.
+    send(
+        &mut second,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "stolen".to_owned() }],
+            error: None,
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!asked.is_finished(), "an answer from a non-holder settles nothing");
+
+    // The holder's answer for an id nobody asked under.
+    send(
+        &mut first,
+        ClientMessage::BrowserAnswer {
+            id: id + 999,
+            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "stray".to_owned() }],
+            error: None,
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!asked.is_finished(), "an id nobody asked under settles nothing");
+
+    // The holder's own answer, under its own id.
+    send(
+        &mut first,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }],
+            error: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        settled(asked, "the close").await,
+        Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }]),
+        "and the holder's own parts are what the call settles with",
+    );
 }
 
 /// **The relay the transport registers into is the one the WORKSPACE hands

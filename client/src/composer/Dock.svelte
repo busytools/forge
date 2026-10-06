@@ -507,16 +507,31 @@
       : 'browser hand-off',
   );
   const opened = $derived(ask.kind === 'browser_hand_off' && openedFor === ask.request.id);
+  /** And which one a raise was asked for and did not happen, by the same id. */
+  let raiseFailedFor = $state<string | null>(null);
+  const raiseFailed = $derived(
+    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id,
+  );
 
   /**
    * Bring the browser up visibly, which is the client's own act rather than
-   * the core's: it answers nothing, and outside the shell (no host to
-   * invoke) the dock's own words are the whole of the guidance.
+   * the core's.
+   *
+   * **The claim follows the answer.** `showBrowser` says whether a browser
+   * was really raised, and only a raise moves this dock to "the browser is
+   * up" - a line that lied would have the person press Done and tell the
+   * session they acted.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
-    openedFor = ask.request.id;
-    void showBrowser();
+    const id = ask.request.id;
+    void showBrowser().then((raised) => {
+      if (raised) {
+        openedFor = id;
+      } else {
+        raiseFailedFor = id;
+      }
+    });
   }
 
   /** A hand-off's answer, which is the only release for its blocked handler. */
@@ -789,7 +804,9 @@
     <div class="desc">
       {opened
         ? 'The browser is up. Do what is needed there, then press Done - closing the window counts too.'
-        : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
+        : raiseFailed
+          ? 'The browser could not be raised here - act in the desktop client if you have one, then press Done.'
+          : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
     </div>
   {/if}
 

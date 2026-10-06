@@ -87,6 +87,24 @@ pub enum Refusal {
 }
 
 impl Refusal {
+    /// Whether this refusal could have been an IMAGE frame's.
+    ///
+    /// A header too short to say, a kind nobody knows, a truncated image
+    /// header and an oversized image are all things an image frame can be.
+    /// A dictation refusal - an oversized or uneven payload - belongs to the
+    /// audio stream, and failing asks that are waiting for images on it would
+    /// hand a session an image-error sentence over a microphone frame, which
+    /// is a reason that names the wrong thing.
+    pub fn concerns_images(self) -> bool {
+        match self {
+            Self::ShortHeader
+            | Self::UnknownKind(_)
+            | Self::ShortImageHeader(_)
+            | Self::OversizedImage(_) => true,
+            Self::Oversized(_) | Self::UnevenPayload(_) => false,
+        }
+    }
+
     /// One line for the debug record.
     pub fn reason(self) -> String {
         match self {
@@ -289,5 +307,24 @@ mod tests {
             forge_dictate::SAMPLE_RATE,
             "a frame's samples are what the dictation models consume, at their rate"
         );
+    }
+
+    /// **Who a refusal can fail.** Only the kinds an image frame can be may
+    /// fail asks that are waiting for images; a dictation refusal belongs to
+    /// the audio stream, and failing image waits on it would hand a session
+    /// an image-error sentence over a microphone frame.
+    #[test]
+    fn only_image_possible_refusals_concern_image_waits() {
+        for refusal in [
+            Refusal::ShortHeader,
+            Refusal::UnknownKind(9),
+            Refusal::ShortImageHeader(3),
+            Refusal::OversizedImage(MAX_IMAGE_BYTES + 1),
+        ] {
+            assert!(refusal.concerns_images(), "{refusal:?} could be an image frame's");
+        }
+        for refusal in [Refusal::Oversized(MAX_PAYLOAD_BYTES + 1), Refusal::UnevenPayload(3)] {
+            assert!(!refusal.concerns_images(), "{refusal:?} is the dictation stream's own");
+        }
     }
 }

@@ -624,6 +624,11 @@ fn frames_record() -> Value {
             args: json!({ "url": "https://example.com" }),
         }),
     );
+    // The role frame's one field, pinned for the same reason: a rename would
+    // move no census line, and the client's strip would read undefined for
+    // ever.
+    payload_sampled
+        .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),

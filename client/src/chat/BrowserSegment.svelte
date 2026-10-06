@@ -1,29 +1,44 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { canHost, listContexts, type ContextRow } from '../browser/host';
+  import {
+    canHost,
+    closeContext,
+    listContexts,
+    showBrowser,
+    type ContextRow,
+  } from '../browser/host';
   import type { Connection } from '../socket';
 
   /**
    * The browser row in the strip above the composer: how many named contexts
-   * this client holds, and - opened - who owns each and which client drives
-   * them.
+   * this client holds, and - opened - who owns each, which client drives
+   * them, and the controls the person has.
    *
    * **A segment beside the agents row, not a page of its own.** The inspector
    * is going, and this is the shape its survivors take: a row in the strip,
    * its list opening in place (the mockup Ved settled, 2026-10-06). When the
    * surviving strip lands, this mounts into it unchanged.
    *
+   * Three controls live here and each is the person's, never a session's:
+   * **Take over** (the force override, where a click can honestly serve it),
+   * **Show browser** (the visible toggle - a headed relaunch, whose cost the
+   * list states), and a context row's **close** (which is what makes a
+   * context whose owning session is gone recoverable).
+   *
    * The contexts are the CLIENT's own state - it owns the drivers - so the
-   * row reads them from the host it runs in, never from the server. The role
-   * is the connection's fact, and Take over is offered only where a click can
-   * honestly serve it: a page outside the shell holds no browser to take.
+   * row reads them from the host it runs in, never from the server.
    */
   let { connection, capable = canHost() }: { connection: Connection; capable?: boolean } = $props();
 
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
   let contexts = $state<ContextRow[]>([]);
+  // The role is read ONCE here and kept live by the subscription below: the
+  // connection's identity does not change over this segment's life, so the
+  // initial read is the truth the subscription then maintains.
+  // svelte-ignore state_referenced_locally
   let hosting = $state(connection.browserRole());
+  let segEl = $state<HTMLElement | null>(null);
 
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
@@ -31,18 +46,36 @@
     void listContexts().then((rows) => (contexts = rows));
   });
 
+  // A pointer landing outside the segment closes the list, the same one look
+  // every other popover on the page takes.
+  $effect(() => {
+    if (!open) return;
+    const away = (event: PointerEvent): void => {
+      const at = event.target;
+      if (at instanceof Node && segEl !== null && segEl.contains(at)) return;
+      open = false;
+    };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  });
+
   function toggle(): void {
     open = !open;
     if (open) void listContexts().then((rows) => (contexts = rows));
   }
 
-  /** Escape closes from either control the list holds. */
+  /** Escape closes from either of the list's controls. */
   function esc(event: KeyboardEvent): void {
     if (event.key === 'Escape') open = false;
   }
+
+  /** The person's close: saves, frees the name, and the row falls away. */
+  function close(row: ContextRow): void {
+    void closeContext(row.name).then(() => listContexts().then((rows) => (contexts = rows)));
+  }
 </script>
 
-<span class="bz-seg" class:open>
+<span class="bz-seg" class:open bind:this={segEl}>
   <button type="button" class="bz-tog" aria-expanded={open} onclick={toggle} onkeydown={esc}>
     <Icon name="web" />
     browser
@@ -62,7 +95,7 @@
         {#if capable && !hosting}
           <button
             type="button"
-            class="bz-take"
+            class="bz-take bz-takeover"
             onclick={() => connection.takeBrowserRole()}
             onkeydown={esc}
           >
@@ -70,6 +103,28 @@
           </button>
         {/if}
       </div>
+
+      {#if capable}
+        <!-- The visible toggle: the app's own Chromium comes up as a window.
+             A window is a launch flag, so this is a relaunch, and the cost
+             rides the control where the decision is read. -->
+        <div class="bz-it bz-window">
+          <span class="nm">window</span>
+          <button
+            type="button"
+            class="bz-take bz-show"
+            onclick={() => void showBrowser()}
+            onkeydown={esc}
+          >
+            Show browser
+          </button>
+        </div>
+        <div class="bz-cost">
+          Showing the browser restarts it: named contexts reopen from their saved cookies and tabs
+          on their next call; the shared context's open tabs do not come back.
+        </div>
+      {/if}
+
       {#each contexts as row (row.name)}
         <div class="bz-it">
           {#if row.running}
@@ -79,6 +134,15 @@
           {/if}
           <span class="nm">{row.name}</span>
           <span class="tx">{row.owner}{row.running ? '' : ' · its driver is gone'}</span>
+          <button
+            type="button"
+            class="bz-take bz-close"
+            aria-label="close the {row.name} context"
+            onclick={() => close(row)}
+            onkeydown={esc}
+          >
+            close
+          </button>
         </div>
       {/each}
       {#if contexts.length === 0}

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { BrowserAnswer, BrowserAsk, BrowserAnswerPart } from '../protocol';
+import type { BrowserAnswer, BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
-import { bytesOf, hostTheBrowser, canHost, type HostReply } from './host';
+import { answerPart, bytesOf, hostTheBrowser, canHost, type HostReply } from './host';
 
 /**
  * The mapping from what the shell's host returns to what the socket sends,
@@ -17,7 +17,7 @@ describe('what the host answered', () => {
         { type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' },
       ],
     };
-    expect(reply.parts.map(toAnswerPart)).toEqual([
+    expect(reply.parts.map(answerPart)).toEqual([
       { type: 'text', text: 'navigated' },
       { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) },
     ]);
@@ -29,13 +29,6 @@ describe('what the host answered', () => {
     expect(bytesOf('AP8Q')).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
   });
 });
-
-/** The mapping under test, named so the assertion above reads as the pairs. */
-function toAnswerPart(part: HostReply['parts'][number]): BrowserAnswerPart {
-  return part.type === 'image'
-    ? { type: 'image', mime_type: part.mime_type, bytes: bytesOf(part.data_base64) }
-    : part;
-}
 
 /** The seat every ask in these tests is made for. */
 const SEAT = { org: 'o', project: 'p', label: 'lead' };

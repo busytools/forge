@@ -116,6 +116,9 @@ impl Drop for ResolveHandOffOnDrop {
 pub struct MockBrowserFacade {
     /// Captured `(tool, args)` calls.
     pub calls: parking_lot::Mutex<Vec<(String, Value)>>,
+    /// The seat each call was made for, so a caller sending the wrong one is a
+    /// failed assertion rather than a silent mismatch.
+    pub seats: parking_lot::Mutex<Vec<SessionSlot>>,
     /// The outcome every call answers with.
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
     /// What `hand_off` answers with, and what it was asked.
@@ -128,6 +131,7 @@ impl MockBrowserFacade {
     pub fn new() -> Self {
         Self {
             calls: parking_lot::Mutex::new(Vec::new()),
+            seats: parking_lot::Mutex::new(Vec::new()),
             answer: parking_lot::Mutex::new(Ok(vec![BrowserPart::Text {
                 text: "done".to_owned(),
             }])),
@@ -146,20 +150,22 @@ impl MockBrowserFacade {
 impl BrowserFacade for MockBrowserFacade {
     async fn call(
         &self,
-        _seat: &SessionSlot,
+        seat: &SessionSlot,
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
+        self.seats.lock().push(seat.clone());
         self.calls.lock().push((tool.to_owned(), args));
         self.answer.lock().clone()
     }
 
     async fn hand_off(
         &self,
-        _seat: &SessionSlot,
+        seat: &SessionSlot,
         reason: &str,
         context: Option<&str>,
     ) -> Result<HandOffEnding, String> {
+        self.seats.lock().push(seat.clone());
         self.hand_offs.lock().push((reason.to_owned(), context.map(str::to_owned)));
         self.hand_off_answer.lock().clone()
     }
@@ -194,6 +200,50 @@ mod tests {
 
         host.await.expect("the host task ran");
         assert_eq!(answer, Ok(vec![BrowserPart::Text { text: "clicked".to_owned() }]));
+    }
+
+    /// **The waiter going away is its own ending.** A session that dies (or a
+    /// handler dropped mid-wait) must clear the registry and tell the views
+    /// which ending took the hand-off, rather than leaving a dock up for a
+    /// prompt no answer can reach.
+    #[tokio::test]
+    async fn a_hand_off_waiter_that_dies_is_reported_as_abandoned() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let facade = ProdBrowserFacade::from_workspace(&workspace);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            let seat = seat.clone();
+            async move { facade.hand_off(&seat, "solve the CAPTCHA", None).await }
+        });
+        // The hand-off lands in the registry, which is what the blocked call
+        // just did.
+        for _ in 0..200 {
+            if workspace.browser_handoffs.lock().keys().next().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            workspace.browser_handoffs.lock().keys().next().is_some(),
+            "the blocked call parked a hand-off",
+        );
+
+        task.abort();
+        let _ = task.await;
+
+        let mut resolved = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { ending, .. } = update {
+                resolved.push(ending);
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![HandOffEnding::Abandoned],
+            "a dropped waiter clears the registry and says which ending took the hand-off",
+        );
+        assert!(workspace.browser_handoffs.lock().is_empty(), "and leaves nothing registered");
     }
 
     /// With no client holding the role, the facade answers the relay's own

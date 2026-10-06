@@ -225,6 +225,8 @@ pub(crate) fn dispatch_browser_hand_off_outcome(
     id: uuid::Uuid,
     done: bool,
 ) {
+    #[cfg(feature = "testing")]
+    app.test_dispatched_browser_hand_offs.borrow_mut().push((id, done));
     let Some(workspace) = app.workspace.as_ref() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,

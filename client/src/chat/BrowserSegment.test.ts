@@ -72,7 +72,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
-    const take = shown.target.querySelector('.bz-take');
+    const take = shown.target.querySelector('.bz-takeover');
     expect(take, 'capable and not hosting: the take is the door').not.toBeNull();
     click(take);
     expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
@@ -84,14 +84,14 @@ describe('the browser segment', () => {
     click(shown.target.querySelector('.bz-tog'));
 
     expect(shown.target.textContent).toContain('this client cannot drive the browser');
-    expect(shown.target.querySelector('.bz-take'), 'nothing to take with no host').toBeNull();
+    expect(shown.target.querySelector('.bz-takeover'), 'nothing to take with no host').toBeNull();
     shown.stop();
   });
 
   it('flips on the role frame: holding it drops the take and says so', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    expect(shown.target.querySelector('.bz-take')).not.toBeNull();
+    expect(shown.target.querySelector('.bz-takeover')).not.toBeNull();
 
     shown.flip(true);
     flushSync();
@@ -99,7 +99,7 @@ describe('the browser segment', () => {
     expect(shown.target.textContent, 'the role frame is what the line reads').toContain(
       'this client drives the browser',
     );
-    expect(shown.target.querySelector('.bz-take'), 'a holder offers no take').toBeNull();
+    expect(shown.target.querySelector('.bz-takeover'), 'a holder offers no take').toBeNull();
     shown.stop();
   });
 });

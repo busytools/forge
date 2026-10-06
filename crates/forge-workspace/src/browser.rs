@@ -33,10 +33,14 @@ pub struct BrowserRequest {
 
 /// What a role change tells the connection it happened to.
 ///
-/// Only the force-take needs telling: a grant is the answer to the offer the
-/// connection just made, and a promotion arrives with the asks themselves.
+/// A promotion is told too, because it arrives without an ask to make it
+/// obvious - a holder goes, the next in line is handed the role - and a
+/// client that went on believing it was in line would draw "another client
+/// drives the browser" while its own connection is the one being asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoleNotice {
+    /// This connection holds the role now, promoted from the waiting line.
+    Granted,
     /// This connection held the role and lost it to a force-take. Its
     /// connection stops reading asks on this word - the same thing its own
     /// drop does - so the calls it was carrying fail loudly rather than
@@ -112,8 +116,10 @@ impl BrowserRelay {
         notices: mpsc::UnboundedSender<RoleNotice>,
     ) -> bool {
         let mut role = self.lock();
-        // The same connection offering again (a later subscribe) replaces its
-        // own channel and changes nothing else about where it stands.
+        // The same connection offering again - a later subscribe - replaces
+        // its own channel, and as a WAITER it goes to the back of the line:
+        // the retain drops it and the push below re-adds it, which is the
+        // honest reading of "offered just now".
         role.waiting.retain(|client| client.id != id);
         match role.host.as_ref() {
             Some(host) if host.id != id => {
@@ -222,6 +228,7 @@ fn promote(role: &mut Role) {
         if next.to_host.is_closed() {
             continue;
         }
+        let _ = next.notices.send(RoleNotice::Granted);
         role.host = Some(next);
         return;
     }
@@ -510,6 +517,31 @@ mod tests {
             .await
             .expect("the role promotes in line after the claimant goes");
         assert!(third_rx.try_recv().is_err(), "and the third's old channel is the dead one");
+    }
+
+    /// **A promotion is ANNOUNCED**: the waiter promoted when the holder goes
+    /// hears `Granted`, so its own strip stops saying another client drives
+    /// the browser while its connection is the one being asked.
+    #[tokio::test]
+    async fn a_promoted_waiter_is_told_it_holds_the_role() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
+        let (second_notes, mut second_note_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()));
+        assert!(!relay.register(2, second, second_notes));
+        assert!(second_note_rx.try_recv().is_err(), "in line, nothing is said yet");
+
+        relay.unregister(1);
+
+        assert_eq!(
+            second_note_rx.try_recv(),
+            Ok(RoleNotice::Granted),
+            "the promotion is said out loud",
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), lands_on(&relay, &mut second_rx))
+            .await
+            .expect("and the asks arrive with it");
     }
 
     fn handoff(reason: &str) -> HandOff {

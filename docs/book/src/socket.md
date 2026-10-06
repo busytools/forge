@@ -92,12 +92,12 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 38
-variants, 37 of them struct variants; the one unit variant,
+A command's variant is its name around its field bag - `Command` has 39
+variants, 38 of them struct variants; the one unit variant,
 `dictate_catalogue_check`, crosses as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 68 of `SessionUpdate`'s 73 variants are struct variants too. The other
+and 70 of `SessionUpdate`'s 75 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -236,6 +236,14 @@ host's connection goes, and the tool call fails naming that. A host that
 sends an answer and then dies between frames is therefore a failure the
 session reads at disconnect time, not after a clock nobody set.
 
+**`browser_take_role`** - take the browser role from whoever holds it. The
+claimant must have declared itself capable on a `subscribe` first; the server
+answers with a `browser_role` frame either way, so a refused take is visible
+rather than silent. The displaced holder is TOLD (the same frame with
+`hosting: false`), stops reading asks, and the calls it was carrying fail as
+if its connection had gone - a take-over is loud on both sides rather than
+half-done.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
@@ -361,6 +369,12 @@ was asked for.
   CLI sent verbatim. Nothing else pairs the two, so an ask left unanswered
   is a session's tool call waiting - a client that cannot serve it answers
   with the reason rather than with silence.
+- **`browser_role {hosting}`** - whether THIS connection holds the browser
+  role, sent on every change of it: when a capable declare is granted, when
+  a waiter is promoted because the holder went, and when a force-take takes
+  the role away (`browser_take_role`, above). A client's own browser row
+  reads it to say which client drives - before this frame, "could host" and
+  "does host" looked the same from the client's side.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
 
@@ -405,7 +419,7 @@ conversation, and what the composer is doing.
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat somebody is showing is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it. |
 | `background_tasks` | The CLI's background-task registry: what it reports running, each entry with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself. |
 | `monitors` | The watches the session has running. |
-| `pending_asks` | Every prompt the seat is holding, oldest first, drafts leading. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads. |
+| `pending_asks` | Every prompt the seat is holding, oldest first, the held kinds leading (a Slack draft, a browser hand-off). Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads. |
 | `pending_ask` | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them. |

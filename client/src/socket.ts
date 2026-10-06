@@ -567,6 +567,16 @@ export function connect(url: string): Connection {
     next.onclose = () => {
       if (next !== socket) return;
       socket = null;
+      // **The role dies with the connection it belonged to.** The relay keeps
+      // the role for the CONNECTION id, not for the page, so a reconnected
+      // client is a new one - and a strip that went on saying "this client
+      // drives the browser" through a drop would hide the Take over that is
+      // the only way back. Reset before the drop guard, so even the final
+      // close says the truth.
+      if (browserRole) {
+        browserRole = false;
+        for (const hear of roleListeners) hear(browserRole);
+      }
       // A mismatched protocol is not something a retry answers, so the close
       // that follows it must not be read as a drop.
       if (status === 'closed' || status === 'mismatched') return;
@@ -717,6 +727,13 @@ export function connect(url: string): Connection {
       return () => roleListeners.delete(fn);
     },
     takeBrowserRole() {
+      // A click while the socket is down is dropped with a record rather than
+      // thrown into the click handler: a command that cannot cross is the
+      // connection's state, not a page error.
+      if (!isOpen()) {
+        report('the browser role could not be claimed', 'the socket is not open');
+        return;
+      }
       sendNow({ kind: 'browser_take_role' });
     },
     onMessage(fn) {

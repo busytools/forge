@@ -370,6 +370,13 @@ async fn run_connection(
                         batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserRole { hosting: false }).await?;
                     }
+                    // **The role handed over.** A promotion arrives without an
+                    // ask to make it obvious, so it is said the way the grant
+                    // is: the strip must not go on saying another client
+                    // drives a browser this connection is now being asked for.
+                    HostingEvent::Notice(RoleNotice::Granted) => {
+                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    }
                 }
             }
             // The deadline is a value, not a condition: with nothing held the
@@ -449,13 +456,42 @@ enum HostingEvent {
 
 /// The next thing the hosting has for the loop - one future, because both
 /// channels hang off the same borrow and `select!` takes one per branch.
-/// A connection with no hosting parks here forever, so its branch is inert
-/// rather than ending the loop.
+///
+/// **A closed channel is not the connection's end, and this is the seam a
+/// force-take runs through.** The relay drops both of a displaced holder's
+/// senders, so its channels close - and the last word, the `Taken` notice, is
+/// still IN the closed notice channel: `recv` on a closed channel delivers
+/// what it holds and only then reads as done. So each channel is drained
+/// first, a closed one is waited past rather than satisfied, and both closed
+/// parks the branch: the connection stays a client - a viewer, told what
+/// happened - where ending it would have taken its socket down mid-test and
+/// mid-life. A connection with no hosting parks here too, so its branch is
+/// inert rather than ending the loop.
 async fn next_hosting_event(hosting: &mut Option<Hosting>) -> Option<HostingEvent> {
     match hosting.as_mut() {
-        Some(hosting) => tokio::select! {
-            ask = hosting.asks.recv() => ask.map(HostingEvent::Ask),
-            notice = hosting.notices.recv() => notice.map(HostingEvent::Notice),
+        Some(hosting) => loop {
+            if let Ok(notice) = hosting.notices.try_recv() {
+                return Some(HostingEvent::Notice(notice));
+            }
+            if let Ok(request) = hosting.asks.try_recv() {
+                return Some(HostingEvent::Ask(request));
+            }
+            let asks_dead = hosting.asks.is_closed();
+            let notices_dead = hosting.notices.is_closed();
+            if asks_dead && notices_dead {
+                return std::future::pending().await;
+            }
+            let next = tokio::select! {
+                ask = hosting.asks.recv(), if !asks_dead => ask.map(HostingEvent::Ask),
+                notice = hosting.notices.recv(), if !notices_dead => {
+                    notice.map(HostingEvent::Notice)
+                }
+            };
+            if let Some(event) = next {
+                return Some(event);
+            }
+            // A channel closed under the select with nothing left in it:
+            // loop, and either the other channel or the park decides.
         },
         None => std::future::pending().await,
     }
@@ -487,11 +523,19 @@ async fn handle_client(
                     // would wait forever. Nothing names which ask a refused
                     // frame was for, so every ask waiting on an image is
                     // failed with the reason - a failure a session can read,
-                    // where a wait with no end is not.
-                    fail_awaiting_images(
-                        hosting,
-                        &format!("an image frame this server cannot take: {}", refusal.reason()),
-                    );
+                    // where a wait with no end is not. **A dictation refusal
+                    // is not that**: it belongs to the audio stream, and
+                    // failing image waits on it would name an image error
+                    // over a microphone frame.
+                    if refusal.concerns_images() {
+                        fail_awaiting_images(
+                            hosting,
+                            &format!(
+                                "an image frame this server cannot take: {}",
+                                refusal.reason()
+                            ),
+                        );
+                    }
                     take_frame(
                         &state.surface,
                         dictate.as_slice(),
@@ -598,7 +642,15 @@ async fn handle_client(
                             seat: None,
                         },
                     )
-                    .await
+                    .await?;
+                    // **The role was taken at register, before the snapshot
+                    // could refuse** - so the grant is owed here too, or a
+                    // connection that holds the role (and will be sent asks)
+                    // is one the client believes never got it.
+                    if grant_role {
+                        return send(socket, ServerMessage::BrowserRole { hosting: true }).await;
+                    }
+                    Ok(())
                 }
             }
         }

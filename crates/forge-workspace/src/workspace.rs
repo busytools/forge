@@ -3546,6 +3546,12 @@ impl Workspace {
     /// fails the turn rather than hanging it. A subscriber that declares
     /// itself an observer is not counted as an answer.
     ///
+    /// **A browser hand-off fails closed differently**: nothing parks a
+    /// decision for it to cancel, so its registration hands the blocked call
+    /// a dead receiver instead and the tool answers the reason - no attached
+    /// client can show the hand-off - rather than holding a session on a
+    /// prompt no view can draw.
+    ///
     /// Who takes the pre-attach backlog is positional, not role-aware:
     /// an observer subscribing before the TUI is the first caller and
     /// takes whatever the workspace emitted beforehand, the boot notice

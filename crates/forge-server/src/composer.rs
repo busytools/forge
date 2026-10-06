@@ -682,6 +682,44 @@ mod tests {
         );
     }
 
+    /// The same rule for a browser hand-off: it leads like the draft does -
+    /// its registry carries no arrival order either - and its resolution
+    /// falls back to whatever was waiting behind it.
+    #[test]
+    fn a_hand_off_leads_the_queue_and_its_resolution_falls_back() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let handoff = forge_primitives::browser::HandOff {
+            id: uuid::Uuid::parse_str("0192e1c0-0000-7000-8000-0000000000aa").expect("a uuid"),
+            reason: "solve the CAPTCHA".to_owned(),
+            context: Some("job-hunt".to_owned()),
+        };
+
+        composer.apply(&asked(&slot, question("toolu_q", 0)));
+        composer.apply(&SessionUpdate::BrowserHandOffPending {
+            key: slot.clone(),
+            handoff: handoff.clone(),
+        });
+
+        assert_eq!(
+            ask_key(composer.ask(&slot).expect("a front ask")),
+            (handoff.id.to_string(), None),
+            "the hand-off leads the question that was already waiting",
+        );
+
+        composer.apply(&SessionUpdate::BrowserHandOffResolved {
+            key: slot.clone(),
+            id: handoff.id,
+            ending: forge_primitives::browser::HandOffEnding::Done,
+        });
+
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_q".to_owned(), Some(0)),
+            "and its resolution falls back to the question",
+        );
+    }
+
     /// The fold applies every update twice - once on the boot's fold, once on
     /// the page's stream - so a request must not park the same ask twice.
     #[test]

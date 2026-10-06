@@ -745,15 +745,19 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
             continue;
         };
-        properties.insert(
-            "context".to_owned(),
-            json!({
-                "type": "string",
-                "description": "Name of the browser context to drive. A context is owned by \
-                    the session that first names it, and another session naming it is refused \
-                    until it is released; omit it to use the shared browser context.",
-            }),
-        );
+        // The hand-off is the one tool whose `context` chooses what the PERSON
+        // is shown rather than what this session drives, so its description
+        // says that instead.
+        let description = if spec.name == "browser_hand_off" {
+            "Name of the browser context to raise for the person. Omit to raise the shared \
+             browser context."
+        } else {
+            "Name of the browser context to drive. A context is owned by \
+                the session that first names it, and another session naming it is refused \
+                until it is released; omit it to use the shared browser context."
+        };
+        properties
+            .insert("context".to_owned(), json!({ "type": "string", "description": description }));
     }
     specs
 }
@@ -762,9 +766,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 mod tests {
     use super::*;
 
-    /// The surface is twenty-seven tools: the 25 upstream published and the
-    /// two this family adds. A count is the cheap half; the shape of each is
-    /// pinned below.
+    /// The surface is twenty-eight tools: the 25 upstream published and the
+    /// three this family adds. A count is the cheap half; the shape of each
+    /// is pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();

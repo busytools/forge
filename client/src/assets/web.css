@@ -895,6 +895,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; font: inherit;
   font-size: var(--fs-label); color: var(--muted); }
 .bz-list .bz-take:hover { color: var(--text); background: var(--s3); }
+.bz-list .bz-cost { color: var(--dim); font-size: var(--fs-label); padding: 0 13px 8px;
+  border-bottom: 1px solid var(--line); }
 .bz-list .bz-it { display: flex; align-items: center; gap: 9px; padding: 7px 13px;
   font-size: var(--fs-data); }
 .bz-list .bz-it .ring { width: 9px; height: 9px; flex: none; }

@@ -297,6 +297,11 @@ mod tests {
             "the host is asked for the tool the model called, with its arguments verbatim",
         );
         assert_eq!(
+            mock.seats.lock().as_slice(),
+            [seat()],
+            "and for the seat that called, so a wrong slot cannot show the wrong session as the asker",
+        );
+        assert_eq!(
             out.blocks,
             vec![ToolOutputBlock::Text { text: "done".to_owned() }],
             "and the host's parts are what the tool returns",

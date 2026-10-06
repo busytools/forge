@@ -4091,6 +4091,39 @@ describe('the dock', () => {
     ]);
   });
 
+  it('declines the hand-off with Not now, which is the same release', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Not now').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          done: false,
+        },
+      },
+    ]);
+  });
+
+  /** Open is the client's own act, and **its claim follows its answer**:
+   * outside the shell nothing raises, so the dock says so rather than
+   * claiming "the browser is up" over a click that did nothing. */
+  it('says the browser could not be raised when nothing raised it', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    // The raise answers on a microtask; one flush after it lands.
+    await Promise.resolve();
+    flushSync();
+
+    expect(drawn(), 'no false "up"').not.toContain('The browser is up.');
+    expect(drawn()).toContain('could not be raised here');
+    expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
+  });
+
   it("draws the question's own mark for its header, not a character-cell glyph", () => {
     open({ record: record({ pending_asks: [questionAsk()] }) });
 

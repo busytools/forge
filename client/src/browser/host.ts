@@ -45,8 +45,14 @@ export function bytesOf(base64: string): Uint8Array {
   return bytes;
 }
 
-/** One part as the socket wants it: an image's bytes in hand, not base64. */
-function answerPart(part: HostPart): BrowserAnswerPart {
+/**
+ * One part as the socket wants it: an image's bytes in hand, not base64.
+ *
+ * Exported for the same reason the invoke is injectable: it is the mapping
+ * the shell's contract rests on, so a test calls the real one rather than a
+ * copy that can drift.
+ */
+export function answerPart(part: HostPart): BrowserAnswerPart {
   return part.type === 'image'
     ? { type: 'image', mime_type: part.mime_type, bytes: bytesOf(part.data_base64) }
     : part;
@@ -96,14 +102,32 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 /**
  * Bring the browser up visibly, which is what a hand-off's Open asks for.
  *
- * A no-op outside the shell: a page in a plain browser has no host to raise
- * anything with, and the dock's own words are the whole of the guidance
- * there.
+ * **Answers whether a browser was really raised.** `false` outside the shell
+ * and on a failed raise - an unvendored build, a host that cannot start -
+ * and the caller draws that truth rather than claiming a window is up. A
+ * dock that said "The browser is up" over a raise that never happened would
+ * have the person press Done and tell the session they acted.
  */
-export async function showBrowser(): Promise<void> {
+export async function showBrowser(): Promise<boolean> {
+  if (!canHost()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_show');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Close a named context from the client's own UI: the strip's row, acting
+ * for the person rather than for a session - the door a context whose
+ * owning session is gone comes back through.
+ */
+export async function closeContext(name: string): Promise<void> {
   if (!canHost()) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_show');
+  await invoke('browser_context_close', { name });
 }
 
 /** One named context, as the client's own browser strip draws it. */

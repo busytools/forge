@@ -998,4 +998,48 @@ describe('the browser role', () => {
       error: 'this client cannot host the browser',
     });
   });
+
+  /**
+   * **An escalation is re-declared.** A shell that comes up before its host
+   * resolves subscribes without the capability and subscribes again once it
+   * can host - and the second declare has to reach the server, or the role
+   * never moves.
+   */
+  it('re-declares when the capability is added', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { browser: false });
+    await until(() => server.received.length === 1, 'the first subscribe');
+    expect(server.received[0]).toMatchObject({ kind: 'subscribe', browser: false });
+
+    conn.subscribe(HOME, { browser: true });
+    await until(() => server.received.length === 2, 'the escalated declare');
+    expect(server.received[1]).toMatchObject({ kind: 'subscribe', browser: true });
+  });
+
+  /**
+   * **The role frame is the only thing that says "you host".** It flips the
+   * read and reaches every listener; `takeBrowserRole` puts the claim on the
+   * wire; and a drop clears it, because the role belonged to the connection
+   * that went rather than to the page.
+   */
+  it('keeps the role from the server frame, claims it, and clears it on a drop', async () => {
+    const { server, conn } = await connected();
+    const heard: boolean[] = [];
+    conn.onBrowserRole((now) => heard.push(now));
+    expect(conn.browserRole(), 'before any frame, this client does not host').toBe(false);
+
+    server.send({ kind: 'browser_role', hosting: true });
+    await until(() => conn.browserRole(), 'the grant to land');
+    expect(heard, 'the listener heard the grant').toEqual([true]);
+
+    conn.takeBrowserRole();
+    await until(() => server.received.length === 1, 'the claim to arrive');
+    expect(server.received[0], 'the claim crosses as its own frame').toEqual({
+      kind: 'browser_take_role',
+    });
+
+    server.drop();
+    await until(() => !conn.browserRole(), 'the drop to clear the role');
+    expect(heard, 'and the drop is said out loud').toEqual([true, false]);
+  });
 });
