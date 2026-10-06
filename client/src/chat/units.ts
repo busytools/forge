@@ -1956,22 +1956,6 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
               continue;
             }
           }
-          // **The mark the CLI gives every injected body** (#1543): a synthetic
-          // user frame that nothing above claimed - a skill's body arriving
-          // without the plumbing line or a matching heading - rides the first
-          // call still waiting for one, named by position the way the CLI
-          // injects it, right after the call that loaded the skill. With no
-          // call waiting it still draws, as a notice - never as the reader's
-          // own turn.
-          if (frame.isSynthetic === true) {
-            if (attachSkillBody(null, stripped.trim())) continue;
-            push({
-              kind: 'notice',
-              key: keyOf(at, frame, blockAt),
-              notice: { severity: 'info', text: stripped },
-            });
-            continue;
-          }
           if (isContinuation(stripped)) {
             attachContinuation(stripped, keyOf(at, frame, blockAt));
             continue;
@@ -1988,6 +1972,27 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
                 notice: { severity: 'info', text: note },
               });
             }
+            continue;
+          }
+          // **The mark the CLI gives every injected frame** (#1543), read LAST
+          // on purpose: every family that claims a reader-shaped frame it did
+          // not write sits above this - the reminder, a skill's body, a
+          // compaction's continuation, an image's caption - and each of those
+          // frames carries the mark too, so a mark read earlier would steal
+          // them from their own rows. What reaches here is what none of them
+          // claimed: a skill's body arriving with neither the plumbing line
+          // nor a matching heading, which rides the first call still waiting
+          // for one - named by position the way the CLI injects it, right
+          // after the call that loaded the skill. With no call waiting it
+          // still draws, as a notice - never as the reader's own turn.
+          const body = stripped.trim();
+          if (carried === null && body !== '' && frame.isSynthetic === true) {
+            if (attachSkillBody(null, body)) continue;
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: stripped },
+            });
             continue;
           }
         }
