@@ -28,13 +28,13 @@ pub mod custom;
 pub mod driver;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::Manager as _;
 
-use contexts::{Context, Named, Seat};
-use driver::{Driver, ReplyPart};
+use contexts::{Context, DriverStart, Named, Seat};
+use driver::ReplyPart;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -76,19 +76,27 @@ impl StackPaths {
             .path()
             .app_data_dir()
             .map_err(|why| format!("the app's data directory cannot be resolved: {why}"))?;
+        Ok(Self::from_dirs(&resource, &data))
+    }
 
+    /// The derivation itself, apart from the handle that feeds it: the stack
+    /// is the bundle's own resource copy when the vendoring is really there,
+    /// else the checkout the binary was built from, and the three state
+    /// directories hang off the app's data directory - never the resource
+    /// directory, and never each other.
+    pub fn from_dirs(resource: &Path, data: &Path) -> Self {
         let bundled = resource.join("browser-stack");
         let stack = if bundled.join("node/bin/node").is_file() {
             bundled
         } else {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack")
         };
-        Ok(Self {
+        Self {
             stack,
             profile: data.join("browser/profile"),
             output: data.join("browser/output"),
             contexts: data.join("browser/contexts"),
-        })
+        }
     }
 }
 
@@ -133,6 +141,11 @@ impl BrowserHost {
     /// No `context` argument drives the browser's own context. A name drives
     /// the named context under it, opened on first use by the asking session;
     /// a name another session already holds is refused with the owner's name.
+    ///
+    /// **Every call resolves the browser first**, so the endpoint it hands the
+    /// context is the one the browser answers on NOW: a browser that died (or
+    /// was relaunched for a window) moves that endpoint, and the context
+    /// rebuilds its driver rather than talking to a port nobody listens on.
     pub async fn call(
         &self,
         seat: &Seat,
@@ -140,38 +153,96 @@ impl BrowserHost {
         args: Value,
     ) -> Result<Vec<ReplyPart>, String> {
         let (context, args) = take_context(args)?;
+        // A name that cannot be a context is decided before anything else: no
+        // directory, no lock and no browser is consulted to answer it.
+        if let Some(name) = context.as_deref()
+            && let Some(refusal) = contexts::name_refusal(name)
+        {
+            return Err(refusal);
+        }
+        let paths = self.paths.clone()?;
+        let active = self.active_browser(&paths).await?;
+        let endpoint = format!("http://127.0.0.1:{}", active.port);
+        let node = driver::node_path(&paths.stack);
+        let cli = driver::cli_path(&paths.stack);
         match context {
             None => {
-                let context = self.default_context().await?;
-                context.call(tool, args).await
+                let context = self.default_context().await;
+                let start = DriverStart {
+                    node: &node,
+                    cli: &cli,
+                    endpoint: &endpoint,
+                    output: &paths.output,
+                    storage: None,
+                };
+                let outcome = context.call(&start, tool, args).await;
+                self.forget_a_dead_browser(&paths, &context, active.port, outcome.is_err()).await;
+                outcome
             }
             Some(name) => {
                 let named = self.named_context(seat, &name).await?;
-                named.call(tool, args).await
+                let start = DriverStart {
+                    node: &node,
+                    cli: &cli,
+                    endpoint: &endpoint,
+                    output: &paths.output,
+                    storage: Some(&named.storage),
+                };
+                let outcome = named.call(&start, tool, args).await;
+                self.forget_a_dead_browser(&paths, &named.context, active.port, outcome.is_err())
+                    .await;
+                outcome
             }
         }
     }
 
-    /// Release a named context: save it, close its driver and forget the name.
+    /// A call failed: is it the browser that is gone, rather than the tool?
     ///
-    /// Only the session that opened it releases it, mirroring who may attach;
-    /// the name then opens fresh for whoever names it next.
-    pub async fn release(&self, seat: &Seat, name: &str) -> Result<(), String> {
+    /// A plain tool failure - no such element, a refused navigation - leaves
+    /// the driver in place; only a browser that stopped answering on the port
+    /// this driver was built for drops it, so the next call rebuilds against
+    /// a relaunched browser. Bounded by the probe's own read timeout.
+    async fn forget_a_dead_browser(
+        &self,
+        paths: &StackPaths,
+        context: &Context,
+        port: u16,
+        failed: bool,
+    ) {
+        if !failed || chromium::answers_as(&paths.profile, port).await {
+            return;
+        }
+        context.drop_driver().await;
+    }
+
+    /// Close a named context, whoever opened it: the client's own UI acting on
+    /// the row.
+    ///
+    /// **The human's door, and no seat.** A session drives only the context it
+    /// opened - the verdict refuses the rest - but the row is the person's, and
+    /// a context whose owning session is GONE is exactly what this is for.
+    /// **The save lands before the name is free** - the map's lock is held
+    /// across it - so a second session opening the name can never read the
+    /// file mid-write.
+    pub async fn close(&self, name: &str) -> Result<(), String> {
+        let paths = self.paths.clone()?;
         let mut named = self.named.lock().await;
         let Some(entry) = named.get(name) else {
             return Err(format!("no browser context is open under '{name}'"));
         };
-        if &entry.owner != seat {
-            return Err(format!(
-                "the context '{name}' belongs to {}; only the session that opened it releases it",
-                entry.owner,
-            ));
-        }
-        let Some(entry) = named.remove(name) else {
-            return Err(format!("the context '{name}' went away while it was being released"));
+        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
+        let node = driver::node_path(&paths.stack);
+        let cli = driver::cli_path(&paths.stack);
+        let start = DriverStart {
+            node: &node,
+            cli: &cli,
+            endpoint: &endpoint,
+            output: &paths.output,
+            storage: Some(&entry.storage),
         };
-        drop(named);
-        entry.save().await
+        let saved = entry.save(&start).await;
+        named.remove(name);
+        saved
     }
 
     /// Bring the browser up, without any driver.
@@ -225,37 +296,28 @@ impl BrowserHost {
         chromium::show(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
-    /// The browser's own context's driver, started when it is not up.
+    /// The browser's own context: one, cached, whose driver builds and
+    /// rebuilds itself under its own lock.
     ///
-    /// Serialized: a burst of calls arriving on a cold host must launch ONE
-    /// driver, and every caller behind the first finds it there. A driver that
-    /// died is replaced on the next call.
-    async fn default_context(&self) -> Result<Arc<Context>, String> {
-        let paths = self.paths.clone()?;
+    /// Serialized: a burst of calls arriving on a cold host finds ONE context
+    /// and builds ONE driver, because every call runs through it.
+    async fn default_context(&self) -> Arc<Context> {
         let mut default = self.default.lock().await;
-        if let Some(context) = default.as_ref().filter(|context| context.is_alive()) {
-            return Ok(Arc::clone(context));
+        if let Some(context) = default.as_ref() {
+            return Arc::clone(context);
         }
-        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
-        let driver = Driver::start(
-            &driver::node_path(&paths.stack),
-            &driver::cli_path(&paths.stack),
-            &endpoint,
-            &paths.output,
-            None,
-        )
-        .await?;
-        let context = Arc::new(Context::new(driver));
+        let context = Arc::new(Context::new());
         *default = Some(Arc::clone(&context));
-        Ok(context)
+        context
     }
 
     /// The named context under `name`, opened when it is not there.
     ///
     /// The map's lock is held across an open, so two sessions naming one fresh
-    /// context race at the verdict rather than both starting a driver: the
-    /// first opens and owns it, and the second is refused by the same rule as
-    /// any other attach.
+    /// context race at the verdict rather than both opening: the first opens
+    /// and owns it, and the second is refused by the same rule as any other
+    /// attach. A context whose driver died between calls needs nothing here -
+    /// its next call rebuilds the driver over the saved files.
     async fn named_context(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
         if let Some(refusal) = contexts::name_refusal(name) {
             return Err(refusal);
@@ -269,34 +331,27 @@ impl BrowserHost {
                 let Some(entry) = named.get(name).map(Arc::clone) else {
                     return Err(format!("the context '{name}' went away while it was read"));
                 };
-                if entry.context.is_alive() {
-                    return Ok(entry);
-                }
-                // The driver died between calls: bring it back over its saved
-                // files, still under the owner that holds the name.
-                let fresh = Arc::new(self.start_named(&paths, &entry.owner, name).await?);
-                named.insert(name.to_owned(), Arc::clone(&fresh));
-                Ok(fresh)
+                Ok(entry)
             }
             contexts::Verdict::Open => {
-                let fresh = Arc::new(self.start_named(&paths, seat, name).await?);
+                let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
+                let endpoint =
+                    format!("http://127.0.0.1:{}", self.active_browser(&paths).await?.port);
+                let node = driver::node_path(&paths.stack);
+                let cli = driver::cli_path(&paths.stack);
+                let start = DriverStart {
+                    node: &node,
+                    cli: &cli,
+                    endpoint: &endpoint,
+                    output: &paths.output,
+                    storage: Some(&fresh.storage),
+                };
+                contexts::reopen_tabs(&fresh.context, &start, &contexts::saved_tabs(&fresh.tabs))
+                    .await;
                 named.insert(name.to_owned(), Arc::clone(&fresh));
                 Ok(fresh)
             }
         }
-    }
-
-    /// Start the driver behind a named context and reopen its saved tabs.
-    async fn start_named(
-        &self,
-        paths: &StackPaths,
-        owner: &Seat,
-        name: &str,
-    ) -> Result<Named, String> {
-        let endpoint = format!("http://127.0.0.1:{}", self.active_browser(paths).await?.port);
-        let named = Named::start(owner.clone(), name, &endpoint, paths).await?;
-        contexts::reopen_tabs(&named.context, &contexts::saved_tabs(&named.tabs)).await;
-        Ok(named)
     }
 }
 
@@ -371,14 +426,14 @@ pub async fn browser_contexts(
     Ok(host.contexts().await)
 }
 
-/// Release the asking session's named context.
+/// Close a named context from the client's own UI: the strip's row, acting
+/// for the person rather than for a session.
 #[tauri::command]
-pub async fn browser_context_release(
+pub async fn browser_context_close(
     host: tauri::State<'_, Arc<BrowserHost>>,
-    seat: Seat,
     name: String,
 ) -> Result<(), String> {
-    host.release(&seat, &name).await
+    host.close(&name).await
 }
 
 #[cfg(test)]
@@ -448,22 +503,40 @@ mod tests {
         assert!(host.contexts().await.is_empty());
     }
 
-    /// The profile, the output and the contexts are the app's OWN
-    /// directories: a profile that landed beside the binary would hold logins
-    /// in a place a bundle update erases.
+    /// **The derivation `resolve` makes, apart from the handle.** Everything
+    /// it produces must hang off the two directories it is given: the state
+    /// directories off the DATA dir (a profile that landed beside the binary
+    /// would hold logins where a bundle update erases them), and the stack
+    /// off the resource dir only when the vendoring is really there.
     #[test]
-    fn the_machine_local_directories_are_under_the_app_data() {
-        let paths = StackPaths {
-            stack: PathBuf::from("/stack"),
-            profile: PathBuf::from("/data/browser/profile"),
-            output: PathBuf::from("/data/browser/output"),
-            contexts: PathBuf::from("/data/browser/contexts"),
-        };
-        assert!(paths.profile.starts_with("/data/browser"), "{paths:?}");
-        assert!(paths.output.starts_with("/data/browser"), "{paths:?}");
-        assert!(paths.contexts.starts_with("/data/browser"), "{paths:?}");
-        assert_ne!(paths.profile, paths.output, "the profile is not where output files land");
-        assert_ne!(paths.contexts, paths.profile, "a context's files are not the profile itself");
+    fn the_paths_derive_from_the_two_directories_they_are_given() {
+        let resource = tempfile::tempdir().expect("a temp dir");
+        let data = tempfile::tempdir().expect("a temp dir");
+
+        let absent = StackPaths::from_dirs(resource.path(), data.path());
+        assert_eq!(
+            absent.stack,
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack"),
+            "with nothing vendored, the stack is the checkout the binary was built from",
+        );
+        assert!(absent.profile.starts_with(data.path()), "{absent:?}");
+        assert!(absent.output.starts_with(data.path()), "{absent:?}");
+        assert!(absent.contexts.starts_with(data.path()), "{absent:?}");
+        assert!(
+            !absent.profile.starts_with(resource.path()),
+            "and none of them hangs off the resource directory: {absent:?}",
+        );
+        assert_ne!(absent.profile, absent.output, "the profile is not where output files land");
+        assert_ne!(absent.contexts, absent.profile, "a context's files are not the profile itself");
+
+        std::fs::create_dir_all(resource.path().join("browser-stack/node/bin")).expect("dirs");
+        std::fs::write(resource.path().join("browser-stack/node/bin/node"), b"").expect("node");
+        let bundled = StackPaths::from_dirs(resource.path(), data.path());
+        assert_eq!(
+            bundled.stack,
+            resource.path().join("browser-stack"),
+            "and the bundle's own copy wins once the vendoring is there",
+        );
     }
 
     /// `context` chooses the context and never reaches a tool; a call without

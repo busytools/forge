@@ -116,9 +116,20 @@ pub fn read_active_port(profile: &Path) -> Option<ActivePort> {
 /// endpoint Chrome serves for exactly this question, and something else
 /// holding the port answers it with nothing that parses.
 pub async fn probe(port: u16) -> bool {
+    probe_identity(port).await.is_some()
+}
+
+/// The browser target path an answering port reports - `/devtools/browser/
+/// <uuid>`, taken from its own `/json/version` - or `None` when nothing
+/// answers there as a browser. Compared against the port file's own line,
+/// this is what tells a launch from whatever else took the port over.
+pub async fn probe_identity(port: u16) -> Option<String> {
     let url = format!("http://127.0.0.1:{port}/json/version");
-    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await;
-    answer.ok().flatten().is_some_and(|body| body.contains("\"webSocketDebuggerUrl\""))
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let ws = parsed.get("webSocketDebuggerUrl")?.as_str()?;
+    ws.find("/devtools/").map(|at| ws[at..].to_owned())
 }
 
 /// One HTTP/1.1 GET, without an HTTP client: the endpoint is loopback and
@@ -183,14 +194,21 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
     Some(at + 4 + length)
 }
 
+/// How much of a failed launch's stderr is kept, in bytes: enough for the
+/// first complaint a Chrome prints about a locked profile or a quarantined
+/// binary, bounded so a chatty failure cannot grow without end.
+const STDERR_TAIL: usize = 4096;
+
 /// Launch the vendored Chromium against `profile`, and answer once it is
 /// answering on its port.
 ///
 /// Detached on purpose: the child is left running when this drops - its
-/// stdout and stderr go nowhere a client reads, and its lifetime is the
-/// machine's, not the client run's.
+/// stdout goes nowhere a client reads, and its lifetime is the machine's, not
+/// the client run's. **The window follows the marker the last launch left**,
+/// so a relaunch after a crash comes back the way the person was looking at
+/// it rather than silently headless.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, false).await
+    launch_with(binary, profile, launched_windowed(profile)).await
 }
 
 /// The same, with the window asked for: what a hand-off's Open needs.
@@ -203,15 +221,9 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
     }
     std::fs::create_dir_all(profile)
         .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
-    // A port file from an older launch would be read as this one's.
-    let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
-    // The marker follows the launch that is about to happen; a failed launch
-    // leaves none, which reads as headless and is the safe direction.
-    let _ = std::fs::remove_file(windowed_marker(profile));
-    if windowed {
-        std::fs::write(windowed_marker(profile), b"")
-            .map_err(|why| format!("the browser window marker cannot be written: {why}"))?;
-    }
+    // A launch about to happen owns the wires: an older port file would be
+    // read as this one's, and an older pid names a process this launch is not.
+    forget_launch(profile);
 
     let mut command = tokio::process::Command::new(binary);
     for arg in launch_args(profile, windowed) {
@@ -220,31 +232,72 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let child =
+        // **A failure's own words, not a silent null.** A locked profile, a
+        // quarantined binary and an exec denial all answer the same way
+        // otherwise - "did not answer within 15 s" - which names nothing a
+        // reader can act on.
+        .stderr(std::process::Stdio::piped());
+    let mut child =
         command.spawn().map_err(|why| format!("the vendored browser would not start: {why}"))?;
     // The id before the handle goes: the browser is meant to outlive this
     // call, and this process reaps nothing it did not spawn as its own work -
     // but a caller that must reap it needs the id, and the handle is what
-    // carries it. It is written down as well, because the client that
-    // relaunches the browser for a window is usually not the one that
-    // launched it.
+    // carries it. It is written down only once the launch ANSWERS, so a file
+    // never names a browser that never came up.
     let pid = child.id();
-    drop(child);
-    if let Some(pid) = pid {
-        let _ = std::fs::write(pid_file(profile), pid.to_string());
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    if let Some(mut stderr) = child.stderr.take() {
+        let tail = std::sync::Arc::clone(&tail);
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt as _;
+            let mut chunk = [0_u8; 1024];
+            while let Ok(read) = stderr.read(&mut chunk).await {
+                if read == 0 {
+                    break;
+                }
+                let mut held = tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                held.extend_from_slice(&chunk[..read]);
+                let len = held.len();
+                if len > STDERR_TAIL {
+                    held.drain(..len - STDERR_TAIL);
+                }
+            }
+        });
     }
+    drop(child);
 
     let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
     loop {
-        if let Some(active) = read_active_port(profile)
-            && probe(active.port).await
-        {
+        if let Some(active) = verified(profile).await {
+            if let Some(pid) = pid {
+                let _ = std::fs::write(pid_file(profile), pid.to_string());
+            }
+            // Written only now, with the browser answering: `show` reads it
+            // as "a window is up", and a marker for a launch that failed is a
+            // claim nobody can check.
+            if windowed {
+                let _ = std::fs::write(windowed_marker(profile), b"");
+            }
             return Ok(ActivePort { pid, ..active });
         }
         if tokio::time::Instant::now() >= deadline {
+            // The child is ours and it never answered: kill it here, so a
+            // timed-out launch leaves no tree nobody can reap.
+            if let Some(pid) = pid {
+                kill_pid(pid, false).await;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                kill_pid(pid, true).await;
+            }
+            forget_launch(profile);
+            let said = String::from_utf8_lossy(
+                &tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .trim()
+            .to_owned();
+            let because =
+                if said.is_empty() { String::new() } else { format!("; it said: {said}") };
             return Err(format!(
-                "the vendored browser did not answer on its port within {} s",
+                "the vendored browser did not answer on its port within {} s{because}",
                 LAUNCH_TIMEOUT.as_secs(),
             ));
         }
@@ -253,37 +306,56 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
 }
 
 /// The browser to talk to: the one already running on `profile`, launched if
-/// there is none.
+/// there is none. A relaunch follows the marker, so visibility survives it.
 pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    if let Some(active) = read_active_port(profile)
-        && probe(active.port).await
-    {
+    if let Some(active) = verified(profile).await {
         return Ok(active);
     }
     launch(binary, profile).await
 }
 
-/// Bring the browser up VISIBLY, for a hand-off's Open.
+/// The launch this profile names, when the port really answers AS that
+/// launch: the probe's own `/devtools/browser/<uuid>` compared against the
+/// port file's. A port another program took over answers without that path,
+/// which is what keeps "never his Brave" from resting on file freshness.
+async fn verified(profile: &Path) -> Option<ActivePort> {
+    let active = read_active_port(profile)?;
+    answers_as(profile, active.port).await.then_some(active)
+}
+
+/// Whether `profile`'s launch is still the browser answering on `port`: the
+/// port file names that port AND the probe's own target path matches the
+/// file's. The identity check a context runs after a failed call.
+pub async fn answers_as(profile: &Path, port: u16) -> bool {
+    let Some(active) = read_active_port(profile) else {
+        return false;
+    };
+    active.port == port && probe_identity(port).await.as_deref() == Some(active.path.as_str())
+}
+
+/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's own
+/// control.
 ///
 /// A window is a launch flag, not something a running browser can be told, so
 /// this relaunches headed when the running one is headless (or unknown) and
 /// answers the live launch when a window is already up. **The relaunch costs
 /// what the toggle's own line says**: every open driver's transport dies with
 /// the old browser, named contexts reopen from their saved cookies and tabs
-/// on their next call, and the shared context's open tabs do not come back.
+/// on their next call (a context rebuilds its driver when the call after a
+/// browser change finds the old one stale), and the shared context's open
+/// tabs do not come back.
 ///
 /// A window already up is NOT raised: nothing here can reach the OS focus,
 /// and a button that quietly did nothing would be worse than one that says
 /// the window is up.
 pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     if launched_windowed(profile)
-        && let Some(active) = read_active_port(profile)
-        && probe(active.port).await
+        && let Some(active) = verified(profile).await
     {
         return Ok(active);
     }
-    if let Some(active) = read_active_port(profile) {
-        close(profile, active.port).await;
+    if let Some(port) = read_active_port(profile).map(|active| active.port) {
+        close(profile, port).await;
     }
     launch_with(binary, profile, true).await
 }
@@ -296,16 +368,25 @@ fn pid_file(profile: &Path) -> PathBuf {
 /// Close the browser on `profile`, so a relaunch is not a second browser onto
 /// one profile.
 ///
-/// By the PID the launch wrote down, never by a pattern or a name - this
-/// machine runs other browsers, and one of them belongs to the person sitting
-/// at it. TERM, a bounded wait on the port letting go, then KILL, because a
-/// Chrome shutting down under load can ignore the first. The by-port door is
-/// the fallback for a profile an older client launched, which wrote no pid.
+/// **The LISTENER is the truth and the pid file is a hint.** The pid a launch
+/// wrote describes a process that may since have exited - a dead pid, or a
+/// recycled one belonging to something else entirely - so killing it blindly
+/// is the exact outcome the pid file exists to avoid. So the pid is killed
+/// only when it holds THIS port; otherwise, what holds the port is - by the
+/// PORT and never by a pattern or a name, because this machine runs other
+/// browsers and one of them belongs to the person sitting at it. The wires go
+/// only once nothing answers, because a port file deleted under a live
+/// browser is a launch nothing can ever find again.
 async fn close(profile: &Path, port: u16) {
-    let pid = std::fs::read_to_string(pid_file(profile))
+    let listeners = port_pids(port).await;
+    if listeners.is_empty() {
+        forget_launch(profile);
+        return;
+    }
+    let named = std::fs::read_to_string(pid_file(profile))
         .ok()
         .and_then(|written| written.trim().parse::<u32>().ok());
-    match pid {
+    match named.filter(|pid| listeners.contains(pid)) {
         Some(pid) => {
             kill_pid(pid, false).await;
             if !port_frees(port).await {
@@ -314,11 +395,26 @@ async fn close(profile: &Path, port: u16) {
             }
         }
         None => {
-            kill_by_port(port).await;
-            let _ = port_frees(port).await;
+            for pid in &listeners {
+                kill_pid(*pid, false).await;
+            }
+            if !port_frees(port).await {
+                for pid in &listeners {
+                    kill_pid(*pid, true).await;
+                }
+                let _ = port_frees(port).await;
+            }
         }
     }
+    forget_launch(profile);
+}
+
+/// Drop the wires a launch leaves. Called only once nothing answers - and by
+/// a launch about to take them over.
+fn forget_launch(profile: &Path) {
+    let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let _ = std::fs::remove_file(pid_file(profile));
+    let _ = std::fs::remove_file(windowed_marker(profile));
 }
 
 /// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
@@ -330,18 +426,19 @@ async fn kill_pid(pid: u32, hard: bool) {
     let _ = kill.arg(pid.to_string()).status().await;
 }
 
-/// Whatever holds `port`: the door for a launch that left no pid.
-async fn kill_by_port(port: u16) {
+/// Whatever holds `port`.
+async fn port_pids(port: u16) -> Vec<u32> {
     let Ok(listed) = tokio::process::Command::new("lsof")
         .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
         .output()
         .await
     else {
-        return;
+        return Vec::new();
     };
-    for pid in String::from_utf8_lossy(&listed.stdout).split_whitespace() {
-        let _ = tokio::process::Command::new("kill").arg(pid).status().await;
-    }
+    String::from_utf8_lossy(&listed.stdout)
+        .split_whitespace()
+        .filter_map(|pid| pid.parse().ok())
+        .collect()
 }
 
 /// Wait, bounded, for the port a closing browser holds to stop answering.

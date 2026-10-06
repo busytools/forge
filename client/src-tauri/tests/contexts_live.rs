@@ -64,7 +64,7 @@ async fn two_named_contexts_share_one_browser_and_see_different_cookies() {
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
     // The browser dies with this test, whichever way the test ends.
-    let browser = Launched::new(active.pid, active.port);
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
     let browser_port = active.port;
 
     // A page both contexts can visit, so a cookie has an origin to live on.
@@ -162,7 +162,7 @@ async fn a_named_context_refuses_another_session_and_reopens_from_its_save() {
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port);
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
 
     // A page with a path, so a reopened tab is recognisable by its URL.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
@@ -216,11 +216,10 @@ async fn a_named_context_refuses_another_session_and_reopens_from_its_save() {
     assert!(refusal.contains("'hunt'"), "the refusal names the context: {refusal}");
     assert!(refusal.contains("Busytools/forge/alpha"), "and the session holding it: {refusal}",);
 
-    // The release saves the context and frees the name; the driver goes with
-    // it, so what beta opens next is a fresh driver over the saved files.
-    host.release(&alpha, "hunt")
-        .await
-        .unwrap_or_else(|why| panic!("alpha could not release its context: {why}"));
+    // The person's close saves the context and frees the name; the driver
+    // goes with it, so what beta opens next is a fresh driver over the saved
+    // files.
+    host.close("hunt").await.unwrap_or_else(|why| panic!("the context could not be closed: {why}"));
     let read = "async (page) => JSON.stringify(await page.context().cookies())";
     let seen = host
         .call(&beta, "browser_run_code_unsafe", json!({ "code": read, "context": "hunt" }))

@@ -42,37 +42,111 @@ impl fmt::Display for Seat {
     }
 }
 
+/// Where a context's driver comes from whenever it has to be rebuilt: the
+/// vendored node and CLI, the browser's CURRENT endpoint, the output
+/// directory, and - for a named context - its storage file.
+pub(super) struct DriverStart<'a> {
+    pub node: &'a Path,
+    pub cli: &'a Path,
+    /// The live endpoint, which a browser relaunch moves: a driver built
+    /// against the old one is stale even while its own transport stays open.
+    pub endpoint: &'a str,
+    pub output: &'a Path,
+    /// The named context's storage file; `None` for the browser's own.
+    pub storage: Option<&'a Path>,
+}
+
+impl DriverStart<'_> {
+    async fn start(&self) -> Result<Driver, String> {
+        Driver::start(self.node, self.cli, self.endpoint, self.output, self.storage).await
+    }
+}
+
+/// The driver a context holds, and the endpoint it was built against.
+struct Held {
+    endpoint: String,
+    driver: Option<Arc<Driver>>,
+}
+
 /// A context and the driver that serves it.
 ///
-/// The driver's lock is held across one call: calls to one context run in
-/// order, while different contexts run in parallel over their own drivers.
+/// The lock is held across one call: calls to one context run in order, while
+/// different contexts run in parallel over their own drivers.
 pub struct Context {
-    pub(super) driver: Mutex<Arc<Driver>>,
+    held: Mutex<Held>,
 }
 
 impl Context {
-    pub(super) fn new(driver: Driver) -> Self {
-        Self { driver: Mutex::new(Arc::new(driver)) }
+    pub(super) fn new() -> Self {
+        Self { held: Mutex::new(Held { endpoint: String::new(), driver: None }) }
     }
 
-    /// Whether the driver behind this context is still there to answer. A lock
-    /// that cannot be taken means a call is running, which means it is.
+    /// Whether a driver is there to answer. **The browser's own liveness is a
+    /// separate question**, asked per call by [`live_driver`]; this is only
+    /// what a caller reads to decide between reuse and rebuild. A lock that
+    /// cannot be taken means a call is running, which means it is there.
     pub(super) fn is_alive(&self) -> bool {
-        match self.driver.try_lock() {
-            Ok(driver) => driver.is_running(),
+        match self.held.try_lock() {
+            Ok(held) => held.driver.as_ref().is_some_and(|driver| driver.is_running()),
             Err(_) => true,
         }
     }
 
-    /// One call through this context's driver.
-    ///
-    /// The driver's lock is held across the whole call, so a context's calls
-    /// run in order while different contexts run in parallel - and it is why a
-    /// call can never interleave with that context's save.
-    pub(super) async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
-        let driver = self.driver.lock().await;
+    /// One call through this context's driver, rebuilt when it is not there,
+    /// when it died, or when the browser it was built against moved.
+    pub(super) async fn call(
+        &self,
+        start: &DriverStart<'_>,
+        tool: &str,
+        args: Value,
+    ) -> Result<Vec<ReplyPart>, String> {
+        let mut held = self.held.lock().await;
+        let driver = live_driver(&mut held, start).await?;
         routed_call(&driver, tool, &args).await
     }
+
+    /// Save the context's cookies and open tabs, through the same lock.
+    pub(super) async fn save(
+        &self,
+        start: &DriverStart<'_>,
+        storage: &Path,
+        tabs: &Path,
+    ) -> Result<(), String> {
+        let mut held = self.held.lock().await;
+        let driver = live_driver(&mut held, start).await?;
+        save(&driver, storage, tabs).await
+    }
+
+    /// Forget the driver, so the next call builds a fresh one. Called when a
+    /// call failed AND the browser is no longer the one this driver was built
+    /// against - a browser that died under it - while a plain tool failure
+    /// (no such element) leaves the driver in place.
+    pub(super) async fn drop_driver(&self) {
+        self.held.lock().await.driver = None;
+    }
+}
+
+/// The driver to run with: rebuilt when there is none, when it died, or when
+/// the browser moved out from under it.
+///
+/// **The endpoint comparison is the browser half of liveness.** The driver
+/// child is tied to the browser only by CDP, so a browser that dies closes
+/// the socket while the driver's own transport stays open - `is_running()`
+/// keeps saying yes, and a call would re-run `connectOverCDP` against a port
+/// nobody listens on. The host hands the endpoint the browser answers on
+/// right now; a mismatch is the one thing that rebuilds a live-looking
+/// driver.
+async fn live_driver(held: &mut Held, start: &DriverStart<'_>) -> Result<Arc<Driver>, String> {
+    if held.endpoint == start.endpoint
+        && let Some(driver) = held.driver.as_ref()
+        && driver.is_running()
+    {
+        return Ok(Arc::clone(driver));
+    }
+    let fresh = Arc::new(start.start().await?);
+    held.endpoint = start.endpoint.to_owned();
+    held.driver = Some(Arc::clone(&fresh));
+    Ok(fresh)
 }
 
 /// A named context: it belongs to the session that opened it, and it keeps
@@ -96,49 +170,40 @@ async fn routed_call(driver: &Driver, tool: &str, args: &Value) -> Result<Vec<Re
 }
 
 impl Named {
-    /// Start the driver behind a named context.
-    ///
-    /// The driver is ISOLATED with this context's storage file: upstream reads
-    /// that file as it creates the context, which is how the cookies come
-    /// back, and creates a context of its own - nothing shared with any other
-    /// driver over the same browser.
-    pub(super) async fn start(
-        owner: Seat,
-        name: &str,
-        endpoint: &str,
-        paths: &StackPaths,
-    ) -> Result<Self, String> {
-        let storage = paths.contexts.join(format!("{name}.json"));
-        let tabs = paths.contexts.join(format!("{name}.tabs"));
-        let driver = Driver::start(
-            &driver::node_path(&paths.stack),
-            &driver::cli_path(&paths.stack),
-            endpoint,
-            &paths.output,
-            Some(&storage),
-        )
-        .await?;
-        Ok(Self { owner, context: Context::new(driver), storage, tabs })
+    /// The paths and the owner a named context is opened with. **Its driver
+    /// is built on the first call**, not here: a session that names a context
+    /// and then drives it pays for the driver once, and one that names it and
+    /// stops pays nothing.
+    pub(super) fn open(owner: Seat, name: &str, paths: &StackPaths) -> Self {
+        Self {
+            owner,
+            context: Context::new(),
+            storage: paths.contexts.join(format!("{name}.json")),
+            tabs: paths.contexts.join(format!("{name}.tabs")),
+        }
     }
 
     /// One call through this context, then its save.
     ///
-    /// The save rides the same lock, and it runs whether the call answered or
-    /// failed: a failed call can still have moved the page. A save that fails
-    /// is the client's own problem - logged, never the call's answer.
-    pub(super) async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
-        let driver = self.context.driver.lock().await;
-        let outcome = routed_call(&driver, tool, &args).await;
-        if let Err(why) = save(&driver, &self.storage, &self.tabs).await {
+    /// The save runs whether the call answered or failed: a failed call can
+    /// still have moved the page. A save that fails is the client's own
+    /// problem - logged, never the call's answer.
+    pub(super) async fn call(
+        &self,
+        start: &DriverStart<'_>,
+        tool: &str,
+        args: Value,
+    ) -> Result<Vec<ReplyPart>, String> {
+        let outcome = self.context.call(start, tool, args).await;
+        if let Err(why) = self.context.save(start, &self.storage, &self.tabs).await {
             tauri_plugin_log::log::warn!("a browser context's save failed: {why}");
         }
         outcome
     }
 
     /// Save the context's cookies and its open tabs, without a call.
-    pub(super) async fn save(&self) -> Result<(), String> {
-        let driver = self.context.driver.lock().await;
-        save(&driver, &self.storage, &self.tabs).await
+    pub(super) async fn save(&self, start: &DriverStart<'_>) -> Result<(), String> {
+        self.context.save(start, &self.storage, &self.tabs).await
     }
 }
 
@@ -164,9 +229,10 @@ async fn save(driver: &Driver, storage: &Path, tabs: &Path) -> Result<(), String
 ///
 /// A tab that will not open is logged and the rest go on: one dead URL is not
 /// a reason to refuse the whole context.
-pub(super) async fn reopen_tabs(context: &Context, urls: &[String]) {
+pub(super) async fn reopen_tabs(context: &Context, start: &DriverStart<'_>, urls: &[String]) {
     for url in urls {
-        if let Err(why) = context.call("browser_tabs", json!({ "action": "new", "url": url })).await
+        if let Err(why) =
+            context.call(start, "browser_tabs", json!({ "action": "new", "url": url })).await
         {
             tauri_plugin_log::log::warn!("a saved browser tab did not reopen ({url}): {why}");
         }

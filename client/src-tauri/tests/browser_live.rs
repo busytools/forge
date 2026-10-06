@@ -18,8 +18,10 @@
 mod support;
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use forge_client::browser::contexts::Seat;
+use forge_client::browser::driver::Driver;
 use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
 use support::Launched;
@@ -54,7 +56,7 @@ async fn a_session_drives_a_page() {
     // and a second start ATTACHES to that launch rather than making another
     // one - one browser for the app, however many times it is ensured.
     let launched = host.start().await.expect("the browser comes up with the app");
-    let browser = Launched::new(launched.pid, launched.port);
+    let browser = Launched::new(launched.pid, launched.port, paths.profile.clone());
     let attached = host.start().await.expect("a second start attaches");
     assert_eq!(
         attached.port, launched.port,
@@ -161,7 +163,7 @@ async fn the_additions_drive_a_real_page() {
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port);
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
 
     let page = format!("http://127.0.0.1:{port}/");
     host.call(&seat(), "browser_navigate", json!({ "url": page }))
@@ -216,4 +218,155 @@ async fn the_additions_drive_a_real_page() {
         form.contains("picker") && form.contains("committed"),
         "and a field's committed value is what comes back, wherever the control keeps it: {form}",
     );
+}
+
+/// **Parity is checked against the driver itself, not against the capture.**
+/// Spec section 9 asks that the surface equal what the pinned
+/// `@playwright/mcp` publishes; the 25 upstream names below are the probe
+/// capture's list, and the server side pins OUR surface to the same names -
+/// so this test closes the loop by comparing the list to the LIVE
+/// `tools/list` of the vendored driver, where a renamed or dropped tool
+/// cannot survive.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn the_surface_matches_the_drivers_own_tools_list() {
+    // The probe capture's 25, in its order - the same list
+    // `forge_workspace::mcp::browser::specs` pins ours to.
+    const UPSTREAM: [&str; 25] = [
+        "browser_close",
+        "browser_resize",
+        "browser_console_messages",
+        "browser_handle_dialog",
+        "browser_emulate_media",
+        "browser_evaluate",
+        "browser_file_upload",
+        "browser_drop",
+        "browser_find",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_type",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_network_requests",
+        "browser_network_request",
+        "browser_run_code_unsafe",
+        "browser_take_screenshot",
+        "browser_snapshot",
+        "browser_click",
+        "browser_drag",
+        "browser_hover",
+        "browser_select_option",
+        "browser_tabs",
+        "browser_wait_for",
+    ];
+
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let endpoint = format!("http://127.0.0.1:{}", active.port);
+    let driver = match Driver::start(
+        &forge_client::browser::driver::node_path(&paths.stack),
+        &forge_client::browser::driver::cli_path(&paths.stack),
+        &endpoint,
+        &paths.output,
+        None,
+    )
+    .await
+    {
+        Ok(driver) => driver,
+        Err(why) => {
+            browser.reap();
+            panic!("the driver did not start: {why}");
+        }
+    };
+
+    let published = match driver.tool_names().await {
+        Ok(names) => names,
+        Err(why) => {
+            browser.reap();
+            panic!("the driver did not list its tools: {why}");
+        }
+    };
+    browser.reap();
+    assert_eq!(
+        published,
+        UPSTREAM.map(str::to_owned).to_vec(),
+        "the driver's own tools/list is the surface this family registers",
+    );
+}
+
+/// **The browser dying under a live driver does not wedge its context.**
+///
+/// Round 1's Critical, falsified live: the driver is a node child tied to the
+/// browser only by CDP, so killing the browser closes the socket while the
+/// driver's MCP transport stays OPEN - `is_running()` keeps saying yes, and
+/// every later call re-runs `connectOverCDP` against the endpoint it was
+/// spawned with, which is a CLI argument naming a port nobody listens on any
+/// more. The context has to notice the browser moved: this kills the browser
+/// by its own pid file and asserts the next call still answers, on a
+/// relaunched browser.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn a_killed_browser_does_not_wedge_its_context() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+
+    let page = "data:text/html,<h1>alive</h1>";
+    host.call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .unwrap_or_else(|why| panic!("the first navigate should run: {why}"));
+
+    // The browser dies under the driver: the pid its own launch wrote down.
+    let pid = std::fs::read_to_string(paths.profile.join("browser.pid"))
+        .expect("the launch wrote its pid down")
+        .trim()
+        .to_owned();
+    let killed = Command::new("kill").arg(&pid).status().expect("kill runs");
+    assert!(killed.success(), "the browser is killed by its own pid");
+    // Bounded wait for the port to stop answering, so the kill landed.
+    for _ in 0..40 {
+        if forge_client::browser::chromium::probe(active.port).await {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        } else {
+            break;
+        }
+    }
+    assert!(
+        !forge_client::browser::chromium::probe(active.port).await,
+        "the killed browser's port stopped answering",
+    );
+
+    // The next call must recover: the context notices the browser moved,
+    // drops its driver, and the call relaunches both.
+    let parts = host
+        .call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .unwrap_or_else(|why| panic!("a call after the browser was killed must recover: {why}"));
+    browser.reap();
+    assert!(!parts.is_empty(), "the recovery navigate answers with something");
 }

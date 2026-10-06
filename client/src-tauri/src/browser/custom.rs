@@ -199,7 +199,12 @@ fn target_of(args: &Value) -> Result<String, String> {
     let Some(target) = args.get("target").and_then(Value::as_str) else {
         return Err("this call needs a `target`: a snapshot ref or a selector".to_owned());
     };
-    let selector = if target.starts_with('e') && target[1..].chars().all(|c| c.is_ascii_digit()) {
+    // A bare `e` is not a ref: the engine's refs carry a number, and an empty
+    // tail would turn the letter into one.
+    let selector = if target.len() > 1
+        && target.starts_with('e')
+        && target[1..].chars().all(|c| c.is_ascii_digit())
+    {
         format!("aria-ref={target}")
     } else {
         target.to_owned()
@@ -333,6 +338,16 @@ mod tests {
         };
         assert!(code.contains("page.locator(\"#submit\")"), "{code}");
         assert!(!code.contains("aria-ref"), "{code}");
+
+        // **A bare `e` is not a ref**: the engine's refs carry a number, and
+        // an empty tail would turn the letter into one.
+        let Routed::Snippet(bare) =
+            route("browser_click", &json!({ "target": "e", "force": true })).expect("routes")
+        else {
+            panic!("a forced click is a snippet");
+        };
+        assert!(bare.contains("page.locator(\"e\")"), "{bare}");
+        assert!(!bare.contains("aria-ref"), "{bare}");
     }
 
     /// The two beyond-upstream tools are snippets, and each carries what it

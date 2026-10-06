@@ -75,7 +75,7 @@ the browser with the app and nothing downloads at first use. The bundling
 recipes run the vendoring themselves; `just client-tauri-check` does not,
 because it copies no resources.
 
-`src-tauri/src/browser/` is the host, and three things in it are worth
+`src-tauri/src/browser/` is the host, and four things in it are worth
 knowing before changing them:
 
 - **The browser outlives the client**, so it is launched detached against a

@@ -5,10 +5,6 @@ use std::time::Duration;
 
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
-// `state` and `config` on the handle are the Manager trait's, and the phone's
-// commands reach the plugin through them.
-#[cfg(target_os = "android")]
-use tauri::Manager as _;
 
 /// Bound on each update request - the check and the download alike. A stalled
 /// connection otherwise holds the header's "updating..." for the session.
@@ -29,6 +25,8 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
     app.updater_builder().timeout(UPDATE_TIMEOUT).build().map_err(|err| err.to_string())
 }
 
+// `path` and `state` on the handle are the Manager trait's; one import serves
+// every target, the phone included.
 use tauri::Manager as _;
 
 pub mod browser;
@@ -55,7 +53,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
         tauri::generate_handler![
             browser::browser_call,
-            browser::browser_context_release,
+            browser::browser_context_close,
             browser::browser_contexts,
             browser::browser_show,
             check_update,
@@ -66,15 +64,26 @@ pub fn run() {
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         browser::browser_call,
-        browser::browser_context_release,
+        browser::browser_context_close,
         browser::browser_contexts,
         browser::browser_show
     ]);
 
+    // **`invoke_handler` REPLACES the handler, it does not add to it** - so
+    // the Android arm carries every command the desktop arm does, the
+    // browser's among them. The host is the client's on the phone too, and a
+    // webview that declares `browser: true` while its commands are
+    // unregistered would hold the exclusive role and fail every ask on a
+    // missing invoke.
     #[cfg(target_os = "android")]
-    let builder = builder
-        .plugin(android::init())
-        .invoke_handler(tauri::generate_handler![check_update, install_update]);
+    let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
+        browser::browser_call,
+        browser::browser_context_close,
+        browser::browser_contexts,
+        browser::browser_show,
+        check_update,
+        install_update
+    ]);
 
     let run = builder
         .setup(|app| {
@@ -147,13 +156,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
     // `timeout: None` and the download only bounds itself when this is set -
     // so the bound is put back on before the download runs.
     update.timeout = Some(UPDATE_TIMEOUT);
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|err| {
-            tauri_plugin_log::log::warn!("the client update failed to install: {err}");
-            err.to_string()
-        })?;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|err| {
+        tauri_plugin_log::log::warn!("the client update failed to install: {err}");
+        err.to_string()
+    })?;
     Ok(STAGE_RESTART.to_string())
 }
 
@@ -232,11 +238,7 @@ async fn android_check(app: &tauri::AppHandle) -> Result<Option<android::Found>,
         version: app.package_info().version.to_string(),
         endpoint: update_endpoint(app)?,
     };
-    handle
-        .0
-        .run_mobile_plugin_async("check", args)
-        .await
-        .map_err(|err| err.to_string())
+    handle.0.run_mobile_plugin_async("check", args).await.map_err(|err| err.to_string())
 }
 
 /// The version an update check found, or `None` when this build is current.
@@ -268,10 +270,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         .0
         .run_mobile_plugin_async::<()>(
             "install",
-            android::InstallArgs {
-                version: found.version,
-                url: found.url,
-            },
+            android::InstallArgs { version: found.version, url: found.url },
         )
         .await
         .map_err(|err| err.to_string())?;

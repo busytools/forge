@@ -8,26 +8,41 @@
 //! by port on their success paths only, which leaks on every panic and on
 //! nextest's cancellation of a failed run - so the kill is a Drop guard now:
 //! whichever way a test ends, the browser it launched goes with it.
+//!
+//! **What a Drop cannot cover, named rather than left to be rediscovered**: a
+//! run killed by a SIGNAL outright (nextest's own teardown) never unwinds, so
+//! no guard runs - only a sweep of leftovers between runs could. That sweep
+//! stays out: any process matcher would have to be a pattern, and forge's own
+//! workers carry their whole charter in argv.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 /// A browser a test launched. Dropping it reaps it.
 pub struct Launched {
     pid: Option<u32>,
     port: u16,
+    /// The profile its port file lives in, read FRESH at reap time: a launch
+    /// that replaced the one this test started (the relaunch race, where the
+    /// first browser died and `start()` brought up a second with a new port)
+    /// is found there, where the port this guard was built with is not.
+    profile: PathBuf,
 }
 
 impl Launched {
     /// Hold the browser that was launched, by the id and port the launch
-    /// answered with.
-    pub fn new(pid: Option<u32>, port: u16) -> Self {
-        Self { pid, port }
+    /// answered with, and the profile to re-read the live port from.
+    pub fn new(pid: Option<u32>, port: u16, profile: PathBuf) -> Self {
+        Self { pid, port, profile }
     }
 
     /// Reap it now, and confirm. Runs again at drop; asking twice is fine.
     pub fn reap(&self) {
         if let Some(pid) = self.pid {
             kill(pid);
+        }
+        if let Some(active) = forge_client::browser::chromium::read_active_port(&self.profile) {
+            kill_the_browser_on(active.port);
         }
         kill_the_browser_on(self.port);
     }

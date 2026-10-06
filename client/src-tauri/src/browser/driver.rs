@@ -14,12 +14,16 @@
 //! it happens to have open chooses to expose.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt as _, TokioChildProcess};
 use serde_json::Value;
+
+/// The longest one tool call is given before the driver is presumed mute.
+const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// One part of a tool's answer, on its way to the socket.
 ///
@@ -79,6 +83,18 @@ impl Driver {
                 cmd.arg("--cdp-endpoint")
                     .arg(cdp_endpoint)
                     .arg("--no-webmcp")
+                    // **No gate on what a session opens or reads, and a cwd
+                    // that is pinned.** Upstream resolves a relative file path
+                    // against `process.cwd()` and refuses a path outside its
+                    // roots, and this child inherits whatever directory the
+                    // CLIENT was launched from - so a `file_upload` worked
+                    // from Finder and failed from a shell. forge has no gates
+                    // here (the trust bound is the profile), so the flag
+                    // removes the root check outright and the cwd is pinned
+                    // under the app's data directory rather than left to the
+                    // launch directory.
+                    .arg("--allow-unrestricted-file-access")
+                    .current_dir(output_dir)
                     // Where upstream's own screenshot default lands: the
                     // client runs from a directory nobody chose, and a file
                     // dropped there is one nobody finds.
@@ -100,7 +116,25 @@ impl Driver {
         !self.client.is_transport_closed()
     }
 
+    /// The tool names the driver itself publishes: the live side of the
+    /// parity check, read from the pinned package rather than from a capture.
+    pub async fn tool_names(&self) -> Result<Vec<String>, String> {
+        let listed = self
+            .client
+            .list_tools(None)
+            .await
+            .map_err(|why| format!("the driver did not list its tools: {why}"))?;
+        Ok(listed.tools.into_iter().map(|tool| tool.name.to_string()).collect())
+    }
+
     /// Run one tool, answering with its parts or the reason it failed.
+    ///
+    /// **A request timeout, because rmcp carries none by default.** In 3.5.0
+    /// the peer's request timeout is NONE, so a driver that accepts a request
+    /// and never answers would hold the call - and, through the context's own
+    /// lock, every call behind it - forever. The bound sits above upstream's
+    /// own (a 60 s navigation, a 30 s wait) with room: it is the wedge-breaker,
+    /// not a deadline the tools keep.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
         let arguments = match args {
             Value::Object(fields) => fields,
@@ -111,11 +145,16 @@ impl Driver {
                 ));
             }
         };
-        let result = self
-            .client
-            .call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments))
-            .await
-            .map_err(|why| format!("the driver did not answer {tool}: {why}"))?;
+        let result = tokio::time::timeout(
+            CALL_TIMEOUT,
+            self.client
+                .call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments)),
+        )
+        .await
+        .map_err(|_| {
+            format!("the driver did not answer {tool} within {} s", CALL_TIMEOUT.as_secs())
+        })?
+        .map_err(|why| format!("the driver did not answer {tool}: {why}"))?;
 
         let parts = parts_of(&result)?;
         if result.is_error == Some(true) {
