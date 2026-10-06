@@ -209,6 +209,28 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
             }
             out
         }
+        PromptSource::BrowserHandOff { handoff, .. } => {
+            let mut out = Vec::new();
+            // The terminal raises no browser window, so the header says
+            // where the act happens rather than pretending otherwise; the
+            // reason is the session's own words, verbatim.
+            let where_to = match &handoff.context {
+                Some(context) => {
+                    format!(
+                        "Browser hand-off · context {context} · act in a client that shows the browser"
+                    )
+                }
+                None => "Browser hand-off · act in a client that shows the browser".to_owned(),
+            };
+            out.push(Line::from(Span::styled(
+                where_to,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            for row in wrap_plain(&handoff.reason, content_width) {
+                out.push(Line::from(Span::styled(row, Style::default().fg(Color::White))));
+            }
+            out
+        }
     }
 }
 
@@ -224,7 +246,9 @@ fn build_option_lines(
     let question_options: Option<&[forge_primitives::question::QuestionOption]> =
         match &prompt.source {
             PromptSource::Question { prompt: q, .. } => Some(&q.options),
-            PromptSource::Permission { .. } | PromptSource::SlackDraft { .. } => None,
+            PromptSource::Permission { .. }
+            | PromptSource::SlackDraft { .. }
+            | PromptSource::BrowserHandOff { .. } => None,
         };
 
     // Display-only: in multi-select, the Notes/"Other" row reads as

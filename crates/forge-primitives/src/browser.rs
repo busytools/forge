@@ -24,9 +24,93 @@ pub enum BrowserPart {
     },
 }
 
+/// A browser hand-off: a session asking the person at a client to act in a
+/// browser tab before it can carry on.
+///
+/// The parked shape crosses the socket as `BrowserHandOffPending` and the
+/// dock draws it; `id` is what the answer comes back under, the same id the
+/// registry is keyed by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandOff {
+    pub id: uuid::Uuid,
+    /// What the session needs done, in its own words.
+    pub reason: String,
+    /// The named context to raise, when the session named one.
+    pub context: Option<String>,
+}
+
+/// Why a hand-off left the registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HandOffEnding {
+    /// The person acted; the session carries on.
+    Done,
+    /// The person declined; the session knows what to do instead.
+    NotNow,
+    /// The asking session went away before anyone answered.
+    Abandoned,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand-off crosses as its own words plus the context it named - and
+    /// one that named no context carries none, rather than an empty string a
+    /// dock would have to read as "the default".
+    #[test]
+    fn a_hand_off_crosses_with_what_it_asked_for() {
+        let handoff = HandOff {
+            id: uuid::Uuid::from_u128(7),
+            reason: "the sign-in page wants a CAPTCHA".to_owned(),
+            context: Some("job-hunt".to_owned()),
+        };
+        let encoded = serde_json::to_value(&handoff).expect("a hand-off encodes");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000007",
+                "reason": "the sign-in page wants a CAPTCHA",
+                "context": "job-hunt",
+            }),
+        );
+        assert_eq!(
+            serde_json::from_value::<HandOff>(encoded).expect("a hand-off decodes"),
+            handoff,
+        );
+
+        let bare = HandOff {
+            id: uuid::Uuid::from_u128(8),
+            reason: "look at it".to_owned(),
+            context: None,
+        };
+        let encoded = serde_json::to_value(&bare).expect("a bare hand-off encodes");
+        assert_eq!(
+            serde_json::from_value::<HandOff>(encoded).expect("a bare hand-off decodes"),
+            bare,
+            "a hand-off that named no context decodes as one that named none",
+        );
+    }
+
+    /// An ending crosses as its tag: the resolved update carries it, and the
+    /// view that did not answer says what happened with the same word the
+    /// answer had.
+    #[test]
+    fn an_ending_crosses_as_its_tag() {
+        assert_eq!(
+            serde_json::to_value(HandOffEnding::Done).expect("an ending encodes"),
+            serde_json::json!({ "type": "done" }),
+        );
+        assert_eq!(
+            serde_json::from_value::<HandOffEnding>(serde_json::json!({ "type": "not_now" }))
+                .expect("an ending decodes"),
+            HandOffEnding::NotNow,
+        );
+        assert_eq!(
+            serde_json::to_value(HandOffEnding::Abandoned).expect("an ending encodes"),
+            serde_json::json!({ "type": "abandoned" }),
+        );
+    }
 
     /// The bytes are the frame's, not this type's: a wire form that carried
     /// them would be the base64 balloon the frame exists to avoid.

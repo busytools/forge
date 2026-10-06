@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::BrowserPart;
+use forge_primitives::browser::{BrowserPart, HandOffEnding};
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
@@ -94,7 +94,11 @@ impl Tool for BrowserTool {
 
     async fn call(&self, input: ToolInput) -> ToolOutput {
         let started = std::time::Instant::now();
-        let outcome = self.facade.call(&self.slot, self.spec.name, input.value).await;
+        let outcome = if self.spec.name == "browser_hand_off" {
+            self.hand_off(input.value).await
+        } else {
+            self.facade.call(&self.slot, self.spec.name, input.value).await
+        };
         // The record of calls: what ran, for whom, and how it ended. `debug`
         // because a browser call is the session's own work rather than a
         // problem forge has.
@@ -110,6 +114,37 @@ impl Tool for BrowserTool {
         match outcome {
             Ok(parts) => parts_output(parts),
             Err(why) => ToolOutput::error(why),
+        }
+    }
+}
+
+impl BrowserTool {
+    /// **The one tool whose logic is the core's own.** Every other tool
+    /// forwards to the host because a `target` ref only means something in
+    /// the client's page state; the hand-off parks on the person, and the
+    /// wait - with no timeout - is the answer.
+    async fn hand_off(&self, args: Value) -> Result<Vec<BrowserPart>, String> {
+        let Some(reason) = args.get("reason").and_then(Value::as_str) else {
+            return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
+        };
+        let context = match args.get("context") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(other) => return Err(format!("`context` is the name of a context, not {other}")),
+        };
+        match self.facade.hand_off(&self.slot, reason, context).await? {
+            HandOffEnding::Done => Ok(vec![BrowserPart::Text {
+                text: "The person is done in the browser; carry on from where you left off."
+                    .to_owned(),
+            }]),
+            HandOffEnding::NotNow => Err(
+                "The person declined to act for now; the browser is as it was - decide what to \
+                 do instead."
+                    .to_owned(),
+            ),
+            // The waiter cannot outlive a drop that sends this, so seeing it
+            // here would mean the registry and the waiter disagree.
+            HandOffEnding::Abandoned => Err("The hand-off ended without an answer.".to_owned()),
         }
     }
 }
@@ -348,7 +383,7 @@ mod tests {
                 workspace: MockWorkspaceFacade::new().into_arc(),
                 worker: MockWorkerFacade::new().into_arc(),
                 // The exact composition the spawn uses.
-                browser: ProdBrowserFacade::from_relay(workspace.browser_relay()),
+                browser: ProdBrowserFacade::from_workspace(&workspace),
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
@@ -391,5 +426,94 @@ mod tests {
             "the tool's answer is the host's parts, so the call reached it: {encoded}",
         );
         assert!(!encoded.contains("no browser-capable client"), "{encoded}");
+    }
+
+    /// The hand-off is the one tool that does not forward: it parks on the
+    /// person, and what comes back to the model is the ending - Done means
+    /// carry on.
+    #[tokio::test]
+    async fn a_hand_off_parks_on_the_person_and_a_done_answers_it() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool
+            .call(ToolInput {
+                value: json!({ "reason": "solve the CAPTCHA", "context": "job-hunt" }),
+            })
+            .await;
+
+        assert!(!out.is_error, "{:?}", out.blocks);
+        assert!(
+            mock.calls.lock().is_empty(),
+            "the hand-off never reaches the relay: the person is the ask, not the browser",
+        );
+        assert_eq!(
+            mock.hand_offs.lock().as_slice(),
+            [("solve the CAPTCHA".to_owned(), Some("job-hunt".to_owned()))],
+            "the reason and the context cross to the park verbatim",
+        );
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("carry on"), "Done tells the model to carry on: {text}");
+    }
+
+    /// A decline is a tool error with the person's answer in it, so the model
+    /// reads it as "not this way" rather than as a success.
+    #[tokio::test]
+    async fn a_hand_off_decline_is_a_tool_error() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        *mock.hand_off_answer.lock() = Ok(HandOffEnding::NotNow);
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("declined"), "{text}");
+    }
+
+    /// No reason is the call's own mistake, answered before anything parks.
+    #[tokio::test]
+    async fn a_hand_off_without_a_reason_is_refused() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({}) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("`reason`"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// A stream nobody can answer on fails closed with the named reason
+    /// rather than parking the session on a prompt no view can draw.
+    #[tokio::test]
+    async fn a_hand_off_that_cannot_be_shown_fails_closed() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        *mock.hand_off_answer.lock() =
+            Err("no attached client can show the browser hand-off".to_owned());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("no attached client"), "{text}");
     }
 }

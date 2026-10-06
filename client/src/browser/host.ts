@@ -92,3 +92,16 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
   const { invoke } = await import('@tauri-apps/api/core');
   return await invoke('browser_call', request);
 }
+
+/**
+ * Bring the browser up visibly, which is what a hand-off's Open asks for.
+ *
+ * A no-op outside the shell: a page in a plain browser has no host to raise
+ * anything with, and the dock's own words are the whole of the guidance
+ * there.
+ */
+export async function showBrowser(): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_show');
+}

@@ -723,6 +723,22 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
+        ToolSpec {
+            name: "browser_hand_off",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done or decline.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "What needs doing, in the session's own words. It is shown on the prompt, so name the page and the act rather than the tool."
+                    }
+                },
+                "required": ["reason"],
+                "additionalProperties": false
+            }),
+        },
     ];
     for spec in &mut specs {
         let Some(schema) = spec.schema.as_object_mut() else { continue };
@@ -750,9 +766,9 @@ mod tests {
     /// two this family adds. A count is the cheap half; the shape of each is
     /// pinned below.
     #[test]
-    fn the_surface_is_the_captures_tools_and_the_two_additions() {
+    fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 27, "25 upstream tools and two additions: {names:?}");
+        assert_eq!(names.len(), 28, "25 upstream tools and three additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -783,8 +799,10 @@ mod tests {
             assert!(names.contains(&upstream), "{upstream} is missing from the surface");
         }
         assert!(
-            names.contains(&"browser_click_and_capture") && names.contains(&"browser_form_state"),
-            "the two beyond-upstream tools are on the surface: {names:?}",
+            names.contains(&"browser_click_and_capture")
+                && names.contains(&"browser_form_state")
+                && names.contains(&"browser_hand_off"),
+            "the three beyond-upstream tools are on the surface: {names:?}",
         );
     }
 

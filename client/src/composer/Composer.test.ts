@@ -60,6 +60,7 @@ import { boxKey } from './box.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 import {
+  browserHandOffAsk,
   permissionAsk,
   questionAsk,
   record,
@@ -4055,6 +4056,36 @@ describe('the dock', () => {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-000000000000',
           approved: false,
+        },
+      },
+    ]);
+  });
+
+  it('draws the hand-off as the session asked it, with the verbs that reach its answer', () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    expect(drawn()).toContain('needs you');
+    expect(drawn()).toContain('browser hand-off · job-hunt');
+    expect(drawn(), "the reason is the session's own words, in full").toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+    expect(drawn(), "Open is the client's own door").toContain('Open browser');
+    expect(drawn(), 'and both answers are reachable').toContain('Done');
+    expect(drawn()).toContain('Not now');
+  });
+
+  it('answers the hand-off as the verb says: Done settles it', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          done: true,
         },
       },
     ]);

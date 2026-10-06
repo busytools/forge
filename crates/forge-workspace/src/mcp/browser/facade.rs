@@ -9,10 +9,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::BrowserPart;
+use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
 use serde_json::Value;
 
 use crate::browser::BrowserRelay;
+use crate::workspace::Workspace;
 
 /// The relay, as one tool call sees it.
 #[async_trait]
@@ -25,14 +26,33 @@ pub trait BrowserFacade: Send + Sync {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String>;
+
+    /// Ask the person at a client to act in a browser tab, and wait for their
+    /// word.
+    ///
+    /// **No timeout.** The ask dock's own timelines say a held prompt sits for
+    /// hours, and the session is meant to wait as long as it takes; the one
+    /// refusal that does not wait is a stream nobody can answer on, which
+    /// fails closed rather than parking the session on a prompt no view can
+    /// draw.
+    async fn hand_off(
+        &self,
+        seat: &SessionSlot,
+        reason: &str,
+        context: Option<&str>,
+    ) -> Result<HandOffEnding, String>;
 }
 
-/// Production impl: the workspace's own relay.
-pub struct ProdBrowserFacade(pub Arc<BrowserRelay>);
+/// Production impl: the workspace's own relay, and the workspace itself for
+/// the one tool that parks on the person rather than on the browser.
+pub struct ProdBrowserFacade {
+    relay: Arc<BrowserRelay>,
+    workspace: std::sync::Weak<Workspace>,
+}
 
 impl ProdBrowserFacade {
-    pub fn from_relay(relay: Arc<BrowserRelay>) -> Arc<dyn BrowserFacade> {
-        Arc::new(Self(relay))
+    pub fn from_workspace(workspace: &Arc<Workspace>) -> Arc<dyn BrowserFacade> {
+        Arc::new(Self { relay: workspace.browser_relay(), workspace: Arc::downgrade(workspace) })
     }
 }
 
@@ -44,7 +64,49 @@ impl BrowserFacade for ProdBrowserFacade {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        self.0.ask(seat, tool, args).await
+        self.relay.ask(seat, tool, args).await
+    }
+
+    async fn hand_off(
+        &self,
+        seat: &SessionSlot,
+        reason: &str,
+        context: Option<&str>,
+    ) -> Result<HandOffEnding, String> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Err("the workspace went away before the hand-off was staged".to_owned());
+        };
+        let handoff = HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: reason.to_owned(),
+            context: context.map(str::to_owned),
+        };
+        let (id, answer) = workspace.register_browser_hand_off(seat, handoff);
+        let guard =
+            ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
+        let ending = answer.await.map_err(|_| {
+            // The fail-closed read: the stream could not take the update, so
+            // no view can show the dock - and holding the session on a prompt
+            // nobody can answer would park it forever.
+            "no attached client can show the browser hand-off".to_owned()
+        })?;
+        drop(guard);
+        Ok(ending)
+    }
+}
+
+/// Resolves a parked hand-off when the awaiting handler goes - a session that
+/// died mid-wait, never a decision. A resolve that already happened makes the
+/// drop a no-op, which is why the approved path can just let it fall.
+struct ResolveHandOffOnDrop {
+    workspace: Arc<Workspace>,
+    id: uuid::Uuid,
+    caller: SessionSlot,
+}
+
+impl Drop for ResolveHandOffOnDrop {
+    fn drop(&mut self) {
+        self.workspace.resolve_browser_hand_off(self.id, &self.caller, HandOffEnding::Abandoned);
     }
 }
 
@@ -56,6 +118,9 @@ pub struct MockBrowserFacade {
     pub calls: parking_lot::Mutex<Vec<(String, Value)>>,
     /// The outcome every call answers with.
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
+    /// What `hand_off` answers with, and what it was asked.
+    pub hand_off_answer: parking_lot::Mutex<Result<HandOffEnding, String>>,
+    pub hand_offs: parking_lot::Mutex<Vec<(String, Option<String>)>>,
 }
 
 #[cfg(test)]
@@ -66,6 +131,8 @@ impl MockBrowserFacade {
             answer: parking_lot::Mutex::new(Ok(vec![BrowserPart::Text {
                 text: "done".to_owned(),
             }])),
+            hand_off_answer: parking_lot::Mutex::new(Ok(HandOffEnding::Done)),
+            hand_offs: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -86,6 +153,16 @@ impl BrowserFacade for MockBrowserFacade {
         self.calls.lock().push((tool.to_owned(), args));
         self.answer.lock().clone()
     }
+
+    async fn hand_off(
+        &self,
+        _seat: &SessionSlot,
+        reason: &str,
+        context: Option<&str>,
+    ) -> Result<HandOffEnding, String> {
+        self.hand_offs.lock().push((reason.to_owned(), context.map(str::to_owned)));
+        self.hand_off_answer.lock().clone()
+    }
 }
 
 #[cfg(test)]
@@ -98,10 +175,10 @@ mod tests {
     /// back, with the tool and args it was called with.
     #[tokio::test]
     async fn the_production_facade_sends_the_ask_through_the_relay() {
-        let relay = Arc::new(BrowserRelay::new());
+        let (workspace, _rx) = Workspace::testing_stub();
         let (to_host, mut asks) = mpsc::unbounded_channel::<BrowserRequest>();
-        assert!(relay.register(3, to_host));
-        let facade = ProdBrowserFacade::from_relay(Arc::clone(&relay));
+        assert!(workspace.browser_relay().register(3, to_host));
+        let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
 
         let host = tokio::spawn(async move {
@@ -122,7 +199,8 @@ mod tests {
     /// refusal rather than inventing one of its own.
     #[tokio::test]
     async fn the_production_facade_carries_the_relays_refusal() {
-        let facade = ProdBrowserFacade::from_relay(Arc::new(BrowserRelay::new()));
+        let (workspace, _rx) = Workspace::testing_stub();
+        let facade = ProdBrowserFacade::from_workspace(&workspace);
         let refused = facade
             .call(&SessionSlot::lead("TestOrg", "proj"), "browser_close", serde_json::json!({}))
             .await;

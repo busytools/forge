@@ -1,6 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
+  import { showBrowser } from '../browser/host';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -491,6 +492,41 @@
     answer({ respond_slack_post: { key: slot, id, approved } });
   }
 
+  /** Which hand-off Open has brought the browser up for, by its own id. */
+  let openedFor = $state<string | null>(null);
+
+  /**
+   * The hand-off's own header line, built here rather than in the markup: a
+   * `{' · '}` interpolation beside an `{#if}` keeps its spacing - Svelte
+   * trims the block's own edges - and is a literal a lint (rightly) calls
+   * useless; one template string says it once.
+   */
+  const handOffTitle = $derived(
+    ask.kind === 'browser_hand_off' && ask.request.context !== null
+      ? `browser hand-off · ${ask.request.context}`
+      : 'browser hand-off',
+  );
+  const opened = $derived(ask.kind === 'browser_hand_off' && openedFor === ask.request.id);
+
+  /**
+   * Bring the browser up visibly, which is the client's own act rather than
+   * the core's: it answers nothing, and outside the shell (no host to
+   * invoke) the dock's own words are the whole of the guidance.
+   */
+  function open(): void {
+    if (ask.kind !== 'browser_hand_off') return;
+    openedFor = ask.request.id;
+    void showBrowser();
+  }
+
+  /** A hand-off's answer, which is the only release for its blocked handler. */
+  function handOff(done: boolean): void {
+    if (answered || ask.kind !== 'browser_hand_off') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({ respond_browser_hand_off: { key: slot, id, done } });
+  }
+
   function move(step: number): void {
     // An answered prompt is standing down: its rows are a record of what was
     // answered, not a list to move through.
@@ -725,7 +761,7 @@
       {/if}
     </div>
     <div class="desc">{ask.request.header}</div>
-  {:else}
+  {:else if ask.kind === 'slack_draft'}
     <div class="d-head">
       <span class="dest">
         {ask.request.workspace} · {ask.request.conversationLabel}{#if ask.request.threadTs !== null}
@@ -742,6 +778,19 @@
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
     <div class="preview"><Prose text={ask.request.text} /></div>
+  {:else}
+    <div class="d-head">
+      <span class="tag warn">&#9888; needs you</span>
+      <span class="q mono">{handOffTitle}</span>
+    </div>
+    <!-- The reason verbatim: it is what the session needs, in its own words,
+         and a summary of it would be the client guessing at the act. -->
+    <div class="d-q">{ask.request.reason}</div>
+    <div class="desc">
+      {opened
+        ? 'The browser is up. Do what is needed there, then press Done - closing the window counts too.'
+        : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
+    </div>
   {/if}
 
   {#if rows.length > 0}
@@ -890,6 +939,18 @@
         dictating · the words land in your draft either way
       </div>
     {/if}
+  {/if}
+
+  {#if ask.kind === 'browser_hand_off'}
+    <div class="acts">
+      <!-- Open is the client's own act, not the core's: it brings the app's
+           browser up visibly and answers nothing. Done is the answer, and
+           Not now declines - the session waits with no timeout, so one of
+           the two must be reachable from here. -->
+      <button class="btn p" onclick={open}>Open browser</button>
+      <button class="btn" onclick={() => handOff(true)}>Done</button>
+      <button class="btn d" onclick={() => handOff(false)}>Not now</button>
+    </div>
   {/if}
 
   {#if notice !== null}

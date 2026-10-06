@@ -491,15 +491,16 @@ pub struct SessionHeaderWire {
     pub turn_in_flight: bool,
 }
 
-/// What a seat is held on: all three kinds of parked interaction, not the
-/// two the dock happened to draw first. Each request crosses as the core's
-/// own shape, because a client draws it rather than re-deriving it.
+/// What a seat is held on: every kind of parked interaction, not the two the
+/// dock happened to draw first. Each request crosses as the core's own shape,
+/// because a client draws it rather than re-deriving it.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 pub enum PendingAskWire {
     Permission(Value),
     Question(Value),
     SlackDraft(Value),
+    BrowserHandOff(Value),
 }
 
 impl From<&PendingAsk> for PendingAskWire {
@@ -514,6 +515,9 @@ impl From<&PendingAsk> for PendingAskWire {
             }
             PendingAsk::SlackDraft(draft) => {
                 Self::SlackDraft(encode(serde_json::to_value(draft.as_ref())))
+            }
+            PendingAsk::BrowserHandOff(handoff) => {
+                Self::BrowserHandOff(encode(serde_json::to_value(handoff.as_ref())))
             }
         }
     }

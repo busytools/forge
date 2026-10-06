@@ -42,6 +42,7 @@ pub fn run() {
         tauri::generate_handler![
             browser::browser_call,
             browser::browser_context_release,
+            browser::browser_show,
             check_update,
             install_update,
             restart_app
@@ -50,7 +51,8 @@ pub fn run() {
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         browser::browser_call,
-        browser::browser_context_release
+        browser::browser_context_release,
+        browser::browser_show
     ]);
 
     let run = builder

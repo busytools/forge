@@ -916,6 +916,7 @@
     if (current.kind === 'question') {
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
+    if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -929,7 +930,9 @@
    */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
-    if (current.kind === 'slack_draft') return current.request.id;
+    if (current.kind === 'slack_draft' || current.kind === 'browser_hand_off') {
+      return current.request.id;
+    }
     return current.request.toolId;
   }
 </script>

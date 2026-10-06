@@ -195,6 +195,18 @@ impl BrowserHost {
         chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
+    /// Bring the browser up visibly, which is what a hand-off's Open asks for.
+    ///
+    /// Serialized with every other launch, so a show racing a first call
+    /// cannot leave two browsers on one profile. This is the client's own
+    /// act and answers the core nothing: the hand-off's answer is Done or
+    /// Not now, and never the window itself.
+    pub async fn show(&self) -> Result<chromium::ActivePort, String> {
+        let paths = self.paths.clone()?;
+        let _launching = self.launch.lock().await;
+        chromium::show(&chromium::chrome_binary(&paths.stack), &paths.profile).await
+    }
+
     /// The browser's own context's driver, started when it is not up.
     ///
     /// Serialized: a burst of calls arriving on a cold host must launch ONE
@@ -308,6 +320,14 @@ pub async fn browser_call(
     args: Value,
 ) -> Result<BrowserReply, String> {
     host.call(&seat, &tool, args).await.map(|parts| BrowserReply { parts })
+}
+
+/// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
+/// the core: the window is the client's act, and Done or Not now is the
+/// answer.
+#[tauri::command]
+pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
+    host.show().await.map(|_| ())
 }
 
 /// Release the asking session's named context.

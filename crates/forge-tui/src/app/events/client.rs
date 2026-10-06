@@ -100,6 +100,17 @@ fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) ->
     }
 }
 
+/// What one browser hand-off ending reads as, in the chat of the session that
+/// held it - the same shape as the draft's line, for the same reason.
+fn browser_hand_off_ending_line(ending: forge_primitives::browser::HandOffEnding) -> String {
+    use forge_primitives::browser::HandOffEnding as Ending;
+    match ending {
+        Ending::Done => "The browser hand-off was settled in another view.".to_owned(),
+        Ending::NotNow => "The browser hand-off was declined in another view.".to_owned(),
+        Ending::Abandoned => "The browser hand-off's asking session went away.".to_owned(),
+    }
+}
+
 /// Whether this update belongs to another view's dictation take.
 ///
 /// The terminal's own take - the one its push-to-talk key starts - is the
@@ -335,6 +346,45 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     &key,
                     Some(crate::app::SystemSeverity::Info),
                     &slack_draft_ending_line(ending),
+                );
+            }
+        }
+        SessionUpdate::BrowserHandOffPending { key, handoff } => {
+            // Queued on the ASKING session, like the draft: the prompt is
+            // answered by whoever reads the asking session's page.
+            let asking = key.clone();
+            let mut queued = false;
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_browser_hand_off(asking, handoff);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+                queued = true;
+            }
+            // The asking session's `browser_hand_off` is blocked on this
+            // answer with no timeout, so a prompt silently dropped here would
+            // hold it forever.
+            if !queued {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    slot = %key.display(),
+                    "browser hand-off prompt dropped: no session bucket for the asking session",
+                );
+                return;
+            }
+            app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
+        }
+        SessionUpdate::BrowserHandOffResolved { key, id, ending } => {
+            // Same as the draft's resolution: the hand-off left the core's
+            // registry, so a dock still queued here offers a decision no
+            // answer can reach.
+            let held = app
+                .session_mut(&key)
+                .is_some_and(|session| crate::app::prompt::retire_browser_hand_off(session, id));
+            if held {
+                super::push_system_message_to_session(
+                    app,
+                    &key,
+                    Some(crate::app::SystemSeverity::Info),
+                    &browser_hand_off_ending_line(ending),
                 );
             }
         }
