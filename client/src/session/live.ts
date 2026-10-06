@@ -128,20 +128,21 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 /**
  * Watch one seat.
  *
- * **The seat is the client's; a page only reads it.** The first page to show a
- * seat subscribes it - the subscription's own answer is what fills its history
- * - and every page after that is handed what the seat holds. Leaving gives
- * nothing back, so a return subscribes nothing and reads nothing.
+ * **The seat's record is the client's; its subscription follows the page.**
+ * The first page to show a seat subscribes it - the subscription's own answer
+ * is what fills its history - and every page after that is handed what the
+ * seat holds. The last reader leaving gives the subscription back; a return
+ * subscribes it again, and the record it held draws until that answer lands.
  *
  * **The subscribe happens at this call**, not when the returned store gets its
  * first subscriber. Taking the store and never subscribing to it therefore
- * leaves a subscription standing, and the only thing that releases a seat is a
- * refusal.
+ * leaves a subscription standing, and a refusal is what releases the seat
+ * outright.
  *
- * **A seat the server refused is that exception**, and it is let go with its
- * last reader: a refusal is an answer rather than a subscription ("a refused
- * subscribe leaves nothing to hear"), so holding one holds nothing, and a seat
- * that starts later would never be reached again.
+ * **A seat the server refused is let go with its last reader**: a refusal is
+ * an answer rather than a subscription ("a refused subscribe leaves nothing to
+ * hear"), so holding one holds nothing, and a seat that starts later would
+ * never be reached again.
  */
 export function watchSession(
   connection: Connection,
@@ -353,9 +354,16 @@ function createSeat(
    * Nothing is asked while one ask is in flight - a full encode apiece, and a
    * second would queue behind the first - so a replacement wanted now is
    * recorded and asked for when the answer lands.
+   *
+   * **A seat with no page subscribes nothing back, it only leaks.** The ask
+   * is an unsubscribe-then-subscribe pair, and the subscribe re-attaches a
+   * seat no page is showing: the server reads it as shown (spending the
+   * marks every other reader would get) with no counter here owning it. The
+   * away refresh therefore does not go out; the return's own subscribe
+   * answers with the whole record, which covers everything it was for.
    */
   function reread(): void {
-    if (seat.asking) return;
+    if (seat.asking || seat.opened === 0) return;
     seat.asking = true;
     seat.replaceWanted = false;
     seat.askedAt = seat.frames;

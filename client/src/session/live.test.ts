@@ -906,6 +906,28 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * A replacement frame for a seat nobody is showing stays out of the
+   * socket. The ask would be an unsubscribe-then-subscribe pair, and the
+   * subscribe re-attaches a seat no page is showing: the server reads it
+   * as shown - spending the marks every reader would get - with no counter
+   * here owning it. The return's own subscribe answers with the whole
+   * record, which covers everything the away ask was for.
+   */
+  it('asks nothing for an away seat when a replacement frame lands', () => {
+    const connection = drivable();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD));
+    away.stop();
+    const asked = connection.reads();
+
+    connection.land(updateOf(occupant('new-occupant')));
+
+    expect(connection.reads(), 'the away replacement frame asked the server again').toBe(asked);
+    expect(connection.subscribes(), 'and it re-subscribed an away seat').toBe(1);
+    expect(connection.unsubscribes(), 'and it gave one back to do it').toBe(1);
+  });
+
+  /**
    * **A record still waiting for a frame is handed over when the page goes.**
    * No frame paints for a page that has left, so a frame that arrived before
    * the leave and would have been published at the next paint is published by
