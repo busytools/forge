@@ -5,10 +5,13 @@
     candidateFacts,
     checkLine,
     entryUrl,
+    families,
+    fastest,
     inUseRowFacts,
     modelChip,
     roleWord,
     search,
+    speedLabel,
     updateFacts,
     type FactPart,
   } from './view';
@@ -37,6 +40,10 @@
   const placeholder = $derived(
     `search ${wire.rows.length} variants - parakeet, granite, whisper, moonshine...`,
   );
+  // What a reader can browse before they know a name: the feed's own
+  // families, and its fastest entries.
+  const familyList = $derived(families(wire.rows));
+  const picks = $derived(fastest(wire.rows, 3));
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -112,6 +119,14 @@
       {#if line.detail !== null}<span class="detail">{line.detail}</span>{/if}
     </div>
 
+    {#if wire.enabled}
+      <p class="note">
+        a check reads the catalogue the transcribe.cpp runtime publishes - every variant with its
+        sizes, licences, and the speeds and error rates its maintainers measured - and compares it
+        with the two models pinned here. It measures nothing on this machine.
+      </p>
+    {/if}
+
     {#each wire.updates as update (`${update.role}/${update.file}`)}
       <div class="status warn">
         <span class="dot warn"></span>
@@ -121,9 +136,10 @@
           {@render facts(updateFacts(update))}
         </span>
         <span class="detail">
-          Faster and more accurate than the model in use, on the feed's own test set. Taking it
-          means pinning it here and opening a pull request - the bench that checks a candidate on
-          your own recordings is not built yet.
+          Proposed because it beats the model in use on both of the feed's own measurements - fewer
+          errors on its English test set, and a faster realtime factor on an m4-max - and its
+          licence allows forge to ship it. Taking it means pinning it here and opening a pull
+          request; the bench that re-checks a candidate on your own recordings is not built yet.
         </span>
       </div>
     {/each}
@@ -159,9 +175,31 @@
       <div aria-live="polite">
         {#if query.trim() === ''}
           <p class="note">
-            type a name &middot; the feed's whole catalogue is already here, so this reads nothing
-            off the network
+            type a name, or pick a family below &middot; the feed's whole catalogue is already here,
+            so this reads nothing off the network
           </p>
+          <!-- What can be searched, and what is worth trying: the feed's own
+               families and its own fastest rows. Both set the query, so a
+               pick is the same mechanism as typing. -->
+          <div class="chips">
+            {#each familyList as family (family.name)}
+              <button class="chip" type="button" onclick={() => (query = family.name)}>
+                {family.name}<b>{family.count}</b>
+              </button>
+            {/each}
+          </div>
+          {#if picks.length > 0}
+            <p class="note">
+              fastest on the feed:
+              {#each picks as pick, i (pick.variant)}{#if i > 0}{' \u{b7} '}{/if}<button
+                  class="link"
+                  type="button"
+                  onclick={() => (query = pick.variant)}
+                  >{pick.variant} {speedLabel(pick.speed?.xrt_wall ?? 0)}</button
+                >
+              {/each}
+            </p>
+          {/if}
         {:else if results.length === 0}
           <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
         {:else}

@@ -76,7 +76,14 @@ describe('the models page as it draws', () => {
     expect(html).toContain('Granite Speech 5.0 470M TurboCTC');
     expect(html).toContain('388.8\u{d7} vs 72.9\u{d7}');
     expect(html).toContain('FLEURS-en 4.61 vs 5.08');
-    expect(html).toContain('a pull request');
+    // Normalised: the template wraps the sentence, and a line break inside
+    // the phrase is not what this test is about.
+    expect(html.replace(/\s+/g, ' ')).toContain('opening a pull request');
+    // The rule behind the proposal, in words, which is what a reader asked
+    // for when the line simply named a model.
+    expect(html.replace(/\s+/g, ' ')).toContain(
+      "beats the model in use on both of the feed's own measurements",
+    );
   });
 
   /**
@@ -107,6 +114,51 @@ describe('the models page as it draws', () => {
     flushSync();
 
     expect(checks).toBe(1);
+  });
+
+  /**
+   * **The box is blind on its own, so the page offers what can be searched
+   * before a name is known**: the feed's families as chips and its fastest
+   * rows as links, and both SET THE QUERY - a pick is the same mechanism as
+   * typing, which is what makes a chip a way in rather than a label.
+   */
+  it('offers the families and the fastest rows, and a pick filters the list', () => {
+    const host = open();
+    const names = (): string[] =>
+      [...host.querySelectorAll('.models .cand .nm')].map((el) => el.textContent ?? '');
+
+    const link = host.querySelector<HTMLButtonElement>('.models .link');
+    expect(link, 'no fastest row was offered').not.toBeNull();
+    // The control carries its own number too: `name 401.6x`.
+    const pick = (link?.textContent ?? '').trim().split(' ')[0] ?? '';
+    expect(pick, 'the fastest link names nothing').not.toBe('');
+
+    link?.click();
+    flushSync();
+    expect(names().length, 'a fastest link selected nothing').toBeGreaterThan(0);
+    // Every row shown is a match for the picked name - the pick sets the
+    // query, it is not a second filtering mechanism.
+    for (const name of names()) {
+      expect(name.toLowerCase()).toContain(pick.toLowerCase());
+    }
+
+    // And a family chip does the same for its class.
+    const input = host.querySelector('input');
+    if (input !== null) {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }
+    const chip = host.querySelector<HTMLButtonElement>('.models .chips .chip');
+    expect(chip, 'the page offered nothing to browse').not.toBeNull();
+    expect(chip?.textContent, 'the biggest family is not first').toContain('granite');
+    chip?.click();
+    flushSync();
+
+    expect(names().length, 'a family chip selected nothing').toBeGreaterThan(0);
+    for (const name of names()) {
+      expect(name.toLowerCase()).toContain('granite');
+    }
   });
 
   /**

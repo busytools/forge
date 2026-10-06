@@ -264,6 +264,40 @@ export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
   );
 }
 
+/** One of the feed's families, and how many entries it holds. */
+export interface Family {
+  name: string;
+  count: number;
+}
+
+/**
+ * The classes the feed holds, most-populated first and then by name.
+ *
+ * The box is blind on its own - a reader who does not already know a model
+ * name has nothing to type - and the family is the feed's own word for what
+ * a thing is. Every name returned here matches its own rows through
+ * `search`, which is what makes a chip a way in rather than a label.
+ */
+export function families(rows: CatalogueRow[]): Family[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.family, (counts.get(row.family) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+/**
+ * The fastest entries the feed measured, which is the only ranking it
+ * carries: it names no dates, so "latest" is not a thing this page can say,
+ * and a row with no measured speed is not a recommendation.
+ */
+export function fastest(rows: CatalogueRow[], take: number): CatalogueRow[] {
+  return rows
+    .filter((row) => row.speed !== null)
+    .sort((a, b) => (b.speed?.xrt_wall ?? 0) - (a.speed?.xrt_wall ?? 0))
+    .slice(0, take);
+}
+
 /** An in-use row's two fact lines. */
 export interface InUseFacts {
   pinned: FactPart[];

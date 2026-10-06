@@ -13,6 +13,8 @@ import {
   checkLine,
   clock,
   entryUrl,
+  families,
+  fastest,
   inUseRowFacts,
   languagesLabel,
   modelChip,
@@ -239,6 +241,61 @@ describe('the update line', () => {
     });
 
     expect(facts).toEqual([{ text: '470M' }, { text: 'offline' }]);
+  });
+});
+
+describe('what can be searched', () => {
+  // The display name moves with the family: the helper's default names a
+  // granite model, and a row whose name still says granite would match a
+  // neighbour's family chip.
+  const rows = [
+    row({ variant: 'granite-a', family: 'granite', display_name: 'Granite A' }),
+    row({ variant: 'granite-b', family: 'granite', display_name: 'Granite B' }),
+    row({ variant: 'parakeet-a', family: 'parakeet', display_name: 'Parakeet A' }),
+    row({ variant: 'qwen-a', family: 'qwen', display_name: 'Qwen A' }),
+  ];
+
+  /**
+   * **The box is blind on its own**: a reader who does not already know a
+   * name has nothing to type. The families are the feed's own word for the
+   * classes it holds, so the page offers them - most-populated first, then
+   * alphabetically.
+   */
+  it("lists the feed's families, biggest first and then by name", () => {
+    expect(families(rows)).toEqual([
+      { name: 'granite', count: 2 },
+      { name: 'parakeet', count: 1 },
+      { name: 'qwen', count: 1 },
+    ]);
+  });
+
+  /** A chip is only a way in if typing its own name finds its rows. */
+  it('offers a name that matches every row of its family', () => {
+    for (const family of families(rows)) {
+      expect(search(rows, family.name), `${family.name} finds nothing`).toHaveLength(family.count);
+    }
+  });
+
+  /**
+   * The feed names no dates, so "latest" is not a thing this page can say.
+   * What it does carry is its own measurement, so the recommendation is the
+   * fastest rows - and one the feed measured no speed for is not among them.
+   */
+  it('recommends the fastest rows, and only ones the feed measured', () => {
+    const measured = [
+      row({
+        variant: 'slow',
+        speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 50 },
+      }),
+      row({
+        variant: 'fast',
+        speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 400 },
+      }),
+      row({ variant: 'unmeasured', speed: null }),
+    ];
+
+    expect(fastest(measured, 2).map((entry) => entry.variant)).toEqual(['fast', 'slow']);
+    expect(fastest(measured, 9).map((entry) => entry.variant)).not.toContain('unmeasured');
   });
 });
 

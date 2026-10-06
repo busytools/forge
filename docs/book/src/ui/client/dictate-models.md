@@ -22,8 +22,8 @@ either.
 |---|---|---|
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | In use | one row per pinned model: its role, its file, the facts the pin declares - size, quant, parameters, digest, licence - and the feed's own measurement when it has one, with the live state as a chip | `in_use` |
-| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal, each a comparison against the model in use | `check`, `updates` |
-| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes. Each row links to the entry's own document | `rows` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal: its facts, the rule it was admitted on, and what taking it means | `check`, `updates` |
+| Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes. Each row links to the entry's own document | `rows` |
 | Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
 
 **A pin is drawn from the pin.** The first fact line comes off the pinned
@@ -39,15 +39,21 @@ a proposal reads `update available`, because they are one state of one
 thing. The line states when the check ran - as a local time, from the
 server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
-the rows the last fetch left stand.
+the rows the last fetch left stand. **The note under the line says what a
+check is**, because the control does not: it reads the catalogue the
+runtime publishes - every variant with its sizes, licences and the speeds
+and error rates its maintainers measured - and compares that with the two
+models pinned here. Nothing is measured on this machine.
 
-**An update line says what to do with it, because there is nothing to press
-yet.** It names the model it would replace, draws the comparison the server
-admitted it on - the candidate's speed and error against the model in use -
-and says in words what taking it means: pinning it here and opening a pull
-request. The bench that checks a candidate on this machine's own recordings
-is the piece that is not built, and the line says so rather than leaving a
-reader to look for a control that is not there.
+**An update line says what it is, why it was picked, and what taking it
+means.** It names the model it would replace, draws the comparison the
+server admitted it on - the candidate's speed and error against the model in
+use - states the rule in words (it beats the model in use on both of the
+feed's own measurements, and its licence allows forge to ship it), and says
+what taking it is: pinning it here and opening a pull request. The bench
+that re-checks a candidate on this machine's own recordings is the piece
+that is not built, and the line says so rather than leaving a reader to look
+for a control that is not there.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no button to press and nothing
@@ -57,6 +63,15 @@ its catalogue entry** - the feed's own document, in the same tree the server
 fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
+
+**The box is blind on its own, so the page offers what can be searched.**
+Before a name is typed it draws the feed's own families as chips - each one
+naming a class the feed holds, with its entry count, most-populated first -
+and its three fastest measured rows under them. Both set the query, so a
+pick is the same mechanism as typing rather than a second one, and every
+family name is one `search` matches its own rows by. The feed names no
+dates, so "latest" is not a thing this page can say; its own measurement is
+the only ranking it carries.
 
 ## The states the page can be in
 
