@@ -464,8 +464,8 @@ mod tests {
             .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
-        let json: serde_json::Value = serde_json::from_str(text_of(&out))
-            .expect("the result is the task record, not prose");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the task record, not prose");
         assert_eq!(json["id"], "t-1", "the record names the task it moved: {json}");
         assert_eq!(json["subject"], "Merge peers and workers");
         assert_eq!(json["status"], "in_progress", "and the state it now holds");
