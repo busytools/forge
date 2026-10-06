@@ -145,7 +145,9 @@ fn model_identity(spec: &ModelSpec, path: &Path) -> String {
          timings for a model it cannot identify.",
         spec.file, spec.file, spec.size
     );
-    spec.sha256[..8].to_owned()
+    // The pins all carry a digest; a spec that does not names itself by its
+    // size instead, which is the one identity it declares.
+    spec.sha256.as_deref().map_or_else(|| format!("size-{len}"), |digest| digest[..8].to_owned())
 }
 
 /// The committed figure set, extracted so it is testable without weights.

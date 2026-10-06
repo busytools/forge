@@ -357,6 +357,18 @@ describe('the in-use rows', () => {
   });
 
   /**
+   * **A model with no published digest draws no digest.** Every pin carries
+   * one; a model downloaded from the feed's docs has none, and a row that
+   * printed a placeholder would be claiming bytes nobody checked.
+   */
+  it('draws no digest for a model that has none', () => {
+    const facts = inUseRowFacts(inUse({ sha256: null }));
+
+    expect(facts.pinned.some((part) => part.text.startsWith('sha '))).toBe(false);
+    expect(facts.pinned[0]).toEqual({ text: '1.56 GB', hl: true });
+  });
+
+  /**
    * A pin the feed does not carry still draws its own facts: the file, its
    * quant and its digest are the pin's, and a row that hid them because the
    * feed had no entry would hide the model in use. The runtime stands where

@@ -258,12 +258,15 @@ impl DigestCache {
     /// a hit: re-hashing is what turns that into a mismatch the caller
     /// can act on.
     fn hit(&self, file: &Path, spec: &ModelSpec) -> bool {
+        // Nothing is remembered for a spec with no digest, so nothing can
+        // match it.
+        let Some(expected) = spec.sha256.as_deref() else { return false };
         let Some((size, mtime_ns)) = state_of(file) else { return false };
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.records.get(file).is_some_and(|record| {
             record.size == size
                 && record.mtime_ns == mtime_ns
-                && record.sha256.eq_ignore_ascii_case(&spec.sha256)
+                && record.sha256.eq_ignore_ascii_case(expected)
         })
     }
 
@@ -338,6 +341,14 @@ fn ensure(
 ) -> Result<(), Error> {
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
+        // A digestless spec's whole check is the size, which is the stat
+        // this already made: nothing to hash, nothing to remember, and no
+        // "verifying" row that lives for one stat.
+        if spec.sha256.is_none() {
+            verify(&target, spec, on_progress)?;
+            announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
+            return Ok(());
+        }
         // Nothing is announced before this: a file whose state matches its
         // record is not checked again, and a "verifying" row that lives
         // for one stat is noise.
@@ -348,7 +359,9 @@ fn ensure(
         announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
         let state = state_of(&target);
         let digest = verify(&target, spec, on_progress)?;
-        cache.record(&target, state, &digest);
+        if let Some(digest) = &digest {
+            cache.record(&target, state, digest);
+        }
         announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
         return Ok(());
     }
@@ -358,7 +371,10 @@ fn ensure(
 
     // Announced before the hash, not after: on a multi-gigabyte file the
     // read takes seconds, and a caller left on "100%" reads it as a hang.
-    announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
+    // A digestless spec has no such read.
+    if spec.sha256.is_some() {
+        announce(on_progress, Progress::Verifying { file: spec.file.clone() })?;
+    }
 
     let state = state_of(&partial);
     let digest = match verify(&partial, spec, on_progress) {
@@ -368,7 +384,9 @@ fn ensure(
     fs::rename(&partial, &target).map_err(|source| Error::Io { path: target.clone(), source })?;
     // One inode moved, so the bytes just hashed are the bytes now at
     // `target`, still in the state that was read before them.
-    cache.record(&target, state, &digest);
+    if let Some(digest) = &digest {
+        cache.record(&target, state, digest);
+    }
     announce(on_progress, Progress::Ready { file: spec.file.clone() })?;
     Ok(())
 }
@@ -418,22 +436,34 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
 ///
 /// Returns the digest it computed, for a caller recording it against the
 /// state the file is in.
-fn verify(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<String, Error> {
+/// Check `path` against the spec, hashing only what there is a digest for.
+///
+/// Returns the digest when one was computed. A spec with no digest - a
+/// model whose upstream publishes none - gets its size checked and nothing
+/// more, and the caller records nothing: there is nothing to remember.
+fn verify(
+    path: &Path,
+    spec: &ModelSpec,
+    on_progress: &mut Reporter<'_>,
+) -> Result<Option<String>, Error> {
     let actual =
         fs::metadata(path).map_err(|source| Error::Io { path: path.into(), source })?.len();
     if actual != spec.size {
         return Err(Error::SizeMismatch { path: path.into(), expected: spec.size, actual });
     }
 
+    let Some(expected) = spec.sha256.as_deref() else {
+        return Ok(None);
+    };
     let digest = sha256(path, spec, on_progress)?;
-    if !digest.eq_ignore_ascii_case(&spec.sha256) {
+    if !digest.eq_ignore_ascii_case(expected) {
         return Err(Error::HashMismatch {
             path: path.into(),
-            expected: spec.sha256.clone(),
+            expected: expected.to_owned(),
             actual: digest,
         });
     }
-    Ok(digest)
+    Ok(Some(digest))
 }
 
 fn sha256(path: &Path, spec: &ModelSpec, on_progress: &mut Reporter<'_>) -> Result<String, Error> {
@@ -636,7 +666,7 @@ impl std::io::Write for ProgressWriter<'_, '_> {
 #[cfg(test)]
 mod tests_cached_verification {
     use super::*;
-    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::Write as _;
@@ -649,8 +679,78 @@ mod tests_cached_verification {
             file: file.into(),
             url: "http://127.0.0.1:1/unreachable".into(),
             size: body.len() as u64,
-            sha256: hex::encode(Sha256::digest(body)),
+            sha256: Some(hex::encode(Sha256::digest(body))),
             facts: ModelFacts::default(),
+        }
+    }
+
+    /// **A downloaded candidate has no digest to check.** No upstream
+    /// publishes one for these weights, so its spec carries the size alone
+    /// and nothing here may claim more than that.
+    #[test]
+    fn a_spec_without_a_digest_is_accepted_on_its_size_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"five!";
+        fs::write(dir.path().join("candidate.gguf"), body).unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for_download(
+                "candidate.gguf",
+                "http://127.0.0.1:1/unreachable",
+                body.len() as u64,
+                ModelFacts::default(),
+            ))
+            .normalizer(None)
+            .build();
+        let announced = std::cell::RefCell::new(Vec::new());
+
+        prepare(&cfg, |progress| {
+            announced.borrow_mut().push(progress);
+            std::ops::ControlFlow::Continue(())
+        })
+        .expect("a file of the right length is all a digestless spec asks for");
+
+        assert!(
+            matches!(
+                announced.borrow().last(),
+                Some(Progress::Ready { file }) if file == "candidate.gguf"
+            ),
+            "the file was not announced ready: {:?}",
+            announced.borrow()
+        );
+        assert!(
+            !announced.borrow().iter().any(|p| matches!(p, Progress::Verifying { .. })),
+            "a digestless spec has nothing to hash, so nothing may say it is verifying"
+        );
+    }
+
+    /// The size is the whole check, and it still fails loudly on a
+    /// mismatch - naming both numbers, via the variant `fetch` already has.
+    #[test]
+    fn a_spec_without_a_digest_still_rejects_the_wrong_size() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("candidate.gguf"), b"five!").unwrap();
+
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(spec_for_download(
+                "candidate.gguf",
+                "http://127.0.0.1:1/unreachable",
+                6,
+                ModelFacts::default(),
+            ))
+            .normalizer(None)
+            .build();
+
+        let failure = prepare(&cfg, |_| std::ops::ControlFlow::Continue(()))
+            .expect_err("six bytes expected against five on disk");
+
+        match failure {
+            Error::SizeMismatch { expected, actual, .. } => {
+                assert_eq!((expected, actual), (6, 5));
+            }
+            other => panic!("a size check reported {other:?}"),
         }
     }
 
@@ -989,7 +1089,7 @@ mod tests_download {
             file: path.trim_start_matches('/').into(),
             url: format!("{}{path}", server.base),
             size: body.len() as u64,
-            sha256: hex::encode(Sha256::digest(body)),
+            sha256: Some(hex::encode(Sha256::digest(body))),
             facts: ModelFacts::default(),
         }
     }
@@ -1329,7 +1429,7 @@ mod tests_digest_cache {
             file: file.into(),
             url: "http://127.0.0.1:1/unreachable".into(),
             size: body.len() as u64,
-            sha256: hex::encode(Sha256::digest(body)),
+            sha256: Some(hex::encode(Sha256::digest(body))),
             facts: ModelFacts::default(),
         }
     }
@@ -1478,7 +1578,7 @@ mod tests_digest_cache {
         prepare_ok(&config(models.path(), digests.path()));
 
         let mut moved = offline_spec("asr.gguf", BODY);
-        moved.sha256 = hex::encode(Sha256::digest(b"what the re-release weights are"));
+        moved.sha256 = Some(hex::encode(Sha256::digest(b"what the re-release weights are")));
         assert_eq!(
             moved.size,
             BODY.len() as u64,

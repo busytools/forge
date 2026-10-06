@@ -71,7 +71,9 @@ pub struct InUseModel {
     pub role: DictateRole,
     pub file: String,
     pub size: u64,
-    pub sha256: String,
+    /// The digest the pin declares, or `None` for an installed model whose
+    /// upstream publishes none: nothing may print a digest for one.
+    pub sha256: Option<String>,
     /// The preflight snapshot's own state: pending through ready.
     pub state: DictateModelState,
     /// The facts the pin declares.

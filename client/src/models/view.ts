@@ -285,7 +285,9 @@ export function inUseRowFacts(model: InUseModel): InUseFacts {
   if (model.facts.params !== null) {
     pinned.push({ text: `${paramsLabel(model.facts.params)} params` });
   }
-  pinned.push({ text: `sha ${model.sha256.slice(0, 8)}` });
+  // A model downloaded from the feed's docs has no published digest, and a
+  // row that printed a placeholder would claim bytes nobody checked.
+  if (model.sha256 !== null) pinned.push({ text: `sha ${model.sha256.slice(0, 8)}` });
   if (model.facts.license !== null) pinned.push({ text: model.facts.license });
 
   const join = model.catalogue;

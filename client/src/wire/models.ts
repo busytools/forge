@@ -59,7 +59,9 @@ export interface InUseModel {
   role: ModelRole;
   file: string;
   size: number;
-  sha256: string;
+  /** The declared digest: `null` for an installed model whose upstream
+   * publishes none, which is drawn without one. */
+  sha256: string | null;
   state: DictateModelState;
   facts: ModelFacts;
   catalogue: CatalogueJoin | null;
