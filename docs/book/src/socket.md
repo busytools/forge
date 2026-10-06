@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 5, "forge_version": "1.0.114 · abc1234", "forge_version_short": "1.0.114+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 6, "forge_version": "1.0.114 · abc1234", "forge_version_short": "1.0.114+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -103,8 +103,8 @@ its name around the value inside it.
 
 ## What a client sends
 
-**`subscribe {what, answering}`** - answered with a `snapshot` of the whole
-subject. The subscription this opens is the one updates arrive on.
+**`subscribe {what, answering, browser}`** - answered with a `snapshot` of
+the whole subject. The subscription this opens is the one updates arrive on.
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** The core parks a turn on the reply of
@@ -121,9 +121,23 @@ is what the core counts when it decides whether a prompt can be answered,
 and a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
 
-Neither way takes the pre-attach backlog: it goes to the first subscriber,
-and the view that draws the boot notice is the terminal. A client reads
-what it missed from the subject's snapshot.
+**`browser` declares whether this client can host the browser, and it is
+off unless you say otherwise.** One connection holds that role at a time -
+the first capable one to declare it - and every browser tool call a session
+makes is routed to that connection as a `browser_ask`. **Declaring it is a
+claim about what the client can DO**: a client that declares the capability
+it does not have is sent asks it can only answer with a failure, and that
+arrives at the far end as a session's tool call failing rather than as the
+client's mistake. A second capable client changes nothing - it stays a view
+like any other, and the role is not an error to be second for. The role is
+handed back when the connection goes, and the next capable client takes it
+by declaring it again (a reconnect does). With no capable client attached,
+a browser tool answers the named error `no browser-capable client connected`
+rather than waiting for one to appear.
+
+Neither declaration takes the pre-attach backlog: it goes to the first
+subscriber, and the view that draws the boot notice is the terminal. A
+client reads what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
 stop hearing. Note that a second `subscribe` to one subject adds a second
@@ -193,21 +207,49 @@ machine's, and it lists them itself, which also means their names are the
 browser's own - blank until the origin has been allowed the microphone
 once.
 
-**Binary messages are dictation audio, and nothing else.** A client that
-captures sends one per 20 ms of speech:
+**`browser_answer {id, parts, error}`** - the host's answer to one
+`browser_ask`, under that ask's own id. `parts` are what the tool returned,
+in order; `error` is the reason the call failed, and a failed answer carries
+no parts. **An image part's bytes do NOT cross here** - the part names its
+`mime_type` and the bytes ride a binary frame of their own (below), because
+base64 inside this JSON would pay a third again for a screenshot. Every
+answer is sent by the connection that holds the browser role and by no
+other; an answer naming an ask the connection was never sent is dropped with
+a debug record.
+
+**Binary messages are frames, and a frame's first byte says which kind.** A
+client that captures sends one dictation frame per 20 ms of speech:
 
 | bytes | field | value |
 |---|---|---|
-| 1 | codec | `0` = `pcm_i16`; other values reserved |
+| 1 | kind | `0` = dictation; other values reserved but `1` is taken |
 | rest | samples | i16 little-endian, mono, 16 kHz |
 
-A frame carries no seat. It addresses the take its own CONNECTION started:
-one connection streams one take at a time and its messages are ordered, so
-a frame can only arrive between its own take's start and its stop. A frame
-this server cannot decode - a short header, an unknown codec, a payload
-past 16 KiB - or one that arrives with no take to hold it is dropped with a
-debug record and no answer, because a take's audio has no reply channel and
-the take's own outcome is what a reader sees either way.
+A dictation frame carries no seat. It addresses the take its own CONNECTION
+started: one connection streams one take at a time and its messages are
+ordered, so a frame can only arrive between its own take's start and its
+stop. A frame this server cannot decode - a short header, an unknown kind, a
+payload past 16 KiB - or one that arrives with no take to hold it is dropped
+with a debug record and no answer, because a take's audio has no reply
+channel and the take's own outcome is what a reader sees either way.
+
+**`1` is a browser image part's bytes**, and it belongs to an answer rather
+than to a take:
+
+| bytes | field | value |
+|---|---|---|
+| 1 | kind | `1` = browser image |
+| 8 | id | the `browser_ask`'s id, big-endian u64 |
+| rest | bytes | the image, whose mime type the answer's part named |
+
+A client sends one per image part of the answer it is about to send - or has
+just sent, since the two travel on one ordered connection - **in the order
+the parts are listed**: the first frame fills the first image part, the
+second the second. The id is what says which answer the bytes belong to, so
+two sessions asking at once cannot be handed each other's picture. The
+payload cap is 16 MiB, and the socket's own frame limit is raised to it at
+the upgrade; a frame with no answer waiting for it, or with every image part
+already filled, is dropped with a debug record.
 
 **`dictate_stream {key, options}`** - begin a take the CLIENT captures.
 The connection that sends it feeds the audio as the binary frames above,
@@ -281,6 +323,14 @@ was asked for.
   renders where the list would have been - the two are the request's only
   outcomes.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
+- **`browser_ask {id, seat, tool, args}`** - one browser tool call, sent to
+  the client that holds the browser role. **This is the socket's only
+  request in the direction a client answers**: `id` is what pairs it with
+  the `browser_answer` that settles it, `seat` is the session whose turn is
+  waiting, `tool` is upstream's own unprefixed name, and `args` is what the
+  CLI sent verbatim. Nothing else pairs the two, so an ask left unanswered
+  is a session's tool call waiting - a client that cannot serve it answers
+  with the reason rather than with silence.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
 
