@@ -315,6 +315,41 @@ client-tauri-bundle:
 
     npm --prefix client run tauri -- build --ci -- --locked
 
+# The Android half's own gate. Neither `just check` nor `client-tauri-check`
+# reaches it: the shell crate is its own workspace root, and the Kotlin lives
+# in the Gradle project, so without this the update plugin and its version
+# compare are compiled only at release time. The Kotlin compile and its unit
+# tests need the SDK and a JDK; a device and the release keystore are not.
+#
+# The target has to be installed (`rustup target add aarch64-linux-android`)
+# for the shell check.
+client-android-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    sdk=""
+    for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" /opt/homebrew/share/android-commandlinetools; do
+        [ -n "$candidate" ] || continue
+        if [ -d "$candidate/platforms" ] || [ -d "$candidate/ndk" ]; then
+            sdk="$candidate"
+            break
+        fi
+    done
+    if [ -z "$sdk" ]; then
+        echo "[ERROR] no Android SDK found - set ANDROID_HOME, or install one (client/README.md, The Android target)" >&2
+        exit 1
+    fi
+    if ! command -v java >/dev/null 2>&1; then
+        echo "[ERROR] no java on PATH - the Kotlin compile needs a JDK 17 or newer" >&2
+        exit 1
+    fi
+    export ANDROID_HOME="$sdk"
+
+    # The variant names come from the rust plugin's ABI split; universal is
+    # the one `--target aarch64` builds (the release APK is universal too).
+    (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:compileUniversalDebugKotlin :app:testUniversalDebugUnitTest)
+    RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
+
 # Bundle the client as an app and install it over /Applications/forge.app.
 # It does not bump anything, so it can be re-run after a failed build -
 # while no source has changed since the tag, which is what records the
