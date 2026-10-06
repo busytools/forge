@@ -31,14 +31,6 @@ impl ToolOutput {
         Self { blocks: vec![ToolOutputBlock::Text { text: s.into() }], is_error: true }
     }
 
-    /// Build an image output.
-    pub fn image(mime_type: impl Into<String>, data: Vec<u8>) -> Self {
-        Self {
-            blocks: vec![ToolOutputBlock::Image { mime_type: mime_type.into(), data }],
-            is_error: false,
-        }
-    }
-
     /// Serialise to the JSON shape MCP expects.
     pub(crate) fn to_mcp_content(&self) -> Vec<Value> {
         self.blocks
@@ -101,7 +93,13 @@ mod tests {
     /// a screenshot from any MCP server arrives in.
     #[test]
     fn an_image_block_crosses_as_an_mcp_image_content_block() {
-        let output = ToolOutput::image("image/png", vec![0x00, 0xff, 0x10]);
+        let output = ToolOutput {
+            blocks: vec![ToolOutputBlock::Image {
+                mime_type: "image/png".to_owned(),
+                data: vec![0x00, 0xff, 0x10],
+            }],
+            is_error: false,
+        };
         let content = output.to_mcp_content();
         assert_eq!(content.len(), 1, "one block in, one block out");
         assert_eq!(content[0]["type"], "image");

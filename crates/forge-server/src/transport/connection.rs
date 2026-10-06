@@ -64,6 +64,14 @@ impl Drop for Holds<'_> {
     }
 }
 
+/// Why an ask failed because its host sent the frames a step out of order.
+///
+/// Named rather than left to the driver's own words: the ordering contract is
+/// this socket's, and the sentence a session reads should say which half of it
+/// was broken.
+const BEFORE_ANSWER: &str = "the browser host sent an image frame before the answer that \
+                              declares the image, so the call cannot be completed";
+
 /// The browser role this connection holds, and what is in flight under it.
 struct Hosting {
     /// The asks the relay routes here, in the order they were made.
@@ -123,12 +131,16 @@ struct InFlight {
 
 /// Take the upgrade and give the connection its own task.
 ///
-/// The frame limit is raised to the image cap here: a browser answer's image
-/// rides one binary frame, and the default limit is smaller than a screenshot.
-/// Frames the server refuses are refused by [`super::frame`] on their own
-/// terms; this is only what the socket will carry at all.
+/// The frame limit is set to the image cap here, and what that does to the
+/// defaults is worth stating because it goes both ways: it RAISES the frame
+/// limit (16 MiB by default, and an image frame is that plus its header) and
+/// LOWERS the message limit (64 MiB by default). One byte past the cap is
+/// carried on purpose, so an image a shade too big is refused by
+/// [`super::frame`] - which fails the ask it belongs to, naming the reason -
+/// rather than tearing the connection down at the socket layer, where the
+/// asker would be told only that its host went away.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
-    let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES;
+    let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES + 1;
     ws.max_frame_size(limit).max_message_size(limit).on_upgrade(move |socket| greet(socket, state))
 }
 
@@ -300,6 +312,11 @@ async fn run_connection(
             // cannot be paired with each other's results.
             ask = next_ask(hosting) => {
                 let Some(request) = ask else { break };
+                // What the core already said goes out first, the same rule the
+                // client-message arm keeps: an ask is composed after the news
+                // that preceded it, so nothing the core emitted before this
+                // call lands behind it.
+                batch::flush(socket, held.take()).await?;
                 if let Some(hosting) = hosting.as_mut() {
                     hosting.in_flight.insert(
                         request.id,
@@ -417,6 +434,24 @@ async fn handle_client(
         Message::Binary(bytes) => {
             match frame_route(&bytes, dictate.as_slice()) {
                 FrameRoute::Image { id, bytes } => browser_image_bytes(hosting, id, &bytes),
+                FrameRoute::Refused(refusal) => {
+                    // An image frame this server cannot take cannot fill the
+                    // part that is waiting for it, and the ask it belongs to
+                    // would wait forever. Nothing names which ask a refused
+                    // frame was for, so every ask waiting on an image is
+                    // failed with the reason - a failure a session can read,
+                    // where a wait with no end is not.
+                    fail_awaiting_images(
+                        hosting,
+                        &format!("an image frame this server cannot take: {}", refusal.reason()),
+                    );
+                    take_frame(
+                        &state.surface,
+                        dictate.as_slice(),
+                        me,
+                        FrameRoute::Refused(refusal),
+                    );
+                }
                 other => take_frame(&state.surface, dictate.as_slice(), me, other),
             }
             return Ok(());
@@ -977,11 +1012,19 @@ fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
         return;
     };
     let Some(parts) = in_flight.parts.as_mut() else {
-        tracing::debug!(
-            event_name = "browser_image_before_its_answer",
-            id,
-            "an image frame arrived before the answer that declared the image",
-        );
+        // **A frame before its answer is a malformed pair, not slowness**, so
+        // the ask fails naming it rather than being left to wait for parts an
+        // answer has not declared. The answer that was supposed to come first
+        // is dropped when it arrives, for an ask nothing is waiting on.
+        let refused = hosting.in_flight.remove(&id);
+        if let Some(in_flight) = refused {
+            tracing::debug!(
+                event_name = "browser_image_before_its_answer",
+                id,
+                "an image frame arrived before the answer that declared the image",
+            );
+            in_flight.reply.send(Err(BEFORE_ANSWER.to_owned())).ok();
+        }
         return;
     };
     let Some(&at) = in_flight.images.get(in_flight.filled) else {
@@ -1002,6 +1045,30 @@ fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
         };
         if let Some(parts) = in_flight.parts {
             in_flight.reply.send(Ok(parts)).ok();
+        }
+    }
+}
+
+/// Fail every ask on this connection that is waiting for an image, naming why.
+///
+/// A frame whose bytes cannot be taken is the end of those asks: the part it
+/// was for is never filled, and the alternative to failing them is a session's
+/// tool call waiting on a promise nothing can keep.
+fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
+    let Some(hosting) = hosting.as_mut() else {
+        return;
+    };
+    let waiting: Vec<u64> = hosting
+        .in_flight
+        .iter()
+        .filter(|(_, in_flight)| {
+            in_flight.parts.is_some() && in_flight.filled < in_flight.images.len()
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for id in waiting {
+        if let Some(in_flight) = hosting.in_flight.remove(&id) {
+            in_flight.reply.send(Err(why.to_owned())).ok();
         }
     }
 }

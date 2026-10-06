@@ -49,14 +49,14 @@ async fn a_server() -> (String, Fleet) {
 /// on a seat nothing has seeded and get the empty one.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let state = Arc::new(TransportState {
-        surface: fleet.surface(),
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
-        browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
-    });
+    // Built the way a running forge builds it: the same constructor the
+    // binary calls, so what these tests exercise is the boot's own wiring -
+    // the browser relay included, which a hand-built state could quietly get
+    // from somewhere else.
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::WebConfig::default(),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -3414,6 +3414,22 @@ fn ask(
     tokio::spawn(async move { state.browser.ask(&lead_seat(), &tool, args).await })
 }
 
+/// What an ask was settled with, or a named failure.
+///
+/// **Bounded, because an ask that is never answered is the failure these tests
+/// exist for.** Waiting on the task itself would hold the test open until the
+/// whole run is killed, and a hang reports nothing about what was being
+/// proven - this panics instead, naming the call that never came back.
+async fn settled(
+    asked: tokio::task::JoinHandle<Result<Vec<forge_primitives::browser::BrowserPart>, String>>,
+    what: &str,
+) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asked)
+        .await
+        .unwrap_or_else(|_| panic!("{what} was never settled"));
+    answer.expect("the asker task ran")
+}
+
 /// A capable connection is sent the asks, and the answer it sends back is what
 /// the tool call returns.
 #[tokio::test]
@@ -3438,7 +3454,7 @@ async fn a_capable_client_is_sent_the_asks_and_its_answer_comes_back() {
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "navigated".to_owned() }];
     send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
 
-    let answer = asked.await.expect("the asker task ran");
+    let answer = settled(asked, "the navigate").await;
     assert_eq!(answer, Ok(parts), "the host's parts are what the tool call returns");
 }
 
@@ -3476,7 +3492,7 @@ async fn an_answers_image_rides_its_own_binary_frame() {
     frame.extend_from_slice(&[0x89, 0x50]);
     socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
 
-    let answer = asked.await.expect("the asker task ran");
+    let answer = settled(asked, "the screenshot").await;
     assert_eq!(
         answer,
         Ok(vec![forge_primitives::browser::BrowserPart::Image {
@@ -3524,8 +3540,260 @@ async fn a_second_capable_client_does_not_take_the_role() {
 
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
     send(&mut first, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
+    assert!(settled(asked, "the close").await.is_ok(), "the holder's answer settles the call");
+}
+
+/// **The relay the transport registers into is the one the WORKSPACE hands
+/// out.** The ask here is made through `workspace.browser_relay()`, while the
+/// connection took its role through the state `for_workspace` built - so this
+/// passes only if those are one relay. A state holding a relay of its own
+/// would register a host nothing routes to, and every browser tool would
+/// answer "no browser-capable client connected" with a client attached.
+#[tokio::test]
+async fn the_transports_relay_is_the_workspaces_own() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let asked = tokio::spawn({
+        let workspace = fleet.workspace();
+        async move {
+            workspace
+                .browser_relay()
+                .ask(&lead_seat(), "browser_close", serde_json::json!({}))
+                .await
+        }
+    });
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
+    assert_eq!(
+        settled(asked, "the close").await,
+        Ok(parts),
+        "the ask went through the workspace's relay to the connection that took the role",
+    );
+}
+
+/// An image frame before the answer that declares it is a malformed pair, so
+/// the ask FAILS naming it - it is not left waiting on parts no answer has
+/// declared, which is a session's tool call hanging on a promise nothing can
+/// keep.
+#[tokio::test]
+async fn an_image_frame_before_its_answer_fails_the_ask() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+
+    let mut frame = vec![forge_server::transport::frame::Kind::BrowserImage.tag()];
+    frame.extend_from_slice(&id.to_be_bytes());
+    frame.extend_from_slice(&[0x89, 0x50]);
+    socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
+
+    let refused = settled(asked, "the screenshot").await;
     assert!(
-        asked.await.expect("the asker task ran").is_ok(),
-        "the holder's answer settles the call"
+        matches!(&refused, Err(why) if why.contains("before the answer")),
+        "the ask fails naming the ordering it met: {refused:?}",
+    );
+}
+
+/// An image frame the server cannot take cannot fill the part waiting for it,
+/// so the ask fails with the refusal rather than waiting for a frame that was
+/// never going to arrive.
+#[tokio::test]
+async fn a_refused_image_frame_fails_the_ask_waiting_for_it() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![forge_primitives::browser::BrowserPart::Image {
+                mime_type: "image/png".to_owned(),
+                bytes: Vec::new(),
+            }],
+            error: None,
+        },
+    )
+    .await;
+
+    // A frame cut inside its own header: an id cannot be read from it.
+    socket
+        .send(Message::Binary(
+            vec![forge_server::transport::frame::Kind::BrowserImage.tag()].into(),
+        ))
+        .await
+        .expect("the short frame sends");
+
+    let refused = settled(asked, "the screenshot").await;
+    assert!(
+        matches!(&refused, Err(why) if why.contains("cannot take")),
+        "the ask fails with the frame's own refusal: {refused:?}",
+    );
+}
+
+/// Two asks in flight at once, answered in the other order: each is settled
+/// with its OWN parts, because the id - not the arrival order - is what pairs
+/// an answer with its ask.
+#[tokio::test]
+async fn two_asks_in_flight_are_settled_by_their_own_answers() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let first = ask(&state, "browser_navigate", serde_json::json!({ "url": "one" }));
+    let second = ask(&state, "browser_navigate", serde_json::json!({ "url": "two" }));
+    let (first_id, _, _, _) = browser_ask(&mut socket).await;
+    let (second_id, _, _, _) = browser_ask(&mut socket).await;
+    assert_ne!(first_id, second_id, "two asks are two ids");
+
+    let parts =
+        |text: &str| vec![forge_primitives::browser::BrowserPart::Text { text: text.to_owned() }];
+    // The second one answered first: the ids are what keep them apart.
+    send(
+        &mut socket,
+        ClientMessage::BrowserAnswer { id: second_id, parts: parts("second"), error: None },
+    )
+    .await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserAnswer { id: first_id, parts: parts("first"), error: None },
+    )
+    .await;
+
+    assert_eq!(settled(second, "the second ask").await, Ok(parts("second")));
+    assert_eq!(settled(first, "the first ask").await, Ok(parts("first")));
+}
+
+/// One answer carrying two image parts, whose frames fill them in the order
+/// the parts are listed - the frames say nothing about which part they are
+/// for, so the pair's own order is what decides.
+#[tokio::test]
+async fn two_images_of_one_answer_are_filled_in_their_own_order() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![
+                forge_primitives::browser::BrowserPart::Image {
+                    mime_type: "image/png".to_owned(),
+                    bytes: Vec::new(),
+                },
+                forge_primitives::browser::BrowserPart::Image {
+                    mime_type: "image/jpeg".to_owned(),
+                    bytes: Vec::new(),
+                },
+            ],
+            error: None,
+        },
+    )
+    .await;
+
+    for bytes in [[0x01_u8, 0x02], [0x03, 0x04]] {
+        let mut frame = vec![forge_server::transport::frame::Kind::BrowserImage.tag()];
+        frame.extend_from_slice(&id.to_be_bytes());
+        frame.extend_from_slice(&bytes);
+        socket.send(Message::Binary(frame.into())).await.expect("the image frame sends");
+    }
+
+    let answer = settled(asked, "the screenshot").await;
+    assert_eq!(
+        answer,
+        Ok(vec![
+            forge_primitives::browser::BrowserPart::Image {
+                mime_type: "image/png".to_owned(),
+                bytes: vec![0x01, 0x02],
+            },
+            forge_primitives::browser::BrowserPart::Image {
+                mime_type: "image/jpeg".to_owned(),
+                bytes: vec![0x03, 0x04],
+            },
+        ]),
+        "the first frame filled the first part, the second the second",
+    );
+}
+
+/// **The role frees when its holder goes, and the next capable client takes
+/// it.** This is the path a client restart rides, and a role that stayed held
+/// would make every browser tool answer "no browser-capable client connected"
+/// while a client sat attached.
+///
+/// **One subscribe, and no failing ask before it.** The role has to be free
+/// by the time this client offers to take it: an unwanted retry, or a first
+/// ask that fails and frees it on the way, would let this pass with the
+/// holder's role never given back on its own.
+#[tokio::test]
+async fn a_second_capable_client_takes_the_role_when_its_holder_goes() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    // The holder goes, the way a client quitting does, and the server is
+    // given the hop it takes to notice - the file's own wait, which reaps on
+    // an emit until the count falls.
+    let attached = fleet.subscriber_count();
+    drop(first);
+    assert!(
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "the server noticed the holder went rather than leaving it counted",
+    );
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut second).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
+    assert!(
+        settled(asked, "the close").await.is_ok(),
+        "the ask routed to the new holder is settled by its answer",
     );
 }

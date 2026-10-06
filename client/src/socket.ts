@@ -440,7 +440,8 @@ export function connect(url: string): Connection {
       return;
     }
     // The mime types cross on the answer; the bytes follow as frames, in the
-    // order the parts are listed.
+    // order the parts are listed. **The answer goes first**, which is what the
+    // server reads: it declares the images before any frame can fill them.
     const parts: BrowserPart[] = answer.parts.map((part) =>
       part.type === 'image' ? { type: 'image', mime_type: part.mime_type } : part,
     );
@@ -452,7 +453,14 @@ export function connect(url: string): Connection {
         // view is one, and TS cannot see that through the default.
         socket?.send(imageFrame(ask.id, part.bytes) as Uint8Array<ArrayBuffer>);
       } catch (why) {
-        report('an image frame could not be sent', why);
+        // **A frame that could not be sent cannot be skipped.** The answer is
+        // already on the wire and its images will never all arrive, so the
+        // tool call would wait on a promise this client cannot keep. Dropping
+        // the connection ends that ask - the server fails it naming the host
+        // that went away - and the reconnect re-declares the capability.
+        report('an image frame could not be sent; dropping the connection', why);
+        socket?.close();
+        return;
       }
     }
   }

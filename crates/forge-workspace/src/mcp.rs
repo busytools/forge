@@ -191,6 +191,12 @@ pub(crate) fn canonical_mcp_families(names: &[String]) -> Result<Option<Vec<Stri
         if name == "agents" {
             return Err("`agents` is always on for every worker and cannot be listed".to_owned());
         }
+        // The browser is the other always-on group, for a different reason:
+        // it is one machine-global client rather than a project's scope, so
+        // there is nothing a project could withhold.
+        if name == "browser" {
+            return Err("`browser` is always on for every session and cannot be listed".to_owned());
+        }
         let Some(family) = McpFamily::parse(name) else {
             let selectable: Vec<&str> =
                 McpFamily::ALL.iter().map(|family| family.as_str()).collect();

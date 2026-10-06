@@ -89,11 +89,6 @@ impl BrowserRelay {
         }
     }
 
-    /// Whether `id` is the connection the browser routes to.
-    pub fn is_host(&self, id: u64) -> bool {
-        self.lock().as_ref().is_some_and(|existing| existing.id == id)
-    }
-
     /// Send one ask to the host and wait for its answer.
     ///
     /// The failure arms are the named errors a tool returns: no host at all,
@@ -159,35 +154,55 @@ mod tests {
         serde_json::json!({ "url": "https://example.com" })
     }
 
-    /// The role is exclusive and the first capable connection holds it.
-    #[test]
-    fn the_first_capable_connection_holds_the_role() {
+    /// The role is exclusive and the first capable connection holds it - read
+    /// off where the ask LANDS rather than off a flag: which connection a call
+    /// reaches is the whole of what the role means.
+    #[tokio::test]
+    async fn the_first_capable_connection_holds_the_role() {
         let relay = BrowserRelay::new();
-        let (first, _first_rx) = mpsc::unbounded_channel();
-        let (second, _second_rx) = mpsc::unbounded_channel();
+        let (first, mut first_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
 
         assert!(relay.register(1, first), "the first capable connection holds the role");
         assert!(!relay.register(2, second), "and a second capable client does not take it");
-        assert!(relay.is_host(1), "the role is still the first connection's");
-        assert!(!relay.is_host(2), "and not the second's");
+
+        let seat = seat();
+        let asked = relay.ask(&seat, "browser_close", args());
+        let landed = tokio::spawn(async move {
+            let request = first_rx.recv().await.expect("the ask reaches the first");
+            request.reply.send(Ok(Vec::new())).ok();
+        });
+        assert!(asked.await.is_ok(), "the ask was answered by the role's holder");
+        landed.await.expect("the landing task ran");
+        assert!(
+            second_rx.try_recv().is_err(),
+            "and nothing was routed to the second capable client",
+        );
     }
 
     /// The role frees when its holder goes, and the next capable client may
     /// take it - the reconnect case.
-    #[test]
-    fn the_role_frees_when_its_holder_goes() {
+    #[tokio::test]
+    async fn the_role_frees_when_its_holder_goes() {
         let relay = BrowserRelay::new();
         let (first, _first_rx) = mpsc::unbounded_channel();
         assert!(relay.register(1, first));
 
         relay.unregister(1);
-        let (second, _second_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
         assert!(relay.register(2, second), "the next capable client takes the freed role");
 
         // A late unregister from a connection that no longer holds it must
         // not take the role away from its new holder.
         relay.unregister(1);
-        assert!(relay.is_host(2), "the role belongs to whoever holds it");
+        let seat = seat();
+        let asked = relay.ask(&seat, "browser_close", args());
+        let landed = tokio::spawn(async move {
+            let request = second_rx.recv().await.expect("the ask reaches the role's holder");
+            request.reply.send(Ok(Vec::new())).ok();
+        });
+        assert!(asked.await.is_ok(), "the role still belongs to whoever holds it");
+        landed.await.expect("the landing task ran");
     }
 
     /// Nothing capable connected is the named error rather than a hang.

@@ -44,7 +44,8 @@ struct ToolSpec {
     schema: Value,
 }
 
-/// The core tools, in upstream's own order.
+/// The core tools, in the order this phase lists them - which is the
+/// capture's order for the ones it takes.
 ///
 /// The set is phase 1's: enough to prove the pipe by driving a page for real.
 /// The rest of the 25 land with the full-surface phase, as their own
@@ -512,5 +513,80 @@ mod tests {
             ],
             "the parts cross in order, the image's bytes with them",
         );
+    }
+
+    /// **The whole seam, from a tool call to the channel the workspace hands
+    /// out.** A tool driven through the built server is answered by a host
+    /// registered through `Workspace::browser_relay()` - the same accessor the
+    /// spawn builds its facade from - so a facade wired to a relay of its own
+    /// fails here rather than shipping as every browser tool answering "no
+    /// browser-capable client connected" while a client sits attached.
+    #[tokio::test]
+    async fn a_tool_driven_through_the_server_asks_the_relay_the_workspace_hands_out() {
+        use crate::mcp::browser::facade::ProdBrowserFacade;
+        use crate::mcp::cron::facade::MockCronFacade;
+        use crate::mcp::gotify::facade::MockGotifyFacade;
+        use crate::mcp::peers::facade::MockWorkspaceFacade;
+        use crate::mcp::review::facade::MockReviewFacade;
+        use crate::mcp::slack::facade::MockSlackFacade;
+        use crate::mcp::tasks::facade::MockTasksFacade;
+        use crate::mcp::workers::facade::MockWorkerFacade;
+        use tokio::sync::mpsc;
+
+        let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
+        let (to_host, mut asks) = mpsc::unbounded_channel();
+        assert!(
+            workspace.browser_relay().register(1, to_host),
+            "precondition: the role is free on a fresh workspace",
+        );
+
+        let server = crate::mcp::build_forge_server(
+            crate::mcp::ForgeServerFacades {
+                workspace: MockWorkspaceFacade::new().into_arc(),
+                worker: MockWorkerFacade::new().into_arc(),
+                // The exact composition the spawn uses.
+                browser: ProdBrowserFacade::from_relay(workspace.browser_relay()),
+                review: MockReviewFacade::new().into_arc(),
+                cron: MockCronFacade::new().into_arc(),
+                gotify: MockGotifyFacade::new().into_arc(),
+                slack: MockSlackFacade::new().into_arc(),
+                tasks: MockTasksFacade::new().into_arc(),
+                systemone: None,
+            },
+            &crate::mcp::McpFamily::all(),
+            seat(),
+            crate::mcp::SessionKind::Worker,
+        );
+
+        let host = tokio::spawn(async move {
+            let request = asks.recv().await.expect("the ask reached the registered host");
+            assert_eq!(request.tool, "browser_close", "and names the tool that was called");
+            request.reply.send(Ok(vec![BrowserPart::Text { text: "closed".to_owned() }])).ok();
+        });
+
+        let answer = server
+            .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
+                jsonrpc: "2.0".to_owned(),
+                id: Some(json!(1)),
+                method: "tools/call".to_owned(),
+                params: Some(json!({ "name": "browser_close", "arguments": {} })),
+            })
+            .await
+            .expect("a tools/call is answered");
+        // Bounded, so a facade wired to a relay of its own fails here -
+        // naming what never happened - rather than holding the run open.
+        tokio::time::timeout(std::time::Duration::from_secs(5), host)
+            .await
+            .expect(
+                "the ask reached the registered host rather than the tool answering without one",
+            )
+            .expect("the host task ran");
+
+        let encoded = format!("{answer:?}");
+        assert!(
+            encoded.contains("closed"),
+            "the tool's answer is the host's parts, so the call reached it: {encoded}",
+        );
+        assert!(!encoded.contains("no browser-capable client"), "{encoded}");
     }
 }

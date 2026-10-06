@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 6, "forge_version": "1.0.114 · abc1234", "forge_version_short": "1.0.114+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 6, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -217,6 +217,21 @@ answer is sent by the connection that holds the browser role and by no
 other; an answer naming an ask the connection was never sent is dropped with
 a debug record.
 
+**The order is part of the contract: the answer FIRST, then one frame per
+image part, in the order the parts are listed.** A frame that arrives before
+the answer that declares its image is a malformed pair rather than slowness,
+and the ask FAILS naming that - it is not left waiting for parts nothing has
+declared. A frame whose bytes cannot be taken (an unknown kind, a payload
+past the cap) fails every ask on that connection waiting for an image, with
+the refusal as the reason: the part it was for can never be filled, and a
+session reading a failure can act where a session waiting forever cannot.
+
+**A partial answer has no timeout of its own, and that is the contract.**
+Nothing here waits out a host that stops mid-answer; the ask ends when the
+host's connection goes, and the tool call fails naming that. A host that
+sends an answer and then dies between frames is therefore a failure the
+session reads at disconnect time, not after a clock nobody set.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
@@ -242,14 +257,16 @@ than to a take:
 | 8 | id | the `browser_ask`'s id, big-endian u64 |
 | rest | bytes | the image, whose mime type the answer's part named |
 
-A client sends one per image part of the answer it is about to send - or has
-just sent, since the two travel on one ordered connection - **in the order
-the parts are listed**: the first frame fills the first image part, the
-second the second. The id is what says which answer the bytes belong to, so
-two sessions asking at once cannot be handed each other's picture. The
-payload cap is 16 MiB, and the socket's own frame limit is raised to it at
-the upgrade; a frame with no answer waiting for it, or with every image part
-already filled, is dropped with a debug record.
+A client sends one per image part, **after** the answer that declares them
+and in the order the parts are listed: the first frame fills the first image
+part, the second the second. The id is what says which answer the bytes
+belong to, so two sessions asking at once cannot be handed each other's
+picture. The payload cap is 16 MiB, and the socket's own frame limit is that
+cap plus one byte, set at the upgrade - so an image a shade too big is
+refused by the decoder, which fails the ask it belongs to, rather than
+tearing the connection down at the socket layer where the asker would only
+be told its host went away. A frame with no answer waiting for it, or with
+every image part already filled, is dropped with a debug record.
 
 **`dictate_stream {key, options}`** - begin a take the CLIENT captures.
 The connection that sends it feeds the audio as the binary frames above,

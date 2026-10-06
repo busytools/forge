@@ -265,6 +265,20 @@ mod tests {
         assert_eq!(decode(&bytes), Err(Refusal::OversizedImage(MAX_IMAGE_BYTES + 1)));
     }
 
+    /// **The cap is a ceiling, not a shape the largest real image is under.**
+    /// A payload of exactly the cap is a frame this server takes, which is
+    /// what makes the refusal above a boundary rather than an off-by-one.
+    #[test]
+    fn an_image_payload_of_exactly_the_cap_is_taken() {
+        let mut frame = image_frame(3, &[]);
+        frame.extend(std::iter::repeat_n(0u8, MAX_IMAGE_BYTES));
+        assert_eq!(
+            decode(&frame),
+            Ok(Frame::Image { id: 3, bytes: vec![0; MAX_IMAGE_BYTES] }),
+            "exactly the cap crosses; one byte more is refused",
+        );
+    }
+
     /// The wire's rate is the one the models read. Not imported, because
     /// the transport states its own contract - so a drift between the two
     /// has to fail here rather than ride a shared constant.

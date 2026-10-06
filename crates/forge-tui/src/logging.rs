@@ -121,6 +121,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     agent.env_git=debug,\
     forge_server=debug,\
     forge_workspace::work=debug,\
+    forge_workspace::browser=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";

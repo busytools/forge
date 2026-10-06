@@ -258,16 +258,26 @@ read "the TUI cannot touch the agent" into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with seven groups today:
-`agents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
+to the model as `mcp__forge__<group>__<tool>`, with eight groups today:
+`agents`, `browser`, `review`, `cron`, `tasks`, `gotify`, `slack` and
 `systemone`.
 
-`review`, `cron`, `tasks`, `gotify` and `slack` are registered for every
-session; `systemone` joins them when `[systemone]` is configured and
-enabled. A worker's families can be narrowed at spawn -
+`browser` is the exception to the render pattern: its tools are
+upstream `@playwright/mcp`'s own, so they cross unprefixed -
+`mcp__forge__browser_navigate`, not `mcp__forge__browser__navigate` -
+which is what keeps a prompt written against a Playwright MCP server
+resolving here unchanged.
+
+`browser`, `review`, `cron`, `tasks`, `gotify` and `slack` are
+registered for every session; `systemone` joins them when `[systemone]`
+is configured and enabled. A worker's families can be narrowed at spawn -
 `agents__spawn`'s `mcp_families` list, revised by `agents__update` and
 stored on the worker's durable record - and each withheld family is
-named in that worker's own prompt; the `agents` group is always on. The split that varies by session kind is inside `agents`: any session may
+named in that worker's own prompt. The `agents` group is always on, and
+so is `browser`: it is one machine-global client rather than a project's
+scope - the session asks the client that holds the browser role, and with
+none connected the tool answers the named error - so there is nothing a
+project could withhold. The split that varies by session kind is inside `agents`: any session may
 `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only. Reach is the same for both: a target is a

@@ -33,13 +33,26 @@ async function stubServer() {
   const received: ClientMessage[] = [];
   /** Every binary frame the client sent, in order - a browser image's bytes. */
   const binary: Buffer[] = [];
+  /**
+   * Both kinds in ONE log, in arrival order.
+   *
+   * The order is the contract for a browser answer - the answer first, then
+   * its image frames - and two separate arrays cannot state it: a frame that
+   * overtook its answer would look exactly like one that followed it.
+   */
+  const arrivals: ({ kind: 'json'; message: ClientMessage } | { kind: 'frame'; bytes: Buffer })[] =
+    [];
   server.on('connection', (socket) => {
     socket.on('message', (data: RawData, isBinary: boolean) => {
       if (isBinary) {
-        binary.push(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        binary.push(bytes);
+        arrivals.push({ kind: 'frame', bytes });
         return;
       }
-      received.push(JSON.parse(frame(data)) as ClientMessage);
+      const message = JSON.parse(frame(data)) as ClientMessage;
+      received.push(message);
+      arrivals.push({ kind: 'json', message });
     });
   });
 
@@ -47,6 +60,7 @@ async function stubServer() {
     url: `ws://127.0.0.1:${port}/socket`,
     received,
     binary,
+    arrivals,
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -910,6 +924,49 @@ describe('the browser role', () => {
     expect(frame?.[0], 'the browser-image kind tag').toBe(1);
     expect(frame?.readBigUInt64BE(1), 'the answer id, big-endian').toBe(9n);
     expect([...(frame?.subarray(9) ?? [])], 'the image bytes').toEqual([0x89, 0x50]);
+
+    // **The answer goes FIRST.** A frame that overtook the answer declaring
+    // its image is a pair the server refuses - and fails the call over - so
+    // the order is asserted as it arrived, rather than from two separate
+    // lists that cannot tell an overtaking frame from a following one.
+    expect(
+      server.arrivals.map((arrival) => arrival.kind),
+      'the answer crossed before the frame it belongs to',
+    ).toEqual(['json', 'frame']);
+  });
+
+  /**
+   * **A frame that could not be sent cannot be skipped.** The answer is
+   * already on the wire, so its image can never arrive and the tool call
+   * would wait on a promise this client cannot keep. The connection drops
+   * instead: the server fails that ask naming the host that went away, and
+   * the reconnect re-declares the capability.
+   */
+  it('drops the connection when an image frame cannot be sent', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { browser: true });
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    conn.onBrowserAsk(() => ({
+      parts: [{ type: 'image', mime_type: 'image/png', bytes: new Uint8Array([1]) }],
+    }));
+
+    // The fault is a FRAME that cannot be sent, not the answer: the answer is
+    // a string and goes through, and the frame after it is what fails.
+    const send = vi.spyOn(WebSocket.prototype, 'send').mockImplementation((data: unknown) => {
+      if (typeof data !== 'string') throw new Error('the socket is gone');
+    });
+    server.send({
+      kind: 'browser_ask',
+      id: 3,
+      seat: LEAD,
+      tool: 'browser_take_screenshot',
+      args: {},
+    });
+    await until(
+      () => conn.status() !== 'open',
+      'the connection to drop rather than leave the answer half-sent',
+    );
+    send.mockRestore();
   });
 
   /**
