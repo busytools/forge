@@ -366,6 +366,21 @@ export function connect(url: string): Connection {
     awaiting.push(subjectKey(what));
   }
 
+  /**
+   * Re-declare the browser capability on what this connection already
+   * watches.
+   *
+   * A take needs it: the relay registers only connections that declared, and
+   * one displaced by an earlier take is no longer in its line - so the claim
+   * below would be answered `false` with the click visibly doing nothing.
+   * Nothing is declared when the page watches nothing yet.
+   */
+  function declare(): void {
+    const watching = held.values().next();
+    if (watching.done) return;
+    askFor(watching.value.subject, watching.value.answering, true);
+  }
+
   /** A subject the server has answered, which is no longer outstanding. */
   function answered(what: Subject): void {
     const at = awaiting.indexOf(subjectKey(what));
@@ -734,6 +749,12 @@ export function connect(url: string): Connection {
         report('the browser role could not be claimed', 'the socket is not open');
         return;
       }
+      // The claim re-declares first: the relay holds a channel only for a
+      // connection that declared, and a connection displaced by an earlier
+      // take is no longer registered - so the bare claim would come back
+      // `false` with nothing re-registered. The declare is idempotent and
+      // puts this connection back in the line the claim moves.
+      declare();
       sendNow({ kind: 'browser_take_role' });
     },
     onMessage(fn) {

@@ -1017,6 +1017,26 @@ describe('the browser role', () => {
   });
 
   /**
+   * **A take re-declares first.** The relay registers only declared
+   * connections, so a connection displaced by an earlier take - the very one
+   * whose strip draws Take over - must declare again for the claim to move
+   * anything; without it the click comes back `false` and nothing happens.
+   */
+  it('re-declares with a take, so a displaced connection can claim', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { browser: false });
+    await until(() => server.received.length === 1, 'the first subscribe');
+
+    conn.takeBrowserRole();
+    await until(() => server.received.length === 3, 'the declare and the claim');
+    expect(server.received[1], 'the declare goes first, carrying the capability').toMatchObject({
+      kind: 'subscribe',
+      browser: true,
+    });
+    expect(server.received[2], 'and the claim follows it').toEqual({ kind: 'browser_take_role' });
+  });
+
+  /**
    * **The role frame is the only thing that says "you host".** It flips the
    * read and reaches every listener; `takeBrowserRole` puts the claim on the
    * wire; and a drop clears it, because the role belonged to the connection
@@ -1041,5 +1061,46 @@ describe('the browser role', () => {
     server.drop();
     await until(() => !conn.browserRole(), 'the drop to clear the role');
     expect(heard, 'and the drop is said out loud').toEqual([true, false]);
+  });
+
+  /**
+   * **A refused take is a frame too.** The socket stays open, and the role
+   * frame with `false` is what says the claim did not move it - a refusal
+   * that were silence would leave the click unanswered on screen.
+   */
+  it('reads a refused take from its frame, with the socket still open', async () => {
+    const { server, conn } = await connected();
+    const heard: boolean[] = [];
+    conn.onBrowserRole((now) => heard.push(now));
+
+    conn.takeBrowserRole();
+    await until(() => server.received.length === 1, 'the claim to arrive');
+    server.send({ kind: 'browser_role', hosting: false });
+
+    await until(() => heard.length === 1, 'the refusal to land');
+    expect(heard, 'the refusal is said out loud rather than left silent').toEqual([false]);
+    expect(conn.browserRole(), 'and it is what the read now is').toBe(false);
+  });
+
+  /**
+   * **A claim while the socket is down is a record, not a send.** The guard
+   * is the whole difference between a click that says why it did nothing and
+   * a frame thrown into a dead socket.
+   */
+  it('records a claim made while the socket is down rather than sending it', async () => {
+    const { server, conn } = await connected();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      conn.close();
+      conn.takeBrowserRole();
+
+      expect(warned, 'the click is recorded with its reason').toHaveBeenCalledWith(
+        'forge client: the browser role could not be claimed',
+        'the socket is not open',
+      );
+      expect(server.received, 'and nothing crossed').toEqual([]);
+    } finally {
+      warned.mockRestore();
+    }
   });
 });

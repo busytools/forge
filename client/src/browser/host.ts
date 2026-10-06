@@ -81,8 +81,14 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
   });
 }
 
-/** The reason a rejected command carried, as a sentence. */
-function whyText(why: unknown): string {
+/**
+ * The reason a rejected command carried, as a sentence.
+ *
+ * Exported for the strip's own reads: a failed `listContexts` or a refused
+ * close has the shell's own words in its rejection, and a caller that drew
+ * anything else would be inventing a reason.
+ */
+export function whyText(why: unknown): string {
   if (typeof why === 'string' && why !== '') return why;
   return `the client's browser host failed: ${String(why)}`;
 }

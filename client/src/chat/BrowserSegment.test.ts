@@ -3,7 +3,23 @@ import { flushSync, mount, unmount } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
+import { closeContext, listContexts } from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
+
+/**
+ * The client's own host, mocked so the READ has states a test can drive: the
+ * real one answers the empty list outside the shell, which only ever proved
+ * the resting row.
+ */
+vi.mock('../browser/host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/host')>();
+  return {
+    ...actual,
+    canHost: () => true,
+    listContexts: vi.fn(() => Promise.resolve([])),
+    closeContext: vi.fn(() => Promise.resolve(undefined)),
+  };
+});
 
 /**
  * The connection the segment reads its role from and takes it through: a
@@ -50,7 +66,7 @@ const click = (el: Element | null | undefined): void => {
 };
 
 describe('the browser segment', () => {
-  it('rests as a count and opens onto the role and the contexts', () => {
+  it('rests as a count and opens onto the role and the contexts', async () => {
     const shown = show();
     expect(shown.target.textContent, 'the resting row names the count').toContain('0 contexts');
     expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
@@ -62,8 +78,48 @@ describe('the browser segment', () => {
     expect(shown.target.textContent, 'a capable client that is not hosting is told so').toContain(
       'another client drives the browser',
     );
-    expect(shown.target.textContent, 'with no contexts yet said plainly').toContain(
-      'no contexts yet',
+    await vi.waitFor(() => {
+      expect(
+        shown.target.textContent,
+        'with no contexts yet said plainly, once the read has answered',
+      ).toContain('no contexts yet');
+    });
+    shown.stop();
+  });
+
+  it('says the read failed rather than claiming there are no contexts', async () => {
+    const shown = show(false, true);
+    await vi.waitFor(() => expect(listContexts).toHaveBeenCalledTimes(1));
+    vi.mocked(listContexts).mockRejectedValueOnce('the context list would not read');
+
+    click(shown.target.querySelector('.bz-tog'));
+
+    await vi.waitFor(() => {
+      expect(shown.target.textContent).toContain('the context list would not read');
+    });
+    expect(
+      shown.target.textContent,
+      'an empty row would be a claim about a read that never answered',
+    ).not.toContain('no contexts yet');
+    shown.stop();
+  });
+
+  it('keeps the row and says why when the close is refused', async () => {
+    vi.mocked(listContexts).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    vi.mocked(closeContext).mockRejectedValueOnce('no browser context is open under hunt');
+    click(shown.target.querySelector('.bz-close'));
+
+    await vi.waitFor(() => {
+      expect(shown.target.textContent).toContain('no browser context is open under hunt');
+    });
+    expect(shown.target.textContent, 'the row is not taken away by a close that failed').toContain(
+      'hunt',
     );
     shown.stop();
   });

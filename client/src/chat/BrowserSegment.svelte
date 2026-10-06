@@ -5,6 +5,7 @@
     closeContext,
     listContexts,
     showBrowser,
+    whyText,
     type ContextRow,
   } from '../browser/host';
   import type { Connection } from '../socket';
@@ -33,6 +34,13 @@
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
   let contexts = $state<ContextRow[]>([]);
+  /**
+   * What the last read answered. "No contexts yet" is a claim about this
+   * client's own state, and a read that never answered has no state to claim,
+   * so the row waits - or says why - rather than asserting one.
+   */
+  let read = $state<'loading' | 'ready' | 'failed'>('loading');
+  let why = $state<string | null>(null);
   // The role is read ONCE here and kept live by the subscription below: the
   // connection's identity does not change over this segment's life, so the
   // initial read is the truth the subscription then maintains.
@@ -42,8 +50,23 @@
 
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
+  /**
+   * The client's own contexts, read at mount and when the list opens. A
+   * failed read keeps whatever the last one answered and says why.
+   */
+  async function readContexts(): Promise<void> {
+    try {
+      contexts = await listContexts();
+      read = 'ready';
+      why = null;
+    } catch (error) {
+      read = 'failed';
+      why = whyText(error);
+    }
+  }
+
   $effect(() => {
-    void listContexts().then((rows) => (contexts = rows));
+    void readContexts();
   });
 
   // A pointer landing outside the segment closes the list, the same one look
@@ -61,7 +84,7 @@
 
   function toggle(): void {
     open = !open;
-    if (open) void listContexts().then((rows) => (contexts = rows));
+    if (open) void readContexts();
   }
 
   /** Escape closes from either of the list's controls. */
@@ -71,7 +94,15 @@
 
   /** The person's close: saves, frees the name, and the row falls away. */
   function close(row: ContextRow): void {
-    void closeContext(row.name).then(() => listContexts().then((rows) => (contexts = rows)));
+    void closeContext(row.name).then(
+      () => readContexts(),
+      (error: unknown) => {
+        // A close the shell refused leaves the context open, and the row says
+        // so rather than vanishing over a name that is still held.
+        read = 'failed';
+        why = whyText(error);
+      },
+    );
   }
 </script>
 
@@ -145,7 +176,11 @@
           </button>
         </div>
       {/each}
-      {#if contexts.length === 0}
+      {#if read === 'loading'}
+        <div class="bz-it"><span class="tx">reading the contexts…</span></div>
+      {:else if read === 'failed'}
+        <div class="bz-it"><span class="tx bad">{why}</span></div>
+      {:else if contexts.length === 0}
         <div class="bz-it"><span class="tx">no contexts yet</span></div>
       {/if}
     </div>

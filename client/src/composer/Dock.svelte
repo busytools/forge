@@ -439,6 +439,14 @@
       if (denyOption !== null) decide(denyWith);
       return;
     }
+    if (ask.kind === 'browser_hand_off') {
+      // A hand-off refuses with its own "not now", which is the answer the
+      // core reads as the session carrying on without the browser. Without
+      // this arm the parked call - which has no timeout - waits forever on a
+      // key the dock's own row advertises.
+      handOff(false);
+      return;
+    }
     // A held post refuses with its own "don't send", which is the answer the
     // core reads as the draft going nowhere.
     post(false);

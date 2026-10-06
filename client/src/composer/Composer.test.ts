@@ -3,6 +3,18 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { showBrowser } from '../browser/host';
+
+/**
+ * The shell's own door, mock-able so both halves of Open's claim are testable
+ * here: outside the shell the real one always answers false, which only ever
+ * proved the could-not line.
+ */
+vi.mock('../browser/host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/host')>();
+  return { ...actual, showBrowser: vi.fn(actual.showBrowser) };
+});
+
 /**
  * A microphone that opens without an audio stack.
  *
@@ -4074,6 +4086,26 @@ describe('the dock', () => {
     expect(drawn()).toContain('Not now');
   });
 
+  it('says why an answer did not land when the hand-off left under the click', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+
+    // The core resolved it elsewhere, so the click's answer is refused: the
+    // reason rides the hand-off's own operation name and is drawn where the
+    // dock stood.
+    harness.say({
+      kind: 'error',
+      what: 'respond_browser_hand_off',
+      why: 'that browser hand-off is no longer waiting: it has been answered, or its asking session went away',
+    });
+    flushSync();
+
+    expect(drawn(), 'the reason is drawn where the dock stood').toContain('no longer waiting');
+  });
+
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
@@ -4108,6 +4140,50 @@ describe('the dock', () => {
     ]);
   });
 
+  it('declines the hand-off on Escape, which the dock row promises', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    press('Escape');
+    flushSync();
+
+    expect(
+      commands(harness),
+      'Escape is the Not now door: without it the key would do nothing and the parked call - ' +
+        'which has no timeout - would wait forever',
+    ).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          done: false,
+        },
+      },
+    ]);
+  });
+
+  it('says what became of a hand-off that left without this reader answering', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    expect(document.querySelector('.dock'), 'the dock is up').not.toBeNull();
+
+    // Another view answered it: the stand-down carries the ending, and the
+    // record goes with it as the apply arm leaves it.
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          ending: { type: 'done' },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
+    expect(drawn(), 'and the row says which ending took it').toContain('settled in another view');
+  });
+
   /** Open is the client's own act, and **its claim follows its answer**:
    * outside the shell nothing raises, so the dock says so rather than
    * claiming "the browser is up" over a click that did nothing. */
@@ -4122,6 +4198,20 @@ describe('the dock', () => {
     expect(drawn(), 'no false "up"').not.toContain('The browser is up.');
     expect(drawn()).toContain('could not be raised here');
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
+  });
+
+  /** **A raise that answered true is the claim the dock may make**: the real
+   * window is up, and the line says so rather than the could-not. */
+  it('says the browser is up once a raise really raised it', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce(true);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await Promise.resolve();
+    flushSync();
+
+    expect(drawn(), 'the claim follows the raise that answered').toContain('The browser is up.');
+    expect(drawn()).not.toContain('could not be raised here');
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {
