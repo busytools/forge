@@ -376,6 +376,25 @@ describe('a structured value, read the way the block draws it', () => {
       billing: { text: 'structured value', raw: 7 },
       frontend: { text: 'structured value', raw: false },
     });
+
+    const scoreText = JSON.stringify({
+      model: 'm',
+      answer: { type: 'score', score: 0.5, probabilities: { 0: 0.5, 1: 0.5 } },
+    });
+    const score = decisionOf(
+      'mcp__forge__systemone__ask_score',
+      { instructions: 'How urgent?', criteria: [3, 'Urgent'] },
+      result(scoreText),
+    );
+    expect(score?.answer, 'and a level that is a number keeps its row too').toEqual({
+      kind: 'score',
+      score: 0.5,
+      levels: [
+        { name: 'structured value', value: 0.5, raw: 3 },
+        { name: 'Urgent', value: 0.5, raw: null },
+      ],
+      confidence: null,
+    });
   });
 
   it('drops an empty or whitespace criterion, which names nothing', () => {

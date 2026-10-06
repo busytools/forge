@@ -271,7 +271,9 @@ describe('the block one decision draws', () => {
     });
 
     expect(body, 'two fields').toContain('structured value - 2 fields');
-    expect(body, 'one field, singular').toContain('structured value - 1 field');
+    // The closing tag terminates the count: `- 1 field` is a prefix of
+    // `- 1 fields`, so an unterminated assertion cannot tell the two apart.
+    expect(body, 'one field, singular').toContain('structured value - 1 field</summary>');
     expect(
       drawn({ question: { text: 'structured instructions', raw: ['a.rs', 'b.rs'] } }),
       'an array counts items',
@@ -279,7 +281,7 @@ describe('the block one decision draws', () => {
     expect(
       drawn({ question: { text: 'structured instructions', raw: ['a.rs'] } }),
       'one item, singular',
-    ).toContain('structured instructions - 1 item');
+    ).toContain('structured instructions - 1 item</summary>');
   });
 
   it("composes the same disclosure the book's structured specimen draws", () => {
@@ -304,13 +306,20 @@ describe('the block one decision draws', () => {
       },
     });
 
+    const printed = JSON.stringify(value, null, 2);
     expect(body, 'the block composes the disclosure label').toContain(
       'structured value - 2 fields',
     );
+    // The block's own body, with the markup's escaping undone: the page can
+    // only draw the printed form if the block prints it.
+    const drawnText = body
+      .replaceAll('&quot;', '"')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>');
+    expect(drawnText, 'the block prints the pretty form').toContain(printed);
     expect(PAGE, 'and the page draws it word for word').toContain('structured value - 2 fields');
-    expect(PAGE, 'and the specimen is exactly what the block prints').toContain(
-      JSON.stringify(value, null, 2),
-    );
+    expect(PAGE, 'and the specimen is exactly what the block prints').toContain(printed);
   });
 
   it('leaves no separator behind for a result that named no model', () => {
