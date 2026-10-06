@@ -57,10 +57,12 @@ an m4 max, not on this machine.
   propose.
 - **An update available**: one line per in-service model worth adopting,
   which can be one or both.
-- **Dictation off**: `[dictate] enabled` is unset, so no model is in use
-  and none is proposed. It is its own state, naming the key that would
-  switch it on; the feed's rows still cross, so the search still reads
-  them, and the check's line says `not checked yet`.
+- **Dictation off**: `[dictate] enabled` is unset, so no model is in use,
+  none is proposed, and the feed has not been read at all - the server
+  loads the catalogue only for an enabled section, so the read answers no
+  rows and no check. It is its own state, naming the key that would switch
+  it on, and the search draws a note saying the same rather than a box that
+  would answer every query with `no entry matches`.
 - **Reading**: connected, and the subject's snapshot has not landed. The
   page says it is reading rather than drawing an empty catalogue.
 - **Refused**: the server turned the subscription down, in its own words.

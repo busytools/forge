@@ -65,9 +65,12 @@
     border-bottom: 1px solid var(--line);
   }
   .brand { display: flex; align-items: center; gap: 10px; }
-  .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+  /* The mark rides the same optical lift the shipped rule carries: svg ink
+     centered against a text line box reads low. */
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent);
+    position: relative; top: -1px; }
   .brand .mark svg { display: block; width: 100%; height: 100%; }
-  .brand .word { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
   .models .title { display: flex; flex-direction: column; }
   .models .title .t { font-size: 18px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
   .models .title .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
@@ -120,9 +123,6 @@
     font-size: 14px; color: var(--text); background: var(--s1);
     border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
   .models .searchbar input::placeholder { color: var(--dim); }
-  .models .searchbar button { font-family: var(--mono); font-size: 12.5px; padding: 4px 10px;
-    border: 1px solid rgba(244,118,0,.5); border-radius: 9px; color: var(--hot);
-    background: none; cursor: pointer; }
   .models .note { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; }
 
   .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
@@ -139,24 +139,45 @@
     padding: 46px 24px; text-align: center; }
   .models .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
   .models .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
-  .models .empty code, .models .note code {
+  /* The empty box's code is the shipped one; a code inside a NOTE has no
+     shipped rule and renders as plain text, so neither does one here. */
+  .models .empty code {
     font-family: var(--mono); font-size: 11.5px; color: var(--muted);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
-  /* the state marks, the shared vocabulary: shape carries it */
+  /* the state marks, the shared vocabulary: shape carries it. The pair the
+     page added is at the verdict size; the cross and the ring are the shared
+     marks at their base size, which is how the sheet draws them inside a
+     chip (no page-scoped reset reaches them). */
   .dot { width: 11px; height: 11px; flex: 0 0 11px; display: inline-block; }
   .dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
     background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
   .dot.warn { width: 9px; height: 9px; flex: 0 0 9px;
     background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
-  .dot.failed { width: 9px; height: 9px; flex: 0 0 9px; background: var(--bad);
+  .dot.failed { background: var(--bad);
     clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
   .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
-  .dot.live { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
-    border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+  .dot.live { border-radius: 50%; border: 1.6px solid rgba(244,118,0,.3);
+    border-top-color: var(--accent); animation: spin 900ms linear infinite; }
   .dot.ok, .dot.warn, .dot.failed, .dot.off, .dot.live { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    /* The ring is the one mark that moves; reduced, it keeps its accent on a
+       static border rather than dropping to a plain disc. */
+    .dot.live { animation: none; border-top-color: rgba(244,118,0,.3); border-left-color: var(--accent); }
+  }
 
-  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+  @media (pointer: coarse) {
+    .models .back, .models .cand { min-height: 44px; }
+    .models .back { display: inline-flex; align-items: center; }
+  }
+
+  @media (max-width: 760px) {
+    .models .model { flex-wrap: wrap; gap: 8px; }
+    .models .role, .models .side { flex-basis: 100%; }
+    .models .cand { flex-wrap: wrap; }
+    .models .cand .col { flex-basis: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -237,7 +258,7 @@
 
         <form class="searchbar" onsubmit="return false">
           <input type="search" aria-label="Search the model catalogue" placeholder="search 73 variants - parakeet, granite, whisper, moonshine...">
-          <button type="submit">Search</button>
+          <button class="chip go" type="submit">Search</button>
         </form>
 
         <p class="note">nothing searched yet &middot; the feed's whole catalogue is already here, so a search reads nothing off the network</p>
@@ -287,7 +308,7 @@
   </div>
 
   <div class="tile">
-    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned and nothing proposed - the feed's rows still cross</div>
+    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned, nothing proposed, and the catalogue has not been read at all</div>
     <div class="models">
       <div class="empty">
         <p class="t">dictation is off</p>
@@ -296,10 +317,11 @@
       <div class="status" style="margin-top:12px">
         <span class="dot off"></span>
         <span class="t">not checked yet</span>
-        <span class="detail">the feed refreshes at the next boot, or when you check it</span>
+        <span class="detail">the feed is read only with [dictate] enabled set</span>
       </div>
-      <p class="note">nothing searched yet &middot; the feed's whole catalogue is already here, so a search reads nothing off the network</p>
+      <p class="note">the feed is read only with <code>[dictate] enabled</code> set &middot; switch it on and restart forge, and the catalogue loads here</p>
     </div>
+    <div class="tnote">The catalogue is loaded only for an enabled section, so the off forge's read answers no rows: a search box here would answer every query with "no entry matches", which reads as a feed that found nothing rather than one that was never fetched.</div>
   </div>
 
   <div class="tile">
