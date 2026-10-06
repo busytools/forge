@@ -345,9 +345,14 @@ client-android-check:
     fi
     export ANDROID_HOME="$sdk"
 
-    # The variant names come from the rust plugin's ABI split; universal is
-    # the one `--target aarch64` builds (the release APK is universal too).
-    (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:compileUniversalDebugKotlin :app:testUniversalDebugUnitTest)
+    # The gradle glue (tauri.settings.gradle, app/tauri.build.gradle.kts,
+    # .tauri/) is gitignored and only the CLI writes it, so a fresh clone has
+    # none of it and gradle alone dies at settings evaluation. The CLI's own
+    # build generates it (and compiles the Kotlin and the Rust); the unit
+    # tests then run alone, because a build success prints no test count.
+    npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
+    # Universal is the variant `--target aarch64` builds (the release APK too).
+    (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
     RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
 
 # Bundle the client as an app and install it over /Applications/forge.app.
