@@ -29,9 +29,11 @@ pub struct Live {
     /// The seats a page is open on, by how many connections are showing
     /// them: a turn finishing on one of those is a turn the reader watched.
     attached: HashMap<SessionSlot, usize>,
-    /// When this socket last showed each seat. A failure newer than the
-    /// stamp is one the reader has not seen, which is what the rail's
-    /// failure mark reads (#1612).
+    /// When each seat was last shown, by any connection. A failure newer
+    /// than the stamp is one the reader has not seen, which is what the
+    /// rail's failure mark reads (#1612): one `Live` is folded per server
+    /// and shared by every connection, so showing a seat spends its mark
+    /// for all of them.
     seen_failed: HashMap<SessionSlot, SystemTime>,
     composer: Composer,
 }
@@ -43,17 +45,18 @@ pub struct Live {
 pub struct LiveState {
     pub unseen: Unseen,
     pub composer: Composer,
-    /// The seats this socket is showing, and when it last showed each seat:
-    /// together these answer whether a failure on it is the reader's to
-    /// see, which the home read filters rows with.
+    /// The seats a page is open on, by how many connections are showing
+    /// them, and when each seat was last shown: together these answer
+    /// whether a failure on it is the reader's to see, which the home read
+    /// filters rows with.
     attached: HashMap<SessionSlot, usize>,
     seen_failed: HashMap<SessionSlot, SystemTime>,
 }
 
 impl LiveState {
     /// The failure instant the rail should draw for `slot`, or `None`
-    /// when this socket has no failure to mark: the seat is being shown
-    /// (the reader is watching it fail), or it has been shown since the
+    /// when there is no failure to mark: the seat is being shown (some
+    /// connection is watching it fail), or it has been shown since the
     /// failure landed.
     pub fn failed_mark(&self, slot: &SessionSlot, at: SystemTime) -> Option<SystemTime> {
         if self.attached.contains_key(slot) {
@@ -91,7 +94,7 @@ impl Live {
         self.seen_failed.insert(slot.clone(), SystemTime::now());
     }
 
-    /// A page is open on `slot`, which is this socket showing it, so a mark
+    /// A page is open on `slot`, which is a connection showing it, so a mark
     /// armed before the page opened goes with it. Counted, because two tabs
     /// on one seat are one seat still being shown.
     pub fn attach(&mut self, slot: &SessionSlot) {
@@ -305,7 +308,7 @@ mod tests {
         assert_eq!(
             live.snapshot().failed_mark(&slot, first),
             Some(first),
-            "a failure nobody has shown marks on this socket",
+            "a failure nobody has shown marks",
         );
 
         live.attach(&slot);

@@ -375,7 +375,11 @@ async fn handle_client(
                             // Not worth dropping the connection for: the next
                             // redraw carries the same news. The breadcrumb is
                             // for a mark that reads spent until then.
+                            // Debug rather than a warning: the seat's marks
+                            // read spent until the next redraw, which is
+                            // forge working as it should, not a problem.
                             Err(error) => tracing::debug!(
+                                event_name = "home_refresh_failed",
                                 slot = %slot.display(),
                                 %error,
                                 "the home refresh after a seat attach could not be encoded",

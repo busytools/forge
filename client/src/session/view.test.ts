@@ -202,27 +202,6 @@ describe('the rail', () => {
    * seconds the core takes to shut it down. The mark is the client's own, so
    * the caller brings the predicate in.
    */
-  /**
-   * A failed turn is the seat's own failure, and both surfaces say so from
-   * one mapping: the row carries the line and the header takes the failure
-   * mark. Each half had its own way to fall silent - the line through
-   * `failedLine`, the mark through the promotion - so both are pinned.
-   */
-  it('names a failed turn on the row and marks it for the header', () => {
-    const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
-    const failed: AgentRow = { ...lead(), pending: null, failed_turn: at };
-    const home = withHome({ agents: [failed] });
-
-    const block = railGroups(home, LEAD, 0)[0]?.projects[0];
-    if (block === undefined) throw new Error('the rail drew no block for the failed seat');
-    expect(failedLine(block.row), 'the row names the failure').toBe('a turn failed');
-    expect(block.why, 'and the line draws under the row').toEqual({
-      line: 'a turn failed',
-      bad: true,
-    });
-    expect(seatState(home, LEAD).mark, 'the header draws the failure mark').toBe('failed');
-  });
-
   it('counts a closing seat as asleep the moment it is closed', () => {
     const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
     const worker: AgentRow = { ...leadRow, slot: { ...leadRow.slot, label: 'w1' }, label: 'w1' };
@@ -253,6 +232,27 @@ describe('the rail', () => {
       railGroups(withHome({ agents: [leadRow, held] }), LEAD, 0, (slot) => slot.label === 'w1'),
     );
     expect(closed?.why, 'a closed seat still wrote on the project line').toBeNull();
+  });
+
+  /**
+   * A failed turn is the seat's own failure, and both surfaces say so from
+   * one mapping: the row carries the line and the header takes the failure
+   * mark. Each half had its own way to fall silent - the line through
+   * `failedLine`, the mark through the promotion - so both are pinned.
+   */
+  it('names a failed turn on the row and marks it for the header', () => {
+    const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
+    const failed: AgentRow = { ...lead(), pending: null, failed_turn: at };
+    const home = withHome({ agents: [failed] });
+
+    const block = railGroups(home, LEAD, 0)[0]?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no block for the failed seat');
+    expect(failedLine(block.row), 'the row names the failure').toBe('a turn failed');
+    expect(block.why, 'and the line draws under the row').toEqual({
+      line: 'a turn failed',
+      bad: true,
+    });
+    expect(seatState(home, LEAD).mark, 'the header draws the failure mark').toBe('failed');
   });
 
   /**

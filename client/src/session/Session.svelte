@@ -65,7 +65,8 @@
   let read = $state.raw<SessionRead>({ wire: null, refused: null });
   $effect(() => {
     // Read here rather than through `$derived`, so a seat change subscribes the
-    // seat it moved to - the seat it left keeps its record and its subscription.
+    // seat it moved to - the seat it left keeps its record, and its
+    // subscription goes back with the page (live.ts's leave).
     const open = connection;
     const seat = slot;
     // The page answers for a seat only when it can: the dock that answers a

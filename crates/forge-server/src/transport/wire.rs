@@ -176,9 +176,9 @@ pub struct AgentWire {
     pub pending_depth: usize,
     pub last_activity: Option<std::time::SystemTime>,
     pub reason: Option<String>,
-    /// When the seat's newest turn ended in failure, filtered to THIS
-    /// socket: `None` once the socket has shown the seat since the
-    /// failure, or while it is showing it now.
+    /// When the seat's newest turn ended in failure, filtered by what has
+    /// been shown: `None` once the seat has been shown since the failure,
+    /// or while it is being shown now.
     pub failed_turn: Option<std::time::SystemTime>,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
@@ -990,8 +990,8 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     // forge holds no directory for keeps `None` rather than borrowing the
     // project's read, which is what the cell's blank has to mean.
     //
-    // The live snapshot filters the failure mark to this socket: the same
-    // facts the diamond rides, read once for both.
+    // The live snapshot filters the failure mark by what has been shown:
+    // the same facts the diamond rides, read once for both.
     let live = crate::live::Live::lock(&state.live).snapshot();
     let mut agent_rows = Vec::with_capacity(agents.all().len());
     for agent in agents.all() {
