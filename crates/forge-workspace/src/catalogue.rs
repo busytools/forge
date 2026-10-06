@@ -802,7 +802,7 @@ mod tests_catalogue_view {
         );
         let join = join_for(&entries, &in_use_spec())
             .expect("the join still crosses, so a reader can see the length moved");
-        assert_eq!(join.size_bytes, 101, "the feed's own length, against the pin's 1_558_162_944");
+        assert_eq!(join.size_bytes, 101, "the feed's own length, against the pin's 100");
     }
 
     /// The model in use is not news about itself, whatever a duplicate
@@ -1038,11 +1038,23 @@ mod tests_catalogue_view {
     #[test]
     fn a_disabled_dictation_reads_no_models_and_no_proposals() {
         let (ws, _updates) = Workspace::testing_stub();
+        // The in-use entry IS the production pin - same variant name,
+        // same quant file, same length - so without the `enabled` gate
+        // the candidate below would be proposed and this test would see
+        // it.
         ws.dictate_catalogue.lock().catalogue = Some(Catalogue {
             fetched_at: "2026-10-06T00:00:00Z".to_owned(),
             release: None,
             entries: vec![
-                entry("in-use", r#"["en"]"#, 72.9, 5.08),
+                entry_under(
+                    "cohere-transcribe-03-2026",
+                    r#"["en"]"#,
+                    72.9,
+                    5.08,
+                    1_558_162_944,
+                    "apache-2.0",
+                    "Apache-2.0",
+                ),
                 entry("better", r#"["en"]"#, 500.0, 4.00),
             ],
             skipped: 0,
