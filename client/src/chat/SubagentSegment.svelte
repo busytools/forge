@@ -3,6 +3,7 @@
   import { askReveal } from '../session/scroll-ask';
   import { duration } from './numbers';
   import { subagents, transcribable } from './subagents.svelte';
+  import { panelStyle } from './strip-panel';
   import { firstLine } from './text';
 
   /**
@@ -49,9 +50,20 @@
     return said.length > MAX_ACTIVITY ? `${said.slice(0, MAX_ACTIVITY).trimEnd()}\u{2026}` : said;
   };
 
+  /** The panel's measured caps, remeasured on a resize while open. */
+  let limits = $state('');
+
+  $effect(() => {
+    if (!open) return;
+    const remeasure = () => (limits = panelStyle(segEl));
+    window.addEventListener('resize', remeasure);
+    return () => window.removeEventListener('resize', remeasure);
+  });
+
   function hold() {
     if (closing !== null) clearTimeout(closing);
     closing = null;
+    if (!open) limits = panelStyle(segEl);
     open = true;
   }
 
@@ -224,7 +236,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl}>
+      <div class="sg-list" bind:this={listEl} style={limits}>
         {#each listed as card (card.dispatch_id)}
           <button
             type="button"

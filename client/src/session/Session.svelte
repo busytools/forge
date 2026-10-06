@@ -13,6 +13,8 @@
   import Rail from './Rail.svelte';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { outcomesFrom } from '../chat/outcomes';
+  import { processes } from '../chat/processes.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
@@ -80,6 +82,22 @@
    */
   $effect(() => {
     subagents.sync(record?.subagent_instances ?? null);
+  });
+
+  /**
+   * The processes join follows the record the same way: the walk and the
+   * CLI's registry move on different frames, and the strip's row reads both
+   * from the one store. The outcomes come from the conversation's own task
+   * frames, joined by the call id the row already carries.
+   */
+  const outcomes = $derived(outcomesFrom(record?.conversation.turns ?? []));
+  $effect(() => {
+    processes.sync(
+      record?.processes ?? null,
+      record?.background_tasks ?? null,
+      record?.header.turn_in_flight ?? false,
+      outcomes,
+    );
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */

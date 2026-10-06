@@ -959,6 +959,13 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 
 /* The sub-agent segment of the strip: the count at the strip's right, and the
    way into each instance. `sg-` namespaced like the row's own fields. */
+/* The strip's segments share one right-hand fill: two rows each carrying
+   their own auto margin would split the free space between them. It WRAPS
+   rather than shrinking to fit: the rows are nowrap, so a fill compressed
+   below their width pushes the last one past the strip's edge instead of
+   moving it, and a narrow strip stacks the rows on their own lines. */
+.sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; row-gap: 2px; }
 .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
@@ -971,7 +978,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    belongs to a row and carries that row's leave. A padded panel leaves strips
    with no listener, and a pointer leaving through one never arms the close. */
 .sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  min-width: 330px; max-width: calc(100vw - 26px); max-height: 60vh;
+  overflow-y: auto; background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
 .sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
@@ -985,12 +993,16 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+/* A settled row is kept, not alive: its name drops to the muted tone while
+   the check in the mark slot says why it is still here. */
+.sg-list .sg-it.settled .nm { color: var(--muted); }
 @media (pointer: coarse) { .sg-list .sg-it { min-height: 44px; } }
 
 /* The one flash the reveal leaves on the row it lands on: a tint that arrives
-   and leaves. */
-details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
-@keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
+   and leaves. Long and gentle - the reader is moving their eyes across the
+   column, and the row has to still be lit when they arrive. */
+details.leaf.sg-hit { animation: sg-flash 6s ease-out 1; }
+@keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -1999,12 +2011,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    is not. */
 .sb .kv .k { flex: 1 1 auto; }
 .sb .kv .v { flex: 0 1 auto; }
-
-/* The processes section: a process's children are a list inside its own item,
-   so the indent is the browser's and a deeper tree is a deeper list rather
-   than twice as many characters in front of a command. */
-.sb .tree, .sb .tree ul { list-style: none; }
-.sb .tree ul { padding-left: 14px; }
 
 /* The slack section: a workspace, and the subscriptions under it as a list
    inside the workspace's own item rather than two spaces in front of a
