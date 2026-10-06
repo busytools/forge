@@ -26,7 +26,9 @@ The shell under `client/src-tauri/` is its own workspace root, so
 `just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
 punctuation gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-check` builds the shipping configuration and `just
-client-tauri-bundle` adds the bundles.
+client-tauri-bundle` adds the bundles. `just client-android-check`
+compiles the Kotlin half and runs its unit tests, because nothing else
+reaches that code; it needs the Android SDK and a JDK.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later
