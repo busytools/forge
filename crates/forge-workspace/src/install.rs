@@ -637,7 +637,13 @@ impl Workspace {
             // rebuild would cost a second model load for no change.
             return Ok(rfc3339_now());
         }
-        let at = rfc3339_now();
+        let stamp = rfc3339_now();
+        // `at` is the runtime pick's own stamp; a pin or a config leg is not
+        // a pick, so it carries none however it got there.
+        let at = match from {
+            ActiveFrom::Installed { .. } => Some(stamp.clone()),
+            ActiveFrom::Config { .. } | ActiveFrom::Pin => None,
+        };
         let next: Vec<(DictateRole, ActiveModel)> = current
             .into_iter()
             .map(|(r, model)| {
@@ -648,7 +654,7 @@ impl Workspace {
                             role,
                             spec: spec.clone(),
                             from: from.clone(),
-                            at: Some(at.clone()),
+                            at: at.clone(),
                         },
                     )
                 } else {
@@ -664,7 +670,7 @@ impl Workspace {
 
         self.dictate.set_active(&next);
         self.dictate.mark_all(&crate::dictate::DictateModelState::Ready);
-        Ok(at)
+        Ok(stamp)
     }
 
     fn fail_activate(&self, role: DictateRole, file: String, reason: String) {
