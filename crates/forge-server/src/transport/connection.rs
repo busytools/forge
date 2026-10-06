@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::BrowserPart;
-use forge_workspace::browser::{BrowserRelay, BrowserRequest};
+use forge_workspace::browser::{BrowserRelay, BrowserRequest, RoleNotice};
 
 use super::PROTOCOL_VERSION;
 use super::TransportState;
@@ -72,10 +72,20 @@ impl Drop for Holds<'_> {
 const BEFORE_ANSWER: &str = "the browser host sent an image frame before the answer that \
                               declares the image, so the call cannot be completed";
 
+/// Why an in-flight ask failed because a force-take moved the role mid-call.
+///
+/// Named like [`BEFORE_ANSWER`]: the call was not wrong, the role moved out
+/// from under it, and the session should read which of the two happened.
+const HOST_GONE_BY_TAKE: &str = "another client took the browser role before the answer's \
+                                  image frames arrived, so the call cannot be completed";
+
 /// The browser role this connection holds, and what is in flight under it.
 struct Hosting {
     /// The asks the relay routes here, in the order they were made.
     asks: mpsc::UnboundedReceiver<BrowserRequest>,
+    /// What the relay says about the role itself - for now, that a
+    /// force-take took it away.
+    notices: mpsc::UnboundedReceiver<RoleNotice>,
     /// The asks sent to the client and not yet answered, by id.
     in_flight: HashMap<u64, InFlight>,
     /// The role itself, given back when this drops, a panic included.
@@ -90,15 +100,20 @@ impl Hosting {
     /// line, and the relay promotes it there when the holder goes - which is
     /// only possible because the channel it will be sent asks on already
     /// exists. A waiter receives nothing until then, so what it costs is an
-    /// idle receiver.
-    fn offer(relay: &Arc<BrowserRelay>, id: u64) -> Self {
+    /// idle receiver. `true` says the offer was also taken.
+    fn offer(relay: &Arc<BrowserRelay>, id: u64) -> (Self, bool) {
         let (to_host, asks) = mpsc::unbounded_channel();
-        relay.register(id, to_host);
-        Self {
-            asks,
-            in_flight: HashMap::new(),
-            _role: BrowserRole { relay: Arc::clone(relay), id },
-        }
+        let (notices_tx, notices) = mpsc::unbounded_channel();
+        let held = relay.register(id, to_host, notices_tx);
+        (
+            Self {
+                asks,
+                notices,
+                in_flight: HashMap::new(),
+                _role: BrowserRole { relay: Arc::clone(relay), id },
+            },
+            held,
+        )
     }
 }
 
@@ -309,37 +324,53 @@ async fn run_connection(
                     held.push(Instant::now(), update);
                 }
             }
-            // One browser tool call, on its way out to this host. The answer
-            // comes back by the relay's own id, so two sessions asking at once
-            // cannot be paired with each other's results.
-            ask = next_ask(hosting) => {
-                let Some(request) = ask else { break };
-                // What the core already said goes out first, the same rule the
-                // client-message arm keeps: an ask is composed after the news
-                // that preceded it, so nothing the core emitted before this
-                // call lands behind it.
-                batch::flush(socket, held.take()).await?;
-                if let Some(hosting) = hosting.as_mut() {
-                    hosting.in_flight.insert(
-                        request.id,
-                        InFlight {
-                            reply: request.reply,
-                            parts: None,
-                            images: Vec::new(),
-                            filled: 0,
-                        },
-                    );
+            // **The role's own channel and its asks, raced as one future**
+            // because `select!` wants one borrow of the hosting: an ask on
+            // its way out to this host, or the relay saying the role moved.
+            event = next_hosting_event(hosting) => {
+                let Some(event) = event else { break };
+                match event {
+                    HostingEvent::Ask(request) => {
+                        // What the core already said goes out first, the same
+                        // rule the client-message arm keeps: an ask is composed
+                        // after the news that preceded it, so nothing the core
+                        // emitted before this call lands behind it.
+                        batch::flush(socket, held.take()).await?;
+                        if let Some(hosting) = hosting.as_mut() {
+                            hosting.in_flight.insert(
+                                request.id,
+                                InFlight {
+                                    reply: request.reply,
+                                    parts: None,
+                                    images: Vec::new(),
+                                    filled: 0,
+                                },
+                            );
+                        }
+                        send(
+                            socket,
+                            ServerMessage::BrowserAsk {
+                                id: request.id,
+                                seat: request.seat,
+                                tool: request.tool,
+                                args: request.args,
+                            },
+                        )
+                        .await?;
+                    }
+                    // **The role taken away.** A force-take tells this
+                    // connection before its next ask would have arrived, and
+                    // what it does then is the same thing its own drop does:
+                    // the hosting goes, its in-flight calls fail with the
+                    // relay's own HOST_GONE, and the client is told - its
+                    // strip must not go on saying it hosts.
+                    HostingEvent::Notice(RoleNotice::Taken) => {
+                        fail_awaiting_images(hosting, HOST_GONE_BY_TAKE);
+                        hosting.take();
+                        batch::flush(socket, held.take()).await?;
+                        send(socket, ServerMessage::BrowserRole { hosting: false }).await?;
+                    }
                 }
-                send(
-                    socket,
-                    ServerMessage::BrowserAsk {
-                        id: request.id,
-                        seat: request.seat,
-                        tool: request.tool,
-                        args: request.args,
-                    },
-                )
-                .await?;
             }
             // The deadline is a value, not a condition: with nothing held the
             // branch is disabled and this instant is never waited on.
@@ -409,9 +440,23 @@ async fn next_update(
 /// connection does not hold the browser role - the same shape as
 /// [`next_update`], and for the same reason: a disabled `select!` branch is
 /// what keeps a connection the role was never given out of the way.
-async fn next_ask(hosting: &mut Option<Hosting>) -> Option<BrowserRequest> {
+/// What the hosting has to say to the loop: one tool call to carry out, or
+/// the relay saying the role itself moved.
+enum HostingEvent {
+    Ask(BrowserRequest),
+    Notice(RoleNotice),
+}
+
+/// The next thing the hosting has for the loop - one future, because both
+/// channels hang off the same borrow and `select!` takes one per branch.
+/// A connection with no hosting parks here forever, so its branch is inert
+/// rather than ending the loop.
+async fn next_hosting_event(hosting: &mut Option<Hosting>) -> Option<HostingEvent> {
     match hosting.as_mut() {
-        Some(hosting) => hosting.asks.recv().await,
+        Some(hosting) => tokio::select! {
+            ask = hosting.asks.recv() => ask.map(HostingEvent::Ask),
+            notice = hosting.notices.recv() => notice.map(HostingEvent::Notice),
+        },
         None => std::future::pending().await,
     }
 }
@@ -482,8 +527,16 @@ async fn handle_client(
             // error: the relay keeps this connection's channel and hands it
             // the role when the holder goes, so nothing has to be declared
             // again for the handover to happen.
+            let mut grant_role = false;
             if browser && hosting.is_none() {
-                *hosting = Some(Hosting::offer(&state.browser, me));
+                let (offering, held) = Hosting::offer(&state.browser, me);
+                *hosting = Some(offering);
+                // **The grant is said out loud**, after the snapshot: the
+                // client knew only that it COULD host; its own strip needs
+                // "does", and a force-take later is the same frame with
+                // `false`. Sent last so the subscribe's own answer keeps
+                // being the snapshot.
+                grant_role = held;
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
@@ -521,7 +574,11 @@ async fn handle_client(
                         Live::lock(&state.live).attach(slot);
                     }
                     watched.push(what.clone());
-                    send(socket, ServerMessage::Snapshot { subject: what, data }).await
+                    send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    if grant_role {
+                        return send(socket, ServerMessage::BrowserRole { hosting: true }).await;
+                    }
+                    Ok(())
                 }
                 // A seat nobody has started is an ANSWER rather than a
                 // silence: the client learns why, and never draws an empty
@@ -813,6 +870,15 @@ async fn handle_client(
                 .await
                 .unwrap_or_else(|join| Err(join.to_string()));
             send(socket, devices_answer(outcome)).await
+        }
+        ClientMessage::BrowserTakeRole => {
+            // The claimant must have offered first: the relay answers a host
+            // down the channel a capable declare created, and a connection
+            // that never declared has none. Both outcomes answer with the
+            // same frame - the control that sent this draws the truth either
+            // way, so a refusal needs no words.
+            let claimed = hosting.is_some() && state.browser.claim(me);
+            send(socket, ServerMessage::BrowserRole { hosting: claimed }).await
         }
         ClientMessage::BrowserAnswer { id, parts, error } => {
             let Some(hosting) = hosting.as_mut() else {

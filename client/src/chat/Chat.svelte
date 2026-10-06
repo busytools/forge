@@ -1020,7 +1020,7 @@
        being written stops depending on where the reader is looking. It is a
        sibling of the scroller rather than a row of the grid, so the composer
        and the dock - both drawn under this column - never have to know it. -->
-  <Pinned info={pinned?.info ?? null} />
+  <Pinned info={pinned?.info ?? null} {connection} />
   <!-- The way back to the foot, shown ONLY while the reader is away from it:
        following means the newest row is on screen, so its presence is the
        state read at a glance and its click is the whole way back - at the

@@ -1,6 +1,8 @@
 <script lang="ts">
   import Strip from './Strip.svelte';
+  import BrowserSegment from './BrowserSegment.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
+  import type { Connection } from '../socket';
   import type { TurnInfo } from './units';
 
   /**
@@ -16,11 +18,11 @@
    * one fact has two readers: this row, and the turn's own that must stand
    * aside while the pin holds it.
    */
-  let { info }: { info: TurnInfo | null } = $props();
+  let { info, connection }: { info: TurnInfo | null; connection: Connection } = $props();
 </script>
 
 {#if info !== null}
   <div class="strip">
-    <div class="ti"><Strip {info} /><SubagentSegment /></div>
+    <div class="ti"><Strip {info} /><BrowserSegment {connection} /><SubagentSegment /></div>
   </div>
 {/if}

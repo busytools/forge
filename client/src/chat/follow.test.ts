@@ -136,6 +136,11 @@ function stub() {
       watchers.add(fn);
       return () => watchers.delete(fn);
     },
+    // The strip's browser segment registers a role listener and reads the
+    // role as it draws; Take over is never pressed here.
+    browserRole: () => false,
+    onBrowserRole: () => () => undefined,
+    takeBrowserRole: () => undefined,
     store: () => undefined,
     settings: () => null,
     status: () => 'open' as const,

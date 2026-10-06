@@ -31,7 +31,21 @@ pub struct BrowserRequest {
     pub reply: oneshot::Sender<Result<Vec<BrowserPart>, String>>,
 }
 
-/// The registered connection, and the channel its asks go down.
+/// What a role change tells the connection it happened to.
+///
+/// Only the force-take needs telling: a grant is the answer to the offer the
+/// connection just made, and a promotion arrives with the asks themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleNotice {
+    /// This connection held the role and lost it to a force-take. Its
+    /// connection stops reading asks on this word - the same thing its own
+    /// drop does - so the calls it was carrying fail loudly rather than
+    /// half-answering into a role it no longer holds.
+    Taken,
+}
+
+/// The registered connection, and the channels its asks and its role notices
+/// go down.
 #[derive(Debug)]
 struct Client {
     /// The connection that registered. A drop tells the transport which
@@ -39,6 +53,7 @@ struct Client {
     /// first's.
     id: u64,
     to_host: mpsc::UnboundedSender<BrowserRequest>,
+    notices: mpsc::UnboundedSender<RoleNotice>,
 }
 
 /// Who holds the role, and who is in line for it.
@@ -90,21 +105,50 @@ impl BrowserRelay {
     /// `false` is the ordinary case of a second capable client: it stays a
     /// view like any other, waits in line, and is sent asks once the role
     /// reaches it.
-    pub fn register(&self, id: u64, to_host: mpsc::UnboundedSender<BrowserRequest>) -> bool {
+    pub fn register(
+        &self,
+        id: u64,
+        to_host: mpsc::UnboundedSender<BrowserRequest>,
+        notices: mpsc::UnboundedSender<RoleNotice>,
+    ) -> bool {
         let mut role = self.lock();
         // The same connection offering again (a later subscribe) replaces its
         // own channel and changes nothing else about where it stands.
         role.waiting.retain(|client| client.id != id);
         match role.host.as_ref() {
             Some(host) if host.id != id => {
-                role.waiting.push(Client { id, to_host });
+                role.waiting.push(Client { id, to_host, notices });
                 false
             }
             _ => {
-                role.host = Some(Client { id, to_host });
+                role.host = Some(Client { id, to_host, notices });
                 true
             }
         }
+    }
+
+    /// Take the role by force from whoever holds it.
+    ///
+    /// The claimant must have offered first - a connection that never
+    /// declared itself capable has no channel to be asked down, and `false`
+    /// says so. The holder is TOLD ([`RoleNotice::Taken`]), which is what
+    /// makes its connection stop reading asks: the calls it was carrying
+    /// then fail with the relay's own host-gone failure, the same shape a
+    /// holder dying has, taken early rather than at its own choosing.
+    pub fn claim(&self, id: u64) -> bool {
+        let mut role = self.lock();
+        if role.host.as_ref().is_some_and(|host| host.id == id) {
+            return true;
+        }
+        let Some(at) = role.waiting.iter().position(|client| client.id == id) else {
+            return false;
+        };
+        if let Some(displaced) = role.host.take() {
+            let _ = displaced.notices.send(RoleNotice::Taken);
+        }
+        let claimant = role.waiting.remove(at);
+        role.host = Some(claimant);
+        true
     }
 
     /// Give the role back, if `id` holds it - and hand it to whoever is next
@@ -262,6 +306,13 @@ mod tests {
         SessionSlot::lead("TestOrg", "proj")
     }
 
+    /// A notices sender whose receiver is gone: the connection registered
+    /// and nobody is reading its role notices, which every test but the
+    /// force-take's is free to do.
+    fn notices() -> mpsc::UnboundedSender<RoleNotice> {
+        mpsc::unbounded_channel().0
+    }
+
     fn args() -> Value {
         serde_json::json!({ "url": "https://example.com" })
     }
@@ -288,8 +339,11 @@ mod tests {
         let (first, mut first_rx) = mpsc::unbounded_channel();
         let (second, mut second_rx) = mpsc::unbounded_channel();
 
-        assert!(relay.register(1, first), "the first capable connection holds the role");
-        assert!(!relay.register(2, second), "and a second capable client does not take it");
+        assert!(relay.register(1, first, notices()), "the first capable connection holds the role");
+        assert!(
+            !relay.register(2, second, notices()),
+            "and a second capable client does not take it"
+        );
 
         lands_on(&relay, &mut first_rx).await;
         assert!(
@@ -308,8 +362,11 @@ mod tests {
         let relay = Arc::new(BrowserRelay::new());
         let (first, _first_rx) = mpsc::unbounded_channel();
         let (second, mut second_rx) = mpsc::unbounded_channel();
-        assert!(relay.register(1, first), "the first connection holds it");
-        assert!(!relay.register(2, second), "the second waits in line rather than taking it");
+        assert!(relay.register(1, first, notices()), "the first connection holds it");
+        assert!(
+            !relay.register(2, second, notices()),
+            "the second waits in line rather than taking it"
+        );
 
         relay.unregister(1);
         lands_on(&relay, &mut second_rx).await;
@@ -318,7 +375,7 @@ mod tests {
         // not take the role away from its new holder.
         let (third, mut third_rx) = mpsc::unbounded_channel();
         relay.unregister(1);
-        assert!(!relay.register(3, third), "the role is taken, so a third waits");
+        assert!(!relay.register(3, third, notices()), "the role is taken, so a third waits");
         lands_on(&relay, &mut second_rx).await;
         assert!(third_rx.try_recv().is_err(), "and the third is not asked");
     }
@@ -331,10 +388,10 @@ mod tests {
         let (first, _first_rx) = mpsc::unbounded_channel();
         let (second, second_rx) = mpsc::unbounded_channel();
         let (third, mut third_rx) = mpsc::unbounded_channel();
-        assert!(relay.register(1, first));
-        assert!(!relay.register(2, second));
+        assert!(relay.register(1, first, notices()));
+        assert!(!relay.register(2, second, notices()));
         drop(second_rx);
-        assert!(!relay.register(3, third));
+        assert!(!relay.register(3, third, notices()));
 
         relay.unregister(1);
         lands_on(&relay, &mut third_rx).await;
@@ -358,7 +415,7 @@ mod tests {
     async fn an_ask_reaches_the_host_and_its_answer_comes_back() {
         let relay = BrowserRelay::new();
         let (to_host, mut asks) = mpsc::unbounded_channel();
-        assert!(relay.register(7, to_host));
+        assert!(relay.register(7, to_host, notices()));
 
         let host = tokio::spawn(async move {
             let request = asks.recv().await.expect("the ask arrives");
@@ -387,7 +444,7 @@ mod tests {
     async fn a_host_that_went_away_frees_the_role_and_the_call_fails() {
         let relay = BrowserRelay::new();
         let (to_host, asks) = mpsc::unbounded_channel();
-        assert!(relay.register(7, to_host));
+        assert!(relay.register(7, to_host, notices()));
         drop(asks);
 
         let refused = relay.ask(&seat(), "browser_close", args()).await;
@@ -398,7 +455,61 @@ mod tests {
         );
 
         let (next, _next_rx) = mpsc::unbounded_channel();
-        assert!(relay.register(8, next), "the role is free for the next capable client");
+        assert!(relay.register(8, next, notices()), "the role is free for the next capable client");
+    }
+
+    /// **A force-take moves the role: the claimant is what gets asked, and
+    /// the holder is TOLD.** Read off where the ask lands, which is the whole
+    /// of what holding means - and the notice is what makes the old holder's
+    /// connection stop reading asks, so the calls it was carrying fail loudly
+    /// rather than half-answering into a role it no longer holds.
+    #[tokio::test]
+    async fn a_force_claim_takes_the_role_and_the_holder_is_told() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (first, mut first_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
+        let (first_notes, mut first_note_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, first_notes), "the first connection holds it");
+        assert!(!relay.register(2, second, notices()), "and the second waits in line");
+
+        assert!(relay.claim(2), "a capable client already in line can take it");
+
+        // Bounded, so a claim that quietly kept the old host fails as a
+        // named timeout rather than holding the run open.
+        tokio::time::timeout(std::time::Duration::from_secs(5), lands_on(&relay, &mut second_rx))
+            .await
+            .expect("the ask reaches the claimant, not the displaced holder");
+        assert!(first_rx.try_recv().is_err(), "and nothing reaches the old holder");
+        assert_eq!(
+            first_note_rx.try_recv(),
+            Ok(RoleNotice::Taken),
+            "which is told it lost the role",
+        );
+    }
+
+    /// The role a force-take leaves is the claimant's: a third capable client
+    /// still waits, a connection that never offered cannot claim at all, and
+    /// when the claimant goes the role still promotes in line.
+    #[tokio::test]
+    async fn after_a_force_take_the_role_is_the_claimants() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, _second_rx) = mpsc::unbounded_channel();
+        let (third, mut third_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, notices()));
+        assert!(!relay.register(2, second, notices()));
+        assert!(!relay.register(3, third, notices()));
+
+        assert!(relay.claim(2), "the claim moves the role to the claimant");
+        assert!(!relay.claim(9), "and a connection that never offered cannot claim");
+
+        let (again, mut again_rx) = mpsc::unbounded_channel();
+        assert!(!relay.register(3, again, notices()), "the third still waits behind it");
+        relay.unregister(2);
+        tokio::time::timeout(std::time::Duration::from_secs(5), lands_on(&relay, &mut again_rx))
+            .await
+            .expect("the role promotes in line after the claimant goes");
+        assert!(third_rx.try_recv().is_err(), "and the third's old channel is the dead one");
     }
 
     fn handoff(reason: &str) -> HandOff {

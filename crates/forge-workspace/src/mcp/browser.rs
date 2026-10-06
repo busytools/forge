@@ -373,8 +373,9 @@ mod tests {
 
         let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
         let (to_host, mut asks) = mpsc::unbounded_channel();
+        let (notices, _notice_rx) = mpsc::unbounded_channel();
         assert!(
-            workspace.browser_relay().register(1, to_host),
+            workspace.browser_relay().register(1, to_host, notices),
             "precondition: the role is free on a fresh workspace",
         );
 

@@ -147,6 +147,14 @@ pub enum ClientMessage {
         #[serde(default)]
         error: Option<String>,
     },
+    /// Take the browser role from whoever holds it.
+    ///
+    /// The claimant must have declared itself capable first (its `subscribe`
+    /// carried `browser: true`), because the relay answers a host down the
+    /// channel that declaration created. The holder is told its role is gone
+    /// and its in-flight calls fail, so a take-over is loud on both sides
+    /// rather than half-done.
+    BrowserTakeRole,
 }
 
 /// What the server sends.
@@ -198,6 +206,17 @@ pub enum ServerMessage {
     Reply {
         reply_to: u64,
         body: serde_json::Value,
+    },
+    /// Whether this connection holds the browser role.
+    ///
+    /// Sent when it is granted (the answer to a capable declare or a
+    /// force-take) and when it is LOST to a force-take, so a client's own
+    /// browser strip says the truth: before this frame, "I could host" and
+    /// "I do host" looked the same from the client's side, and a strip that
+    /// went on saying it hosted after losing the role is a lie a person acts
+    /// on.
+    BrowserRole {
+        hosting: bool,
     },
     Error {
         what: String,

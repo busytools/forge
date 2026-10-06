@@ -7974,7 +7974,8 @@ mod tests {
             "every caller reaches the same relay, or the role and the asks live in different ones",
         );
         let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
-        assert!(first.register(1, to_host), "no connection has taken the role at boot");
+        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {

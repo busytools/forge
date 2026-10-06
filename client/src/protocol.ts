@@ -274,7 +274,13 @@ export type ClientMessage =
    * per image part in the order the parts are listed. `error` is the call's
    * failure, and a failed answer carries no parts.
    */
-  | { kind: 'browser_answer'; id: number; parts: BrowserPart[]; error: string | null };
+  | { kind: 'browser_answer'; id: number; parts: BrowserPart[]; error: string | null }
+  /**
+   * Take the browser role from whoever holds it, which is the force override
+   * a second capable client offers. The server answers with a `browser_role`
+   * frame either way, so a refused take is visible rather than silent.
+   */
+  | { kind: 'browser_take_role' };
 
 /** What the server sends. */
 export type ServerMessage =
@@ -330,7 +336,14 @@ export type ServerMessage =
    * `browser_answer` under this same `id`; nothing else pairs the two, so an
    * ask left unanswered is a session's tool call waiting.
    */
-  | { kind: 'browser_ask'; id: number; seat: SessionSlot; tool: string; args: unknown };
+  | { kind: 'browser_ask'; id: number; seat: SessionSlot; tool: string; args: unknown }
+  /**
+   * Whether THIS connection holds the browser role: sent when a capable
+   * declare is granted, and when a force-take takes the role away. Before
+   * this frame a client knew only that it COULD host, and a strip that went
+   * on saying "you" after losing the role would be a lie its reader acts on.
+   */
+  | { kind: 'browser_role'; hosting: boolean };
 
 /**
  * One part of a browser tool's answer, as it crosses the socket.

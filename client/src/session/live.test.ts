@@ -678,6 +678,9 @@ function drivable(refused = false): Driveable {
     devices: () => false,
     frame: () => false,
     onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

@@ -177,7 +177,8 @@ mod tests {
     async fn the_production_facade_sends_the_ask_through_the_relay() {
         let (workspace, _rx) = Workspace::testing_stub();
         let (to_host, mut asks) = mpsc::unbounded_channel::<BrowserRequest>();
-        assert!(workspace.browser_relay().register(3, to_host));
+        let (notices, _notice_rx) = mpsc::unbounded_channel();
+        assert!(workspace.browser_relay().register(3, to_host, notices));
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
 

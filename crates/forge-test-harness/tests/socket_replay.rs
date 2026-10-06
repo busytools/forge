@@ -231,7 +231,7 @@ macro_rules! assert_serde_names {
 census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
-        Devices struct, Reply struct, Error struct, BrowserAsk struct,
+        Devices struct, Reply struct, BrowserRole struct, Error struct, BrowserAsk struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
@@ -302,6 +302,7 @@ census!(ClientMessage,
     [
         Subscribe struct, Unsubscribe struct, Command struct, More struct, Devices struct,
         BrowserAnswer struct,
+        BrowserTakeRole struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 

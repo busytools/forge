@@ -3673,7 +3673,8 @@ provider = "anthropic"
         // through: the tool's ask lands here only if the spawn's server asks
         // the same relay.
         let (to_host, mut asks) = tokio::sync::mpsc::unbounded_channel();
-        assert!(ws.browser_relay().register(1, to_host), "fixture: the role is free");
+        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(ws.browser_relay().register(1, to_host, notices), "fixture: the role is free");
 
         let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
         ws.install_test_spawn_handle(stand_in);

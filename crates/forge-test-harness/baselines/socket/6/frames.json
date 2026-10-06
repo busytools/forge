@@ -1,6 +1,7 @@
 {
   "server_message": {
     "BrowserAsk": "browser_ask",
+    "BrowserRole": "browser_role",
     "Devices": "devices",
     "Error": "error",
     "Greeting": "greeting",
@@ -135,6 +136,7 @@
   },
   "client_message": {
     "BrowserAnswer": "browser_answer",
+    "BrowserTakeRole": "browser_take_role",
     "Command": "command",
     "Devices": "devices",
     "More": "more",

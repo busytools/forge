@@ -3396,12 +3396,14 @@ async fn a_subscribe_from_a_client_that_predates_v6_is_answered() {
 /// The host's next browser ask, passing over whatever updates arrive first.
 ///
 /// A connection forwards the core's news as well as the asks, so a test that
-/// reads once and expects an ask is claiming an ordering nothing here gives.
+/// reads once and expects an ask is claiming an ordering nothing here gives -
+/// and the role's own frame (the grant a capable declare is answered with)
+/// arrives between the snapshot and the first ask.
 async fn browser_ask(socket: &mut Client) -> (u64, SessionSlot, String, serde_json::Value) {
     loop {
         match next_server(socket).await {
             ServerMessage::BrowserAsk { id, seat, tool, args } => return (id, seat, tool, args),
-            ServerMessage::Update { .. } => {}
+            ServerMessage::Update { .. } | ServerMessage::BrowserRole { .. } => {}
             other => panic!("a browser ask was expected and {other:?} arrived"),
         }
     }
@@ -3545,6 +3547,71 @@ async fn a_second_capable_client_does_not_take_the_role() {
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
     send(&mut first, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
     assert!(settled(asked, "the close").await.is_ok(), "the holder's answer settles the call");
+}
+
+/// **A force-take moves the role on the wire, and the displacement is said
+/// out loud.** The claimant's `browser_take_role` makes it the connection the
+/// asks land on; the old holder receives the role frame with `false` - not a
+/// silence - so its own browser strip stops saying it hosts, and its
+/// in-flight calls fail rather than half-answering into a role it no longer
+/// holds.
+#[tokio::test]
+async fn a_force_take_moves_the_role_and_tells_the_holder() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    send(&mut second, ClientMessage::BrowserTakeRole).await;
+
+    // The claimant's own answer, passing over whatever updates arrive.
+    let holds = loop {
+        match next_server_within(&mut second, 2000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("the claim is answered with the role frame"),
+        }
+    };
+    assert!(holds, "the claimant holds the role");
+
+    // The first client's OWN grant, from its subscribe, is still unread: the
+    // snapshot was what that reply stopped at.
+    let granted = loop {
+        match next_server_within(&mut first, 2000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("the first client's declare was answered with a role frame"),
+        }
+    };
+    assert!(granted, "which said it held the role");
+
+    let told = loop {
+        match next_server_within(&mut first, 2000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("the old holder is told it lost the role, not left silent"),
+        }
+    };
+    assert!(!told, "and then the take told it the role is gone");
+
+    // The asks follow the role: the claimant is what gets asked now.
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut second).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut second, ClientMessage::BrowserAnswer { id, parts, error: None }).await;
+    assert!(settled(asked, "the close").await.is_ok(), "the claimant's answer settles the call");
 }
 
 /// **The relay the transport registers into is the one the WORKSPACE hands

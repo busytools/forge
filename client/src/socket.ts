@@ -148,6 +148,23 @@ export interface Connection {
    * answers with the thrown reason rather than with silence.
    */
   onBrowserAsk(fn: (ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>): () => void;
+  /**
+   * Whether this connection holds the browser role, as the server last said.
+   *
+   * The grant a capable declare is answered with, and the loss a force-take
+   * sends. A strip reads this to say who drives the browser it is drawing.
+   */
+  browserRole(): boolean;
+  /** Hear each change of the role. Answers a function that stops listening. */
+  onBrowserRole(fn: (hosting: boolean) => void): () => void;
+  /**
+   * Take the browser role from whoever holds it.
+   *
+   * The claimant must have declared itself capable, which a shell with a
+   * browser host does on every subscribe; the server answers with the role
+   * frame either way, so a refused take is visible rather than silent.
+   */
+  takeBrowserRole(): void;
   /** Every message the server sent, unparsed by anything here. Answers a function that stops listening. */
   onMessage(fn: (message: ServerMessage) => void): () => void;
   /**
@@ -251,6 +268,15 @@ export function connect(url: string): Connection {
    * the reason rather than with nothing.
    */
   let onBrowserAsk: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
+  /**
+   * Whether this connection holds the browser role, as the server last said.
+   *
+   * `false` until a `browser_role` frame says otherwise, because before the
+   * grant the truth is "not hosting": a strip that drew "you" off the declare
+   * alone would say so while another client is still the one being asked.
+   */
+  let browserRole = false;
+  const roleListeners = new Set<(hosting: boolean) => void>();
   const pending = new Map<
     number,
     { resolve: (body: unknown) => void; reject: (why: Error) => void }
@@ -402,6 +428,13 @@ export function connect(url: string): Connection {
       // the shell's, and the answer has to go back under the ask's own id.
       case 'browser_ask':
         void answerAsk(message);
+        return;
+      // Whether THIS connection holds the role - the grant, and the loss to a
+      // force-take. Kept here rather than on a page: it is the connection's
+      // own fact, and every strip reads it from one place.
+      case 'browser_role':
+        browserRole = message.hosting;
+        for (const hear of roleListeners) hear(browserRole);
         return;
       // A frame whose kind this client does not know is REPORTED rather than
       // dropped in silence: a message that arrived and drew nothing is
@@ -675,6 +708,16 @@ export function connect(url: string): Connection {
         // with it.
         if (onBrowserAsk === fn) onBrowserAsk = null;
       };
+    },
+    browserRole() {
+      return browserRole;
+    },
+    onBrowserRole(fn) {
+      roleListeners.add(fn);
+      return () => roleListeners.delete(fn);
+    },
+    takeBrowserRole() {
+      sendNow({ kind: 'browser_take_role' });
     },
     onMessage(fn) {
       listeners.add(fn);

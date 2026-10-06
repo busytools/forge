@@ -195,6 +195,24 @@ impl BrowserHost {
         chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
+    /// The named contexts this host holds, oldest name first, for its own
+    /// strip. A context whose driver died but whose name is still held is
+    /// listed as not running rather than dropped: the name is owned until it
+    /// is released, and a row that vanished would read as released.
+    pub async fn contexts(&self) -> Vec<ContextRow> {
+        let named = self.named.lock().await;
+        let mut rows: Vec<ContextRow> = named
+            .iter()
+            .map(|(name, entry)| ContextRow {
+                name: name.clone(),
+                owner: entry.owner.to_string(),
+                running: entry.context.is_alive(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
+    }
+
     /// Bring the browser up visibly, which is what a hand-off's Open asks for.
     ///
     /// Serialized with every other launch, so a show racing a first call
@@ -330,6 +348,29 @@ pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<()
     host.show().await.map(|_| ())
 }
 
+/// One named context, as the client's own browser strip draws it.
+#[derive(Debug, serde::Serialize)]
+pub struct ContextRow {
+    /// The name a session drives it by.
+    pub name: String,
+    /// The slot of the session that opened it, as its refusal prints.
+    pub owner: String,
+    /// Whether its driver is still there to answer.
+    pub running: bool,
+}
+
+/// The named contexts this host holds, for its own browser strip.
+///
+/// The contexts are the CLIENT's own state - it owns the drivers - so this is
+/// the client reading itself, not a server read; the strip needs no new view
+/// surface for it.
+#[tauri::command]
+pub async fn browser_contexts(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+) -> Result<Vec<ContextRow>, String> {
+    Ok(host.contexts().await)
+}
+
 /// Release the asking session's named context.
 #[tauri::command]
 pub async fn browser_context_release(
@@ -395,6 +436,16 @@ mod tests {
             Err("the browser stack was never vendored".to_owned()),
             "the start says why rather than panicking at the app's boot",
         );
+    }
+
+    /// A host nothing has named holds no contexts, and answers the strip with
+    /// an empty list rather than an error: no contexts is a state, not a
+    /// failure.
+    #[tokio::test]
+    async fn a_fresh_host_holds_no_contexts() {
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        assert!(host.contexts().await.is_empty());
     }
 
     /// The profile, the output and the contexts are the app's OWN

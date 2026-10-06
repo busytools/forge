@@ -105,3 +105,24 @@ export async function showBrowser(): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('browser_show');
 }
+
+/** One named context, as the client's own browser strip draws it. */
+export interface ContextRow {
+  name: string;
+  /** The slot of the session that opened it. */
+  owner: string;
+  /** Whether its driver is still there to answer. */
+  running: boolean;
+}
+
+/**
+ * The named contexts this client holds, for its own strip.
+ *
+ * The contexts are the client's own state - it owns the drivers - so this is
+ * the client reading itself, and a page outside the shell holds none.
+ */
+export async function listContexts(): Promise<ContextRow[]> {
+  if (!canHost()) return [];
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<ContextRow[]>('browser_contexts');
+}
