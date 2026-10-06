@@ -588,8 +588,20 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
   background: none; border: 0; display: flex; align-items: center;
-  border-radius: 5px; padding: 2px 5px; cursor: pointer; }
-.pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+  border-radius: 5px; padding: 2px 5px; cursor: pointer;
+  opacity: 0; }
+/* The chip arrives with the pointer, like the chevron: a column of rail rows
+   carries no close marks it does not need. **Instant, not a fade**: crossing
+   rows leaves two fading chips on screen at once, which reads as a fragment
+   appearing and vanishing. Focus shows it too - a keyboard reader must see
+   what they are on - and a touch screen, which has no pointer, keeps it at
+   rest. The banner's close is deliberately not one of these: it is the way
+   out of a covering rail (the rule under this block). */
+.pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1; }
+.pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .pr .x, .wk .x { opacity: 1; }
+}
 /* The seat the page is showing, marked on its own row and nowhere else: the
    name takes the accent and the mark is recoloured rather than reshaped. Only
    the two marks drawn in a border take it, and the running ring's ARC is left
