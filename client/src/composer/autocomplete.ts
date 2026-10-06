@@ -113,11 +113,46 @@ export function rowId(offer: Offer, at: number): string {
   return `ac-${offer.kind}-${at}`;
 }
 
-/** The token a draft ends in, and where it starts. */
+/**
+ * Whether `char` is whitespace as a regex's `\s` reads one: ECMAScript's
+ * WhiteSpace and LineTerminator code points, enumerated so a backwards scan
+ * costs comparisons rather than a regex call per character.
+ */
+function isSpace(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (
+    code === 0x20 ||
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
+}
+
+/**
+ * The token a draft ends in, and where it starts: the last run of non-space
+ * characters, so a draft ending in whitespace has none.
+ *
+ * **Scanned backwards over the string, which `/\S+$/` could not do**: the
+ * regex tries a match at every position, so a long token followed by a space
+ * goes quadratic (measured: 80k chars, 3.6 s per call, where one backwards
+ * step answers it).
+ */
 function token(draft: string): { text: string; from: number } {
-  const found = /\S+$/.exec(draft);
-  if (found === null) return { text: '', from: draft.length };
-  return { text: found[0], from: found.index };
+  let from = draft.length;
+  while (from > 0) {
+    const char = draft[from - 1];
+    if (char === undefined || isSpace(char)) break;
+    from -= 1;
+  }
+  if (from === draft.length) return { text: '', from: draft.length };
+  return { text: draft.slice(from), from };
 }
 
 /**
