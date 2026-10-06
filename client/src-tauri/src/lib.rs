@@ -19,6 +19,10 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
         .map_err(|err| err.to_string())
 }
 
+use tauri::Manager as _;
+
+pub mod browser;
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,19 +38,53 @@ pub fn run() {
 
     // The updater plugin stops at the desktop, and these commands are the
     // client's own so both platforms reach one JS surface: Android answers the
-    // same three from its Kotlin side.
+    // same three from its Kotlin side. The browser's command rides the same
+    // handler - a second `invoke_handler` would replace this one rather than
+    // add to it - and the host itself is the client's on both platforms, so
+    // the mobile arm registers it too.
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            browser::browser_call,
             check_update,
             install_update,
             restart_app
         ]);
+    #[cfg(not(desktop))]
+    let builder = builder.invoke_handler(tauri::generate_handler![browser::browser_call]);
 
     let run = builder
-        .setup(|_app| {
+        .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
+            // The browser host is handed to the frontend whether or not its
+            // directories resolve: a client that cannot host says so when it
+            // is asked, rather than refusing to start.
+            let host = match browser::StackPaths::resolve(app.handle()) {
+                Ok(paths) => {
+                    tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                    std::sync::Arc::new(browser::BrowserHost::new(paths))
+                }
+                Err(why) => {
+                    tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                    std::sync::Arc::new(browser::BrowserHost::unavailable(why))
+                }
+            };
+            // **The browser comes up with the app**, so it is there before
+            // any session asks for it: the launch takes seconds and a tool
+            // call should not pay for it, and a browser that cannot start
+            // says so here, in the client's log, rather than as a failed tool
+            // call nobody can attribute. Spawned rather than awaited - the
+            // window does not wait on a browser - and the driver stays lazy,
+            // since it exists to serve calls.
+            let starting = std::sync::Arc::clone(&host);
+            tauri::async_runtime::spawn(async move {
+                match starting.start().await {
+                    Ok(()) => tauri_plugin_log::log::info!("the browser is up"),
+                    Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
+                }
+            });
+            app.manage(host);
             Ok(())
         })
         .run(context);

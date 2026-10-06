@@ -130,12 +130,14 @@ makes is routed to that connection as a `browser_ask`. **Declaring it is a
 claim about what the client can DO**: a client that declares the capability
 it does not have is sent asks it can only answer with a failure, and that
 arrives at the far end as a session's tool call failing rather than as the
-client's mistake. A second capable client changes nothing - it stays a view
-like any other, and the role is not an error to be second for. The role is
-handed back when the connection goes, and the next capable client takes it
-by declaring it again (a reconnect does). With no capable client attached,
-a browser tool answers the named error `no browser-capable client connected`
-rather than waiting for one to appear.
+client's mistake. A second capable client changes nothing about the first -
+it stays a view like any other, and the role is not an error to be second
+for; it WAITS. The role moves on by itself when its holder goes: the oldest
+waiter is promoted, without declaring anything again, so a client attached
+and capable is never left beside a `no browser-capable client connected`
+that is false about the machine. With no capable client attached at all, a
+browser tool answers that named error rather than waiting for one to
+appear.
 
 Neither declaration takes the pre-attach backlog: it goes to the first
 subscriber, and the view that draws the boot notice is the terminal. A

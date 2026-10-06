@@ -3872,3 +3872,47 @@ async fn a_second_capable_client_takes_the_role_when_its_holder_goes() {
         "the ask routed to the new holder is settled by its answer",
     );
 }
+
+/// **A capable client that offered while the role was held takes it when the
+/// holder goes, without declaring anything again.** One subscribe each is the
+/// whole of this test: a waiter left waiting is a client attached and capable
+/// while every browser tool answers "no browser-capable client connected" -
+/// which is a lie about the machine, not a state a person can act on.
+#[tokio::test]
+async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    // The waiter declares WHILE the role is held, and that is the only
+    // declaration it makes.
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    let attached = fleet.subscriber_count();
+    drop(first);
+    assert!(
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "the server noticed the holder went",
+    );
+
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut second).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut second, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
+    assert_eq!(
+        asked.await.expect("the asker task ran"),
+        Ok(parts),
+        "the role moved to the waiter, so the ask reached it",
+    );
+}

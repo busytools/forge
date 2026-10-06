@@ -63,6 +63,47 @@ as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
 starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 `--`, so a cargo flag has to arrive as `run tauri -- build -- <flags>`.
 
+## The browser host
+
+The client hosts the browser a session's `browser_*` tools drive: it owns
+the browser process, its profile and the driver, and answers the asks the
+socket routes to it. `just vendor-browser-stack` fetches and verifies the
+three pinned artifacts into the gitignored `src-tauri/browser-stack/`
+directory - node, `@playwright/mcp` and Chrome for Testing - and
+`bundle.resources` carries that tree into the bundle, so a release ships
+the browser with the app and nothing downloads at first use. The bundling
+recipes run the vendoring themselves; `just client-tauri-check` does not,
+because it copies no resources.
+
+`src-tauri/src/browser/` is the host, and three things in it are worth
+knowing before changing them:
+
+- **The browser outlives the client**, so it is launched detached against a
+  profile under the app's data directory, and a launch is found again by the
+  `DevToolsActivePort` file Chromium writes into that profile. Chrome for
+  Testing 155 writes that file only when it is asked for
+  `--remote-debugging-port=0` - handed a number it writes none - so the port
+  is the browser's own choice, read back, rather than a constant.
+- **The driver is upstream's own** `@playwright/mcp`, spawned as a child
+  process and spoken to as an MCP client through `rmcp`, pointed at the
+  browser's CDP endpoint with `--no-webmcp` (without which the tool surface
+  would depend on what the open page chooses to expose).
+- **The capability is declared only where a host is really there**
+  (`canHost`, `src/browser/host.ts`): the subscribe carries `browser: true`
+  from the shell and never from a page opened outside it, because an ask
+  routed to a client that cannot serve it arrives as a session's tool call
+  failing.
+
+`client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
+driver, `browser_navigate` and `browser_snapshot` - against the vendored
+stack. It is `#[ignore]`d because that stack is half a gigabyte and absent
+from a fresh checkout; run it where it is vendored:
+
+```sh
+cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
+    --run-ignored ignored-only -E 'test(a_session_drives_a_page)'
+```
+
 A start has no terminal to report to, so it writes to
 `~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
 named after the product rather than the crate, and it is appended to

@@ -29,9 +29,9 @@ pub struct BrowserRequest {
     pub reply: oneshot::Sender<Result<Vec<BrowserPart>, String>>,
 }
 
-/// The registered host, and the channel its asks go down.
+/// The registered connection, and the channel its asks go down.
 #[derive(Debug)]
-struct Host {
+struct Client {
     /// The connection that registered. A drop tells the transport which
     /// connection is giving the role back, so a second one cannot take the
     /// first's.
@@ -39,20 +39,37 @@ struct Host {
     to_host: mpsc::UnboundedSender<BrowserRequest>,
 }
 
+/// Who holds the role, and who is in line for it.
+#[derive(Debug, Default)]
+struct Role {
+    host: Option<Client>,
+    /// Capable connections that offered the role while another held it,
+    /// oldest first: the one it goes to when the holder gives it back. A
+    /// connection stays here until it goes or takes the role, so a restart of
+    /// the holder hands over without the waiter being asked to declare
+    /// anything again.
+    waiting: Vec<Client>,
+}
+
 /// The one client connection that drives the browser.
 ///
 /// **Exclusive, and the first capable connection wins.** A second capable
 /// client does not run its own browser - two browsers would duplicate
 /// profiles, logins and state for nothing - and it is not an error: it is
-/// simply not the host. The role frees when its holder goes, and the next
-/// capable client may take it then.
+/// simply not the host yet.
+///
+/// **The role moves on by itself when its holder goes.** A waiter is
+/// promoted then, oldest first, so the failure this avoids is a client
+/// attached and capable while every browser tool answers "no browser-capable
+/// client connected" - which is a lie about the machine, and the state a
+/// second client used to sit in until it happened to subscribe again.
 ///
 /// The relay is the workspace's, not the transport's: the tools that ask are
 /// in the workspace, and the connection that answers is in the transport,
 /// so the one object both can hold is the one the workspace owns.
 #[derive(Debug, Default)]
 pub struct BrowserRelay {
-    host: Mutex<Option<Host>>,
+    role: Mutex<Role>,
 }
 
 impl BrowserRelay {
@@ -62,39 +79,51 @@ impl BrowserRelay {
 
     /// A panicking task must not take the role with it, the way
     /// [`crate::workspace`]'s other locks read.
-    fn lock(&self) -> MutexGuard<'_, Option<Host>> {
-        self.host.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, Role> {
+        self.role.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Offer the role to the connection `id`; answers whether it holds it.
+    /// Offer the role to the connection `id`; answers whether it holds it now.
     ///
     /// `false` is the ordinary case of a second capable client: it stays a
-    /// view like any other, and only the host is sent asks.
+    /// view like any other, waits in line, and is sent asks once the role
+    /// reaches it.
     pub fn register(&self, id: u64, to_host: mpsc::UnboundedSender<BrowserRequest>) -> bool {
-        let mut host = self.lock();
-        match host.as_ref() {
-            Some(existing) if existing.id != id => false,
+        let mut role = self.lock();
+        // The same connection offering again (a later subscribe) replaces its
+        // own channel and changes nothing else about where it stands.
+        role.waiting.retain(|client| client.id != id);
+        match role.host.as_ref() {
+            Some(host) if host.id != id => {
+                role.waiting.push(Client { id, to_host });
+                false
+            }
             _ => {
-                *host = Some(Host { id, to_host });
+                role.host = Some(Client { id, to_host });
                 true
             }
         }
     }
 
-    /// Give the role back, if `id` holds it.
+    /// Give the role back, if `id` holds it - and hand it to whoever is next
+    /// in line.
     pub fn unregister(&self, id: u64) {
-        let mut host = self.lock();
-        if host.as_ref().is_some_and(|existing| existing.id == id) {
-            *host = None;
+        let mut role = self.lock();
+        if role.host.as_ref().is_some_and(|host| host.id == id) {
+            role.host = None;
+            promote(&mut role);
         }
+        role.waiting.retain(|client| client.id != id);
     }
 
     /// Send one ask to the host and wait for its answer.
     ///
     /// The failure arms are the named errors a tool returns: no host at all,
-    /// or a host whose connection is gone. **The second one frees the role**,
-    /// so a client that connects afterwards can take it rather than waiting
-    /// for a restart.
+    /// or a host whose connection is gone. **The second one frees the role
+    /// and promotes whoever is waiting**, so the NEXT ask finds a host where
+    /// this one found none - the call that met the dead connection is not
+    /// retried, because a call may already have run partway on the host that
+    /// went.
     pub async fn ask(
         &self,
         seat: &SessionSlot,
@@ -102,33 +131,53 @@ impl BrowserRelay {
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
         let (id, to_host) = {
-            let host = self.lock();
-            let Some(existing) = host.as_ref() else {
+            let role = self.lock();
+            let Some(host) = role.host.as_ref() else {
                 return Err(NO_BROWSER_CLIENT.to_owned());
             };
-            (mint_id(), existing.to_host.clone())
+            (mint_id(), host.to_host.clone())
         };
         let (reply, answer) = oneshot::channel();
         let request = BrowserRequest { id, seat: seat.clone(), tool: tool.to_owned(), args, reply };
         if to_host.send(request).is_err() {
-            self.unregister_if_dead();
+            self.forget_the_dead();
             tracing::debug!(
                 event_name = "browser_host_gone",
                 tool = %tool,
                 slot = %seat.display(),
-                "a browser ask found the host's connection gone; the role is free again",
+                "a browser ask found the host's connection gone; the role moved on",
             );
             return Err(HOST_GONE.to_owned());
         }
         answer.await.unwrap_or_else(|_| Err(HOST_GONE.to_owned()))
     }
 
-    /// Drop the host when its channel has no receiver left.
-    fn unregister_if_dead(&self) {
-        let mut host = self.lock();
-        if host.as_ref().is_some_and(|existing| existing.to_host.is_closed()) {
-            *host = None;
+    /// Forget a host whose channel has no receiver left - and a waiter whose
+    /// channel is dead too, so a role is never handed to a connection that
+    /// has already gone.
+    fn forget_the_dead(&self) {
+        let mut role = self.lock();
+        role.waiting.retain(|client| !client.to_host.is_closed());
+        if role.host.as_ref().is_some_and(|host| host.to_host.is_closed()) {
+            role.host = None;
+            promote(&mut role);
         }
+    }
+}
+
+/// Hand the role to the first connection in line, if the role is free and
+/// anyone is waiting.
+fn promote(role: &mut Role) {
+    if role.host.is_some() {
+        return;
+    }
+    while !role.waiting.is_empty() {
+        let next = role.waiting.remove(0);
+        if next.to_host.is_closed() {
+            continue;
+        }
+        role.host = Some(next);
+        return;
     }
 }
 
@@ -144,6 +193,8 @@ fn mint_id() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn seat() -> SessionSlot {
@@ -154,55 +205,78 @@ mod tests {
         serde_json::json!({ "url": "https://example.com" })
     }
 
+    /// One ask, landed on `rx`: the ask is answered there and the caller is
+    /// told the parts. Named so the tests below read as where the ask went.
+    async fn lands_on(relay: &Arc<BrowserRelay>, rx: &mut mpsc::UnboundedReceiver<BrowserRequest>) {
+        let relay = Arc::clone(relay);
+        let asked = tokio::spawn(async move { relay.ask(&seat(), "browser_close", args()).await });
+        let request = rx.recv().await.expect("the ask reaches this connection");
+        request.reply.send(Ok(Vec::new())).ok();
+        assert!(
+            asked.await.expect("the asker task ran").is_ok(),
+            "the ask was answered where it landed",
+        );
+    }
+
     /// The role is exclusive and the first capable connection holds it - read
     /// off where the ask LANDS rather than off a flag: which connection a call
     /// reaches is the whole of what the role means.
     #[tokio::test]
     async fn the_first_capable_connection_holds_the_role() {
-        let relay = BrowserRelay::new();
+        let relay = Arc::new(BrowserRelay::new());
         let (first, mut first_rx) = mpsc::unbounded_channel();
         let (second, mut second_rx) = mpsc::unbounded_channel();
 
         assert!(relay.register(1, first), "the first capable connection holds the role");
         assert!(!relay.register(2, second), "and a second capable client does not take it");
 
-        let seat = seat();
-        let asked = relay.ask(&seat, "browser_close", args());
-        let landed = tokio::spawn(async move {
-            let request = first_rx.recv().await.expect("the ask reaches the first");
-            request.reply.send(Ok(Vec::new())).ok();
-        });
-        assert!(asked.await.is_ok(), "the ask was answered by the role's holder");
-        landed.await.expect("the landing task ran");
+        lands_on(&relay, &mut first_rx).await;
         assert!(
             second_rx.try_recv().is_err(),
             "and nothing was routed to the second capable client",
         );
     }
 
-    /// The role frees when its holder goes, and the next capable client may
-    /// take it - the reconnect case.
+    /// **The role moves on when its holder goes, without the waiter being
+    /// asked to declare anything again.** A client attached and capable while
+    /// a dead holder kept the role is the state this exists to prevent: every
+    /// browser tool would answer "no browser-capable client connected" with
+    /// one sitting right there.
     #[tokio::test]
-    async fn the_role_frees_when_its_holder_goes() {
-        let relay = BrowserRelay::new();
+    async fn the_role_moves_to_the_next_in_line_when_the_holder_goes() {
+        let relay = Arc::new(BrowserRelay::new());
         let (first, _first_rx) = mpsc::unbounded_channel();
-        assert!(relay.register(1, first));
+        let (second, mut second_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first), "the first connection holds it");
+        assert!(!relay.register(2, second), "the second waits in line rather than taking it");
 
         relay.unregister(1);
-        let (second, mut second_rx) = mpsc::unbounded_channel();
-        assert!(relay.register(2, second), "the next capable client takes the freed role");
+        lands_on(&relay, &mut second_rx).await;
 
         // A late unregister from a connection that no longer holds it must
         // not take the role away from its new holder.
+        let (third, mut third_rx) = mpsc::unbounded_channel();
         relay.unregister(1);
-        let seat = seat();
-        let asked = relay.ask(&seat, "browser_close", args());
-        let landed = tokio::spawn(async move {
-            let request = second_rx.recv().await.expect("the ask reaches the role's holder");
-            request.reply.send(Ok(Vec::new())).ok();
-        });
-        assert!(asked.await.is_ok(), "the role still belongs to whoever holds it");
-        landed.await.expect("the landing task ran");
+        assert!(!relay.register(3, third), "the role is taken, so a third waits");
+        lands_on(&relay, &mut second_rx).await;
+        assert!(third_rx.try_recv().is_err(), "and the third is not asked");
+    }
+
+    /// A waiter whose connection has gone is passed over: the role is handed
+    /// to a client that can answer, not to the first name on a list.
+    #[tokio::test]
+    async fn a_dead_waiter_is_passed_over() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, second_rx) = mpsc::unbounded_channel();
+        let (third, mut third_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first));
+        assert!(!relay.register(2, second));
+        drop(second_rx);
+        assert!(!relay.register(3, third));
+
+        relay.unregister(1);
+        lands_on(&relay, &mut third_rx).await;
     }
 
     /// Nothing capable connected is the named error rather than a hang.
