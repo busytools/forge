@@ -575,6 +575,112 @@ describe('the agents spawn card', () => {
   });
 });
 
+describe('the reads that draw a list or a fact', () => {
+  it('lists the Gotify applications the server knows', () => {
+    const card = forgeCardOf(
+      'mcp__forge__gotify__apps',
+      {},
+      result(JSON.stringify(['Backups', 'Alerts'])),
+    );
+    expect(card?.title).toBe('applications');
+    expect(card?.figure).toBe('2');
+    expect(itemsOf(card).map((item) => item.text)).toEqual(['Backups', 'Alerts']);
+  });
+
+  it('draws a Slack search as its hits, the query in the title', () => {
+    const card = forgeCardOf(
+      'mcp__forge__slack__search',
+      { query: 'smoke test', workspace: 'acme' },
+      result(
+        JSON.stringify([
+          {
+            ts: '1.0',
+            text: 'smoke test passed on 1.0.115',
+            conversation: 'C1',
+            conversation_name: 'deploys',
+            username: 'bot',
+          },
+        ]),
+      ),
+    );
+    expect(card?.title).toBe('search \u{b7} acme');
+    expect(card?.figure).toBe('1 hits');
+    expect(itemsOf(card)[0]).toMatchObject({
+      text: 'smoke test passed on 1.0.115',
+      tag: '#deploys',
+      when: 'bot',
+    });
+  });
+
+  it('lists Slack conversations, marking the ones this session watches', () => {
+    const card = forgeCardOf(
+      'mcp__forge__slack__list',
+      { workspace: 'acme' },
+      result(
+        JSON.stringify({
+          conversations: [
+            { id: 'C1', name: 'ops', kind: 'public', subscribed: true, subscription_ids: ['s1'] },
+            { id: 'C2', name: 'general', kind: 'public', subscribed: false, subscription_ids: [] },
+          ],
+          subscriptions: [],
+        }),
+      ),
+    );
+    expect(card?.title).toBe('conversations \u{b7} acme');
+    expect(card?.figure).toBe('2');
+    expect(itemsOf(card)[0]).toMatchObject({
+      text: '#ops',
+      tag: 'public',
+      state: { text: 'watching', tone: 'ok' },
+    });
+    expect(itemsOf(card)[1]?.state, 'an unwatched conversation carries no mark').toBeNull();
+  });
+
+  it('draws a Slack user as its own facts', () => {
+    const card = forgeCardOf(
+      'mcp__forge__slack__user',
+      { user: 'U1' },
+      result(
+        JSON.stringify({ id: 'U1', name: 'alex', real_name: 'Alex Doe', tz: 'Asia/Kolkata' }),
+      ),
+    );
+    expect(card?.title).toBe('user alex');
+    expect(pairsOf(card)).toEqual([
+      ['real name', 'Alex Doe'],
+      ['tz', 'Asia/Kolkata'],
+    ]);
+    expect(card?.figure, 'a user is not a count').toBeNull();
+  });
+
+  it('lists the reviews on the branch, each by its own number', () => {
+    const card = forgeCardOf(
+      'mcp__forge__review__list',
+      {},
+      result(
+        JSON.stringify([
+          {
+            review_id: 'rv-1',
+            number: 3,
+            summary: 'Second pass over the card grammar',
+            created_at: '2026-10-05T09:00:00Z',
+            open: 4,
+            addressed: 3,
+            resolved: 2,
+            outdated: 0,
+          },
+        ]),
+      ),
+    );
+    expect(card?.title).toBe('reviews');
+    expect(card?.figure).toBe('1');
+    expect(itemsOf(card)[0]).toMatchObject({
+      text: 'Second pass over the card grammar',
+      tag: '#3',
+      when: 'rv-1',
+    });
+  });
+});
+
 describe('the worker lifecycle cards', () => {
   it('names an update by its label and chips the fields the server wrote', () => {
     // The result carries the field NAMES, not their new values, so the row
