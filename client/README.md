@@ -125,13 +125,13 @@ names and only warns when that is not the pinned one, so
 
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
-`scripts/update_manifest.py` writes the manifest with the signature copied
-verbatim out of the `.sig`, the APK's and the web archive's sha256, and the
-release URLs; the `android` and `web` blocks sit at the top level rather than
-inside `platforms`, because every `platforms` entry must carry both a `url`
-and a `signature` or the whole file fails to parse. `just publish <version>`
-creates the release for a tag already on origin, and `just release` runs it
-itself as its last step.
+`scripts/update_manifest.py` writes the manifest with the `.sig`'s content
+(only its trailing newline trimmed, because the plugin base64-decodes the
+value whole), the web archive's sha256, and the release URLs; the `android`
+and `web` blocks sit at the top level rather than inside `platforms`, because
+every `platforms` entry must carry both a `url` and a `signature` or the
+whole file fails to parse. `just publish <version>` creates the release for a
+tag already on origin, and `just release` runs it itself as its last step.
 
 The phone updates from the same manifest. Its top-level `version` is what the
 app compares against its own, and the `android` block beside `platforms`

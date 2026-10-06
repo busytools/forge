@@ -4,10 +4,14 @@
 Usage: update_manifest.py <repo-root> <version>
 
 The one file all three halves read: the desktop updater (Tauri's static
-manifest - `platforms` entries carry the signature verbatim from the `.sig`
-and the asset URL), the phone (a top-level `android` block), and the web
-image's puller (a top-level `web` block whose sha256 is both its integrity
-check and its same-version skip).
+manifest - a `platforms` entry carries the `.sig`'s content with its trailing
+newline trimmed, and the asset URL), the phone (a top-level `android` block),
+and the web image's puller (a top-level `web` block whose sha256 is both its
+integrity check and its same-version skip).
+
+The trim is load-bearing: the plugin base64-decodes the manifest's value
+whole, so a trailing newline is an InvalidByte and every desktop install
+fails.
 
 The `android` and `web` blocks sit BESIDE `platforms` rather than inside it:
 every `platforms` entry must carry both `url` and `signature` or the whole
@@ -58,7 +62,7 @@ def main() -> None:
 
     release = f"{REPOSITORY}/releases/download/v{version}"
     try:
-        sig = signature.read_text().strip()
+        sig = signature.read_text().rstrip()
     except OSError as err:
         fail(f"{signature} could not be read: {err}")
 
@@ -73,7 +77,6 @@ def main() -> None:
         },
         "android": {
             "url": f"{release}/forge-{version}-arm64.apk",
-            "sha256": sha256(apk),
         },
         "web": {
             "version": version,
@@ -84,7 +87,9 @@ def main() -> None:
 
     out = bundle / "latest.json"
     out.write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"[OK] wrote {out} - version {version}, darwin-aarch64 + android + web")
+    # What it wrote, read back off the manifest itself: a line spelling a
+    # fixed list claims blocks a mutation could have dropped.
+    print(f"[OK] wrote {out} - version {version}, keys {' '.join(sorted(manifest))}")
 
 
 if __name__ == "__main__":
