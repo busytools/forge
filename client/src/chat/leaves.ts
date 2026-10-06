@@ -13,6 +13,7 @@
 import { languageOf } from './code';
 import { decisionOf, decisionWord, type Decision } from './decisions';
 import { isEdit, mcpParts, type CallStatus, type KindRow, rowOf } from './families';
+import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
 import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
@@ -118,6 +119,12 @@ export interface ToolLeaf {
    * text it is, never dropped.
    */
   decision: Decision | null;
+  /**
+   * The `forge` family card the result carried, or `null` for every other
+   * call and for a result the page could not read - which draws as the raw
+   * text it is, never dropped.
+   */
+  forge: ForgeCard | null;
   /**
    * The skill's own markdown, for a `Skill` call, or null for every other
    * call.
@@ -569,17 +576,31 @@ export function leafOf(
     task !== undefined && (task.backgrounded || task.status !== 'in_progress')
       ? task.status
       : settledBy(result, abandoned);
+  const forge = forgeCardOf(name, input, result);
   return {
     id,
     row: rowOf(name),
     name,
-    title: titleOf(name, input),
+    // A card's own title wins: it names the subject the call acted on, which
+    // is the one thing on the row a reader scans for - the tool's name reads
+    // as plumbing. A failed forge call has no card - its result is the reason,
+    // and the reason draws as every failure does - so its subject comes from
+    // the input, and never from the tool it was.
+    title:
+      forge?.title ??
+      forgeRowTitle(
+        name,
+        input,
+        settled === 'failed' || settled === 'killed' ? 'failed' : 'running',
+      ) ??
+      titleOf(name, input),
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
     body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
     mutation: marksOf(name, input, body, record),
     decision: decisionOf(name, input, result),
+    forge,
     skill: null,
     image: imageOf(result),
     imageNote: null,

@@ -1138,6 +1138,85 @@
     .sess > .more > summary { min-width: 44px; }
   }
 
+  /* ---------- a forge call's own card ----------
+     A call into the `forge` MCP server draws as the thing it acted on
+     rather than as the tool it was: the subject for a title, chips for the
+     state it states, a figure at the right, and a body of facts, a quote,
+     rows found, or a review comment with the code it was filed against.
+     The names are `fam-`-prefixed so no bare name of another surface
+     catches them, the same rule the dispatch row's `sg-` fields follow. */
+  details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
+    border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
+    color: var(--muted); line-height: 1.7; white-space: nowrap; }
+  details.leaf > summary .fam-chip.info { color: var(--blue); border-color: rgba(97,160,224,.4); }
+  details.leaf > summary .fam-chip.ok { color: var(--ok); border-color: rgba(130,199,107,.4); }
+  details.leaf > summary .fam-chip.warn { color: var(--warn); border-color: rgba(201,161,59,.4); }
+  details.leaf > summary .fam-chip.bad { color: var(--bad); border-color: rgba(224,104,62,.4); }
+  details.leaf > summary .fam-chip.dim { color: var(--dim); }
+  details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: none;
+    font-family: var(--mono); font-size: var(--fs-data); }
+  details.leaf > summary .fam-fig + .arw { margin-left: 8px; }
+  details.leaf > summary .fam-tail { color: var(--bad); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  details.leaf > summary .fam-tail::before { content: 'failed: '; color: var(--dim); }
+  details.leaf > summary .fam-tail.warn { color: var(--warn); }
+  details.leaf > summary .fam-tail.warn::before { content: 'kept: '; }
+  details.leaf > summary .fam-meter { flex: 0 1 auto; width: 150px; min-width: 32px;
+    height: 6px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
+    border-radius: 99px; background: var(--accent); }
+  .fam-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    margin: 5px 0 3px; overflow-wrap: anywhere; }
+  .fam-meta .lb { color: var(--muted); margin-right: 5px; }
+  .fam-meta .sep { padding: 0 6px; color: var(--line); }
+  .fam-quote { border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 5px 0;
+    color: var(--muted); font-size: var(--fs-base); white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+  .fam-tag { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
+    margin-top: 6px; }
+  .fam-warnline { display: flex; gap: 9px; align-items: baseline; color: var(--warn);
+    font-size: var(--fs-base); margin: 4px 0; }
+  .fam-warnline .fam-lb { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--warn); flex: none; }
+  .fam-list { display: grid; gap: 3px; margin: 5px 0 2px; }
+  .fam-item { display: flex; align-items: center; gap: 9px; font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--muted); }
+  .fam-item .fam-id { color: var(--dim); min-width: 34px; }
+  .fam-item .fam-state { flex: none; min-width: 82px; }
+  .fam-item .fam-state.ok { color: var(--ok); }
+  .fam-item .fam-state.info { color: var(--accent); }
+  .fam-item .fam-state.warn { color: var(--warn); }
+  .fam-item .fam-state.bad { color: var(--bad); }
+  .fam-item .fam-state.dim { color: var(--dim); }
+  .fam-item .fam-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fam-item .fam-tag { flex: none; margin-top: 0; }
+  .fam-item .fam-when { margin-left: auto; color: var(--dim); flex: none; }
+  .fam-cm { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+    margin: 6px 0; }
+  .fam-cm .fam-hd { display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+    border-bottom: 1px solid var(--line); }
+  .fam-cm .fam-hd .fam-where { font-family: var(--mono); font-size: var(--fs-data);
+    overflow-wrap: anywhere; }
+  .fam-cm .fam-hd .fam-tag { margin-top: 0; }
+  .fam-cm .fam-hd .fam-chip { color: var(--muted); }
+  .fam-cm .fam-hd .fam-chip.info { color: var(--blue); }
+  .fam-cm .fam-hd .fam-chip.ok { color: var(--ok); }
+  .fam-cm .fam-hd .fam-chip.bad { color: var(--bad); }
+  .fam-cm .fam-hd .fam-chip.warn { color: var(--warn); }
+  .fam-cm .fam-ctx { font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--muted); padding: 7px 12px; margin: 0; white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+  .fam-cm .fam-turns { padding: 6px 12px 9px; display: grid; gap: 6px; }
+  .fam-turn { font-size: var(--fs-base); color: var(--muted); }
+  .fam-turn .fam-au { color: var(--dim); font-family: var(--mono);
+    font-size: var(--fs-label); margin-right: 7px; }
+  .fam-turn.you .fam-au { color: var(--accent); }
+  .fam-empty { display: flex; align-items: center; gap: 8px; padding: 7px 0 3px;
+    color: var(--dim); font-size: var(--fs-base); }
+  .fam-empty-glyph { width: 13px; height: 13px; flex: none; }
+  .fam-text { color: var(--muted); font-size: var(--fs-base); margin: 5px 0;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+
   /* ---------- the chevron arrives with the pointer ----------
      Hidden at rest, so a column of rows carries no marks it does not need;
      under the pointer it shows in the muted tone - the hover colour these
@@ -1200,6 +1279,9 @@
   <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
   <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
+  <symbol id="i-review" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M18 15V9a3 3 0 0 0-3-3h-3"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
 </svg>
 
 <input type="checkbox" id="l" hidden>
@@ -1699,12 +1781,19 @@ docs: Render the message body into rows.</div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">tasks__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">2 tasks in flight</div></div>
+            <summary><svg class="ic gl ok"><use href="#i-tasks"/></svg><span class="tn">tasks</span><span class="fam-fig">2 in flight</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-list">
+                <div class="fam-item"><span class="fam-id">t-11</span><span class="fam-state info">in progress</span><span class="fam-sub">Merge peers and workers into agents</span><span class="fam-when">lead &#183; 1d</span></div>
+                <div class="fam-item"><span class="fam-id">t-12</span><span class="fam-state dim">pending</span><span class="fam-sub">Tool cards for the MCP families</span><span class="fam-when">unclaimed</span></div>
+              </div>
+            </div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">tasks__update</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">cli-version &#183; in_progress</div></div>
+            <summary><svg class="ic gl ok"><use href="#i-tasks"/></svg><span class="tn">Wire the review notice into the chat</span><span class="fam-chip info">in progress</span><span class="fam-fig">owner lead</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-meta"><span class="lb">changed</span>status<span class="sep">&#183;</span><span class="lb">owner</span>lead<span class="sep">&#183;</span><span class="lb">estimate</span>2h<span class="sep">&#183;</span><span class="lb">updated</span>2026-10-06 09:30</div>
+            </div>
           </details>
 
           <details class="leaf" open>
@@ -1816,8 +1905,54 @@ docs: Render the message body into rows.</div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-tool"/></svg><span class="tn">mcp__forge__cron__list</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">[] &#183; no crons registered</div></div>
+            <summary><svg class="ic gl ok"><use href="#i-schedules"/></svg><span class="tn">schedules</span><span class="fam-fig">1 registered</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-list">
+                <div class="fam-item"><span class="fam-sub">Morning summary</span><span class="fam-tag">0 9 * * *</span><span class="fam-when">next in 8h</span></div>
+              </div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-gotify"/></svg><span class="tn">watching notifications</span><span class="fam-chip">Backups, Alerts</span><span class="fam-chip">priority &#8805; 5</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-meta"><span class="lb">subscription</span>7e29&#8230;<span class="sep">&#183;</span><span class="lb">delivers</span>as a turn, waking this session</div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-slack"/></svg><span class="tn">conversations &#183; Trust Machines</span><span class="fam-fig">4</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-list">
+                <div class="fam-item"><span class="fam-state ok">watching</span><span class="fam-sub">#granite-staging</span><span class="fam-tag">public</span></div>
+                <div class="fam-item"><span class="fam-sub">U0AE0CBJ77G</span><span class="fam-tag">im</span></div>
+              </div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-review"/></svg><span class="tn">review #3 - 1 open, 1 addressed</span><span class="fam-fig">2 comments</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-cm">
+                <div class="fam-hd">
+                  <span class="fam-where">src/chat/units.ts:919</span>
+                  <span class="fam-tag">new side</span>
+                  <span class="fam-chip bad">open</span>
+                </div>
+                <div class="fam-ctx">mcp__forge__agents__send_message: { body: 'message', target: 'address' },</div>
+                <div class="fam-turns">
+                  <div class="fam-turn you"><span class="fam-au">you</span>Reading this fresh - is the reply thread-only?</div>
+                  <div class="fam-turn"><span class="fam-au">worker</span>Right - that is the shipped shape.</div>
+                </div>
+              </div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-gauge"/></svg><span class="tn">worker capacity</span><span class="fam-meter"><span class="fam-f" style="width:50%"></span></span><span class="fam-chip">2 live</span><span class="fam-chip dim">cap 4 &#183; forge.toml</span><span class="fam-fig">2 free</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-meta"><span class="lb">project</span>forge<span class="sep">&#183;</span><span class="lb">cap source</span>max_workers</div>
+            </div>
+          </details>
+          <details class="leaf">
+            <summary><svg class="ic gl err"><use href="#i-slack"/></svg><span class="tn">conversations</span><span class="fam-tail">several Slack workspaces are configured; pass `workspace`</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="term">several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines</div></div>
           </details>
         </div>
 
@@ -2054,12 +2189,18 @@ docs: Render the message body into rows.</div>
           <!-- The external deliveries: each row of its own kind, the same shape
                every other row draws - a glyph, a name, a row that opens. -->
           <details class="leaf inboundrow">
-            <!-- A cron fire's title IS its body's first line, so no tail is
-                 drawn: a tail that repeats the title is not a tail. -->
-            <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">morning sweep</span>
+            <!-- A cron fire is titled by the SCHEDULE that fired it, read off
+                 the same update the prompt arrives with. The tail is the
+                 prompt's first line - the invariant the row hangs on - so a
+                 fire the frame named reads `Morning summary` over its prompt.
+                 A fire falls back to that first line as its TITLE in two
+                 cases: a frame the page never saw, and a schedule registered
+                 with no description, which names nothing to draw. -->
+            <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">Morning summary</span>
+              <span class="ev">summarise overnight CI and open PRs</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body"><div class="prose">
-              <p>morning sweep</p></div></div>
+              <p>summarise overnight CI and open PRs</p></div></div>
           </details>
           <details class="leaf inboundrow">
             <summary><svg class="ic gl"><use href="#i-slack"/></svg><span class="tn">Trust Machines &#183; #alerts &#183; ved</span>

@@ -2115,6 +2115,110 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
 
+/* ---------- a forge call's own card ---------- */
+
+/* The chips a forge row states, the figure at its right, and the reason a
+   failed one failed. Namespaced `fam-`, the same rule the dispatch row's
+   `sg-` fields follow, so no bare name of another surface catches them.
+   Every chip carries its own word: the tone colours it and never replaces
+   it. */
+details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
+  border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
+  color: var(--muted); line-height: 1.7; white-space: nowrap; }
+details.leaf > summary .fam-chip.info { color: var(--blue); border-color: rgba(97,160,224,.4); }
+details.leaf > summary .fam-chip.ok { color: var(--ok); border-color: rgba(130,199,107,.4); }
+details.leaf > summary .fam-chip.warn { color: var(--warn); border-color: rgba(201,161,59,.4); }
+details.leaf > summary .fam-chip.bad { color: var(--bad); border-color: rgba(224,104,62,.4); }
+details.leaf > summary .fam-chip.dim { color: var(--dim); }
+details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: none;
+  font-family: var(--mono); font-size: var(--fs-data); }
+details.leaf > summary .fam-fig + .arw { margin-left: 8px; }
+/* A failure's reason, inline after the title: the one thing a reader acts on,
+   and never a figure in the right-hand column. The body keeps the whole of it.
+   A card's own tail carries a warn tone instead - a clean answer that refused
+   something - and says its own word. */
+details.leaf > summary .fam-tail { color: var(--bad); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+details.leaf > summary .fam-tail::before { content: 'failed: '; color: var(--dim); }
+details.leaf > summary .fam-tail.warn { color: var(--warn); }
+details.leaf > summary .fam-tail.warn::before { content: 'kept: '; }
+/* The one proportion a row carries, drawn where its numbers are: capacity's
+   live count against the cap the server stated. */
+details.leaf > summary .fam-meter { flex: 0 1 auto; width: 150px; min-width: 32px;
+  height: 6px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
+  border-radius: 99px; background: var(--accent); }
+
+/* The card's body: facts, a quote of the words a call carried, and what it
+   found. The facts draw as ONE inline run rather than a label column with the
+   values flung to the far edge - the dispatch row's own `sg-meta` shape,
+   copied here rather than depended on, because a forge card is not an
+   instance. */
+/* One review comment: the spot it was filed on, the code it was filed
+   against, and what has been said about it since. */
+.fam-cm { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  margin: 6px 0; }
+.fam-cm .fam-hd { display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  border-bottom: 1px solid var(--line); }
+.fam-cm .fam-hd .fam-where { font-family: var(--mono); font-size: var(--fs-data);
+  overflow-wrap: anywhere; }
+.fam-cm .fam-hd .fam-tag { margin-top: 0; }
+.fam-cm .fam-hd .fam-chip { color: var(--muted); }
+.fam-cm .fam-hd .fam-chip.info { color: var(--blue); }
+.fam-cm .fam-hd .fam-chip.ok { color: var(--ok); }
+.fam-cm .fam-hd .fam-chip.bad { color: var(--bad); }
+.fam-cm .fam-hd .fam-chip.warn { color: var(--warn); }
+/* The captured lines wrap rather than scrolling sideways: nothing in this
+   sheet scrolls a box, and a code line is often longer than a phone. */
+.fam-cm .fam-ctx { font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--muted); padding: 7px 12px; margin: 0; white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+.fam-cm .fam-turns { padding: 6px 12px 9px; display: grid; gap: 6px; }
+.fam-turn { font-size: var(--fs-base); color: var(--muted); }
+.fam-turn .fam-au { color: var(--dim); font-family: var(--mono);
+  font-size: var(--fs-label); margin-right: 7px; }
+.fam-turn.you .fam-au { color: var(--accent); }
+
+/* What a query found nothing of: said in words, at the glyph of the family
+   that asked, rather than left as an empty box a reader cannot read. */
+.fam-empty { display: flex; align-items: center; gap: 8px; padding: 7px 0 3px;
+  color: var(--dim); font-size: var(--fs-base); }
+.fam-empty-glyph { width: 13px; height: 13px; flex: none; }
+/* A result's later text block, drawn as the words it is: the card reads the
+   first block, and the rest are still things the call said. */
+.fam-text { color: var(--muted); font-size: var(--fs-base); margin: 5px 0;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.fam-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin: 5px 0 3px; overflow-wrap: anywhere; }
+/* A label and its value, spaced: the run reads `estimate 2h`, and a label
+   butted straight against its value reads as one word. */
+.fam-meta .lb { color: var(--muted); margin-right: 5px; }
+.fam-meta .sep { padding: 0 6px; color: var(--line); }
+.fam-quote { border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 5px 0;
+  color: var(--muted); font-size: var(--fs-base); white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+.fam-tag { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
+  margin-top: 6px; }
+.fam-warnline { display: flex; gap: 9px; align-items: baseline; color: var(--warn);
+  font-size: var(--fs-base); margin: 4px 0; }
+.fam-warnline .fam-lb { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+  flex: none; }
+.fam-list { display: grid; gap: 3px; margin: 5px 0 2px; }
+.fam-item { display: flex; align-items: center; gap: 9px; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--muted); }
+.fam-item .fam-id { color: var(--dim); min-width: 34px; }
+.fam-item .fam-state { flex: none; min-width: 82px; }
+.fam-item .fam-state.ok { color: var(--ok); }
+.fam-item .fam-state.bad { color: var(--bad); }
+.fam-item .fam-state.info { color: var(--accent); }
+.fam-item .fam-state.warn { color: var(--warn); }
+.fam-item .fam-state.dim { color: var(--dim); }
+.fam-item .fam-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Inside a list row the tag is a marker beside the text, not the block above
+   it: no top margin of its own, and it never wraps. */
+.fam-item .fam-tag { flex: none; margin-top: 0; }
+.fam-item .fam-when { margin-left: auto; color: var(--dim); flex: none; }
+
 /* ---------- the models page ----------
    Everything under `.models`, for the reason the `.pop` block gives: `.model`,
    `.status`, `.col` and `.note` are short names another surface already uses,

@@ -42,9 +42,10 @@
  * they duplicate that surface inside every turn that used one.
  */
 
+import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
-import { firstLine, stripEscapes } from './text';
+import { firstLine, isSlackId, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
 export interface AnsweredQuestion {
@@ -732,22 +733,6 @@ type Envelope =
   | { kind: 'peer'; card: PeerCard }
   | { kind: 'inbound'; inbound: InboundKind; title: string; body: string; elevated: boolean }
   | { kind: 'notice'; notice: Notice };
-
-/**
- * A Slack id is not a name to print.
- *
- * The server's own heuristic, ported as it stands: an uppercase initial and
- * nothing but uppercase or digits after it, with no length floor and no
- * letter restriction. It is a heuristic and the server says so - an all-caps
- * channel name matches it and loses its `#` - but a client that tightened it
- * for looks would drop the author clause on a `B…` bot id where the terminal
- * drops it, which is one more rule that is not the rule it ports.
- */
-function isSlackId(value: string): boolean {
-  const [first, ...rest] = value;
-  if (first === undefined || !/^[A-Z]$/.test(first)) return false;
-  return rest.every((letter) => /^[A-Z0-9]$/.test(letter));
-}
 
 /**
  * The envelope text a user frame carries, when it is one this page knows.
@@ -1916,11 +1901,17 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
               // A delivery by cron, Slack or Gotify joins the work as a row
               // of its own kind, the way a family's calls do - one shape for
               // every row, so a new external kind is a row and a glyph.
+              //
+              // A cron fire is titled by the SCHEDULE when the frame that
+              // delivered it named one: the prose carries the prompt alone, so
+              // the name is the one thing only the frame's own pairing can
+              // say.
+              const named = envelope.inbound === 'cron' ? cronNames.nameFor(frame.uuid) : null;
               pending.push({
                 tag: 'inbound',
                 kind: envelope.inbound,
                 key: keyOf(at, frame, blockAt),
-                title: envelope.title,
+                title: named ?? envelope.title,
                 body: envelope.body,
                 elevated: envelope.elevated,
               });

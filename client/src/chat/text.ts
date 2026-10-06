@@ -89,6 +89,25 @@ function endOfSequence(text: string, at: number): number {
 }
 
 /**
+ * A Slack id is not a name to print.
+ *
+ * The server's own heuristic, ported as it stands: an uppercase initial and
+ * nothing but uppercase or digits after it, with no length floor and no
+ * letter restriction. It is a heuristic and the server says so - an all-caps
+ * channel name matches it and loses its `#` - but a client that tightened it
+ * for looks would drop the author clause on a `B…` bot id where the terminal
+ * drops it, which is one more rule that is not the rule it ports.
+ *
+ * Shared by the two places that must not dress an id as a name: the author
+ * clause of a Slack envelope, and a channel marker.
+ */
+export function isSlackId(value: string): boolean {
+  const [first, ...rest] = value;
+  if (first === undefined || !/^[A-Z]$/.test(first)) return false;
+  return rest.every((letter) => /^[A-Z0-9]$/.test(letter));
+}
+
+/**
  * `text` with the sequences a terminal would have obeyed taken out.
  *
  * Tab and newline survive, because they are layout the writer meant.

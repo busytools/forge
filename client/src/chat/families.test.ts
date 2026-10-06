@@ -17,11 +17,11 @@ describe('the row a call is summarised under', () => {
     }
   });
 
-  it('keys every MCP call to the mcp row', () => {
-    // A server's name is known only at runtime, and the row draws the mcp
-    // glyph rather than the server: two servers are two rows of one kind.
+  it('keys an unknown MCP call to the mcp row', () => {
+    // A server's name is known only at runtime, and a row draws the mcp glyph
+    // rather than the server: two servers are two rows of one kind.
     expect(rowOf('mcp__playwright__browser_click')).toEqual({ kind: 'mcp' });
-    expect(rowOf('mcp__forge__agents__list')).toEqual({ kind: 'mcp' });
+    expect(rowOf('mcp__otherserver__thing')).toEqual({ kind: 'mcp' });
   });
 
   it('gives the systemone decisions their own row and fork', () => {
@@ -38,10 +38,21 @@ describe('the row a call is summarised under', () => {
     }
   });
 
-  it('keeps every other forge tool on the mcp row', () => {
-    expect(rowOf('mcp__forge__cron__create')).toEqual({ kind: 'mcp' });
-    expect(iconOf(rowOf('mcp__forge__cron__create'))).toBe('mcp');
-    // The class is the three names, not the server prefix: a future
+  it('keys a forge family tool to its own family and glyph', () => {
+    // The family is the first segment under the server, read by name rather
+    // than listed: a family the server grows arrives here by being called.
+    for (const [name, family, glyph] of [
+      ['mcp__forge__tasks__update', 'tasks', 'tasks'],
+      ['mcp__forge__cron__create', 'cron', 'schedules'],
+      ['mcp__forge__gotify__subscribe', 'gotify', 'gotify'],
+      ['mcp__forge__slack__post', 'slack', 'slack'],
+      ['mcp__forge__review__reply', 'review', 'review'],
+      ['mcp__forge__agents__spawn', 'agents', 'subagents'],
+    ] as const) {
+      expect(rowOf(name), `${name} is a forge family call`).toEqual({ kind: 'forge', family });
+      expect(iconOf(rowOf(name)), `${name} draws its family glyph`).toBe(glyph);
+    }
+    // The class is the three decision names, not the server prefix: a future
     // `systemone__*` tool that is not one of the decisions stays an mcp row.
     expect(rowOf('mcp__forge__systemone__something_else')).toEqual({ kind: 'mcp' });
   });
@@ -54,7 +65,7 @@ describe('the row a call is summarised under', () => {
   it('names the sprite each row draws', () => {
     expect(iconOf(rowOf('Read'))).toBe('read');
     expect(iconOf(rowOf('Edit'))).toBe('edit');
-    expect(iconOf(rowOf('mcp__forge__agents__list'))).toBe('mcp');
+    expect(iconOf(rowOf('mcp__playwright__browser_click'))).toBe('mcp');
     expect(iconOf(rowOf('brand_new_tool'))).toBe('tool');
     // Three families draw a symbol of a nearer name than their own: the boxed
     // terminal, the settings gear and the git branch - the family words name

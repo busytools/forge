@@ -25,6 +25,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { cronNames } from '../chat/cron-names.svelte';
 import { slotOf, subjectKey, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -420,11 +421,19 @@ function createSeat(
       // seat waking up, connecting, or taking a new occupant. What they carry
       // is not a record - the seat's own session facts and the folded
       // transcript - so only a read answers them.
-      const [name] = variantOf(message.update);
+      const [name, payload] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
         seat.replaceWanted = true;
         reread();
         return;
+      }
+
+      // A fired cron's schedule reaches no field of this record: the row's
+      // prose carries the prompt, and the pairing lives on the frame alone.
+      // Kept before the record's own early return, because this update is one
+      // the record has nothing to say about.
+      if (name === 'cron_prompt_appended') {
+        cronNames.remember(payload['uuid'], payload['description']);
       }
 
       // Nothing to apply to yet: the first read has not landed, and the frames
