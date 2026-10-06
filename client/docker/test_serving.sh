@@ -22,7 +22,10 @@ printf '%s' "$manifest" > "$served/latest.json"
 container=""
 cleanup() {
     [ -n "$container" ] && docker stop "$container" > /dev/null 2>&1 || true
-    rm -rf "$served"
+    # The container wrote into the volume as uid 101, so the runner outside
+    # may not be able to remove it; a plain `rm` first keeps a local run
+    # from needing sudo at all.
+    rm -rf "$served" 2> /dev/null || sudo rm -rf "$served" 2> /dev/null || true
 }
 trap cleanup EXIT
 
