@@ -1791,7 +1791,7 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         // The transport does not read a transcript, so the seat's
@@ -1905,7 +1905,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -1953,7 +1953,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -1995,7 +1995,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2023,7 +2023,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2078,7 +2078,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         fleet
@@ -2145,7 +2145,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2183,7 +2183,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2227,7 +2227,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2280,7 +2280,7 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2325,7 +2325,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2405,7 +2405,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2536,7 +2536,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2601,7 +2601,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2636,7 +2636,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2662,7 +2662,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2690,7 +2690,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2764,7 +2764,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -2828,7 +2828,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 

@@ -334,8 +334,8 @@ sprite stops being dead weight.
 - `src/assets/` - `web.css` and `sprite.svg`, taken from `crates/forge-web`
   before that crate is deleted. The fonts live in `public/fonts/`.
 
-`forge.toml` is the server's, and the client never reads it: `[web] mark`,
-`[web] theme` and `[web] font` arrive in the greeting. `ClientSettings`
+`forge.toml` is the server's, and the client never reads it: `[client] mark`,
+`[client] theme` and `[client] font` arrive in the greeting. `ClientSettings`
 carries a name for each, not a value.
 
 ## Every cell the server's home draws

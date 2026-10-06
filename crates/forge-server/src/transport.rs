@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::{Message, SessionSlot, WebConfig};
+use forge_primitives::{ClientConfig, Message, SessionSlot};
 use tokio::net::TcpListener;
 
 use crate::SessionUpdate;
@@ -80,8 +80,7 @@ pub const PROTOCOL_VERSION: u32 = 6;
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
 /// the stream has seeded, the live state a late subscriber cannot
-/// reconstruct for itself, and the configuration the greeting carries the
-/// client's half of.
+/// reconstruct for itself, and the `[client]` settings the greeting carries.
 ///
 /// The conversations are here rather than on the surface because they are
 /// the TRANSPORT's: they exist so this socket stops reading a whole
@@ -92,38 +91,12 @@ pub struct TransportState {
     pub work: Arc<WorkCache>,
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
-    pub config: WebConfig,
+    pub client: ClientConfig,
     /// The browser relay the core owns: a capable connection registers into
-    /// it, and the browser tools ask through it. Passed in rather than built
-    /// here, because it has to be the SAME relay the sessions' tool handlers
-    /// hold - see [`Workspace::browser_relay`](forge_workspace::Workspace::browser_relay).
+    /// it, and the browser tools ask through it. Carried in rather than built
+    /// on the spot, because it has to be the SAME relay the sessions' tool
+    /// handlers hold - see [`Workspace::browser_relay`](forge_workspace::Workspace::browser_relay).
     pub browser: Arc<forge_workspace::browser::BrowserRelay>,
-}
-
-impl TransportState {
-    /// The state a running forge serves its socket from, derived from the
-    /// core it is a view of.
-    ///
-    /// **One place, so the pieces cannot drift apart.** Every field here is
-    /// something the socket needs that the workspace owns or that is the
-    /// transport's own: the browser relay above all, which has to be the SAME
-    /// relay the sessions' browser tools ask through - a transport holding a
-    /// relay of its own would register a host into a role nothing routes to,
-    /// and every browser tool would answer "no browser-capable client
-    /// connected" while a client sat attached.
-    pub fn for_workspace(workspace: &Arc<forge_workspace::Workspace>, config: WebConfig) -> Self {
-        Self {
-            surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
-            work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(conversation::Conversations::new()),
-            // The process is another viewer of the same seats, so the
-            // attachment count has to see it: a turn finishing on a seat this
-            // process shows is one the reader watched.
-            live: Mutex::new(Live::new()),
-            config,
-            browser: workspace.browser_relay(),
-        }
-    }
 }
 
 /// Serve the socket on `listener` until the process ends.

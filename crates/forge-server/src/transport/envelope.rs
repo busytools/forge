@@ -6,7 +6,7 @@
 //! adding a variant is compatible and renaming one is not.
 
 use forge_primitives::browser::BrowserPart;
-use forge_primitives::{SessionSlot, WebConfig};
+use forge_primitives::{ClientConfig, SessionSlot};
 use forge_workspace::DictateAxes;
 use serde::{Deserialize, Serialize};
 
@@ -251,10 +251,10 @@ pub enum ServerMessage {
 
 /// What the client draws with, from `forge.toml` by way of the server.
 ///
-/// The client never reads the config file: `[web] mark`, `[web] theme` and
-/// `[web] font` arrive here, and `None` on any of them means the built-in
-/// rather than a pinned value - a commented line in a hand-authored file has
-/// to mean "unset".
+/// The client never reads the config file: `[client] mark`, `[client] theme`
+/// and `[client] font` arrive here, and `None` on any of them means the
+/// built-in rather than a pinned value - a commented line in a hand-authored
+/// file has to mean "unset".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ClientSettings {
@@ -269,13 +269,13 @@ pub struct ClientSettings {
 }
 
 impl ClientSettings {
-    /// The client's settings: the `[web]` keys off the config, and the
+    /// The client's settings: the `[client]` keys off the config, and the
     /// axes the workspace resolved.
-    pub fn new(config: &WebConfig, dictate: DictateAxes) -> Self {
+    pub fn new(client: &ClientConfig, dictate: DictateAxes) -> Self {
         Self {
-            mark: config.mark.clone(),
-            theme: config.theme.clone(),
-            font: config.font.clone(),
+            mark: client.mark.clone(),
+            theme: client.theme.clone(),
+            font: client.font.clone(),
             dictate,
         }
     }
@@ -565,14 +565,11 @@ mod tests {
 
     /// The client's settings come off the server's own config, so the
     /// client never reads `forge.toml` and the two cannot drift - the
-    /// `[web]` keys off it directly, and the `[dictate]` axes as the
+    /// `[client]` keys off it directly, and the `[dictate]` axes as the
     /// workspace resolved them.
     #[test]
     fn the_client_settings_are_the_configs_view_settings() {
-        let config = WebConfig {
-            enabled: false,
-            port: 9,
-            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        let config = ClientConfig {
             mark: Some("strike".to_owned()),
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),

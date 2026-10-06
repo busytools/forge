@@ -73,22 +73,28 @@ pub enum WorkspaceError {
     GatewayRotationInvalid { path: PathBuf, key: &'static str },
 
     #[error(
-        "web port 0 in forge.toml at {} is not usable; the web view needs a port a browser can be pointed at",
+        "server port 0 in forge.toml at {} is not usable; the socket needs a port a client can be pointed at",
         path.display()
     )]
-    WebPortInvalid { path: PathBuf },
+    ServerPortInvalid { path: PathBuf },
 
     #[error(
-        "web port {port} in forge.toml at {} is the port the gateway binds; the two listeners need a port each",
+        "server port {port} in forge.toml at {} is the port the gateway binds; the two listeners need a port each",
         path.display()
     )]
-    WebPortTakenByGateway { path: PathBuf, port: u16 },
+    ServerPortTakenByGateway { path: PathBuf, port: u16 },
 
     #[error(
-        "web {key} = \"{value}\" in forge.toml at {} names nothing forge ships; this key picks by name, never by path",
+        "client {key} = \"{value}\" in forge.toml at {} names nothing forge ships; this key picks by name, never by path",
         path.display()
     )]
-    WebNameUnknown { path: PathBuf, key: &'static str, value: String },
+    ClientNameUnknown { path: PathBuf, key: &'static str, value: String },
+
+    #[error(
+        "[web] was renamed in forge.toml at {}: its listener keys (enabled, port, bind) are [server]'s and its drawing keys (mark, theme, font) are [client]'s",
+        path.display()
+    )]
+    WebSectionRenamed { path: PathBuf },
 
     #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",

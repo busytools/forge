@@ -49,14 +49,16 @@ async fn a_server() -> (String, Fleet) {
 /// on a seat nothing has seeded and get the empty one.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    // Built the way a running forge builds it: the same constructor the
-    // binary calls, so what these tests exercise is the boot's own wiring -
-    // the browser relay included, which a hand-built state could quietly get
-    // from somewhere else.
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::WebConfig::default(),
-    ));
+    let state = Arc::new(TransportState {
+        surface: fleet.surface(),
+        work: Arc::new(WorkCache::new()),
+        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
+        live: Mutex::new(Live::new()),
+        client: forge_primitives::ClientConfig::default(),
+        // The workspace's own relay, not a fresh one: a state holding its own
+        // would register hosts into a role nothing routes to.
+        browser: fleet.workspace().browser_relay(),
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -2108,8 +2110,8 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
         work: Arc::new(WorkCache::new()),
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
-        browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        client: forge_primitives::ClientConfig::default(),
+        browser: fleet.workspace().browser_relay(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -3837,7 +3839,8 @@ async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
 
 /// **The relay the transport registers into is the one the WORKSPACE hands
 /// out.** The ask here is made through `workspace.browser_relay()`, while the
-/// connection took its role through the state `for_workspace` built - so this
+/// connection took its role through the state the server fixture built - so
+/// this
 /// passes only if those are one relay. A state holding a relay of its own
 /// would register a host nothing routes to, and every browser tool would
 /// answer "no browser-capable client connected" with a client attached.

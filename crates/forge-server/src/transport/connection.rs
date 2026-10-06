@@ -172,7 +172,7 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
         version: PROTOCOL_VERSION,
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
-        settings: ClientSettings::new(&state.config, state.surface.dictate_axes()),
+        settings: ClientSettings::new(&state.client, state.surface.dictate_axes()),
     };
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
@@ -1572,7 +1572,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -1606,7 +1606,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
@@ -1905,7 +1905,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -2041,7 +2041,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -2099,7 +2099,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -2171,7 +2171,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");

@@ -1,6 +1,6 @@
 # The socket
 
-forge serves one WebSocket, at `/socket` on the address `[web]`
+forge serves one WebSocket, at `/socket` on the address `[server]`
 `bind`:`port` names. It is served from the process that already owns the
 sessions, so a client costs a listener rather than a second scheduler, a
 second cron store or a second set of connectors.
@@ -56,7 +56,7 @@ greeting is the only channel both halves are guaranteed to have: a client
 that refuses a protocol never receives a snapshot, so a skew that could
 name only a number would name nothing a person can act on.
 
-`settings` is three of `forge.toml`'s `[web]` keys - `mark`, `theme` and
+`settings` is three of `forge.toml`'s `[client]` keys - `mark`, `theme` and
 `font` - which are a client's settings rather than this server's. They
 arrive on connect so a client is configured before it draws anything and
 never reads `forge.toml` itself, which keeps the file the one source of

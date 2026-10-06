@@ -49,6 +49,7 @@
 pub mod account;
 pub mod background;
 pub mod browser;
+pub mod client;
 pub mod cloud;
 pub mod command;
 pub mod content;
@@ -72,6 +73,7 @@ pub mod public_types;
 pub mod question;
 pub mod review;
 pub mod runtime;
+pub mod server;
 pub mod session_meta;
 pub mod session_slot;
 pub mod session_update;
@@ -81,9 +83,9 @@ pub mod tasks;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
-pub mod web;
 pub mod workers;
 
+pub use client::ClientConfig;
 pub use command::AgentCommand;
 pub use content::ContentBlock;
 pub use cron::{CronEntry, CronId, CronKind};
@@ -137,6 +139,7 @@ pub use runtime::{
     MonitorStatus, RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus,
     SessionTurnState, SettingsParseErrorUpdate, TerminalReason,
 };
+pub use server::{DEFAULT_SERVER_PORT, ServerConfig};
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_slot::SessionSlot;
 pub use session_update::{
@@ -146,5 +149,4 @@ pub use session_update::{
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use tasks::{Task, TaskId, TaskStatus};
 pub use turn_error::TurnErrorClass;
-pub use web::{DEFAULT_WEB_PORT, WebConfig};
 pub use workers::{FORGE_WORKER_TAG_PREFIX, LEAD_LABEL, WorkerLiveness, WorkerStatus, worker_tag};

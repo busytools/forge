@@ -111,7 +111,7 @@
             going to look at their network.
           -->
           <p class="h">
-            Nothing answered there. If forge is running, check that <code>[web] enabled</code> is
+            Nothing answered there. If forge is running, check that <code>[server] enabled</code> is
             not set to <code>false</code> in <code>forge.toml</code> - a forge whose owner turned the
             socket off refuses in silence, with nothing wrong at either end.
           </p>

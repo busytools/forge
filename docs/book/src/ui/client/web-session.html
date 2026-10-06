@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; session</title>
 <!-- For the design artifact only: production vendors the woff2 into
-     forge-web/assets and picks it by name from [web] font. -->
+     forge-web/assets and picks it by name from [client] font. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* One theme, the home's tokens, from [web] theme in forge.toml.
+  /* One theme, the home's tokens, from [client] theme in forge.toml.
      Shared with the home, so these lift into the one stylesheet as-is:
      the --tokens, .dot (all nine state marks), .ring (the work mark),
      .kv, .bar (a usage bar).
@@ -58,6 +58,61 @@
   }
 
   html, body { height: 100%; }
+  /* ---------- one scrollbar skin for every scroller on the page ----------
+     The root viewport (the home page scrolls the document), the rail, the
+     chat, the autocomplete, the segment list, the dictation popover and both
+     text fields. One rule set, so a new scroller inherits it; the parts do
+     not take the element's own cursor, and the thumb brightens on hover and
+     again while dragged. */
+  html::-webkit-scrollbar,
+  .rail .scroll::-webkit-scrollbar,
+  .conv::-webkit-scrollbar,
+  .ac .rows::-webkit-scrollbar,
+  .sg-list::-webkit-scrollbar,
+  .pop::-webkit-scrollbar,
+  .box textarea::-webkit-scrollbar,
+  .dock .notes::-webkit-scrollbar { width: 8px; cursor: pointer; }
+  html::-webkit-scrollbar-track,
+  .rail .scroll::-webkit-scrollbar-track,
+  .conv::-webkit-scrollbar-track,
+  .ac .rows::-webkit-scrollbar-track,
+  .sg-list::-webkit-scrollbar-track,
+  .pop::-webkit-scrollbar-track,
+  .box textarea::-webkit-scrollbar-track,
+  .dock .notes::-webkit-scrollbar-track { background: transparent; cursor: pointer; }
+  html::-webkit-scrollbar-corner,
+  .rail .scroll::-webkit-scrollbar-corner,
+  .conv::-webkit-scrollbar-corner,
+  .ac .rows::-webkit-scrollbar-corner,
+  .sg-list::-webkit-scrollbar-corner,
+  .pop::-webkit-scrollbar-corner,
+  .box textarea::-webkit-scrollbar-corner,
+  .dock .notes::-webkit-scrollbar-corner { background: transparent; cursor: pointer; }
+  html::-webkit-scrollbar-thumb,
+  .rail .scroll::-webkit-scrollbar-thumb,
+  .conv::-webkit-scrollbar-thumb,
+  .ac .rows::-webkit-scrollbar-thumb,
+  .sg-list::-webkit-scrollbar-thumb,
+  .pop::-webkit-scrollbar-thumb,
+  .box textarea::-webkit-scrollbar-thumb,
+  .dock .notes::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px;
+    cursor: pointer; }
+  html::-webkit-scrollbar-thumb:hover,
+  .rail .scroll::-webkit-scrollbar-thumb:hover,
+  .conv::-webkit-scrollbar-thumb:hover,
+  .ac .rows::-webkit-scrollbar-thumb:hover,
+  .sg-list::-webkit-scrollbar-thumb:hover,
+  .pop::-webkit-scrollbar-thumb:hover,
+  .box textarea::-webkit-scrollbar-thumb:hover,
+  .dock .notes::-webkit-scrollbar-thumb:hover { background: var(--line); }
+  html::-webkit-scrollbar-thumb:active,
+  .rail .scroll::-webkit-scrollbar-thumb:active,
+  .conv::-webkit-scrollbar-thumb:active,
+  .ac .rows::-webkit-scrollbar-thumb:active,
+  .sg-list::-webkit-scrollbar-thumb:active,
+  .pop::-webkit-scrollbar-thumb:active,
+  .box textarea::-webkit-scrollbar-thumb:active,
+  .dock .notes::-webkit-scrollbar-thumb:active { background: var(--muted); }
   body {
     background:
       radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
@@ -77,7 +132,7 @@
   .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block;
     position: relative; top: -1px; }
   /* One chevron, turned by the open state, on every disclosure on the page. */
-  .arw { transition: transform .12s ease; }
+  .arw { transition: transform .12s ease, opacity .12s ease; opacity: 0; }
   details[open] > summary .arw { transform: rotate(90deg); }
   .dim { color: var(--dim); }
 
@@ -130,9 +185,7 @@
   /* An appearing scrollbar must not shift the layout under the pointer. */
   .rail .scroll { overflow-y: auto; flex: 1; padding: 0 8px 12px;
     scrollbar-gutter: stable; }
-  .rail .scroll::-webkit-scrollbar { width: 8px; }
-  .rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-  .rail .scroll::-webkit-scrollbar-track { background: transparent; }
+
   .banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
   .banner .t { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--accent); }
@@ -182,8 +235,23 @@
   .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
-    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer; }
-  .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer;
+    opacity: 0; pointer-events: none; }
+  /* The chip arrives with the pointer, like the chevron: a column of rail rows
+     carries no close marks it does not need. **Instant, not a fade**: crossing
+     rows leaves two fading chips on screen at once, which reads as a fragment
+     appearing and vanishing. **And it takes no pointer at rest** - opacity does
+     not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
+     would otherwise land on a chip nobody can see; the row's hover restores it
+     (the chip cannot restore it itself, `none` means it never hovers), as does
+     focus, and a touch-primary screen keeps it shown. `.banner .close` is
+     deliberately not one of these: it is the way out of a covering rail. */
+  .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
+    pointer-events: auto; }
+  .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
+  @media (hover: none) {
+    .pr .x, .wk .x { opacity: 1; pointer-events: auto; }
+  }
   /* The seat the page is showing, marked on its own row and nowhere else: the
      name takes the accent and the mark is recoloured rather than reshaped. Only
      the two marks drawn in a border take it, and the running ring's ARC is left
@@ -340,9 +408,7 @@
      fit a descender under a line of monospace. */
   .conv { overflow-y: auto; flex: 1; padding: 2px 8px 0 0; scrollbar-gutter: stable;
     line-height: 1.35; }
-  .conv::-webkit-scrollbar { width: 8px; }
-  .conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-  .conv::-webkit-scrollbar-track { background: transparent; }
+
   /* One blank line between blocks, the terminal's whole spacing policy, read
      the same on both sides of a work block: the turn's margin and the block's
      own padding add up to about a line each way, where the trailing padding
@@ -462,7 +528,11 @@
      prose tone rather than the row's own muting, so a mark reads as a mark. */
   details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
   details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-  details.leaf:hover > summary .arw { color: var(--muted); }
+  /* A thought's expansion is reasoning, not the turn's own words: it reads as a
+     quiet block off the column - a hairline and the muted tone - instead of
+     more prose. Both folds draw through this one row. */
+  details.leaf.think > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+  details.leaf.think > .body .prose { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
@@ -1072,6 +1142,20 @@
     .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
     .sess > .more > summary { min-width: 44px; }
   }
+
+  /* ---------- the chevron arrives with the pointer ----------
+     Hidden at rest, so a column of rows carries no marks it does not need;
+     under the pointer it shows in the muted tone - the hover colour these
+     rows always had - and an open row keeps it: the accent, which the
+     surface rules above already set. A touch screen has no pointer to arrive
+     with, so there it rests faintly visible instead: the chevron is the one
+     thing that says a row opens. These rules sit last so the hover tone lands
+     over the per-surface resting colours. */
+  details > summary:hover .arw { opacity: 1; color: var(--muted); }
+  details[open] > summary .arw { opacity: 1; }
+  @media (hover: none) {
+    .arw { opacity: 1; color: var(--dim); }
+  }
 </style>
 </head>
 <body>
@@ -1172,9 +1256,9 @@
           <summary class="wk"><span class="dot off"></span>
             <span class="nm">2 asleep</span><span class="arw">&#9656;</span></summary>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">chat-kinds</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">chat-kinds</span></div>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">rail-footer</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">rail-footer</span></div>
         </details>
       </div>
       <div class="pj">
@@ -1376,7 +1460,7 @@ Set `service_key` per environment in the bot's own config.</pre>
              drawn from the live frames, so it goes at the next page read,
              which strips thinking blocks. -->
         <div class="leaves">
-          <details class="leaf">
+          <details class="leaf think">
             <summary><svg class="ic gl"><use href="#i-message-circle-more"/></svg>
               <span class="tn">one group Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>

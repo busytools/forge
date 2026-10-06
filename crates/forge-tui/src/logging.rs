@@ -439,7 +439,7 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
-        // The web view's `enabled = false` record is a `debug` on
+        // The `[server] enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.lifecycle=debug"));

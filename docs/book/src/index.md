@@ -14,7 +14,7 @@ three things sharing a repository:
   control-request dispatch, and an in-process MCP host.
 - **A socket for another view.** forge serves one WebSocket from the
   process the TUI runs in, on `127.0.0.1` by default, so reaching it
-  from another machine is a `[web] bind` line rather than a second
+  from another machine is a `[server] bind` line rather than a second
   forge. A client subscribes to a subject - the home, a session, the
   token/cost pool - is answered with that subject in full and then with
   the updates that change it (`usage` is the exception: it is a scan, and

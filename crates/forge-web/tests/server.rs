@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use forge_primitives::McpServerStatus;
 use forge_primitives::{
-    CurrentModel, EffortLevel, MonitorRecord, MonitorStatus, PermissionMode, SessionSlot, WebConfig,
+    ClientConfig, CurrentModel, EffortLevel, MonitorRecord, MonitorStatus, PermissionMode,
+    ServerConfig, SessionSlot,
 };
 use forge_server::SessionUpdate;
 use forge_server::surface::inspector::{ContextUsage, McpServers, ProcessEntry, ProcessSnapshot};
@@ -42,26 +43,32 @@ fn fleet(dir: &Path) -> Fleet {
     fleet
 }
 
-async fn start(bind: IpAddr, surface: Arc<ViewSurface>) -> (SocketAddr, WebConfig) {
-    start_on_a_free_port_with(bind, surface, std::convert::identity).await
+async fn start(bind: IpAddr, surface: Arc<ViewSurface>) -> (SocketAddr, ServerConfig) {
+    let (bound, server, _client) =
+        start_on_a_free_port_with(bind, surface, |server, client| (server, client)).await;
+    (bound, server)
 }
 
-/// [`start`] with the config adjusted before it is handed over, so a test
-/// can set a key without giving up the retry.
+/// [`start`] with the configs adjusted before they are handed over, so a
+/// test can set a key without giving up the retry.
 async fn start_on_a_free_port_with(
     bind: IpAddr,
     surface: Arc<ViewSurface>,
-    adjust: impl Fn(WebConfig) -> WebConfig,
-) -> (SocketAddr, WebConfig) {
+    adjust: impl Fn(ServerConfig, ClientConfig) -> (ServerConfig, ClientConfig),
+) -> (SocketAddr, ServerConfig, ClientConfig) {
     for _ in 0..8 {
-        let config = adjust(WebConfig { port: free_port(), bind, ..WebConfig::default() });
+        let (server, client) = adjust(
+            ServerConfig { port: free_port(), bind, ..ServerConfig::default() },
+            ClientConfig::default(),
+        );
         let state = WebState::new(
             Arc::clone(&surface),
             Arc::new(forge_web::WorkCache::new()),
-            config.clone(),
+            server.clone(),
+            client.clone(),
         );
         match forge_web::start(state).await {
-            Ok(Some(bound)) => return (bound, config),
+            Ok(Some(bound)) => return (bound, server, client),
             Ok(None) => panic!("an enabled config must not come back disabled"),
             // A stolen probe port: take another and try again.
             Err(_) => {}
@@ -71,14 +78,14 @@ async fn start_on_a_free_port_with(
 }
 
 /// Open the page's stream, which stays open.
-async fn open_stream(config: &WebConfig) -> reqwest::Response {
-    open_stream_at(config, "/events").await
+async fn open_stream(server: &ServerConfig) -> reqwest::Response {
+    open_stream_at(server, "/events").await
 }
 
 /// [`open_stream`] for a stream that is not the fleet's: a session page has
 /// one of its own.
-async fn open_stream_at(config: &WebConfig, path: &str) -> reqwest::Response {
-    let url = format!("http://127.0.0.1:{}{path}", config.port);
+async fn open_stream_at(server: &ServerConfig, path: &str) -> reqwest::Response {
+    let url = format!("http://127.0.0.1:{}{path}", server.port);
     let response = tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(url))
         .await
         .expect("the stream opens within five seconds")
@@ -125,9 +132,9 @@ async fn read_until(
     seen
 }
 
-async fn get(config: &WebConfig, path: &str) -> (reqwest::StatusCode, String, String) {
+async fn get(server: &ServerConfig, path: &str) -> (reqwest::StatusCode, String, String) {
     let response =
-        reqwest::get(format!("http://127.0.0.1:{}{path}", config.port)).await.expect("served");
+        reqwest::get(format!("http://127.0.0.1:{}{path}", server.port)).await.expect("served");
     let status = response.status();
     let content_type = response
         .headers()
@@ -537,7 +544,7 @@ async fn the_pages_serve_the_one_stylesheet() {
     assert!(body.contains(".rail"), "and the session page's rail: {body}");
 }
 
-/// The mark a browser tab carries comes from `[web] mark`, so a mark
+/// The mark a browser tab carries comes from `[client] mark`, so a mark
 /// chosen in `forge.toml` is the one on the tab. Catches a route that
 /// hardcodes the built-in, and one that serves the mark without a type a
 /// browser will draw.
@@ -545,12 +552,12 @@ async fn the_pages_serve_the_one_stylesheet() {
 async fn the_favicon_serves_the_configured_mark_in_the_palette() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
-    let (_bound, config) = start_on_a_free_port_with(
+    let (_bound, config, _client) = start_on_a_free_port_with(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         fleet.surface(),
-        |mut config| {
-            config.mark = Some("lanes".to_owned());
-            config
+        |server, mut client| {
+            client.mark = Some("lanes".to_owned());
+            (server, client)
         },
     )
     .await;
@@ -2749,8 +2756,14 @@ async fn a_taken_port_is_an_error() {
     let fleet = fleet(dir.path());
     let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = holder.local_addr().expect("the held address").port();
-    let config = WebConfig { port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), ..WebConfig::default() };
-    let state = WebState::new(fleet.surface(), Arc::new(forge_web::WorkCache::new()), config);
+    let server =
+        ServerConfig { port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), ..ServerConfig::default() };
+    let state = WebState::new(
+        fleet.surface(),
+        Arc::new(forge_web::WorkCache::new()),
+        server,
+        ClientConfig::default(),
+    );
 
     let error = forge_web::start(state).await.expect_err("a taken port must not pass as bound");
 
@@ -2773,12 +2786,8 @@ async fn disabled_binds_nothing() {
     let state = WebState::new(
         fleet.surface(),
         Arc::new(forge_web::WorkCache::new()),
-        WebConfig {
-            enabled: false,
-            port,
-            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            ..WebConfig::default()
-        },
+        ServerConfig { enabled: false, port, bind: IpAddr::V4(Ipv4Addr::LOCALHOST) },
+        ClientConfig::default(),
     );
 
     let bound = forge_web::start(state).await.expect("turning it off is not an error");
@@ -3649,17 +3658,21 @@ async fn the_page_draws_with_the_built_in_face() {
     assert!(!declared.contains("--mono:"), "neither one: {sheet}");
 }
 
-/// `[web] font = "system"` is the opt-out: the same page draws the OS
+/// `[client] font = "system"` is the opt-out: the same page draws the OS
 /// stacks instead, which is the whole of what the key selects.
 #[tokio::test]
 async fn the_font_key_opts_out_to_the_system_stack() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = fleet(dir.path());
-    let (_bound, config) =
-        start_on_a_free_port_with(IpAddr::V4(Ipv4Addr::LOCALHOST), fleet.surface(), |config| {
-            WebConfig { font: Some("system".to_owned()), ..config }
-        })
-        .await;
+    let (_bound, config, _client) = start_on_a_free_port_with(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        fleet.surface(),
+        |server, mut client| {
+            client.font = Some("system".to_owned());
+            (server, client)
+        },
+    )
+    .await;
 
     let (_status, _content_type, page) = get(&config, "/").await;
 
@@ -3747,10 +3760,10 @@ fn encode_query(value: &str) -> String {
 
 /// A draft the browser has typed is a query parameter, so what the box
 /// does with it is a real request rather than a claim about markup.
-async fn composer(config: &WebConfig, draft: &str) -> (reqwest::StatusCode, String) {
+async fn composer(server: &ServerConfig, draft: &str) -> (reqwest::StatusCode, String) {
     let url = format!(
         "http://127.0.0.1:{}/session/Busytools/forge/lead/composer?draft={}",
-        config.port,
+        server.port,
         encode_query(draft),
     );
     let response = reqwest::get(url).await.expect("served");
@@ -4855,9 +4868,9 @@ async fn the_meter_window_fills_its_slot() {
 // ---------- the composer: the write half ----------
 
 /// Posting a form to a session's route, the way a control does.
-async fn post(config: &WebConfig, path: &str, body: &str) -> (reqwest::StatusCode, String) {
+async fn post(server: &ServerConfig, path: &str, body: &str) -> (reqwest::StatusCode, String) {
     let response = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{}{path}", config.port))
+        .post(format!("http://127.0.0.1:{}{path}", server.port))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(body.to_owned())
         .send()
