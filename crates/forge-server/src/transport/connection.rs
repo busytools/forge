@@ -347,8 +347,11 @@ async fn handle_client(
                     // A seat subscription is also this connection SHOWING the
                     // seat, which is what keeps a turn finishing on it from
                     // arming a mark nobody needs: the reader is looking at it.
-                    let attaching = matches!(&what, Subject::Session(_));
-                    if let Subject::Session(slot) = &what {
+                    let seat = match &what {
+                        Subject::Session(slot) => Some(slot.clone()),
+                        _ => None,
+                    };
+                    if let Some(slot) = &seat {
                         Live::lock(&state.live).attach(slot);
                     }
                     watched.push(what.clone());
@@ -358,15 +361,26 @@ async fn handle_client(
                     // that already holds the home gets a fresh one as part of
                     // the attach, rather than keeping a spent mark until the
                     // next unrelated redraw, which can be half a minute away.
-                    if attaching
+                    if let Some(slot) = &seat
                         && watched.iter().any(|held| matches!(held, Subject::Home))
-                        && let Ok(home) = encode_subject(state, &Subject::Home).await
                     {
-                        send(
-                            socket,
-                            ServerMessage::Snapshot { subject: Subject::Home, data: home },
-                        )
-                        .await?;
+                        match encode_subject(state, &Subject::Home).await {
+                            Ok(home) => {
+                                send(
+                                    socket,
+                                    ServerMessage::Snapshot { subject: Subject::Home, data: home },
+                                )
+                                .await?;
+                            }
+                            // Not worth dropping the connection for: the next
+                            // redraw carries the same news. The breadcrumb is
+                            // for a mark that reads spent until then.
+                            Err(error) => tracing::debug!(
+                                slot = %slot.display(),
+                                %error,
+                                "the home refresh after a seat attach could not be encoded",
+                            ),
+                        }
                     }
                     Ok(())
                 }

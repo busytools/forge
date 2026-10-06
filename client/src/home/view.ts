@@ -157,16 +157,17 @@ export interface HomeView {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * Two promotions the core does not make, both about what the mark means: a
- * backgrounded task is work even after the turn that started it settled, and
- * a turn that finished while this view was not showing the seat is the one
- * state that answers "what changed while I was away". Neither is computed
- * here - `has_background_work` and `unseen` both cross on the snapshot.
+ * Three promotions the core does not make, all about what the mark means: a
+ * backgrounded task is work even after the turn that started it settled, a
+ * turn that finished while this view was not showing the seat answers "what
+ * changed while I was away", and a failed turn the view has not been shown
+ * since is the one state the reader has to act on. None is computed here -
+ * `has_background_work`, `unseen` and `failed_turn` all cross on the
+ * snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
-  // The failure outranks every other promotion: it is the one state the
-  // reader has to act on, and the terminal orders it over the spinner and
-  // the diamond both. The wire leaves it set only until the seat is shown.
+  // The failure outranks every other promotion, and the terminal orders it
+  // over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
