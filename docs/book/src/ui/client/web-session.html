@@ -813,6 +813,11 @@
     border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+  /* The status depth under a server row: the tools it offers and what backs
+     it, wrapping rather than eliding. */
+  .sg-sub { padding: 0 13px 7px 26px; font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--muted); overflow-wrap: anywhere; }
+  .sg-sub.bad { color: var(--bad); }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -2439,6 +2444,28 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-slack"/></svg>
               3 subscriptions</button>
           </span>
+          <!-- The schedules row, fourth: the PROJECT's crons with their
+               countdowns - every seat of the project reads the same set, the
+               rows are inert, and the inspector has no schedules section any
+               more. A row leading with a long key elides (the sheet's own
+               `.nm.lead`), so a sentence-length description never buries the
+               countdown. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-schedules"/></svg>
+              2 schedules</button>
+          </span>
+          <!-- The MCP row, fifth: this SESSION's servers, the count in the
+               toggle. The open list carries the status depth the inspector's
+               section used to hold - each server's tools, the command or URL
+               backing it, a failure's reason - and the run-a-command page
+               hangs off these rows later. The inspector has no mcp servers
+               section any more. Drawn CLOSED here, like its siblings. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-mcp"/></svg>
+              3 servers</button>
+          </span>
           </span>
         </div>
       </div>
@@ -2636,32 +2663,6 @@ branch main, nothing to commit</div>
           <div class="tk done"><span class="b"></span><span>
             <div class="s">Merge, release and install the layout pass</div>
             <div class="meta"><b>lead</b> &#183; completed 24m ago</div></span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-schedules"/></svg> schedules
-          <span class="c2">4</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">weekly bench</span>
-            <span class="v">Sat 10:30 &#183; recurring</span></div>
-          <div class="kv"><span class="k">deps sweep</span>
-            <span class="v">10:23 on the 3rd &#183; recurring</span></div>
-          <div class="kv"><span class="k">rules sweep</span>
-            <span class="v">10:00 on the 1st, 15th</span></div>
-          <div class="kv"><span class="k">plugin audit</span>
-            <span class="v">in 27d &#183; one-shot</span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-mcp"/></svg> mcp servers
-          <span class="c2">2</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
-          <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
         </div>
       </details>
 

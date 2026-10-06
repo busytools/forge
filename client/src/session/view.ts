@@ -132,18 +132,21 @@ export interface TaskRow {
   meta: string;
 }
 
-/** One schedule as its row draws it. */
-export interface ScheduleRow {
+/** One MCP server, as the strip's row draws it. */
+export interface McpRow {
+  /** The server's name, which is what a row is keyed by. */
+  name: string;
+  /** The line the row leads with: the name, and the scope it is configured in. */
   k: string;
+  /** What the row says beside it: tool count, or why it is not up. */
   v: string;
-}
-
-/** The MCP section, as its rows draw it. */
-export interface McpView {
-  summary: string;
-  rows: Kv[];
-  /** Why the read failed, when it did: an empty list alone cannot say. */
-  error: string | null;
+  /** The tools the server offers when it is connected, as its status depth. */
+  tools: { name: string; description: string | null }[];
+  /** What backs a subprocess-backed server, when its config names one: the
+   *  command it runs, or the URL it reaches. */
+  command: string | null;
+  /** The failure reason a Failed read carries, shown as the detail line. */
+  reason: string | null;
 }
 
 /**
@@ -775,24 +778,43 @@ function taskMeta(task: Task): string {
   return parts.join(' \u{b7} ');
 }
 
-/** The schedules section: the crons that fire into this project, and when. */
-export function schedulesSection(
-  crons: CronEntry[],
-  now: number,
-): { summary: string; rows: ScheduleRow[] } {
-  return {
-    summary: `${crons.length}`,
-    rows: crons.map((cron) => ({
-      k: cronLabel(cron),
-      v: `${untilOf(cron.next_fire, now)} \u{b7} ${kindOf(cron.kind)}`,
-    })),
-  };
-}
-
 /** What a schedule is called: its own description, else the prompt's first line. */
 function cronLabel(cron: CronEntry): string {
   if (cron.description !== undefined && cron.description !== '') return cron.description;
   return cron.prompt.split('\n')[0] ?? '';
+}
+
+/** One schedule, as the strip's row draws it. */
+export interface SeatScheduleRow {
+  /** The cron's own id: what the row is KEYED by, since two schedules can
+   *  share a description, or a first prompt line, and a row keyed by the
+   *  drawn words throws on exactly that pair. */
+  id: string;
+  /** The line the row leads with: the description, else the prompt's first line. */
+  key: string;
+  /** What the row says beside it: when it is next due, and its kind. */
+  value: string;
+}
+
+/**
+ * The project's schedules, as the seat's strip row draws them.
+ *
+ * **Crons carry no per-seat owner** - a schedule belongs to the project and
+ * fires into it - so every seat of the project reads the same set, unlike the
+ * connector row beside it. The countdown reads against the page's one clock,
+ * so the caller re-reads as that clock moves.
+ */
+export function seatScheduleRows(
+  home: HomeWire,
+  slot: SessionSlot,
+  now: number,
+): SeatScheduleRow[] {
+  const crons = projectOf(home, slot)?.crons ?? [];
+  return crons.map((cron) => ({
+    id: cron.id,
+    key: cronLabel(cron),
+    value: `${untilOf(cron.next_fire, now)} \u{b7} ${kindOf(cron.kind)}`,
+  }));
 }
 
 /** `CronKind` is externally tagged, so its variant name is the key. */
@@ -986,21 +1008,65 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
   };
 }
 
-/** The MCP section, or `null` when the session has no read behind it. */
-export function mcpSection(record: SessionRecord): McpView | null {
-  const servers = record.mcp;
-  if (servers === null) return null;
-  if (servers.servers.length === 0 && servers.error === null) return null;
-  return {
-    // A read that failed carries an empty list, so the summary says which of
-    // the two it is looking at rather than reporting nothing configured.
-    summary: servers.servers.length === 0 ? 'failed' : `${servers.servers.length}`,
-    rows: servers.servers.map((server) => ({
-      k: `${server.name} \u{b7} ${scopeLabel(server)}`,
-      v: mcpState(server),
-    })),
-    error: servers.error,
-  };
+/**
+ * The session's MCP servers, as the strip's row draws them: one row per
+ * server, carrying the status depth (its tools, what backs it, the failure
+ * reason) so the panel shows as much of a server as the wire has.
+ *
+ * A read that FAILED carries an empty list - and that is a state of its own,
+ * not "nothing configured" - so the failure draws as a row naming it.
+ */
+export function mcpRows(record: SessionRecord | null): McpRow[] {
+  const servers = record?.mcp ?? null;
+  if (servers === null) return [];
+  if (servers.servers.length === 0) {
+    return servers.error === null
+      ? []
+      : [
+          {
+            name: 'mcp-read',
+            k: 'servers',
+            v: 'failed',
+            tools: [],
+            command: null,
+            reason: servers.error.trim() === '' ? null : servers.error.trim(),
+          },
+        ];
+  }
+  return servers.servers.map((server) => ({
+    name: server.name,
+    k: `${server.name} \u{b7} ${scopeLabel(server)}`,
+    v: mcpState(server),
+    tools: mcpTools(server),
+    command: mcpCommand(server),
+    reason: server.error?.trim() ? server.error.trim() : null,
+  }));
+}
+
+/** The tools a server offers, as its status depth names them. */
+function mcpTools(server: McpServer): { name: string; description: string | null }[] {
+  return array(server.tools).flatMap((entry) => {
+    const held = isRecord(entry) ? entry : {};
+    const name = held['name'];
+    if (typeof name !== 'string' || name === '') return [];
+    const description = held['description'];
+    return [{ name, description: typeof description === 'string' ? description : null }];
+  });
+}
+
+/**
+ * What backs a server, from its config blob: the command a stdio server runs
+ * (its argv joined), or the URL a remote one reaches. `null` for a config
+ * that names neither, which is the in-process case.
+ */
+function mcpCommand(server: McpServer): string | null {
+  if (!isRecord(server.config)) return null;
+  const url = server.config['url'];
+  if (typeof url === 'string' && url !== '') return url;
+  const command = server.config['command'];
+  if (typeof command !== 'string' || command === '') return null;
+  const args = array(server.config['args']).map((arg) => String(arg));
+  return [command, ...args].join(' ');
 }
 
 /**

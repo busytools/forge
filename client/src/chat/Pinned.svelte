@@ -1,6 +1,8 @@
 <script lang="ts">
   import ConnectorsSegment from './ConnectorsSegment.svelte';
+  import McpSegment from './McpSegment.svelte';
   import ProcessesSegment from './ProcessesSegment.svelte';
+  import SchedulesSegment from './SchedulesSegment.svelte';
   import Strip from './Strip.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
   import type { TurnInfo } from './units';
@@ -27,7 +29,10 @@
          own auto margin would split the free space between them. -->
     <div class="ti">
       <Strip {info} />
-      <span class="sg-fill"><SubagentSegment /><ProcessesSegment /><ConnectorsSegment /></span>
+      <span class="sg-fill"
+        ><SubagentSegment /><ProcessesSegment /><ConnectorsSegment /><SchedulesSegment /><McpSegment
+        /></span
+      >
     </div>
   </div>
 {/if}

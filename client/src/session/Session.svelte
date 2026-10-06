@@ -15,16 +15,20 @@
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
   import { connectors } from '../chat/connectors.svelte';
+  import { mcp } from '../chat/mcp.svelte';
   import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
+  import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
     headerFacts,
+    mcpRows,
     orgNeeded,
     seatConnectorRows,
+    seatScheduleRows,
     seatState,
     type ComposerProps,
     type ConversationProps,
@@ -110,6 +114,23 @@
    */
   $effect(() => {
     connectors.sync(seatConnectorRows(wire, slot));
+  });
+
+  /**
+   * The schedules row reads the page's own clock: a countdown is part of every
+   * row, so the list re-derives as `now` moves rather than going stale between
+   * home reads. Crons carry no per-seat owner, so the set is the project's.
+   */
+  $effect(() => {
+    schedules.sync(seatScheduleRows(wire, slot, now));
+  });
+
+  /**
+   * The MCP rows follow the seat's own record, not the home: the servers are
+   * this session's bridge read, and a failed read draws as itself.
+   */
+  $effect(() => {
+    mcp.sync(mcpRows(record));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */

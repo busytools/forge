@@ -3,11 +3,9 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import GitSection from './sections/GitSection.svelte';
-  import McpSection from './sections/McpSection.svelte';
   import MonitorsSection from './sections/MonitorsSection.svelte';
-  import SchedulesSection from './sections/SchedulesSection.svelte';
   import TasksSection from './sections/TasksSection.svelte';
-  import { gitSection, mcpSection, projectOf } from './view';
+  import { gitSection, projectOf } from './view';
   import type { SessionRecord } from './wire';
 
   /**
@@ -42,8 +40,6 @@
   const git = $derived(record === null ? null : gitSection(record));
 
   const tasks = $derived(project?.tasks ?? []);
-  const crons = $derived(project?.crons ?? []);
-  const mcp = $derived(record === null ? null : mcpSection(record));
   const monitors = $derived(record?.monitors ?? []);
 </script>
 
@@ -70,12 +66,6 @@
     {/if}
     {#if tasks.length > 0}
       <TasksSection {tasks} />
-    {/if}
-    {#if crons.length > 0}
-      <SchedulesSection {crons} {now} />
-    {/if}
-    {#if mcp !== null}
-      <McpSection view={mcp} />
     {/if}
     {#if monitors.length > 0}
       <MonitorsSection {monitors} {now} />

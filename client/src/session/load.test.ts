@@ -27,9 +27,7 @@ vi.mock('./view', async (importOriginal) => {
     ...real,
     gitSection: counting('gitSection', real.gitSection),
     projectOf: counting('projectOf', real.projectOf),
-    mcpSection: counting('mcpSection', real.mcpSection),
     tasksSection: counting('tasksSection', real.tasksSection),
-    schedulesSection: counting('schedulesSection', real.schedulesSection),
     monitorsSection: counting('monitorsSection', real.monitorsSection),
   };
 });
@@ -312,9 +310,9 @@ describe('what one arriving frame costs the inspector', () => {
     // Where the line is: a summary still states its count with every section
     // shut, so the arithmetic its summary needs is what may still run - and
     // only where the slice it states moved. A frame carrying a message moves
-    // the conversation, which is what the mcp and git readers walk; it says
-    // nothing about the monitors, so that section is not recomputed at all.
-    expect(called('mcpSection'), measured).toBeGreaterThan(0);
+    // the record, which is what the git reader walks; it says nothing about
+    // the monitors, so that section is not recomputed at all.
+    expect(called('gitSection'), measured).toBeGreaterThan(0);
     expect(
       called('monitorsSection'),
       `${measured} - a shut section was recomputed for a slice that did not move`,
