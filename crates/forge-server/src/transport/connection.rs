@@ -75,20 +75,22 @@ struct Hosting {
 }
 
 impl Hosting {
-    /// Take the role for `id` if no connection holds it.
+    /// Offer the role for `id`, and keep the channel asks would arrive on.
     ///
-    /// `None` is the ordinary case of a second capable client: it stays a
-    /// view like any other, and only the host is sent asks. A connection
-    /// that does not hold the role never tries again on its own - the role
-    /// is offered on a subscribe, so it is the client's next subscribe (a
-    /// reconnect does one) that offers it again.
-    fn take(relay: &Arc<BrowserRelay>, id: u64) -> Option<Self> {
+    /// **Offering and holding are different**, and the channel is kept either
+    /// way: a connection that offers while another holds the role waits in
+    /// line, and the relay promotes it there when the holder goes - which is
+    /// only possible because the channel it will be sent asks on already
+    /// exists. A waiter receives nothing until then, so what it costs is an
+    /// idle receiver.
+    fn offer(relay: &Arc<BrowserRelay>, id: u64) -> Self {
         let (to_host, asks) = mpsc::unbounded_channel();
-        relay.register(id, to_host).then(|| Self {
+        relay.register(id, to_host);
+        Self {
             asks,
             in_flight: HashMap::new(),
             _role: BrowserRole { relay: Arc::clone(relay), id },
-        })
+        }
     }
 }
 
@@ -439,12 +441,14 @@ async fn handle_client(
             // **The browser role, offered once per connection.** A capable
             // client declares it on every subscribe it makes; the first
             // declaration while the role is free takes it, and a later one
-            // finds this connection already holding it. A declaration that
+            // finds this connection already in place. A declaration that
             // arrives while another client holds the role changes nothing -
-            // one host drives the one browser, and being the second is not
-            // an error.
+            // one host drives the one browser, and being the second is not an
+            // error: the relay keeps this connection's channel and hands it
+            // the role when the holder goes, so nothing has to be declared
+            // again for the handover to happen.
             if browser && hosting.is_none() {
-                *hosting = Hosting::take(&state.browser, me);
+                *hosting = Some(Hosting::offer(&state.browser, me));
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
