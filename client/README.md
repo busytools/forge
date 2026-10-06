@@ -176,7 +176,13 @@ in `docker/test_serving.sh`, which runs against the built image;
 refusal of an archive that does not match the manifest's sha256.
 
 The image is published to `ghcr.io/busytools/forge-web` on a release tag,
-under `v<version>` and a moving `latest`.
+under `v<version>` and a moving `latest`. The org's packages start private
+and a workflow token cannot change that, so the first publish needs one
+manual step before an unauthenticated pull works: the package's settings
+(Package settings -> Change visibility) set to public.
+
+One poller per volume: two would fight over the same symlink and staging
+directory, and the one-container contract is the shape this ships in.
 
 ## The Android target
 
