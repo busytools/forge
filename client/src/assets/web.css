@@ -21,13 +21,12 @@
 
 /* ---------- one scrollbar skin for every scroller on the page ----------
    The root viewport (the home page scrolls the document), the rail, the chat,
-   the autocomplete, the segment list, the dictation popover and the
-   composer's field all scroll, and an unstyled bar is a white or grey strip
-   against the dark panels. One rule set, so a new scroller inherits it rather
-   than rediscovering the same three lines. The parts do not take the
-   element's own cursor, so the pointer is set per part; the thumb brightens
-   on hover and again while dragged. `scrollbar-gutter: stable` stays each
-   scroller's own concern. */
+   the autocomplete, the segment list, the dictation popover and both text
+   fields - the composer's and the dock's. An unstyled bar is a white or grey
+   strip against the dark panels. The parts do not take the element's own
+   cursor, so the pointer is set per part; the thumb brightens on hover and
+   again while dragged. `scrollbar-gutter: stable` stays each scroller's own
+   concern. */
 html::-webkit-scrollbar,
 .rail .scroll::-webkit-scrollbar,
 .conv::-webkit-scrollbar,
