@@ -1730,6 +1730,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+.dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
+.dock .custom .sendb:hover { border-color: var(--accent); color: var(--hot); }
 .dock .custom.live .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
@@ -1747,6 +1751,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
   .dock .custom .micb { min-height: 44px; min-width: 44px; }
+  .dock .custom .sendb { min-height: 44px; min-width: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;

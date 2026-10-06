@@ -623,6 +623,14 @@ describe('the box', () => {
     const harness = open();
     type('ship it once CI is green');
 
+    // **The take starts in the composer's own box** - that is the moment its
+    // destination is captured - and the prompt arrives mid-flight, which does
+    // not take words that were spoken for the draft the reader was in.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
     const watching = record({
       pending_asks: [permissionAsk()],
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
@@ -2714,6 +2722,161 @@ describe('the dock', () => {
     ]);
   });
 
+  it('gives the words their own send, so an answer needs no option selected', () => {
+    // The words-only answer used to be reachable only from the field's own
+    // Enter, and every visible commit was selection-shaped - which read as a
+    // selection being mandatory before the words could go.
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    expect(
+      document.querySelector('.dock .sendb'),
+      'nothing written yet, so there is nothing for the button to send',
+    ).toBeNull();
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'custom only';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    const send = document.querySelector('.dock .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the send button did not appear');
+    send.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: [],
+            annotation: { preview: null, notes: 'custom only' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('carries words written before a row is clicked, beside that row', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'and afterwards';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the row and the words ride together').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-staging'],
+            annotation: { preview: null, notes: 'and afterwards' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('sends toggled rows and the words together', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    options()[0]?.click();
+    flushSync();
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'and afterwards';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    notes.focus();
+    flushSync();
+    press('Enter');
+
+    expect(commands(harness), 'the set and the words ride together').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-staging'],
+            annotation: { preview: null, notes: 'and afterwards' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('draws the custom answer as a row of its own, which opens the words rather than answering', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    expect(
+      [...document.querySelectorAll('.dock .opt .lbl')].map((held) => held.textContent),
+      'the custom answer sits last, where every other choice is',
+    ).toEqual(['Staging', 'Production', 'Tell the agent something else']);
+
+    options()[2]?.click();
+    flushSync();
+    expect(commands(harness), 'the door itself answers nothing').toEqual([]);
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+
+    notes.value = 'custom only';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.dock .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('no send button');
+    send.click();
+    flushSync();
+
+    expect(commands(harness), 'the words alone are the answer').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: [],
+            annotation: { preview: null, notes: 'custom only' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('opens the words on Space over the custom row, rather than toggling an id of its own', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    // The custom row is the last one: an ArrowUp from the first wraps to it.
+    press('ArrowUp');
+    flushSync();
+    press(' ');
+    flushSync();
+
+    expect(commands(harness), 'Space on the door answers nothing').toEqual([]);
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+    expect(drawn(), 'and no count rides the key for a row that cannot be turned on').not.toContain(
+      'submit 1',
+    );
+  });
+
   it("hands a permission's words to its deny, which carries them", () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
@@ -2815,6 +2978,294 @@ describe('the dock', () => {
       document.querySelector('[data-editor="composer"]'),
       'and the composer is not mounted at all while a prompt is up',
     ).toBeNull();
+  });
+
+  /**
+   * **The dictation the dock's row never touched still belongs to the dock.**
+   * A take started by a keyboard shortcut, with a question holding the slot,
+   * used to land its words in the composer's draft - a box that is not even
+   * drawn while the prompt is up - so the answer could never carry them.
+   */
+  it("lands a take's words in the dock when the take began under the question", () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'custom words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words landed in the box the prompt is drawing',
+    ).toBe('custom words');
+  });
+
+  /**
+   * **The destination is captured per TAKE, not once per box.** One seat takes
+   * several in a row, and a capture that never re-runs hands the second take
+   * the first one's answer - the headline defect, from take two on.
+   */
+  it('gives each take its own destination: a later take under the question lands there', () => {
+    const harness = open();
+
+    // Take one begins with no prompt, so its words belong to the draft.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // Then a question arrives, and take two begins under it.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the second take landed where IT began, not where the first one did',
+    ).toBe('second words');
+  });
+
+  it('gives each take its own destination: a later take begun in the composer stays there', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    // Take one begins under the question and lands in its row.
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // The question resolves, and take two begins in the composer.
+    harness.page.record = record();
+    flushSync();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    // A question arrives mid-flight; this take's words are still the draft's.
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'a prompt arriving mid-take did not take words spoken for the draft',
+    ).toBe('');
+
+    harness.page.record = record();
+    flushSync();
+    expect(field().value, 'the words are in the draft the take was spoken into').toContain(
+      'second words',
+    );
+  });
+
+  /**
+   * **A take can end while the reader is on another seat.** The clear has to
+   * run for that take too: a flag left open swallows the next take's capture,
+   * and that take lands by the one before it.
+   */
+  it('captures the next take after one ended while another seat was shown', () => {
+    const harness = open();
+
+    // Take one begins with no prompt, so its words belong to the draft.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    // The reader moves to another seat, and the take ends while they are away.
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // They come back with a question up and take two ALREADY live under it, in
+    // one frame - nothing this seat's box sees between the two takes.
+    harness.page.slot = SLOT;
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the take after the unwatched one landed where it began',
+    ).toBe('second words');
+  });
+
+  /**
+   * **A prompt that resolves before the words land is not the destination.**
+   * The capture says where the take began; the landing also checks what is
+   * still on screen - a dock that has gone leaves its words to the draft.
+   */
+  it('lands in the draft when the question resolved before the take did', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'orphan words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words went to the box that still exists').toContain('orphan words');
+  });
+
+  it('lands in the draft under a permission that offers no words row', () => {
+    const bare = permissionAsk('tu-1', {
+      options: [
+        { option_id: 'opt-once', name: 'Allow once', kind: 'allow', action: { kind: 'allow' } },
+        { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
+      ],
+    });
+    const harness = open({ record: record({ pending_asks: [bare] }) });
+
+    harness.page.record = record({
+      pending_asks: [bare],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [bare],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'draft words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    harness.page.record = record();
+    flushSync();
+    expect(field().value, 'no words row, so the draft is the box').toContain('draft words');
+  });
+
+  it('hides the send while a take draws in the words row', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'words';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.dock .sendb'), 'words typed, a send to go').not.toBeNull();
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.dock .sendb'),
+      'the take draws its own controls, not the send',
+    ).toBeNull();
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'more', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.dock .sendb'),
+      'the card is gone, the send returns',
+    ).not.toBeNull();
   });
 
   /**
@@ -3829,8 +4280,8 @@ describe('the dock', () => {
 
     expect(
       [...document.querySelectorAll('.dock .opt .n')].map((held) => held.textContent),
-      'the rows carry their own numbers, the first row one',
-    ).toEqual(['1', '2']);
+      'the rows carry their own numbers, the first row one, the custom answer last',
+    ).toEqual(['1', '2', '3']);
 
     press('2');
 

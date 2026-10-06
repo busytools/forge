@@ -344,11 +344,38 @@
     if (field !== null) field.focus();
   });
 
+  /** The box the live take's capture ran on, so the clear reaches it from any seat. */
+  let tookBox: Box | null = null;
+
   // Holding the seat's take is having seen it, and the flag never clears -
   // and only the seat's own record arms it: another seat's take, still in the
   // record in hand between two seats, is not this box having watched anything.
   $effect(() => {
-    if (owns && composer.take !== null) box.sawTake = true;
+    if (composer.take === null) {
+      // The take is over; its OWN box is cleared, even when another seat is
+      // shown - the box in hand belongs to whoever is on screen, and a flag
+      // left open on the take's own would swallow the next take's capture.
+      const captured = tookBox;
+      if (captured !== null) {
+        captured.takeOpen = false;
+        tookBox = null;
+      }
+      return;
+    }
+    if (!owns) return;
+    box.sawTake = true;
+    if (!box.takeOpen) {
+      // **Where the take began is where its words go, captured per TAKE.** A
+      // prompt arriving mid-take does not take words spoken into the reader's
+      // draft, and one already holding the slot owns them even when the caret
+      // was never in its row (a keyboard dictation). One seat can take several
+      // in a row, so the flag closes with each take rather than once per box -
+      // and the box it closed on is remembered, because the take can outlive
+      // the visit to its seat.
+      box.takeOpen = true;
+      tookBox = box;
+      box.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
+    }
   });
 
   /** What the dock's own box belongs to, which is what its words go with. */
@@ -370,6 +397,24 @@
   });
 
   /**
+   * Whether the dock is the box a landing belongs to.
+   *
+   * The prompt holding the slot is not enough on its own: the dock draws only
+   * unblocked, and it only has a box to put words in where the kind offers one
+   * - a question always draws its words row, a permission only when it offers
+   * the notes option, and a held post never.
+   */
+  function toDock(): boolean {
+    const asking = dockAsk;
+    if (asking === null || blocker !== null) return false;
+    if (asking.kind === 'question') return true;
+    if (asking.kind === 'permission') {
+      return asking.request.options.some((option) => option.kind === 'notes');
+    }
+    return false;
+  }
+
+  /**
    * A landed take puts its words where the reader was about to type, then the
    * box takes one green beat.
    *
@@ -386,10 +431,13 @@
     }
     if (held.kind !== 'landed' || !box.sawTake || box.landed === held.text) return;
     box.landed = held.text;
-    // Where the words go is the table's answer rather than this component's:
-    // while a prompt has the slot the reader's box is the dock's, and this one
-    // is not drawn at all.
-    if (untrack(() => focusOf(where)) === 'dock') {
+    // **Where the words go is where the take began, checked against what is
+    // still on screen.** A take the dock's own row never touched still belongs
+    // to the dock when the dock was the box it started under - routing it by
+    // the reader's last touch wrote it into a draft nobody could see - and a
+    // take begun in the composer keeps its words even when a prompt arrived
+    // mid-flight.
+    if (box.tookFrom === 'dock' && untrack(() => toDock())) {
       dockDraft = joined(
         untrack(() => dockDraft),
         held.text,
