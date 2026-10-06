@@ -127,10 +127,16 @@ fn restart_app(app: tauri::AppHandle) {
 /// installer intent.
 #[cfg(target_os = "android")]
 mod android {
+    use std::sync::Mutex;
+
     use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
     use tauri::{Manager, Runtime};
 
-    pub struct Updater<R: Runtime>(pub PluginHandle<R>);
+    /// The Kotlin handle, and the release the last check offered. The install
+    /// works from the remembered one rather than asking again: the line the
+    /// reader tapped names that version, and a check between the two would
+    /// install a release the line never named.
+    pub struct Updater<R: Runtime>(pub PluginHandle<R>, pub Mutex<Option<Found>>);
 
     #[derive(serde::Serialize)]
     pub struct CheckArgs {
@@ -138,7 +144,7 @@ mod android {
         pub endpoint: String,
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(Clone, serde::Deserialize)]
     pub struct Found {
         pub version: String,
         pub url: String,
@@ -154,7 +160,7 @@ mod android {
         Builder::new("androidupdate")
             .setup(|app, api| {
                 let handle = api.register_android_plugin("dev.vedhavyas.forge", "UpdatePlugin")?;
-                app.manage(Updater(handle));
+                app.manage(Updater(handle, Mutex::new(None)));
                 Ok(())
             })
             .build()
@@ -191,22 +197,30 @@ async fn android_check(app: &tauri::AppHandle) -> Result<Option<android::Found>,
 }
 
 /// The version an update check found, or `None` when this build is current.
+/// What it found is remembered for the install that line-offering may follow.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    Ok(android_check(&app).await?.map(|found| found.version))
+    let found = android_check(&app).await?;
+    if let Ok(mut remembered) = app.state::<android::Updater<tauri::Wry>>().1.lock() {
+        *remembered = found.clone();
+    }
+    Ok(found.map(|found| found.version))
 }
 
-/// Download the found update, check it, and hand it to the system installer,
-/// answering with the stage that finishes it: the phone's install IS the
-/// prompt, and the app is replaced with it.
+/// Download the remembered release, check it, and hand it to the system
+/// installer, answering with the stage that finishes it: the phone's install
+/// IS the prompt, and the app is replaced with it.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
-    let found = android_check(&app)
-        .await?
-        .ok_or_else(|| "no update is available".to_string())?;
     let handle = app.state::<android::Updater<tauri::Wry>>();
+    let found = handle
+        .1
+        .lock()
+        .ok()
+        .and_then(|remembered| remembered.clone())
+        .ok_or_else(|| "no update is available".to_string())?;
     handle
         .0
         .run_mobile_plugin_async::<()>(
