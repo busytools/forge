@@ -4217,6 +4217,11 @@ impl Workspace {
                     let mut guard = domain.lock();
                     guard.turn_pending = true;
                     guard.failed_turn_at = None;
+                    // A committed turn also expires any cancel stamp the last
+                    // turn left armed: nothing will spend it once this turn
+                    // runs, and left standing it would exempt this turn's
+                    // genuine failure.
+                    guard.pending_cancel = false;
                 }
                 // Arm the cancel stamp on the routed path, so the turn's
                 // own failed `Result` can tell a reader's interrupt from a
@@ -10419,6 +10424,11 @@ provider = "anthropic"
         assert!(
             workspace.session_failed_turn(&key).is_none(),
             "a committed prompt moves past the failure: the newest turn is this one",
+        );
+        assert!(
+            !domain.lock().pending_cancel,
+            "and it expires a stamp the last turn left armed, or this turn's \
+             genuine failure would go unmarked",
         );
     }
 
