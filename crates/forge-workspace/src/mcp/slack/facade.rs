@@ -2019,6 +2019,15 @@ mod tests {
             second[0].id, first[0].id,
             "the repeat hands back the id it already has, so the caller can drop it without a lookup",
         );
+        assert_eq!(
+            second[0].target,
+            SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                name: None,
+                mode: SlackWatchMode::MentionsOnly,
+            },
+            "and the record as it NOW stands, not the state before the mode moved",
+        );
         let stored = ws.slack_subscriptions_for_project("forge");
         assert_eq!(stored.len(), 1, "one record, so the Inspector renders one row");
         assert_eq!(
@@ -2030,6 +2039,36 @@ mod tests {
             },
             "and the mode asked for is the mode stored",
         );
+    }
+
+    /// The unsubscribe hands back the row it removed, not another one: with
+    /// two owned subscriptions and the SECOND removed, a row looked up by
+    /// "the project's first" names the wrong target - and the store check
+    /// catches a removal that took the wrong one.
+    #[tokio::test]
+    async fn unsubscribe_returns_the_row_it_removed_and_leaves_the_other() {
+        let (facade, ws, _api, _rx) = facade_with_recording_slack();
+        let first = facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::Mentions)
+            .expect("first");
+        let second = facade
+            .subscribe(&caller(), Some("acme"), SlackSubscribeRequest::DirectMessages)
+            .expect("second");
+        assert_eq!(second.len(), 1, "one record per target");
+
+        let removed = facade
+            .unsubscribe(&caller(), second[0].id)
+            .expect("the second subscription is the caller's own");
+
+        assert_eq!(removed.id, second[0].id, "the echoed row is the one that went");
+        assert_eq!(
+            removed.target,
+            SlackSubscriptionTarget::DirectMessages,
+            "carrying the target it watched, not the other row's",
+        );
+        let left = ws.slack_subscriptions_for_project("forge");
+        assert_eq!(left.len(), 1, "only the untouched subscription remains");
+        assert_eq!(left[0].id, first[0].id, "and it is the one the call did not name");
     }
 
     #[tokio::test]

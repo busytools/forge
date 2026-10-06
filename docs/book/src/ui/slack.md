@@ -9,9 +9,9 @@ The in-process MCP server exposes the `mcp__forge__slack__*` tools to every sess
 | Tool | What it does |
 |---|---|
 | `slack__list` | Every conversation the token's user is in, each row marked with whether YOU subscribe to it, plus your class subscriptions. An optional `name` substring filters over name, purpose and topic, and an optional `kind` filter keeps one conversation type (`public`, `private`, `im`, `mpim`). |
-| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. Returns the ids it created. |
-| `slack__unsubscribe` | Drop one of the caller's own subscriptions by id. |
-| `slack__post` | Post a message as the user, as a root message or into a thread. Text past 4000 characters is split into numbered parts, each a separate message. Returns the `ts` of each message it posted. Held for approval. |
+| `slack__subscribe` | Watch the whole DM class, named conversations each with a mode (`all` or `mentions`), or the workspace-wide mention target. Returns one row per subscription as it now stands (`{id, workspace, target}`); a conversation already watched hands back that record. |
+| `slack__unsubscribe` | Drop one of the caller's own subscriptions by id, echoing the removed row. |
+| `slack__post` | Post a message as the user, as a root message or into a thread. Text past 4000 characters is split into numbered parts, each a separate message. Returns `{ts, conversation_name, parts}` - the `ts` of each message it posted, the channel it landed in, and how many parts went out. Held for approval. |
 | `slack__edit` | Replace or delete one of the user's own messages. Held for approval. |
 | `slack__react` | Add or remove a reaction. Held for approval. |
 | `slack__attachment` | Fetch a Slack file to a local directory, or upload a local file into a conversation. Fetching is not held; an upload is. |
