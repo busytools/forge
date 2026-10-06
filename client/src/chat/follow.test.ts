@@ -622,6 +622,21 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a moving touch is still their hand').toEqual([]);
   });
 
+  it('disarms just past the notch', async () => {
+    // The boundary the slack draws: inside it a move is not the reader's.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 49);
+    server.frame();
+    await settle();
+
+    expect(pinned(), "past the notch the move is the reader's").toEqual([]);
+  });
+
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
     const seat = writable(LEAD);
     const server = stub();
