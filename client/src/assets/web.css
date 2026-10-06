@@ -1969,3 +1969,60 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 /* The path above a diff is one unbroken token and often longer than a phone. It
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
+
+/* ---------- a forge call's own card ---------- */
+
+/* The chips a forge row states, the figure at its right, and the reason a
+   failed one failed. Namespaced `fam-`, the same rule the dispatch row's
+   `sg-` fields follow, so no bare name of another surface catches them.
+   Every chip carries its own word: the tone colours it and never replaces
+   it. */
+details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
+  border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
+  color: var(--muted); line-height: 1.7; white-space: nowrap; }
+details.leaf > summary .fam-chip.info { color: var(--blue); border-color: rgba(97,160,224,.4); }
+details.leaf > summary .fam-chip.ok { color: var(--ok); border-color: rgba(130,199,107,.4); }
+details.leaf > summary .fam-chip.warn { color: var(--warn); border-color: rgba(201,161,59,.4); }
+details.leaf > summary .fam-chip.bad { color: var(--bad); border-color: rgba(224,104,62,.4); }
+details.leaf > summary .fam-chip.dim { color: var(--dim); }
+details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: none;
+  font-family: var(--mono); font-size: var(--fs-data); }
+details.leaf > summary .fam-fig + .arw { margin-left: 8px; }
+/* A failure's reason, inline after the title: the one thing a reader acts on,
+   and never a figure in the right-hand column. The body keeps the whole of it. */
+details.leaf > summary .fam-tail { color: var(--bad); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+details.leaf > summary .fam-tail::before { content: 'failed: '; color: var(--dim); }
+
+/* The card's body: facts, a quote of the words a call carried, and what it
+   found. The facts draw as ONE inline run rather than a label column with the
+   values flung to the far edge - the dispatch row's own `sg-meta` shape,
+   copied here rather than depended on, because a forge card is not an
+   instance. */
+.fam-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin: 5px 0 3px; overflow-wrap: anywhere; }
+.fam-meta .lb { color: var(--muted); }
+.fam-meta .sep { padding: 0 6px; color: var(--line); }
+.fam-quote { border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 5px 0;
+  color: var(--muted); font-size: var(--fs-base); white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+.fam-tag { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
+  margin-top: 6px; }
+.fam-warnline { display: flex; gap: 9px; align-items: baseline; color: var(--warn);
+  font-size: var(--fs-base); margin: 4px 0; }
+.fam-warnline .fam-lb { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+  flex: none; }
+.fam-list { display: grid; gap: 3px; margin: 5px 0 2px; }
+.fam-item { display: flex; align-items: center; gap: 9px; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--muted); }
+.fam-item .fam-id { color: var(--dim); min-width: 34px; }
+.fam-item .fam-state { flex: none; min-width: 82px; }
+.fam-item .fam-state.ok { color: var(--ok); }
+.fam-item .fam-state.info { color: var(--accent); }
+.fam-item .fam-state.warn { color: var(--warn); }
+.fam-item .fam-state.dim { color: var(--dim); }
+.fam-item .fam-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Inside a list row the tag is a marker beside the text, not the block above
+   it: no top margin of its own, and it never wraps. */
+.fam-item .fam-tag { flex: none; margin-top: 0; }
+.fam-item .fam-when { margin-left: auto; color: var(--dim); flex: none; }

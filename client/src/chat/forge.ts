@@ -1,0 +1,897 @@
+/**
+ * A `forge` MCP call's own card, read off the call's result.
+ *
+ * The server answers each family in a shape of its own, and this module turns
+ * that JSON into the parts a row draws: what the row is titled with (the
+ * subject the call acted on, never the tool's name), the words its chips
+ * carry, the figure at its right, and what the body says. `null` is the
+ * raw-text fallback every other call gets - a result this cannot read is
+ * never dropped, only left undressed, and a failed call is null so its reason
+ * draws the way every failure draws.
+ */
+
+import { untilOf } from '../session/view';
+import { forgeFamilyOf } from './families';
+import { obj, parsedText, str } from './result-json';
+
+/** One word on a forge row. The tone colours the word; the word carries it. */
+export interface ForgeChip {
+  text: string;
+  tone: 'plain' | 'info' | 'ok' | 'warn' | 'bad' | 'dim';
+}
+
+/** One entry of a card's body list. */
+export interface ForgeListItem {
+  id: string | null;
+  state: ForgeChip | null;
+  text: string;
+  /** A dim mono marker beside the text: a cron's expression, a target's kind. */
+  tag: string | null;
+  when: string | null;
+}
+
+/** What a card's body draws, in the row grammar the mock settled. */
+export type ForgePiece =
+  | { kind: 'kv'; pairs: [string, string][] }
+  | { kind: 'quote'; text: string }
+  | { kind: 'tag'; text: string }
+  | { kind: 'list'; items: ForgeListItem[] }
+  | { kind: 'warnline'; label: string; text: string };
+
+/** One forge call as its card. */
+export interface ForgeCard {
+  /** The row's title: the subject, never the tool's name. */
+  title: string;
+  chips: ForgeChip[];
+  figure: string | null;
+  pieces: ForgePiece[];
+}
+
+/**
+ * The gotify family's card: a subscription's filter IS the card.
+ *
+ * `subscribe` answers one structured row, `unsubscribe` the removed row, and
+ * `list` / `apps` / `recent` their arrays - all read here so a reader sees
+ * what is watched rather than a uuid.
+ */
+function gotifyCard(verb: string, answer: unknown): ForgeCard | null {
+  if (verb === 'subscribe') {
+    const sub = subOf(answer);
+    if (sub === null) return null;
+    const pieces: ForgePiece[] = [
+      {
+        kind: 'kv',
+        pairs: [
+          ['subscription', shortId(sub.id)],
+          ['delivers', 'as a turn, waking this session'],
+        ],
+      },
+    ];
+    if (!sub.names_resolve) {
+      pieces.unshift({
+        kind: 'warnline',
+        label: 'warning',
+        text: 'the application index could not be refreshed, so filters naming apps will not match until the stream reconnects',
+      });
+    }
+    return {
+      title: 'watching notifications',
+      chips: subscriptionChips(sub),
+      figure: sub.names_resolve ? null : 'index stale',
+      pieces,
+    };
+  }
+  if (verb === 'unsubscribe') {
+    const envelope = obj(answer);
+    if (str(envelope, 'status') !== 'deleted') return null;
+    const sub = subOf(envelope['removed']);
+    if (sub === null) return null;
+    return {
+      title: 'stopped watching',
+      chips: subscriptionChips(sub).map((chip) => ({ ...chip, tone: 'dim' as const })),
+      figure: null,
+      pieces: [],
+    };
+  }
+  if (verb === 'list') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const sub = subOf(held);
+      if (sub === null) return null;
+      items.push({
+        id: null,
+        state: null,
+        text: appsText(sub.applications),
+        tag: floorText(sub.min_priority),
+        when: shortId(sub.id),
+      });
+    }
+    return {
+      title: 'subscriptions',
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length} active`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'apps') {
+    if (!Array.isArray(answer)) return null;
+    const names = answer.filter((held): held is string => typeof held === 'string');
+    return {
+      title: 'applications',
+      chips: [],
+      figure: names.length === 0 ? null : `${names.length}`,
+      pieces:
+        names.length === 0
+          ? []
+          : [
+              {
+                kind: 'list',
+                items: names.map((name) => ({
+                  id: null,
+                  state: null,
+                  text: name,
+                  tag: null,
+                  when: null,
+                })),
+              },
+            ],
+    };
+  }
+  if (verb === 'recent') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const note = obj(held);
+      const title = str(note, 'title');
+      const app = str(note, 'app');
+      if (title === null || app === null) continue;
+      const priority = typeof note['priority'] === 'number' ? note['priority'] : null;
+      items.push({
+        id: null,
+        state:
+          priority !== null && priority >= 5
+            ? { text: `priority ${priority}`, tone: 'warn' }
+            : null,
+        text: title,
+        tag: app,
+        when: stamp(str(note, 'date')),
+      });
+    }
+    return {
+      title: 'recent notifications',
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length}`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  return null;
+}
+
+/** One gotify subscription off the wire. */
+interface GotifyRow {
+  id: string | null;
+  applications: string[];
+  min_priority: number | null;
+  names_resolve: boolean;
+}
+
+/** One subscription off the wire, or null where a card cannot name it. */
+function subOf(value: unknown): GotifyRow | null {
+  const held = obj(value);
+  const id = str(held, 'id');
+  if (id === null) return null;
+  const applications = Array.isArray(held['applications'])
+    ? held['applications'].filter((name): name is string => typeof name === 'string')
+    : [];
+  const min_priority = typeof held['min_priority'] === 'number' ? held['min_priority'] : null;
+  return {
+    id,
+    applications,
+    min_priority,
+    // Absent means the answer carried no degraded case to report.
+    names_resolve: held['names_resolve'] !== false,
+  };
+}
+
+/** The chips a subscription's filter draws: the apps it names and its floor. */
+function subscriptionChips(sub: GotifyRow): ForgeChip[] {
+  return [
+    { text: appsText(sub.applications), tone: 'plain' },
+    { text: floorText(sub.min_priority), tone: 'plain' },
+  ];
+}
+
+/** The app names a filter matches, or the word for matching any. */
+function appsText(applications: string[]): string {
+  return applications.length === 0 ? 'any application' : applications.join(', ');
+}
+
+/** The priority floor as its own words. */
+function floorText(floor: number | null): string {
+  return floor === null ? 'any priority' : `priority \u{2265} ${floor}`;
+}
+
+/** A uuid as a row spells it: enough to recognise, never the whole thing. */
+function shortId(id: string | null): string {
+  return id === null ? '' : `${id.slice(0, 4)}\u{2026}`;
+}
+
+/** A cron entry as `cron__*` answers it. */
+interface CronEntry {
+  id: string | null;
+  /** The entry's headline: its description, else the prompt's first line. */
+  title: string;
+  /** The expression, or `once` for a run-once. */
+  schedule: string;
+  prompt: string;
+  next_fire: string | null;
+}
+
+/**
+ * The cron family's card: create and delete carry an entry, list an array.
+ *
+ * The chip is the raw expression and the figure is how long until it fires -
+ * Ved's shape: no client-side gloss of the expression, because a gloss this
+ * page invents is a second reading of the schedule that can disagree with the
+ * one the server fired it on.
+ */
+function cronCard(verb: string, answer: unknown): ForgeCard | null {
+  if (verb === 'create') {
+    const entry = cronOf(answer);
+    if (entry === null) return null;
+    const pieces: ForgePiece[] = [{ kind: 'kv', pairs: [['fires into', 'this session']] }];
+    const when = cronStamp(entry.next_fire);
+    if (when !== null) pieces.push({ kind: 'kv', pairs: [['next fire', when]] });
+    pieces.push({ kind: 'quote', text: entry.prompt });
+    return {
+      title: entry.title,
+      chips: [{ text: entry.schedule, tone: 'plain' }],
+      figure: cronUntil(entry.next_fire),
+      pieces,
+    };
+  }
+  if (verb === 'delete') {
+    const envelope = obj(answer);
+    if (str(envelope, 'status') !== 'deleted') return null;
+    const entry = cronOf(envelope['removed']);
+    if (entry === null) return null;
+    return {
+      title: entry.title,
+      chips: [{ text: 'removed', tone: 'dim' }],
+      figure: null,
+      pieces: [{ kind: 'kv', pairs: [['removed', entry.schedule]] }],
+    };
+  }
+  if (verb === 'list') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const entry = cronOf(held);
+      if (entry === null) return null;
+      items.push({
+        id: null,
+        state: null,
+        text: entry.title,
+        tag: entry.schedule,
+        when: cronUntil(entry.next_fire),
+      });
+    }
+    return {
+      title: 'schedules',
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length} registered`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  return null;
+}
+
+/** One cron entry off the wire, or null where the fields a card needs are absent. */
+function cronOf(value: unknown): CronEntry | null {
+  const held = obj(value);
+  const prompt = str(held, 'prompt');
+  const id = str(held, 'id');
+  if (prompt === null || id === null) return null;
+  const description = str(held, 'description')?.trim() ?? '';
+  return {
+    id,
+    title: description === '' ? firstLineOf(prompt) : description,
+    schedule: scheduleOf(held['schedule']),
+    prompt,
+    next_fire: str(held, 'next_fire'),
+  };
+}
+
+/** A cron's schedule as its own words: the expression, or `once` with its time. */
+function scheduleOf(schedule: unknown): string {
+  const held = obj(schedule);
+  const recurring = str(held, 'recurring');
+  if (recurring !== null) return recurring;
+  const once = str(held, 'once_at');
+  if (once !== null) {
+    const at = stamp(once);
+    return at === null ? 'once' : `once \u{b7} ${at}`;
+  }
+  return 'scheduled';
+}
+
+/** How long until a fire, as the inspector's own countdown reads it. */
+function cronUntil(at: string | null): string | null {
+  if (at === null) return null;
+  const secs = Math.floor(Date.parse(at) / 1000);
+  if (Number.isNaN(secs)) return null;
+  return `next ${untilOf({ secs_since_epoch: secs }, Date.now())}`;
+}
+
+/**
+ * A fire's time, local first with UTC beside it: the schedule is authored in
+ * the host's zone and the server fires it on UTC, so both are what a reader
+ * checking a fire time checks against.
+ */
+function cronStamp(at: string | null): string | null {
+  if (at === null) return null;
+  const local = stamp(at);
+  if (local === null) return null;
+  const parsed = new Date(at);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${local} (${pad(parsed.getUTCHours())}:${pad(parsed.getUTCMinutes())} UTC)`;
+}
+
+/** A prompt's first line, for a headline when the entry has no description. */
+function firstLineOf(text: string): string {
+  const line = text.split('\n', 1)[0] ?? '';
+  return line.trim() === '' ? text.trim() : line.trim();
+}
+
+/** One task as `tasks__*` answers it. */
+interface TaskRecord {
+  id: string | null;
+  subject: string | null;
+  status: string | null;
+  owner: string | null;
+  detail: string | null;
+  artifact: string | null;
+  estimate: string | null;
+  active_form: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * One call's card, or null for every result this module will not dress.
+ *
+ * A failed call is null by construction: its result is the reason, and the
+ * reason draws as every failure does rather than as a card with a missing
+ * field.
+ */
+export function forgeCardOf(
+  name: string,
+  input: unknown,
+  result: { content?: unknown; is_error?: unknown } | undefined,
+): ForgeCard | null {
+  const family = forgeFamilyOf(name);
+  if (family === null) return null;
+  if (result === undefined || result.is_error === true) return null;
+  const answer = parsedText(result.content);
+  if (family === 'tasks') return tasksCard(verbOf(name), input, answer);
+  if (family === 'cron') return cronCard(verbOf(name), answer);
+  if (family === 'gotify') return gotifyCard(verbOf(name), answer);
+  if (family === 'slack') return slackCard(verbOf(name), input, answer);
+  if (family === 'review') return reviewCard(verbOf(name), input, answer);
+  if (family === 'agents') return agentsCard(verbOf(name), input, answer);
+  return null;
+}
+
+/**
+ * The review family's card.
+ *
+ * The anchor is what a reply row is about - `src/chat/units.ts:919` is the
+ * thing a reader acts on, and a comment id on its own is not - so the reply
+ * and resolve arms are titled by it. A list's chips are the four state words
+ * with their counts, each word carrying itself.
+ */
+function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  if (verb === 'reply' || verb === 'resolve') {
+    const held = obj(answer);
+    const file = str(held, 'file');
+    const line = typeof held['line'] === 'number' ? held['line'] : null;
+    const comment = str(held, 'comment_id');
+    if (file === null || comment === null) return null;
+    const where = line === null ? file : `${file}:${line}`;
+    const status = str(held, 'status') ?? 'unknown';
+    const pieces: ForgePiece[] = [];
+    const said = str(obj(input), 'text');
+    if (said !== null && said.trim() !== '') pieces.push({ kind: 'quote', text: said });
+    return {
+      title: verb === 'reply' ? `replied on ${where}` : `resolved ${where}`,
+      chips: [{ text: status, tone: statusTone(status) }],
+      figure: comment,
+      pieces,
+    };
+  }
+  if (verb === 'list') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const review = obj(held);
+      const number = typeof review['number'] === 'number' ? review['number'] : null;
+      if (number === null) continue;
+      const summary = str(review, 'summary');
+      const review_id = str(review, 'review_id');
+      items.push({
+        id: null,
+        state: null,
+        text: summary === null || summary.trim() === '' ? `review #${number}` : summary,
+        tag: `#${number}`,
+        when: review_id,
+      });
+    }
+    return {
+      title: 'reviews',
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length}`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'get') {
+    const detail = obj(answer);
+    const number = typeof detail['number'] === 'number' ? detail['number'] : null;
+    const comments = detail['comments'];
+    if (number === null || !Array.isArray(comments)) return null;
+    const chips: ForgeChip[] = [];
+    const counts: Record<string, number> = {};
+    for (const held of comments) {
+      const status = str(obj(held), 'status') ?? 'unknown';
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+    for (const status of ['open', 'addressed', 'outdated', 'resolved']) {
+      const count = counts[status] ?? 0;
+      if (count > 0) chips.push({ text: `${count} ${status}`, tone: statusTone(status) });
+    }
+    const items: ForgeListItem[] = [];
+    for (const held of comments) {
+      const comment = obj(held);
+      const file = str(comment, 'file');
+      const line = typeof comment['line'] === 'number' ? comment['line'] : null;
+      const comment_id = str(comment, 'comment_id');
+      if (file === null || comment_id === null) continue;
+      const status = str(comment, 'status') ?? 'unknown';
+      const turns = Array.isArray(comment['thread']) ? comment['thread'].length : null;
+      items.push({
+        id: null,
+        state: { text: status, tone: statusTone(status) },
+        text: line === null ? file : `${file}:${line}`,
+        tag: null,
+        when: turns === null ? comment_id : `${comment_id} \u{b7} ${turns} turns`,
+      });
+    }
+    const pieces: ForgePiece[] = [];
+    const summary = str(detail, 'summary');
+    if (summary !== null && summary.trim() !== '') pieces.push({ kind: 'quote', text: summary });
+    if (items.length > 0) pieces.push({ kind: 'list', items });
+    return {
+      title: `review #${number}`,
+      chips,
+      figure: comments.length === 0 ? null : `${comments.length} comments`,
+      pieces,
+    };
+  }
+  return null;
+}
+
+/** The chip tone a review state's word draws. */
+function statusTone(status: string): ForgeChip['tone'] {
+  switch (status) {
+    case 'open':
+      return 'bad';
+    case 'addressed':
+      return 'info';
+    case 'resolved':
+      return 'ok';
+    case 'outdated':
+      return 'warn';
+    default:
+      return 'plain';
+  }
+}
+
+/**
+ * The agents family's card: the spawn echo the server answers with.
+ *
+ * The label is the call's own input - the result names the session, not the
+ * worker - so the row is titled by what the lead asked for and the row the
+ * server echoed rides the body beside where the worker landed.
+ */
+function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  if (verb !== 'spawn') return null;
+  const held = obj(answer);
+  const session = str(held, 'session_id');
+  if (session === null) return null;
+  const label = str(obj(input), 'label') ?? 'worker';
+  const chips: ForgeChip[] = [
+    held['resumed'] === true ? { text: 'resumed', tone: 'info' } : { text: 'fresh', tone: 'plain' },
+  ];
+  const families = held['mcp_families'];
+  if (Array.isArray(families)) {
+    chips.push({
+      text: families.length === 0 ? 'all families' : families.join(', '),
+      tone: 'dim',
+    });
+  } else {
+    chips.push({ text: 'all families', tone: 'dim' });
+  }
+  const pieces: ForgePiece[] = [];
+  const worktree = str(held, 'worktree');
+  if (worktree !== null) pieces.push({ kind: 'kv', pairs: [['worktree', worktree]] });
+  const charter = str(obj(input), 'charter');
+  if (charter !== null && charter.trim() !== '') {
+    pieces.push({ kind: 'tag', text: 'charter' });
+    pieces.push({ kind: 'quote', text: charter });
+  }
+  const kick = str(obj(input), 'kick');
+  if (kick !== null && kick.trim() !== '') {
+    pieces.push({ kind: 'tag', text: 'kick' });
+    pieces.push({ kind: 'quote', text: kick });
+  }
+  const warning = str(held, 'durability_warning');
+  if (warning !== null) {
+    pieces.push({ kind: 'warnline', label: 'durability', text: warning });
+  }
+  const notice = str(held, 'notice');
+  if (notice !== null) {
+    pieces.push({ kind: 'warnline', label: 'account', text: notice });
+  }
+  return {
+    title: `spawned worker '${label}'`,
+    chips,
+    figure: session.slice(0, 6),
+    pieces,
+  };
+}
+
+/**
+ * The slack family's card: what was subscribed, what went out, what a read
+ * found.
+ *
+ * A channel is named by its name and never by its id - the sheet's own rule -
+ * and a target the server could not resolve yet draws the id it knows rather
+ * than a name this page would have to invent.
+ */
+function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  if (verb === 'subscribe') {
+    if (!Array.isArray(answer)) return null;
+    const chips: ForgeChip[] = [];
+    const items: ForgeListItem[] = [];
+    let workspace: string | null = null;
+    for (const held of answer) {
+      const row = obj(held);
+      const target = targetOf(row['target']);
+      if (target === null) return null;
+      workspace ??= str(row, 'workspace');
+      chips.push(target.chip);
+      items.push({
+        id: null,
+        state: null,
+        text: target.text,
+        tag: null,
+        when: shortId(str(row, 'id')),
+      });
+    }
+    // **The workspace IS the address on Slack**: one channel name can exist in
+    // two workspaces, so a row that named only the channel would be ambiguous.
+    return {
+      title: workspace === null ? 'subscribed in Slack' : `subscribed in ${workspace}`,
+      chips,
+      figure: items.length === 0 ? null : `${items.length}`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'unsubscribe') {
+    const envelope = obj(answer);
+    if (str(envelope, 'status') !== 'deleted') return null;
+    const row = obj(envelope['removed']);
+    const target = targetOf(row['target']);
+    if (target === null) return null;
+    const workspace = str(row, 'workspace');
+    return {
+      title: workspace === null ? 'unsubscribed' : `unsubscribed in ${workspace}`,
+      chips: [{ ...target.chip, tone: 'dim' }],
+      figure: null,
+      pieces: [],
+    };
+  }
+  if (verb === 'post') {
+    const ts = tsOf(answer);
+    if (ts === null) return null;
+    const held = obj(answer);
+    const name = str(held, 'conversation_name');
+    const parts = typeof held['parts'] === 'number' ? held['parts'] : null;
+    const workspace = str(obj(input), 'workspace');
+    const where = name === null ? null : channelName(name);
+    return {
+      title: postTitle(workspace, where),
+      chips: parts === null || parts <= 1 ? [] : [{ text: `${parts} parts`, tone: 'plain' }],
+      figure: ts.length === 0 ? null : `ts ${ts[0]}`,
+      pieces: [],
+    };
+  }
+  if (verb === 'search') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const hit = obj(held);
+      const text = str(hit, 'text');
+      if (text === null) continue;
+      const channel = str(hit, 'conversation_name');
+      const user = str(hit, 'username');
+      items.push({
+        id: null,
+        state: null,
+        text,
+        tag: channel === null ? null : channelName(channel),
+        when: user,
+      });
+    }
+    return {
+      title: withWorkspace('search', str(obj(input), 'workspace')),
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length} hits`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'list') {
+    const conversations = obj(answer)['conversations'];
+    if (!Array.isArray(conversations)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of conversations) {
+      const row = obj(held);
+      const name = str(row, 'name');
+      const kind = str(row, 'kind');
+      items.push({
+        id: null,
+        state: row['subscribed'] === true ? { text: 'watching', tone: 'ok' } : null,
+        text: name === null ? 'conversation' : channelName(name),
+        tag: kind,
+        when: null,
+      });
+    }
+    return {
+      title: withWorkspace('conversations', str(obj(input), 'workspace')),
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length}`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  if (verb === 'user') {
+    const user = str(obj(answer), 'name');
+    if (user === null) return null;
+    const pairs: [string, string][] = [];
+    for (const key of ['real_name', 'tz']) {
+      const said = str(obj(answer), key);
+      if (said !== null && said !== '') pairs.push([key.replace('_', ' '), said]);
+    }
+    return {
+      title: `user ${user}`,
+      chips: [],
+      figure: null,
+      pieces: pairs.length === 0 ? [] : [{ kind: 'kv', pairs }],
+    };
+  }
+  return null;
+}
+
+/** A slack target as its own words: a channel with its mode, the DM class, or mentions. */
+function targetOf(value: unknown): { chip: ForgeChip; text: string } | null {
+  const held = obj(value);
+  const kind = str(held, 'kind');
+  if (kind === 'conversation') {
+    const id = str(held, 'id');
+    if (id === null) return null;
+    const name = str(held, 'name');
+    const mode = str(held, 'mode') === 'mentions' ? 'mentions' : 'all';
+    const label = name === null ? id : channelName(name);
+    return { chip: { text: `${label} \u{b7} ${mode}`, tone: 'info' }, text: label };
+  }
+  if (kind === 'dm') return { chip: { text: 'DMs', tone: 'plain' }, text: 'direct messages' };
+  if (kind === 'mentions') {
+    return { chip: { text: 'mentions', tone: 'plain' }, text: 'mentions anywhere' };
+  }
+  return null;
+}
+
+/** A conversation's name, as the sheet spells a channel: the marker only on a name. */
+function channelName(name: string): string {
+  return name.startsWith('#') || name.startsWith('@') ? name : `#${name}`;
+}
+
+/** A read's title, naming the workspace the call went into when it named one. */
+function withWorkspace(title: string, workspace: string | null): string {
+  return workspace === null ? title : `${title} \u{b7} ${workspace}`;
+}
+
+/** A post's title: the workspace first, then the channel, whichever are known. */
+function postTitle(workspace: string | null, channel: string | null): string {
+  if (workspace !== null && channel !== null) return `posted to ${workspace} \u{b7} ${channel}`;
+  if (channel !== null) return `posted to ${channel}`;
+  return workspace === null ? 'posted to Slack' : `posted to ${workspace}`;
+}
+
+/** The ts list a post answered with, or null for an answer that is not one. */
+function tsOf(answer: unknown): string[] | null {
+  const held = obj(answer)['ts'];
+  if (!Array.isArray(held)) return null;
+  return held.filter((one): one is string => typeof one === 'string');
+}
+
+/**
+ * A tool name's own verb, the last segment of `mcp__<server>__<family>__<verb>`.
+ *
+ * The family segment is what picks the card; the verb picks the arm inside it.
+ */
+export function verbOf(name: string): string {
+  const parts = name.split('__');
+  return parts.length === 0 ? '' : (parts[parts.length - 1] ?? '');
+}
+
+/** The tasks family's card: create / update echo a record, delete an envelope, list an array. */
+function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  if (verb === 'create' || verb === 'update') {
+    const record = taskOf(answer);
+    if (record === null || record.subject === null) return null;
+    const pieces: ForgePiece[] = [];
+    // The detail is prose, so it draws as prose: the meta line under it is
+    // for the record's own facts, the way an instance's row splits its brief
+    // from its facts.
+    if (record.detail !== null && record.detail !== '') {
+      pieces.push({ kind: 'quote', text: record.detail });
+    }
+    pieces.push({
+      kind: 'kv',
+      pairs: [
+        ...namedBy(input, verb === 'update'),
+        ...recordFacts(record, verb === 'update' ? 'updated_at' : 'created_at'),
+      ],
+    });
+    return {
+      title: record.subject,
+      chips: [statusChip(record.status)],
+      figure: record.owner === null ? null : `owner ${record.owner}`,
+      pieces,
+    };
+  }
+  if (verb === 'delete') {
+    const envelope = obj(answer);
+    if (str(envelope, 'status') !== 'deleted') return null;
+    const record = taskOf(envelope['removed']);
+    if (record === null || record.subject === null) return null;
+    const removed = countOf(envelope['descendants_removed']);
+    return {
+      title: record.subject,
+      chips: [{ text: 'removed', tone: 'dim' }],
+      figure:
+        removed === null || removed === 0
+          ? null
+          : `with ${removed} subtask${removed === 1 ? '' : 's'}`,
+      pieces: [],
+    };
+  }
+  if (verb === 'list') {
+    if (!Array.isArray(answer)) return null;
+    const items: ForgeListItem[] = [];
+    for (const held of answer) {
+      const record = taskOf(held);
+      if (record === null || record.subject === null) return null;
+      items.push({
+        id: record.id,
+        state: statusChip(record.status),
+        text: record.subject,
+        tag: null,
+        when: record.owner ?? record.estimate,
+      });
+    }
+    return {
+      title: 'tasks',
+      chips: [],
+      figure: items.length === 0 ? null : `${items.length} in flight`,
+      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+    };
+  }
+  return null;
+}
+
+/**
+ * The fields the call itself stated, as the meta line's leading pairs.
+ *
+ * An update's own patch is the part the echo cannot show - a record says where
+ * it stands, never what moved - so the changed field names lead. A create
+ * states the whole task, and those values are on the record already.
+ */
+function namedBy(input: unknown, changed: boolean): [string, string][] {
+  if (!changed) return [];
+  const stated = obj(input);
+  const names = Object.keys(stated).filter(
+    (key) => key !== 'id' && stated[key] !== undefined && stated[key] !== null,
+  );
+  return names.length === 0 ? [] : [['changed', names.map(spaced).join(', ')]];
+}
+
+/** The record's own facts, as pairs: what it estimates, points at, and when it moved. */
+function recordFacts(
+  record: TaskRecord,
+  stampKey: 'created_at' | 'updated_at',
+): [string, string][] {
+  const rows: [string, string][] = [];
+  for (const [label, said] of [
+    ['owner', record.owner],
+    ['estimate', record.estimate],
+    ['artifact', record.artifact],
+  ] as [string, string | null][]) {
+    if (said !== null && said !== '') rows.push([label, said]);
+  }
+  const at = stamp(record[stampKey]);
+  if (at !== null) rows.push([stampKey === 'created_at' ? 'created' : 'updated', at]);
+  return rows;
+}
+
+/** One task record off the wire, or null where the fields a card needs are absent. */
+function taskOf(value: unknown): TaskRecord | null {
+  const held = obj(value);
+  // The id is what every arm names the task by; a JSON object without one is
+  // not a task record, whatever else it carries.
+  if (str(held, 'id') === null && str(held, 'subject') === null) return null;
+  return {
+    id: str(held, 'id'),
+    subject: str(held, 'subject'),
+    status: str(held, 'status'),
+    owner: str(held, 'owner'),
+    detail: str(held, 'detail'),
+    artifact: str(held, 'artifact'),
+    estimate: str(held, 'estimate'),
+    active_form: str(held, 'active_form'),
+    created_at: str(held, 'created_at'),
+    updated_at: str(held, 'updated_at'),
+  };
+}
+
+/** The chip a task's status draws: the word the wire sends, spaced and toned. */
+function statusChip(status: string | null): ForgeChip {
+  switch (status) {
+    case 'in_progress':
+      return { text: 'in progress', tone: 'info' };
+    case 'blocked':
+      return { text: 'blocked', tone: 'warn' };
+    case 'completed':
+      return { text: 'completed', tone: 'ok' };
+    case 'pending':
+      return { text: 'pending', tone: 'dim' };
+    default:
+      return { text: status ?? 'unknown', tone: 'plain' };
+  }
+}
+
+/**
+ * An instant as the reader's own wall clock, `YYYY-MM-DD HH:MM`.
+ *
+ * The reader's zone rather than the writer's: the stamp a record carries is
+ * UTC, and a time only the machine that wrote it can place is not a time.
+ */
+function stamp(utc: string | null): string | null {
+  if (utc === null) return null;
+  const at = new Date(utc);
+  if (Number.isNaN(at.getTime())) return null;
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(
+    at.getHours(),
+  )}:${pad(at.getMinutes())}`;
+}
+
+/** A field name as a row spells it: `active_form` is "active form". */
+function spaced(name: string): string {
+  return name.replaceAll('_', ' ');
+}
+
+/** A whole number off the wire, or null for anything else. */
+function countOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}

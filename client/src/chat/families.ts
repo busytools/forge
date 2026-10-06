@@ -26,6 +26,35 @@ export type Family =
   | 'edit';
 
 /**
+ * The forge MCP families whose results draw as a card of their own.
+ *
+ * One name per submodule of the `forge` server rather than a second list: the
+ * family segment a tool name carries IS the family (`mcp__forge__tasks__update`
+ * is tasks), so a family added on the server arrives here by being named.
+ */
+export type ForgeFamily = 'agents' | 'cron' | 'gotify' | 'review' | 'slack' | 'tasks';
+
+/** The families a `forge` call draws a card for; `systemone` keeps its own kind. */
+const FORGE_FAMILIES = new Set<string>(['agents', 'cron', 'gotify', 'review', 'slack', 'tasks']);
+
+/**
+ * The forge family a tool belongs to, or `null` for every other call.
+ *
+ * A tool name is `mcp__<server>__<family>__<verb>` for every family but the
+ * decisions, so the family is the first segment under the server - read from
+ * the name rather than matched against a list of 30 tool names, because the
+ * verb is the card's business and the family is not.
+ */
+export function forgeFamilyOf(name: string): ForgeFamily | null {
+  const parts = mcpParts(name);
+  if (parts === null || parts.server !== 'forge') return null;
+  const cut = parts.tool.indexOf('__');
+  if (cut <= 0) return null;
+  const family = parts.tool.slice(0, cut);
+  return FORGE_FAMILIES.has(family) ? (family as ForgeFamily) : null;
+}
+
+/**
  * The class a row belongs to, which is what a view picks its glyph from.
  *
  * A label alone cannot tell a server named `read` from the read family, which
@@ -34,6 +63,7 @@ export type Family =
  */
 export type KindRow =
   | { kind: 'family'; family: Family }
+  | { kind: 'forge'; family: ForgeFamily }
   | { kind: 'mcp' }
   | { kind: 'systemone' }
   | { kind: 'inbound' }
@@ -108,9 +138,27 @@ export function familyOf(name: string): Family {
 /** The row a call is summarised under. */
 export function rowOf(name: string): KindRow {
   if (isDecisionTool(name)) return { kind: 'systemone' };
+  const family = forgeFamilyOf(name);
+  if (family !== null) return { kind: 'forge', family };
   if (mcpParts(name) !== null) return { kind: 'mcp' };
   return { kind: 'family', family: familyOf(name) };
 }
+
+/**
+ * The sprite a forge family draws.
+ *
+ * Every one is a shipped id except `review`, which is this work's own addition:
+ * the mock's Lucide git-pull-request, added to the sprite in the PR that first
+ * draws a review card.
+ */
+const FORGE_GLYPH: Record<ForgeFamily, string> = {
+  agents: 'subagents',
+  cron: 'schedules',
+  gotify: 'gotify',
+  review: 'review',
+  slack: 'slack',
+  tasks: 'tasks',
+};
 
 /**
  * The sprite each family draws.
@@ -136,6 +184,8 @@ const FAMILY_GLYPH: Record<Family, string> = {
 /** The sprite a row draws, by the class it belongs to. */
 export function iconOf(row: KindRow): string {
   switch (row.kind) {
+    case 'forge':
+      return FORGE_GLYPH[row.family];
     case 'mcp':
       return 'mcp';
     case 'systemone':

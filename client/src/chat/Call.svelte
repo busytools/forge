@@ -5,6 +5,7 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import Forge from './Forge.svelte';
   import Call from './Call.svelte';
   import { iconOf } from './families';
   import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
@@ -208,6 +209,27 @@
       : card.running,
   );
 
+  /** Whether the call failed, which a forge row states on the row itself. */
+  const failed = $derived(call.status === 'failed' || call.status === 'killed');
+
+  /** The card the chips and figure draw from: none while the row says it failed. */
+  const forge = $derived(failed ? null : (call.forge ?? null));
+
+  /**
+   * A failed forge call's own reason, as the row's tail: the first line of the
+   * error the fold unwrapped, with the detail left to the body that keeps it.
+   *
+   * Read off the ROW's kind rather than the card, which a failed call has none
+   * of by construction - the reason is what a failure draws AS. `null` for a
+   * row that did not fail and for one whose failure said nothing: a mark with
+   * no words after it is a word a reader cannot act on.
+   */
+  const failure = $derived(
+    call.row.kind !== 'forge' || !failed
+      ? null
+      : (call.body.find((piece) => piece.kind === 'error')?.message ?? null),
+  );
+
   /**
    * Whether the row's text brightens, which is the narrower condition the
    * group's own rule uses: a call that has a frame in hand. A dispatch takes
@@ -295,6 +317,20 @@
     {/if}
     {#if figures !== null}
       <span class="sg-fig">{figures}</span>
+    {/if}
+    {#if forge !== null}
+      {#each forge.chips as chip, at (at)}
+        <span class="fam-chip {chip.tone}">{chip.text}</span>
+      {/each}
+      {#if forge.figure !== null}
+        <span class="fam-fig">{forge.figure}</span>
+      {/if}
+    {/if}
+    {#if failure !== null}
+      <!-- A call that failed says why on the row itself, after the title: the
+           reason is the one thing a reader acts on, and the body keeps every
+           word of it. -->
+      <span class="fam-tail" title={failure}>{failure}</span>
     {/if}
     <Chevron />
   </summary>
@@ -396,6 +432,14 @@
          they read, and an unreadable result never reaches this branch. -->
     <div class="body">
       <Decision decision={call.decision} />
+    </div>
+  {:else if call.forge !== null}
+    <!-- The result's own JSON is the same facts undressed; the card is how
+         they read, and an unreadable result never reaches this branch. A
+         failed forge call carries no card, so its reason draws below the way
+         every failure draws. -->
+    <div class="body">
+      <Forge card={call.forge} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">
