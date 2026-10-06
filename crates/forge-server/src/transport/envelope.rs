@@ -68,9 +68,15 @@ impl Subject {
             // transcript's tokens moving is not an update any variant
             // announces.
             Self::Usage => false,
-            // The check's own landing, and nothing else: the feed and the
-            // models it is read against are the machine's, not a seat's.
-            Self::DictateModels => matches!(update, SessionUpdate::DictateModelsChanged { .. }),
+            // The check's own landing, and the load's signal: a page open
+            // during a first 3 GB download hears models finished loading
+            // through `DictateAvailability` and reads again, so its state
+            // chips are not stuck on `pending` until the next check. The
+            // feed belongs to no seat, so nothing else reaches here.
+            Self::DictateModels => matches!(
+                update,
+                SessionUpdate::DictateModelsChanged { .. } | SessionUpdate::DictateAvailability
+            ),
         }
     }
 }
@@ -259,6 +265,43 @@ mod tests {
         };
         assert_eq!(what, Subject::Home, "the subject survives the round trip");
         assert!(answering, "and so does the capability the client declared");
+    }
+
+    /// The models subject hears its own landing and the load's signal -
+    /// the only push that says the models finished loading - and nothing
+    /// else. It is the whole live half of that page: a subscriber that
+    /// never hears a landing reads as quiet, not as broken.
+    #[test]
+    fn the_models_subject_hears_the_landing_and_the_load() {
+        let landing = SessionUpdate::DictateModelsChanged {
+            models: forge_workspace::catalogue::DictateModelsSnapshot {
+                enabled: true,
+                models_dir: None,
+                in_use: Vec::new(),
+                check: forge_workspace::catalogue::CatalogueCheck::Never,
+                updates: Vec::new(),
+                rows: Vec::new(),
+            },
+        };
+
+        assert!(
+            Subject::DictateModels.covers(&landing),
+            "the check's landing is the subject's whole live half",
+        );
+        assert!(
+            Subject::DictateModels.covers(&SessionUpdate::DictateAvailability),
+            "and the preflight's signal, so a page open during a first download re-reads its \
+             state chips instead of drawing `pending` until the next check",
+        );
+        assert!(
+            !Subject::DictateModels.covers(&SessionUpdate::AccountsChanged),
+            "another machine-level update is not the models page's to redraw",
+        );
+        assert!(
+            Subject::Home.covers(&landing),
+            "and the slot-less arm carries it home, which is what the client's own census \
+             classifies it against",
+        );
     }
 
     /// The pool belongs to no seat, so a home subscription hears it and a

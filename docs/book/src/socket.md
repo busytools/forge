@@ -356,21 +356,29 @@ are the whole catalogue and only the models page draws them.
 |---|---|
 | `enabled` | Whether `[dictate] enabled` is set. Carried rather than inferred from an empty `in_use`, which a switched-off section and a failed preflight share. |
 | `models_dir` | Where the dictation models land, or `null` when the platform has no usable cache directory and none was configured. |
-| `in_use` | One row per pinned model: `role`, `file`, `size`, `sha256`, the preflight `state` (`pending`, `downloading`, `verifying`, `fetched`, `loading`, `ready`, `failed`), `facts` - what the pin declares about the checkpoint (quant, parameters, licence, runtime) - and `catalogue`, the feed's entry for this file joined by file name when the feed carries one. |
+| `in_use` | One row per pinned model: `role`, `file`, `size`, `sha256`, the preflight `state` (`pending`, `downloading`, `verifying`, `fetched`, `loading`, `ready`, `failed`), `facts` - what the pin declares about the checkpoint (quant, parameters, licence, runtime) - and `catalogue`, the feed's entry for this file joined by file name, with the pin's byte length as the witness, when the feed carries one. |
 | `check` | The last catalogue check, tagged on `state`: `never`, `checking`, `fresh` (`at`, `release`, `skipped`) or `unreachable` (`error`). The rows stand through an `unreachable`: a failed check costs the freshness line, not the feed. |
 | `updates` | One entry per in-service model the feed has a candidate for: `role`, `file`, `current` (the in-use model's own catalogue numbers, `speed_x` and `fleurs_en_wer`) and `candidate`, a catalogue row. |
 | `rows` | The whole feed, one row per variant: display identity, parameters, licence, languages, streaming, `download` (the preferred quant and its size), `speed` (the m4-max Metal row), and `wer` (FLEURS English where the feed carries it, else the entry's own headline). |
 
 **A candidate beats the model in use on both measured axes or it is not
 one**: lower FLEURS English word error rate and higher m4-max Metal
-wall-clock realtime factor, both from the feed's own rows; among those, the
-fastest wins. Nothing is ever adopted automatically - the page proposes, a
-person merges - so what this read states is a comparison, not a change.
+wall-clock realtime factor, both from the feed's own rows. The entry must
+also carry English, must not be the variant already in use, and must not be
+a non-commercial licence - a proposal is what an adoption would pin into a
+public repo. An entry whose file name matches the pin at a different byte
+length has been rebuilt, and is never a comparison. Among the entries that
+clear all of it, the fastest wins. Nothing is ever adopted automatically -
+the page proposes, a person merges - so what this read states is a
+comparison, not a change.
 
 **The check's landing is the update.** `dictate_catalogue_check` starts a
 fetch, and `dictate_models_changed` carries the re-read view when it
 answers; a refresh due at boot lands the same way, so a page that attached
-mid-check hears the result without asking again.
+mid-check hears the result without asking again. `dictate_availability`
+reaches this subject too: when the preflight finishes loading the models -
+which it announces with that update alone - a page reads again rather than
+drawing `pending` chips until the next check.
 
 **Two representations of one conversation cross, and they agree.** A
 settled turn arrives by `more` as the messages it ran as; the turn in
