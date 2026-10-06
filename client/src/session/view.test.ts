@@ -11,7 +11,6 @@ import {
   copyReason,
   fleetCount,
   gitSection,
-  gotifySection,
   headerFacts,
   mcpState,
   memoryLabel,
@@ -22,8 +21,8 @@ import {
   type RailGroup,
   type RailProject,
   schedulesSection,
+  seatConnectorRows,
   seatState,
-  slackSection,
   tasksSection,
   untilOf,
 } from './view';
@@ -448,82 +447,6 @@ describe('the inbox sections', () => {
     expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
     expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
   });
-
-  it('takes the floor of an unbounded subscription off the whole set', () => {
-    // The sets ride the PROJECT's row and the liveness rides the home, which
-    // is the split the section reads across: a subscription list on the home
-    // is one nothing produces.
-    const home = withHome({
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [
-              { applications: ['homelab', 'alerts'], min_priority: 4 },
-              { applications: ['homelab'], min_priority: null },
-            ],
-            slack: [],
-          },
-        },
-      ],
-      connectors: {
-        gotify: { connected: true },
-        slack: { connected_workspaces: [], load_failed: false },
-      },
-    });
-    const row = home.projects[0] ?? null;
-    expect(gotifySection(home, row)?.rows[1]?.v, 'a set with no floor claimed one').toBe('any');
-    expect(gotifySection(home, row)?.rows[0]?.v).toBe('homelab, alerts');
-  });
-
-  /**
-   * A subscription watches a workspace, and the section says so by nesting:
-   * the terminal put two `&nbsp;` in front of the target, which is a space
-   * standing in for a level of hierarchy.
-   *
-   * **The two class targets are strings here because that is what the socket
-   * sends.** `SlackSubscriptionTarget` is an externally tagged enum, so
-   * `Mentions` and `DirectMessages` cross as bare strings and only
-   * `Conversation` is an object.
-   */
-  it('hangs each slack subscription off the workspace it watches', () => {
-    const home = withHome({
-      projects: [
-        {
-          ...project(),
-          connectors: {
-            gotify: [],
-            slack: [
-              { id: 's1', workspace: 'Acme', target: 'Mentions' },
-              {
-                id: 's2',
-                workspace: 'Trust Machines',
-                target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
-              },
-            ],
-          },
-        },
-      ],
-      connectors: {
-        gotify: { connected: false },
-        slack: {
-          connected_workspaces: [['Trust Machines', true]],
-          load_failed: false,
-        },
-      },
-    });
-    const slack = slackSection(home, home.projects[0] ?? null);
-    expect(slack?.summary).toBe('2 workspaces');
-    expect(slack?.workspaces.find((entry) => entry.name === 'Trust Machines')?.subs).toEqual([
-      { id: 's2', k: '#alerts', v: 'every message' },
-    ]);
-    // A workspace the pump has not reported still draws, with its own state.
-    expect(slack?.workspaces.find((entry) => entry.name === 'Acme')).toEqual({
-      name: 'Acme',
-      connected: false,
-      subs: [{ id: 's1', k: 'mentions anywhere', v: 'mentions only' }],
-    });
-  });
 });
 
 describe('the schedules section', () => {
@@ -854,5 +777,218 @@ describe('the dictation overrides', () => {
       Object.hasOwn(held, 'dictate_overrides'),
       'the record must not carry a field nothing reads',
     ).toBe(false);
+  });
+});
+
+describe("a seat's own connector rows", () => {
+  const WORKER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'builder' };
+
+  /** A home whose connectors are up, so a row's value carries no state
+   *  suffix unless a case takes the stream down. */
+  const live = (change: Record<string, unknown> = {}): Partial<HomeWire> => ({
+    connectors: {
+      gotify: { connected: true },
+      slack: { connected_workspaces: [['forge', true]] },
+      ...change,
+    },
+  });
+
+  const home = (change: Record<string, unknown> = {}) =>
+    withHome({
+      ...live(),
+      ...change,
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [
+              { id: 'g-1', applications: ['client-alerts'], min_priority: 5, team_role: null },
+              { id: 'g-2', applications: [], min_priority: null, team_role: 'builder' },
+            ],
+            slack: [
+              { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
+              {
+                id: 's-2',
+                workspace: 'forge',
+                target: { Conversation: { name: 'field-notes', mode: 'All' } },
+                team_role: 'builder',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+  it('reads the lead the no-owner subscriptions and nothing else', () => {
+    const rows = seatConnectorRows(home(), LEAD);
+
+    expect(rows, 'the lead owns one of each').toHaveLength(2);
+    expect(rows[0], 'its gotify apps and floor, keyed by the subscription own id').toEqual({
+      kind: 'gotify',
+      id: 'g-1',
+      key: 'client-alerts',
+      value: '>=5',
+    });
+    expect(rows[1], 'and its slack target, the bare-string arm read by name').toEqual({
+      kind: 'slack',
+      id: 's-1',
+      key: 'forge',
+      value: 'mentions anywhere \u{b7} mentions only',
+    });
+  });
+
+  it("reads a worker its own label and never the lead's", () => {
+    const rows = seatConnectorRows(home(), WORKER);
+
+    expect(rows, 'the worker owns one of each').toHaveLength(2);
+    expect(rows[0], 'its own gotify row: no app filter, any priority').toEqual({
+      kind: 'gotify',
+      id: 'g-2',
+      key: 'any app',
+      value: 'any priority',
+    });
+    expect(rows[1], 'and its own slack conversation, named and readable').toEqual({
+      kind: 'slack',
+      id: 's-2',
+      key: 'forge',
+      value: 'field-notes \u{b7} every message',
+    });
+  });
+
+  it('keys by the subscription, so two subs sharing one workspace both draw', () => {
+    // The live crash shape: a mentions watcher + the auto-subscribed
+    // conversation in one workspace read the same drawn words, and a row
+    // keyed by those words throws in dev and prod alike.
+    const two = withHome({
+      ...live(),
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [],
+            slack: [
+              { id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null },
+              {
+                id: 's-2',
+                workspace: 'forge',
+                target: { Conversation: { name: 'forge', mode: 'All' } },
+                team_role: null,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const rows = seatConnectorRows(two, LEAD);
+
+    expect(rows, 'both subscriptions draw').toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size, 'and their ids are distinct').toBe(2);
+  });
+
+  it('reads only the seat project, never another project on the home', () => {
+    // The OTHER project comes FIRST on purpose: with the seat's project
+    // first, a lookup that took `projects[0]` would pass this whole file.
+    const two = withHome({
+      ...live(),
+      projects: [
+        {
+          ...project(),
+          project: { ...project().project, name: 'other', key: 'TestOrg-other' },
+          connectors: {
+            gotify: [],
+            slack: [{ id: 's-x', workspace: 'Acme', target: 'Mentions', team_role: null }],
+          },
+        },
+        {
+          ...project(),
+          connectors: {
+            gotify: [],
+            slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
+          },
+        },
+      ],
+    });
+
+    const rows = seatConnectorRows(two, LEAD);
+
+    expect(rows, 'one row, from the seat project').toHaveLength(1);
+    expect(rows[0]?.key, "another project's channel drew on this seat").toBe('forge');
+  });
+
+  it('names a slack read that failed, which is the only surface left saying so', () => {
+    // `load_failed` is the boot that could not read the durable slack
+    // subscriptions: the project row draws nothing, so without a row here the
+    // failure would be invisible in the web client entirely.
+    const failed = withHome({
+      connectors: {
+        gotify: { connected: true },
+        slack: { connected_workspaces: [], load_failed: true },
+      },
+      projects: [
+        {
+          ...project(),
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    });
+
+    const rows = seatConnectorRows(failed, LEAD);
+
+    expect(rows, 'the failure draws as a row of its own').toHaveLength(1);
+    expect(rows[0], 'naming what failed').toEqual({
+      kind: 'slack',
+      id: 'slack-load',
+      key: 'slack',
+      value: 'subscriptions failed to load',
+    });
+  });
+
+  it('reads the direct-messages arm by name, mode and all', () => {
+    const dm = withHome({
+      ...live(),
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [],
+            slack: [{ id: 's-1', workspace: 'forge', target: 'DirectMessages', team_role: null }],
+          },
+        },
+      ],
+    });
+
+    const rows = seatConnectorRows(dm, LEAD);
+
+    expect(rows[0]?.value, 'a bare-string arm must not draw an empty key').toBe(
+      'direct messages \u{b7} every message',
+    );
+  });
+
+  it('says so on the row when the stream behind it is not up', () => {
+    const down = withHome({
+      connectors: {
+        gotify: { connected: false },
+        slack: { connected_workspaces: [] },
+      },
+      projects: [
+        {
+          ...project(),
+          connectors: {
+            gotify: [{ id: 'g-1', applications: [], min_priority: null, team_role: null }],
+            slack: [{ id: 's-1', workspace: 'forge', target: 'Mentions', team_role: null }],
+          },
+        },
+      ],
+    });
+
+    const rows = seatConnectorRows(down, LEAD);
+
+    expect(rows[0]?.value, 'a disconnected gotify stream reads on its row').toBe(
+      'any priority \u{b7} offline',
+    );
+    expect(rows[1]?.value, 'an unconnected workspace reads on its row').toBe(
+      'mentions anywhere \u{b7} mentions only \u{b7} not connected',
+    );
   });
 });

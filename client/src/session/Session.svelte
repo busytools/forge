@@ -13,6 +13,7 @@
   import Rail from './Rail.svelte';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { connectors } from '../chat/connectors.svelte';
   import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
   import { subagents } from '../chat/subagents.svelte';
@@ -22,6 +23,7 @@
     compactionFigure,
     headerFacts,
     orgNeeded,
+    seatConnectorRows,
     seatState,
     type ComposerProps,
     type ConversationProps,
@@ -98,6 +100,15 @@
       record?.header.turn_in_flight ?? false,
       outcomes,
     );
+  });
+
+  /**
+   * The connectors row follows the HOME, not the seat's record: the
+   * subscription sets ride the project's own row there, and the seat's own
+   * are the ones whose `team_role` names it.
+   */
+  $effect(() => {
+    connectors.sync(seatConnectorRows(wire, slot));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */

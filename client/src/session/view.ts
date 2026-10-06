@@ -138,27 +138,6 @@ export interface ScheduleRow {
   v: string;
 }
 
-/** A slack workspace, with the subscriptions that watch it under it. */
-export interface SlackWorkspace {
-  name: string;
-  connected: boolean;
-  /** `id` is the wire's own, and it is what a row is keyed by: two
-   * subscriptions in one workspace can draw the same words. */
-  subs: { id: string; k: string; v: string }[];
-}
-
-/** The gotify section, as its rows draw it. */
-export interface GotifyView {
-  summary: string;
-  rows: Kv[];
-}
-
-/** The slack section, as its rows draw it. */
-export interface SlackView {
-  summary: string;
-  workspaces: SlackWorkspace[];
-}
-
 /** The MCP section, as its rows draw it. */
 export interface McpView {
   summary: string;
@@ -808,67 +787,6 @@ export function untilOf(at: { secs_since_epoch: number } | null, now: number): s
   return `in ${Math.floor(remaining / 86_400)}d`;
 }
 
-/** The gotify section, or `null` when nothing is subscribed and it is not up. */
-export function gotifySection(home: HomeWire, project: ProjectWire | null): GotifyView | null {
-  const view = connectorsOf(home).gotify;
-  if (view === null) return null;
-  const subscriptions = rowConnectors(project).gotify;
-  if (!view.connected && subscriptions.length === 0) return null;
-
-  const apps: string[] = [];
-  for (const sub of subscriptions) {
-    for (const app of sub.applications) if (!apps.includes(app)) apps.push(app);
-  }
-  // One subscription with no floor makes the whole set unbounded, which is
-  // what `any` says: a delivery is let through when ANY subscription matches,
-  // so the set's floor is the lowest of them and an absent one removes it.
-  const floors = subscriptions.map((sub) => sub.min_priority);
-  const floor = floors.includes(null)
-    ? null
-    : floors.reduce<number | null>(
-        (lowest, value) =>
-          value === null ? lowest : lowest === null ? value : Math.min(lowest, value),
-        null,
-      );
-  return {
-    summary: view.connected ? 'connected' : 'not connected',
-    rows: [
-      { k: 'apps', v: apps.join(', ') },
-      { k: 'priority', v: floor === null ? 'any' : `>=${floor}` },
-    ],
-  };
-}
-
-/**
- * The slack section, or `null` when the home carries no workspace.
- *
- * A workspace and its subscriptions come back as a parent and its children
- * rather than as a flat list, because the hierarchy is what the section has to
- * draw: a subscription watches a workspace, and a target prefixed with two
- * spaces said so in a way nothing could style or wrap.
- */
-export function slackSection(home: HomeWire, project: ProjectWire | null): SlackView | null {
-  const view = connectorsOf(home).slack;
-  if (view === null) return null;
-  const subscriptions = rowConnectors(project).slack;
-  const names: string[] = view.connected_workspaces.map(([name]) => name);
-  for (const sub of subscriptions) {
-    if (!names.includes(sub.workspace)) names.push(sub.workspace);
-  }
-  if (names.length === 0) return null;
-
-  return {
-    summary: `${names.length} workspace${names.length === 1 ? '' : 's'}`,
-    workspaces: names.map((name) => ({
-      name,
-      connected: view.connected_workspaces.find(([held]) => held === name)?.[1] === true,
-      subs: subscriptions
-        .filter((sub) => sub.workspace === name)
-        .map((sub) => ({ id: sub.id, k: targetOf(sub.target), v: modeOf(sub.target) })),
-    })),
-  };
-}
-
 /**
  * What a subscription watches: a conversation by its name, or the class it
  * covers.
@@ -900,46 +818,109 @@ function conversationOf(target: unknown): Record<string, unknown> {
   return isRecord(held) ? held : {};
 }
 
-/**
- * The connectors' LIVENESS, which the home's snapshot carries beside the
- * fleet. What a project is subscribed to is not here: it rides the project's
- * own row, since the sets are per project and a home-level list would be one
- * no read can fill. See {@link rowConnectors}.
- */
-interface ConnectorViews {
-  gotify: { connected: boolean } | null;
-  slack: { connected_workspaces: [string, boolean][] } | null;
-}
-
-/** One project's connector subscriptions, as its two sections draw them. */
+/** One project's connector subscriptions, as the strip's rows draw them. */
 interface RowConnectorViews {
-  gotify: { applications: string[]; min_priority: number | null }[];
-  slack: { id: string; workspace: string; target: unknown }[];
+  gotify: {
+    id: string;
+    applications: string[];
+    min_priority: number | null;
+    team_role: string | null;
+  }[];
+  slack: { id: string; workspace: string; target: unknown; team_role: string | null }[];
 }
 
 /**
- * The connectors' liveness, narrowed where it enters.
+ * One seat's own connector subscriptions, as a row draws them.
  *
- * The home's own type leaves this member `unknown`, because no page in that
- * slice drew one; the two section bodies above are the readers, so the
- * narrowing belongs here rather than in the wire's own module.
+ * **Ownership is `team_role`**: a subscription names the worker label it
+ * belongs to, and `None` targets the project lead - so the lead's page reads
+ * the None set and a worker's page reads its own label's, and neither shows
+ * the other's. The sets ride the project's home row (all of the project's,
+ * both owners in one list), which is why the seat filter happens here.
  */
-function connectorsOf(home: HomeWire): ConnectorViews {
+export interface SeatConnectorRow {
+  /** Which connector the row belongs to: its glyph names it at a glance. */
+  kind: 'gotify' | 'slack';
+  /** The subscription's own id, which is what a row is KEYED by: two
+   *  subscriptions in one workspace can draw the same words (a mentions
+   *  watcher beside the auto-subscribed conversation), and keying by the
+   *  drawn text throws on exactly that pair. */
+  id: string;
+  /** The line the row leads with: the apps, or what the slack target watches. */
+  key: string;
+  /** What the row says beside it: the floor, or the slack mode - and the
+   *  connector's own state where the stream is not up, because a
+   *  disconnected stream must not read as if all were well. */
+  value: string;
+}
+
+export function seatConnectorRows(home: HomeWire, slot: SessionSlot): SeatConnectorRow[] {
+  const held = rowConnectors(projectOf(home, slot));
+  const live = connectorsLiveness(home);
+  const mine = <T extends { team_role: string | null }>(subs: T[]): T[] =>
+    subs.filter((sub) =>
+      slot.label === 'lead' ? sub.team_role === null : sub.team_role === slot.label,
+    );
+
+  const rows: SeatConnectorRow[] = [];
+  for (const sub of mine(held.gotify)) {
+    const parts = [sub.min_priority === null ? 'any priority' : `>=${sub.min_priority}`];
+    if (!live.gotify) parts.push('offline');
+    rows.push({
+      kind: 'gotify',
+      id: sub.id,
+      key: sub.applications.length === 0 ? 'any app' : sub.applications.join(', '),
+      value: parts.join(' \u{b7} '),
+    });
+  }
+  for (const sub of mine(held.slack)) {
+    const parts = [targetOf(sub.target), modeOf(sub.target)];
+    if (!live.slack.has(sub.workspace)) parts.push('not connected');
+    rows.push({
+      kind: 'slack',
+      id: sub.id,
+      key: sub.workspace,
+      value: parts.join(' \u{b7} '),
+    });
+  }
+  // A boot that could not read the durable slack subscriptions leaves the
+  // project's set empty, so the failure draws as a row of its own - this is
+  // the only surface left that can say so (rule 22's failed state).
+  if (live.slackFailed) {
+    rows.push({
+      kind: 'slack',
+      id: 'slack-load',
+      key: 'slack',
+      value: 'subscriptions failed to load',
+    });
+  }
+  return rows;
+}
+
+/**
+ * The connectors' liveness, as the rows state it: whether the gotify stream
+ * is up, and the slack workspaces that are connected. A subscription row says
+ * so where its stream is not up - the one fact that must not go unrendered
+ * (rule 22), since a silent row reads as a working one.
+ */
+function connectorsLiveness(home: HomeWire): {
+  gotify: boolean;
+  slack: Set<string>;
+  slackFailed: boolean;
+} {
   const held = isRecord(home.connectors) ? home.connectors : {};
-  const gotify = isRecord(held['gotify']) ? held['gotify'] : null;
-  const slack = isRecord(held['slack']) ? held['slack'] : null;
+  const gotify = isRecord(held['gotify']) ? held['gotify'] : {};
+  const slack = isRecord(held['slack']) ? held['slack'] : {};
+  const connected = new Set<string>();
+  for (const entry of array(slack['connected_workspaces'])) {
+    if (Array.isArray(entry) && entry[1] === true && typeof entry[0] === 'string') {
+      connected.add(entry[0]);
+    }
+  }
   return {
-    gotify: gotify === null ? null : { connected: gotify['connected'] === true },
-    slack:
-      slack === null
-        ? null
-        : {
-            connected_workspaces: array(slack['connected_workspaces']).flatMap((entry) =>
-              Array.isArray(entry) && typeof entry[0] === 'string'
-                ? [[entry[0], entry[1] === true] as [string, boolean]]
-                : [],
-            ),
-          },
+    gotify: gotify['connected'] === true,
+    slack: connected,
+    slackFailed: slack['load_failed'] === true,
   };
 }
 
@@ -948,17 +929,20 @@ function connectorsOf(home: HomeWire): ConnectorViews {
  *
  * A seat with no row on the home - a project that left `forge.toml` between
  * the record and this snapshot - reads as nothing subscribed rather than as
- * the page's problem: the sections the row would feed draw empty, the way
- * they do for a project nobody has subscribed anything to.
+ * the page's problem: the strip's row draws nothing, the way it does for a
+ * project nobody has subscribed anything to.
  */
 function rowConnectors(project: ProjectWire | null): RowConnectorViews {
   const held = isRecord(project?.connectors) ? project.connectors : {};
   return {
     gotify: array(held['gotify']).map((entry) => {
       const sub = isRecord(entry) ? entry : {};
+      const id = sub['id'];
       return {
+        id: typeof id === 'string' ? id : '',
         applications: array(sub['applications']).map((app) => String(app)),
         min_priority: typeof sub['min_priority'] === 'number' ? sub['min_priority'] : null,
+        team_role: typeof sub['team_role'] === 'string' ? sub['team_role'] : null,
       };
     }),
     slack: array(held['slack']).map((entry) => {
@@ -969,6 +953,7 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
         id: typeof id === 'string' ? id : '',
         workspace: typeof workspace === 'string' ? workspace : '',
         target: sub['target'],
+        team_role: typeof sub['team_role'] === 'string' ? sub['team_role'] : null,
       };
     }),
   };

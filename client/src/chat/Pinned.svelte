@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ConnectorsSegment from './ConnectorsSegment.svelte';
   import ProcessesSegment from './ProcessesSegment.svelte';
   import Strip from './Strip.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
@@ -22,11 +23,11 @@
 
 {#if info !== null}
   <div class="strip">
-    <!-- The segments share one right-hand fill: two rows each carrying their
+    <!-- The segments share one right-hand fill: rows each carrying their
          own auto margin would split the free space between them. -->
     <div class="ti">
       <Strip {info} />
-      <span class="sg-fill"><SubagentSegment /><ProcessesSegment /></span>
+      <span class="sg-fill"><SubagentSegment /><ProcessesSegment /><ConnectorsSegment /></span>
     </div>
   </div>
 {/if}

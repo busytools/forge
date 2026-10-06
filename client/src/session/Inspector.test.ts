@@ -155,53 +155,6 @@ describe('the inspector as it draws', () => {
     expect(body).toContain('the CLI refused');
   });
 
-  it('hangs each slack subscription off the workspace it watches', () => {
-    const project = homeWire.projects[0];
-    if (project === undefined) throw new Error('the fixture holds no project');
-    draw({
-      wire: {
-        ...homeWire,
-        projects: [
-          {
-            ...project,
-            connectors: {
-              gotify: [],
-              slack: [
-                {
-                  workspace: 'Trust Machines',
-                  target: { Conversation: { id: 'C1', name: '#granite-alerts', mode: 'All' } },
-                },
-              ],
-            },
-          },
-          // A second project whose subscription must NOT draw: the sets are
-          // per project, and a section reading the fleet's own draws another
-          // project's channels on this seat.
-          {
-            ...project,
-            project: { ...project.project, name: 'other', key: 'TestOrg-other' },
-            connectors: {
-              gotify: [],
-              slack: [{ workspace: 'Acme', target: 'Mentions' }],
-            },
-          },
-        ],
-        connectors: {
-          gotify: { connected: false },
-          slack: {
-            connected_workspaces: [['Trust Machines', true]],
-            load_failed: false,
-          },
-        },
-      },
-    });
-    openSection('slack');
-    const body = drawn();
-    expect(sections(body)).toContain('slack');
-    expect(body).toMatch(/<li>[\s\S]*Trust Machines[\s\S]*<ul class="subs">[\s\S]*#granite-alerts/);
-    expect(body, "another project's channel drew on this seat").not.toContain('Acme');
-  });
-
   it('draws the tasks a project holds, in the order a person reads them', () => {
     const project = homeWire.projects[0];
     if (project === undefined) throw new Error('the fixture holds no project');
