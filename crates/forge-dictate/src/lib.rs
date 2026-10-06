@@ -38,6 +38,7 @@
 //! smoke test passes while dev crashes.
 
 mod audio;
+pub mod bench;
 mod capture;
 pub mod catalogue;
 mod config;

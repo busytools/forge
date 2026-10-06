@@ -118,4 +118,9 @@ pub enum Error {
     /// A catalogue document is not an entry this build reads.
     #[error("catalogue: {message}")]
     Catalogue { message: String },
+
+    /// A bench's corpus could not be read: a wav that is not the shape
+    /// this crate reads, or a fixture set that disagrees with itself.
+    #[error("bench: {message}")]
+    Bench { message: String },
 }
