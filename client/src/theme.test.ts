@@ -58,7 +58,7 @@ describe('the palette', () => {
       '--rail-r',
     ];
     // The stacks arrive beside the palette rather than inside it, from
-    // `[web] font` through `fontStack`.
+    // `[client] font` through `fontStack`.
     const stacks = new Set(['--ui', '--mono']);
     // The retired highlighter's, read by the sheet's `.k` / `.s` / `.f` /
     // `.dif` rules and deliberately NOT carried: colouring code and a

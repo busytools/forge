@@ -532,7 +532,7 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         work: Arc::new(WorkCache::new()),
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
+        client: forge_primitives::ClientConfig::default(),
     });
     // The seat's conversation, put where a `Connected` would have left it.
     //

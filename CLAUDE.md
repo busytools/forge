@@ -777,7 +777,7 @@ inspected.
     from the home onward.
 
     - **One theme.** Every page reads the same token set, and that set is
-      `[web] theme` in `forge.toml` - the key already exists and is what
+      `[client] theme` in `forge.toml` - the key already exists and is what
       a second palette will hang off. A page carrying its own palette,
       its own spacing scale or its own copy of a mark is the defect this
       rule names.
