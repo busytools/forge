@@ -137,14 +137,20 @@ export function skewMessage(skew: Skew): string {
   return `this forge server is v${skew.serverVersion} (protocol ${skew.serverProtocol}); ${mine}. ${command}`;
 }
 
-/** What a client can watch, and the address a subscription is held under. */
-export type Subject = 'home' | { session: SessionSlot } | 'usage';
+/**
+ * What a client can watch, and the address a subscription is held under.
+ *
+ * `dictate_models` is the models page's own read: the pins, the catalogue
+ * check and the feed, which only that page draws.
+ */
+export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.
  *
- * A subject is an object for a seat and a string for the other two, so a map
- * keyed on the subject itself would never match two equal slots.
+ * A subject is an object for a seat and a string for the rest, so a map keyed
+ * on the subject itself would never match two equal slots. The string subjects
+ * ARE their own key, which is the name the server serialised.
  *
  * The triple is joined with a NUL rather than a slash, which an org, project
  * or label may contain: two seats whose parts were shaped so the joined
@@ -152,8 +158,7 @@ export type Subject = 'home' | { session: SessionSlot } | 'usage';
  * snapshot.
  */
 export function subjectKey(subject: Subject): string {
-  if (subject === 'home') return 'home';
-  if (subject === 'usage') return 'usage';
+  if (typeof subject === 'string') return subject;
   const { org, project, label } = subject.session;
   return `session:${org}\u0000${project}\u0000${label}`;
 }
@@ -161,16 +166,17 @@ export function subjectKey(subject: Subject): string {
 /**
  * A core command: the variant's name around its own fields.
  *
- * `Command` has 37 variants and every one of them is a struct variant, so
- * the inner value is always a field bag - `{cancel: {key}}`, never a bare
- * `"cancel"`.
+ * A struct variant crosses as its name around a field bag - `{cancel:
+ * {key}}` - and the core's one unit variant a page sends,
+ * `DictateCatalogueCheck`, as its name alone, which is the shape serde writes
+ * for a unit variant.
  *
  * Left unenumerated rather than written out here: every surface dispatches a
- * handful of the 37, and a union naming them would be a second copy of an
- * enum the server generates from. A caller builds the shape it means, and
+ * handful of the variants, and a union naming them would be a second copy of
+ * an enum the server generates from. A caller builds the shape it means, and
  * the page that owns it is where that shape is stated.
  */
-export type Command = Record<string, Record<string, unknown>>;
+export type Command = string | Record<string, Record<string, unknown>>;
 
 /**
  * One `SessionUpdate`, for a subscription that covers it.

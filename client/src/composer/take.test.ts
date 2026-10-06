@@ -7,24 +7,22 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_AXES } from '../session/wire';
-import type { ServerMessage } from '../protocol';
+import type { Command, ServerMessage } from '../protocol';
 import type { ConnectionStatus } from '../socket';
 import { encodeFrame } from './capture.svelte';
 import { LocalTake, RELEASE_WAIT_MS, WENT_UNSENT, type MicSource } from './take';
-
-type Sent = Record<string, unknown>;
 
 /** A socket that records what it was told, and can be moved by hand. */
 function fakeConnection(open = true) {
   const listeners = new Set<(status: ConnectionStatus) => void>();
   const messages = new Set<(message: ServerMessage) => void>();
   let status: ConnectionStatus = open ? 'open' : 'connecting';
-  const sent: Sent[] = [];
+  const sent: Command[] = [];
   const frames: Uint8Array[] = [];
   return {
     sent,
     frames,
-    dispatch(command: Sent) {
+    dispatch(command: Command) {
       if (status !== 'open') throw new Error('the socket is not open');
       sent.push(command);
       return null;

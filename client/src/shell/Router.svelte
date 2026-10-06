@@ -7,6 +7,7 @@
   import Fixture from '../dev/Fixture.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
+  import Models from '../models/Models.svelte';
   import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
@@ -111,11 +112,21 @@
          only input is its URL. -->
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
+{:else if route.name === 'models'}
+  {#if connection !== null}
+    <!-- The page subscribes the catalogue itself and reads the connection
+         directly: its own state (loading, refused, the four sections) is the
+         page's, and nothing outside it draws any of it. -->
+    <Models {connection} mark={settings.mark} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
 {:else}
   <main class="wrap">
     <p class="pending">
-      That is not a page forge serves. The home is at <a href="/">/</a>, and a session at
-      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>.
+      That is not a page forge serves. The home is at <a href="/">/</a>, a session at
+      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>, and the models at
+      <code>/models</code>.
     </p>
   </main>
 {/if}
