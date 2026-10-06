@@ -504,6 +504,40 @@ describe('whether the column follows the newest end', () => {
     );
   });
 
+  it('does not disarm on a move too small for a reader, with no input behind it', async () => {
+    // **The drift's own arm.** A re-measure nudges the scroll by a couple of
+    // pixels with no reader behind it, and judging that as the reader turned
+    // the follow off - every growth after that left them further behind.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
+  });
+
+  it("disarms on the reader's own move at any distance", async () => {
+    // The other half of the rule: when the reader's own wheel was just heard,
+    // even a two-pixel move is theirs, and the follow lets them go.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel'));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own wheel moved them, at any distance').toEqual([]);
+  });
+
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
     const seat = writable(LEAD);
     const server = stub();
