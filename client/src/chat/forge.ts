@@ -36,7 +36,9 @@ export type ForgePiece =
   | { kind: 'quote'; text: string }
   | { kind: 'tag'; text: string }
   | { kind: 'list'; items: ForgeListItem[] }
-  | { kind: 'warnline'; label: string; text: string };
+  | { kind: 'warnline'; label: string; text: string }
+  /** What a query found nothing of, said in words rather than drawn as a gap. */
+  | { kind: 'empty'; text: string };
 
 /** One forge call as its card. */
 export interface ForgeCard {
@@ -99,7 +101,14 @@ function gotifyCard(verb: string, answer: unknown): ForgeCard | null {
     if (sub === null) return null;
     return {
       title: 'stopped watching',
-      chips: subscriptionChips(sub).map((chip) => ({ ...chip, tone: 'dim' as const })),
+      // The filter that stopped, as ONE chip: the row reads as the record of
+      // a thing that is over, not as a live filter with parts.
+      chips: [
+        {
+          text: `${appsText(sub.applications)} \u{b7} ${floorText(sub.min_priority)}`,
+          tone: 'dim',
+        },
+      ],
       figure: null,
       pieces: [],
     };
@@ -122,7 +131,15 @@ function gotifyCard(verb: string, answer: unknown): ForgeCard | null {
       title: 'subscriptions',
       chips: [],
       figure: items.length === 0 ? null : `${items.length} active`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces:
+        items.length === 0
+          ? [
+              {
+                kind: 'empty',
+                text: 'no Gotify subscriptions - nothing from the server reaches this session',
+              },
+            ]
+          : [{ kind: 'list', items }],
     };
   }
   if (verb === 'apps') {
@@ -292,7 +309,10 @@ function cronCard(verb: string, answer: unknown): ForgeCard | null {
       title: 'schedules',
       chips: [],
       figure: items.length === 0 ? null : `${items.length} registered`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces:
+        items.length === 0
+          ? [{ kind: 'empty', text: 'no schedules registered by this session' }]
+          : [{ kind: 'list', items }],
     };
   }
   return null;
@@ -383,7 +403,11 @@ export function forgeCardOf(
 ): ForgeCard | null {
   const family = forgeFamilyOf(name);
   if (family === null) return null;
-  if (result === undefined || result.is_error === true) return null;
+  // A call still out draws from its own input, for the verbs whose input
+  // names the thing it is working on - and for the two the dock can hold for
+  // approval, where the wait is itself what the row must say.
+  if (result === undefined) return pendingCard(verbOf(name), input);
+  if (result.is_error === true) return null;
   const answer = parsedText(result.content);
   if (family === 'tasks') return tasksCard(verbOf(name), input, answer);
   if (family === 'cron') return cronCard(verbOf(name), answer);
@@ -402,6 +426,53 @@ export function forgeCardOf(
  * and resolve arms are titled by it. A list's chips are the four state words
  * with their counts, each word carrying itself.
  */
+/**
+ * A call still out, drawn from its own input.
+ *
+ * A Slack write waits on the dock, and that wait is the one thing the row
+ * must not hide; a spawn says what it is bringing up. Every other verb has
+ * nothing to draw until it answers and falls back to its raw text.
+ */
+function pendingCard(verb: string, input: unknown): ForgeCard | null {
+  const held = obj(input);
+  if (verb === 'spawn') {
+    const label = str(held, 'label');
+    if (label === null) return null;
+    const pieces: ForgePiece[] = [];
+    const charter = str(held, 'charter');
+    if (charter !== null && charter.trim() !== '') {
+      pieces.push({ kind: 'tag', text: 'charter' });
+      pieces.push({ kind: 'quote', text: charter });
+    }
+    return { title: `spawning ${label}`, chips: [], figure: null, pieces };
+  }
+  if (verb === 'post') {
+    // The input carries an id and never a name, so the title spells it as
+    // given: a `#` on an id would dress it as a channel.
+    const channel = str(held, 'conversation');
+    if (channel === null) return null;
+    const said = str(held, 'text');
+    return {
+      title: postTitle(str(held, 'workspace'), channel, 'posting'),
+      chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: said === null || said.trim() === '' ? [] : [{ kind: 'quote', text: said }],
+    };
+  }
+  if (verb === 'edit') {
+    const channel = str(held, 'conversation');
+    if (channel === null) return null;
+    const dropped = held['delete'] === true;
+    return {
+      title: `${dropped ? 'deleting' : 'updating'} a message in ${channel}`,
+      chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
+  return null;
+}
+
 function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
   if (verb === 'reply' || verb === 'resolve') {
     const held = obj(answer);
@@ -577,7 +648,7 @@ function updateCard(input: unknown, answer: unknown): ForgeCard | null {
   const fields = updated.filter((field): field is string => typeof field === 'string');
   return {
     title: `updated worker '${label}'`,
-    chips: fields.map((field) => ({ text: spaced(field), tone: 'plain' as const })),
+    chips: fields.map((field) => ({ text: field, tone: 'plain' as const })),
     figure: 'next respawn',
     pieces: [],
   };
@@ -596,13 +667,14 @@ function capacityCard(answer: unknown): ForgeCard | null {
   const pairs: [string, string][] = [];
   const project = str(held, 'project');
   if (project !== null) pairs.push(['project', project]);
-  if (source !== null) pairs.push(['cap source', source === 'max_workers' ? 'forge.toml' : source]);
+  if (source !== null) pairs.push(['cap source', source]);
   const available = countOf(held['available']);
+  const from = source === 'max_workers' ? 'forge.toml' : source;
   return {
     title: 'worker capacity',
     chips: [
       { text: `${live} live`, tone: 'plain' },
-      { text: `cap ${cap}`, tone: 'dim' },
+      { text: from === null ? `cap ${cap}` : `cap ${cap} \u{b7} ${from}`, tone: 'dim' },
     ],
     figure: available === null ? null : `${available} free`,
     pieces: pairs.length === 0 ? [] : [{ kind: 'kv', pairs }],
@@ -809,10 +881,10 @@ function withWorkspace(title: string, workspace: string | null): string {
 }
 
 /** A post's title: the workspace first, then the channel, whichever are known. */
-function postTitle(workspace: string | null, channel: string | null): string {
-  if (workspace !== null && channel !== null) return `posted to ${workspace} \u{b7} ${channel}`;
-  if (channel !== null) return `posted to ${channel}`;
-  return workspace === null ? 'posted to Slack' : `posted to ${workspace}`;
+function postTitle(workspace: string | null, channel: string | null, lead = 'posted'): string {
+  if (workspace !== null && channel !== null) return `${lead} to ${workspace} \u{b7} ${channel}`;
+  if (channel !== null) return `${lead} to ${channel}`;
+  return workspace === null ? `${lead} to Slack` : `${lead} to ${workspace}`;
 }
 
 /** The ts list a post answered with, or null for an answer that is not one. */
@@ -892,7 +964,15 @@ function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
       title: 'tasks',
       chips: [],
       figure: items.length === 0 ? null : `${items.length} in flight`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces:
+        items.length === 0
+          ? [
+              {
+                kind: 'empty',
+                text: 'no tasks in flight - anything this project declares lands here',
+              },
+            ]
+          : [{ kind: 'list', items }],
     };
   }
   return null;

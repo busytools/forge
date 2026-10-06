@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ForgeCard } from './forge';
+  import Icon from '../components/Icon.svelte';
 
   /**
    * One forge call's card: the facts its result carried, in the row grammar
@@ -10,7 +11,7 @@
    * drawn by `Call.svelte`, which owns the shell every call row sits in; this
    * component is the body and nothing else.
    */
-  let { card }: { card: ForgeCard } = $props();
+  let { card, glyph }: { card: ForgeCard; glyph: string } = $props();
 </script>
 
 {#each card.pieces as piece, at (at)}
@@ -31,6 +32,11 @@
     <div class="fam-warnline">
       <span class="fam-lb">{piece.label}</span>
       <span>{piece.text}</span>
+    </div>
+  {:else if piece.kind === 'empty'}
+    <div class="fam-empty">
+      <Icon name={glyph} class="fam-empty-glyph" />
+      {piece.text}
     </div>
   {:else if piece.kind === 'list'}
     <div class="fam-list">

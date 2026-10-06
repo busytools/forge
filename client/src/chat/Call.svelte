@@ -463,7 +463,7 @@
          failed forge call carries no card, so its reason draws below the way
          every failure draws. -->
     <div class="body">
-      <Forge card={call.forge} />
+      <Forge card={call.forge} glyph={iconOf(call.row)} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">

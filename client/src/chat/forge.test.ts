@@ -130,6 +130,18 @@ describe('the tasks card', () => {
     expect(deleted(0)?.figure, 'a leaf says nothing about subtasks').toBeNull();
   });
 
+  it('draws a project with no schedules and no subscriptions as words too', () => {
+    expect(forgeCardOf('mcp__forge__cron__list', {}, result('[]'))?.pieces).toEqual([
+      { kind: 'empty', text: 'no schedules registered by this session' },
+    ]);
+    expect(forgeCardOf('mcp__forge__gotify__list', {}, result('[]'))?.pieces).toEqual([
+      {
+        kind: 'empty',
+        text: 'no Gotify subscriptions - nothing from the server reaches this session',
+      },
+    ]);
+  });
+
   it("lists a project's tasks as rows, each naming its own state", () => {
     const rows = [RECORD, { ...RECORD, id: 't-2', subject: 'Sweep', status: 'pending' }];
     const card = forgeCardOf('mcp__forge__tasks__list', {}, result(JSON.stringify(rows)));
@@ -157,7 +169,9 @@ describe('the tasks card', () => {
     const card = forgeCardOf('mcp__forge__tasks__list', {}, result('[]'));
     expect(card?.title).toBe('tasks');
     expect(card?.figure, 'no count for no rows').toBeNull();
-    expect(card?.pieces).toEqual([]);
+    expect(card?.pieces, 'what it found nothing of, in words').toEqual([
+      { kind: 'empty', text: 'no tasks in flight - anything this project declares lands here' },
+    ]);
   });
 });
 
@@ -243,9 +257,8 @@ describe('the gotify card', () => {
       result(JSON.stringify({ status: 'deleted', removed: SUB })),
     );
     expect(card?.title).toBe('stopped watching');
-    expect(card?.chips).toEqual([
-      { text: 'Backups, Alerts', tone: 'dim' },
-      { text: 'priority \u{2265} 5', tone: 'dim' },
+    expect(card?.chips, 'the whole filter that stopped, as one record').toEqual([
+      { text: 'Backups, Alerts \u{b7} priority \u{2265} 5', tone: 'dim' },
     ]);
   });
 
@@ -490,9 +503,9 @@ describe('the worker lifecycle cards', () => {
       result(JSON.stringify({ label: 'card-smoke', updated: ['kick', 'resume_kick'] })),
     );
     expect(card?.title).toBe("updated worker 'card-smoke'");
-    expect(card?.chips).toEqual([
+    expect(card?.chips, 'the field names as the server spells them').toEqual([
       { text: 'kick', tone: 'plain' },
-      { text: 'resume kick', tone: 'plain' },
+      { text: 'resume_kick', tone: 'plain' },
     ]);
     expect(card?.figure, 'when the fields take effect').toBe('next respawn');
   });
@@ -514,16 +527,16 @@ describe('the worker lifecycle cards', () => {
     expect(card?.title).toBe('worker capacity');
     expect(card?.chips, 'both numbers, each in its own words').toEqual([
       { text: '7 live', tone: 'plain' },
-      { text: 'cap 8', tone: 'dim' },
+      { text: 'cap 8 \u{b7} forge.toml', tone: 'dim' },
     ]);
     expect(card?.figure).toBe('1 free');
     expect(card?.meter, 'the bar is the chips drawn, never their substitute').toEqual({
       fill: 7,
       of: 8,
     });
-    expect(pairsOf(card)).toEqual([
+    expect(pairsOf(card), 'where the default came from, as the server names it').toEqual([
       ['project', 'forge'],
-      ['cap source', 'forge.toml'],
+      ['cap source', 'max_workers'],
     ]);
   });
 
@@ -553,6 +566,36 @@ describe('the worker lifecycle cards', () => {
     expect(card?.pieces).toEqual([
       { kind: 'warnline', label: 'branch', text: "branch 'worktree-w1' kept: 2 commits" },
     ]);
+  });
+
+  it('draws a call still out from its own input, saying the wait it is in', () => {
+    // The dock holds a Slack write until the user answers, and an approval
+    // prompt nobody has answered is the one thing the row must not hide.
+    const posting = forgeCardOf(
+      'mcp__forge__slack__post',
+      { conversation: 'C1', workspace: 'Trust Machines', text: 'Deploy is green.' },
+      undefined,
+    );
+    expect(posting?.title, 'where it would land, from the id alone').toBe(
+      'posting to Trust Machines \u{b7} C1',
+    );
+    expect(posting?.chips).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+    expect(posting?.pieces, 'and the draft, which is what is being asked about').toEqual([
+      { kind: 'quote', text: 'Deploy is green.' },
+    ]);
+
+    const spawning = forgeCardOf(
+      'mcp__forge__agents__spawn',
+      { label: 'reviewer', charter: 'be terse' },
+      undefined,
+    );
+    expect(spawning?.title).toBe('spawning reviewer');
+    expect(spawning?.pieces.at(-1)).toEqual({ kind: 'quote', text: 'be terse' });
+
+    expect(
+      forgeCardOf('mcp__forge__tasks__create', { subject: 'x' }, undefined),
+      'a verb with nothing to say before it answers',
+    ).toBeNull();
   });
 
   it('says a refused despawn on the row, since the call itself answered cleanly', () => {
