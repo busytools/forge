@@ -637,6 +637,26 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), "past the notch the move is the reader's").toEqual([]);
   });
 
+  it('keeps the input window open across its own events', async () => {
+    // The window is a time, not a one-shot the first event spends: an event
+    // of the same gesture that is not the move does not take it away.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    // An event of the same gesture that lands on the pin rather than moving.
+    list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
+    flushSync();
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the window held across the gesture, not for one event').toEqual([]);
+  });
+
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
     const seat = writable(LEAD);
     const server = stub();
