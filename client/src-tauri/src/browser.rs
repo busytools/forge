@@ -18,6 +18,7 @@
 //! it returned.
 
 pub mod chromium;
+pub mod custom;
 pub mod driver;
 
 use std::path::PathBuf;
@@ -99,11 +100,24 @@ impl BrowserHost {
 
     /// Run one browser tool, answering with the parts it returned or the
     /// reason it failed.
+    ///
+    /// A call this host answers itself - the additions beyond upstream's
+    /// surface - is routed to a snippet over the same driver; everything
+    /// else goes to the driver as upstream's own tool, with the added
+    /// arguments stripped so its schema accepts the call.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
         let driver = self.driver().await?;
-        // The call itself runs off the lock: two sessions asking at once are
-        // two requests on one connection, and pairing them is `rmcp`'s.
-        driver.call(tool, args).await
+        match custom::route(tool, &args)? {
+            custom::Routed::Upstream { tool, args } => {
+                // The call itself runs off the lock: two sessions asking at
+                // once are two requests on one connection, and pairing them
+                // is `rmcp`'s.
+                driver.call(&tool, args).await
+            }
+            custom::Routed::Snippet(code) => {
+                driver.call("browser_run_code_unsafe", serde_json::json!({ "code": code })).await
+            }
+        }
     }
 
     /// Bring the browser up, without the driver.
