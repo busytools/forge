@@ -504,6 +504,231 @@ describe('whether the column follows the newest end', () => {
     );
   });
 
+  it('does not disarm on a move too small for a reader, with no input behind it', async () => {
+    // **The drift's own arm.** A re-measure nudges the scroll by a couple of
+    // pixels with no reader behind it, and judging that as the reader turned
+    // the follow off - every growth after that left them further behind.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
+  });
+
+  it("disarms on the reader's own move at any distance", async () => {
+    // The other half of the rule: when the reader's own wheel was just heard,
+    // even a two-pixel move is theirs, and the follow lets them go.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own wheel moved them, at any distance').toEqual([]);
+  });
+
+  it('does not arm on a wheel that can only move the reader down', async () => {
+    // **A gesture that cannot move the reader up cannot have moved them up.**
+    // A wheel-down at the foot scrolls nothing, and arming on it would excuse
+    // the next adjuster write as the reader's - the drift in a narrower window.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a wheel-down did not move them').toEqual([PIN]);
+  });
+
+  it("disarms on the reader's own key at any distance", async () => {
+    // The key is the terminal's own vocabulary: the ones that scroll the
+    // column up are the ones that may let the follow go.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own key moved them, at any distance').toEqual([]);
+  });
+
+  it('does not arm on a key that cannot scroll the column up', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a letter key was not a scroll').toEqual([PIN]);
+  });
+
+  it('does not arm on a space without shift, which scrolls the column down', async () => {
+    // The down-key class the narrowing exists for: a plain space pages the
+    // column toward the end, so it cannot have moved the reader up.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a plain space was not the reader moving up').toEqual([PIN]);
+  });
+
+  it('disarms on shift-space, the key that scrolls the column up', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', shiftKey: true }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'shift-space scrolled them up, at any distance').toEqual([]);
+  });
+
+  it("disarms on the reader's own touch at any distance", async () => {
+    // Touch arms whole - a touch carries no direction - and Android is the
+    // other half of this client.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new Event('touchstart'));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own touch moved them, at any distance').toEqual([]);
+  });
+
+  it('disarms on a moving touch too', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new Event('touchmove'));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a moving touch is still their hand').toEqual([]);
+  });
+
+  it('disarms just past the notch', async () => {
+    // The boundary the slack draws: inside it a move is not the reader's.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 49);
+    server.frame();
+    await settle();
+
+    expect(pinned(), "past the notch the move is the reader's").toEqual([]);
+  });
+
+  it('keeps following at exactly the notch', async () => {
+    // The other edge of the same boundary: 48 is inside it, so a flip at the
+    // comparison now dies here.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 48);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the notch is a distance a move must exceed').toEqual([PIN]);
+  });
+
+  it('keeps the input window open across its own events', async () => {
+    // The window is a time, not a one-shot the first event spends: an event
+    // of the same gesture that is not the move does not take it away.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    // An event of the same gesture that lands on the pin rather than moving.
+    list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
+    flushSync();
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the window held across the gesture, not for one event').toEqual([]);
+  });
+
+  it('keeps the token through an event that reads it without disarming', async () => {
+    // A second place a token could be spent: the read in the disarm arm
+    // itself. This event sits at the pin while the content below it has
+    // grown, so it reads the token and does not disarm - and the move after
+    // it still must.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    setElement(TOTAL + 200, VIEWPORT);
+    list()?.scrolledTo(FOOT, TOTAL + 200, VIEWPORT);
+    flushSync();
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the token survived the read that did not disarm').toEqual([]);
+  });
+
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
     const seat = writable(LEAD);
     const server = stub();

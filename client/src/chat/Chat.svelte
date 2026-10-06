@@ -58,6 +58,12 @@
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /** How far above the last pin counts as the reader when no input preceded it. */
+  const DISARM_SLACK = 48;
+  /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
+  const READER_WINDOW_MS = 250;
+  /** The keys a focused row scrolls the column UP with, which are the ones that may disarm. */
+  const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
 
   /**
    * The conversation, held as a VALUE: a frame replaces the record rather than
@@ -83,6 +89,8 @@
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
   let placedFor: string | null = null;
+  /** When the reader's own input was last seen; null until a hand touches the column. */
+  let readerAt: number | null = null;
   /**
    * The row the reader's own eye is on, held while they are away from the foot.
    *
@@ -245,6 +253,12 @@
 
   const shift = $derived(outstanding > 0 || settling);
 
+  /** Whether the events arriving are the reader's own, made moments ago. */
+  function readerMoved(): boolean {
+    const seen = readerAt;
+    return seen !== null && performance.now() - seen < READER_WINDOW_MS;
+  }
+
   /**
    * The list's viewport, taken as an attachment.
    *
@@ -268,6 +282,24 @@
     viewport = node;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
+    // The reader's own input, and the only evidence of a hand the column has:
+    // scroll events carry no source, so the gesture has to be heard separately
+    // - and only the UP-capable kinds, because a gesture that cannot move the
+    // reader up cannot have moved them up (the terminal disarms from
+    // `scroll_up` alone). A touch arms whole: it carries no direction.
+    const arm = () => {
+      readerAt = performance.now();
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) arm();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) arm();
+    };
+    node.addEventListener('wheel', onWheel, { passive: true });
+    node.addEventListener('touchstart', arm, { passive: true });
+    node.addEventListener('touchmove', arm, { passive: true });
+    node.addEventListener('keydown', onKey);
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
       if (holdsEverything()) {
@@ -289,6 +321,10 @@
     if (content !== null) watcher.observe(content);
     return () => {
       watcher.disconnect();
+      node.removeEventListener('wheel', onWheel);
+      node.removeEventListener('touchstart', arm);
+      node.removeEventListener('touchmove', arm);
+      node.removeEventListener('keydown', onKey);
       viewport = null;
     };
   }
@@ -674,9 +710,9 @@
    * The header's ask: reveal the latest compaction.
    *
    * Through the list's handle rather than the element, because the row may
-   * not be drawn - and the scroll it performs fires the same scroll event a
-   * reader's own wheel does, so the follow turns off exactly the way it does
-   * when anyone scrolls away from the foot. Nothing else has to remember it.
+   * not be drawn - and the jump it performs lands past the notch, so the
+   * follow turns off the way it does when anyone scrolls away from the foot.
+   * Nothing else has to remember it.
    *
    * **The cut is often older than what is loaded**, so the ask walks the
    * history: each page that lands re-runs this effect, and it stops asking
@@ -855,7 +891,16 @@
       // that number is - so the comparison falls back to any upward move
       // rather than never disarming, which left the way-back hidden on a
       // column that had not pinned yet (Ved, 2026-10-03).
-      else if (offset < (placed ?? Infinity)) working?.following(false);
+      //
+      // **And an event nobody made may not switch the follow off.** A
+      // re-measure nudges the scroll by a couple of pixels with no reader
+      // behind it, so a move inside `DISARM_SLACK` counts only when the
+      // reader's own wheel, touch or key was heard just before it; their
+      // moves count at any distance.
+      else {
+        const slack = readerMoved() ? 0 : DISARM_SLACK;
+        if (offset < (placed ?? Infinity) - slack) working?.following(false);
+      }
     }
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the
