@@ -253,9 +253,12 @@ describe('what one update asks of the fleet', () => {
   it("draws nothing of a turn's own words", () => {
     expect(fleetNews(appended({ type: 'assistant' }))).toEqual({ kind: 'nothing' });
     expect(fleetNews(appended({ type: 'user' }))).toEqual({ kind: 'nothing' });
-    // A result that FAILED is not a completion, and no row changes for it.
+    // A result that FAILED is not a completion, but it is news: the rows
+    // are re-read so the failure mark can arm - the server sends the same
+    // frame as its own Redraw, and a client that dropped it left the mark
+    // to the next unrelated re-read.
     expect(fleetNews(appended({ type: 'result', is_error: true, subtype: 'error' }))).toEqual({
-      kind: 'nothing',
+      kind: 'redraw',
     });
   });
 

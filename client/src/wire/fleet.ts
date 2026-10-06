@@ -101,7 +101,11 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
   if (slot === null) return NOTHING;
 
   if (frame['type'] === 'result') {
-    return isSuccessResult(frame) ? { kind: 'completed', slot } : NOTHING;
+    // A failure is a re-read, not a silence: it arms the rail's failure
+    // mark, so the rows have to come back. The server classifies the same
+    // frame as its own Redraw, and a cancelled turn redraws the rows it
+    // left the same way.
+    return isSuccessResult(frame) ? { kind: 'completed', slot } : { kind: 'redraw' };
   }
   if (frame['type'] !== 'system') return NOTHING;
   if (frame['subtype'] === 'background_tasks_changed') return { kind: 'redraw' };
