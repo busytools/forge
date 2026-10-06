@@ -25,8 +25,11 @@ pub(crate) struct ToolSpec {
 }
 
 /// The whole surface, in upstream's own order.
+///
+/// Every tool carries the optional `context` name: a session says which
+/// context a call drives, and the client routes on it.
 pub(crate) fn specs() -> Vec<ToolSpec> {
-    vec![
+    let mut specs = vec![
         ToolSpec {
             name: "browser_close",
             description: "Close the page",
@@ -720,7 +723,23 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
-    ]
+    ];
+    for spec in &mut specs {
+        let Some(schema) = spec.schema.as_object_mut() else { continue };
+        let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        properties.insert(
+            "context".to_owned(),
+            json!({
+                "type": "string",
+                "description": "Name of the browser context to drive. A context is owned by \
+                    the session that first names it, and another session naming it is refused \
+                    until it is released; omit it to use the shared browser context.",
+            }),
+        );
+    }
+    specs
 }
 
 #[cfg(test)]
@@ -787,6 +806,31 @@ mod tests {
                 !spec.description.is_empty(),
                 "{} has no description for the model to read",
                 spec.name,
+            );
+        }
+    }
+
+    /// **Every tool takes an optional `context` name.** A session says which
+    /// context a call drives; a call that names none drives the shared one.
+    /// The schema is where the model learns the argument exists, and a closed
+    /// schema that did not declare it would REFUSE the call - so this is the
+    /// contract's own half, not decoration.
+    #[test]
+    fn every_tool_takes_an_optional_context_name() {
+        for spec in specs() {
+            assert_eq!(
+                spec.schema["properties"]["context"]["type"],
+                json!("string"),
+                "{} declares no context name: {}",
+                spec.name,
+                spec.schema,
+            );
+            let required = &spec.schema["required"];
+            assert!(
+                required.as_array().is_none_or(|required| !required.contains(&json!("context"))),
+                "{} must not require a context: {}",
+                spec.name,
+                spec.schema,
             );
         }
     }

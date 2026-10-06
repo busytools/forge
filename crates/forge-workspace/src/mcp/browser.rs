@@ -217,6 +217,9 @@ mod tests {
                 .expect("a schema describes an object")
                 .keys()
                 .map(String::as_str)
+                // `context` is on every tool, ours rather than the capture's,
+                // and pinned per-tool by the specs tests.
+                .filter(|name| *name != "context")
                 .collect();
             got.sort_unstable();
             let mut want: Vec<&str> = properties.to_vec();
