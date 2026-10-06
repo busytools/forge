@@ -78,6 +78,13 @@ export interface CronEntry {
   kind: unknown;
   prompt: string;
   description?: string;
+  /**
+   * The worker label the cron was created by, which is what decides the seat
+   * that reads it: `None` targets the project lead, so a row keeps the lead's
+   * set or its own label's - never the other's. The same ownership rule the
+   * connector subscriptions carry.
+   */
+  team_role?: string | null;
   created_at: WireTime;
   /** When it is next due, which is the fact the session's schedules section states. */
   next_fire: WireTime;

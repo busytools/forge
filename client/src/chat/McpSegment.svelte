@@ -30,7 +30,8 @@
     return () => window.removeEventListener('resize', remeasure);
   });
 
-  const count = $derived(mcp.count());
+  /** The servers themselves: the read's own failure row is not one of them. */
+  const count = $derived(mcp.rows().filter((row) => !row.synthetic).length);
 
   function hold() {
     if (closing !== null) clearTimeout(closing);
@@ -129,15 +130,19 @@
       }}
     >
       <Icon name="mcp" />
-      {`${count} server${count === 1 ? '' : 's'}`}
+      {count === 0 ? 'servers failed' : `${count} server${count === 1 ? '' : 's'}`}
     </button>
 
     {#if open}
       <div class="sg-list" bind:this={listEl} style={limits}>
+        <!-- Rows key on the server's name, which is unique in a session's
+             own snapshot. -->
         {#each mcp.rows() as row (row.name)}
           <!-- The group holds while the pointer is anywhere inside it, the
                sub-lines included: they carry no row of their own, and a
-               pointer entering the panel over one is landing on the panel. -->
+               pointer entering the panel over one is landing on the panel.
+               `role="presentation"` is what the compiler's a11y check asks
+               of a plain div carrying pointer handlers. -->
           <div
             class="sg-grp"
             role="presentation"
@@ -174,11 +179,13 @@
               <span class="n">{row.v}</span>
             </button>
             {#if row.command !== null}
-              {@const line = `runs ${row.command}`}
+              <!-- A remote server is reached rather than run, and the URL
+                   says which without a second field. -->
+              {@const line = `${row.command.startsWith('http') ? 'reaches' : 'runs'} ${row.command}`}
               <div class="sg-sub">{line}</div>
             {/if}
             {#if row.tools.length > 0}
-              {@const line = `tools ${row.tools.map((tool) => tool.name).join(', ')}`}
+              {@const line = `tools ${row.tools.join(', ')}`}
               <div class="sg-sub">{line}</div>
             {/if}
             {#if row.reason !== null}

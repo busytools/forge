@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import load from '../dev/fixtures/session-load.json';
+import type { CronEntry } from '../wire/home';
+import { mcp } from '../chat/mcp.svelte';
+import { schedules } from '../chat/schedules.svelte';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -165,11 +168,12 @@ let app: Record<string, unknown> | null = null;
 function open(
   turns: unknown[] = load.turns,
   fields: Record<string, unknown> = {},
+  wire: typeof homeWire = homeWire,
 ): ReturnType<typeof seat> {
   const server = seat(turns, fields);
   app = mount(Session, {
     target: document.body,
-    props: { slot: LEAD, connection: server.connection, wire: homeWire },
+    props: { slot: LEAD, connection: server.connection, wire },
   });
   flushSync();
   return server;
@@ -323,6 +327,53 @@ describe('what one arriving frame costs the inspector', () => {
     openSection('monitors');
     const opened = drawn().find((section) => section.key === 'sec-monitors');
     expect(opened?.body, `opening drew nothing: ${JSON.stringify(drawn())}`).toBeGreaterThan(0);
+  });
+
+  /**
+   * **The record and the home reach the row stores, which no unit test can
+   * see.** The builders are pinned in view.test and each segment draws what
+   * its store holds, but the sync between them is Session's own effect - so
+   * this case is the one that fails if a sync is dropped or handed nothing,
+   * and its second half is the ownership filter: a cron created by another
+   * seat must not ride this page's list.
+   */
+  it('hands the record and the home to the row stores, for this seat', () => {
+    const project = homeWire.projects[0];
+    if (project === undefined) throw new Error('the fixture holds no project');
+    const mine: CronEntry = {
+      id: 'c-mine',
+      project_name: 'proj',
+      kind: { Recurring: '0 9 * * *' },
+      prompt: 'sweep the rules',
+      description: 'rules sweep',
+      created_at: { secs_since_epoch: 1_699_000_000, nanos_since_epoch: 0 },
+      next_fire: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 },
+    };
+    const theirs: CronEntry = {
+      ...mine,
+      id: 'c-w1',
+      description: 'the worker sweep',
+      team_role: 'w1',
+    };
+    open(
+      [],
+      {
+        mcp: {
+          error: null,
+          servers: [{ name: 'forge', status: 'connected', tools: [{ name: 'roster' }] }],
+        },
+      },
+      { ...homeWire, projects: [{ ...project, crons: [mine, theirs] }] },
+    );
+
+    expect(
+      mcp.rows().map((row) => row.name),
+      'the record never reached the servers row',
+    ).toEqual(['forge']);
+    expect(
+      schedules.rows().map((row) => row.key),
+      "the home never reached the schedules row, or another seat's cron rode it",
+    ).toEqual(['rules sweep']);
   });
 
   /**

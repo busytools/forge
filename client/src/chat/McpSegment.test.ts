@@ -3,19 +3,21 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import McpSegment from './McpSegment.svelte';
 import { mcp } from './mcp.svelte';
+import type { McpRow } from '../session/view';
 
 afterEach(() => {
   mcp.sync(null);
 });
 
-const SERVERS = [
+const SERVERS: McpRow[] = [
   {
     name: 'forge',
     k: 'forge \u{b7} session',
     v: '2 tools',
-    tools: [{ name: 'roster', description: null }],
+    tools: ['roster', 'session'],
     command: 'node /opt/mcp-servers/forge-server.js',
     reason: null,
+    synthetic: false,
   },
   {
     name: 'vercel',
@@ -24,6 +26,7 @@ const SERVERS = [
     tools: [],
     command: null,
     reason: 'OAuth token expired',
+    synthetic: false,
   },
 ];
 
@@ -42,6 +45,28 @@ describe('the MCP segment', () => {
 
     expect(body, 'one reads as one').toContain('1 server');
     expect(body, 'and not as a plural').not.toContain('1 servers');
+  });
+
+  /**
+   * A read that failed draws as its own row, and that row is not a server:
+   * the toggle must state the failure rather than count it.
+   */
+  it('states a failed read rather than counting its row as a server', () => {
+    mcp.sync([
+      {
+        name: 'mcp-read',
+        k: 'servers',
+        v: 'failed',
+        tools: [],
+        command: null,
+        reason: 'the CLI refused',
+        synthetic: true,
+      },
+    ]);
+    const body = render(McpSegment, {}).body;
+
+    expect(body, 'the failure is stated').toContain('servers failed');
+    expect(body, 'and not miscounted as a server').not.toContain('1 server');
   });
 
   it('draws nothing for a session that reported no servers', () => {

@@ -119,7 +119,8 @@
   /**
    * The schedules row reads the page's own clock: a countdown is part of every
    * row, so the list re-derives as `now` moves rather than going stale between
-   * home reads. Crons carry no per-seat owner, so the set is the project's.
+   * home reads. A cron names the seat that created it, so the row keeps its
+   * own label's set.
    */
   $effect(() => {
     schedules.sync(seatScheduleRows(wire, slot, now));

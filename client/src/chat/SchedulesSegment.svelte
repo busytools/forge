@@ -4,11 +4,12 @@
   import { panelStyle } from './strip-panel';
 
   /**
-   * The schedules row in the strip above the composer: the project's crons,
-   * when each is next due, and nothing when there are none.
+   * The schedules row in the strip above the composer: this seat's crons in
+   * the project, when each is next due, and nothing when there are none.
    *
-   * **Every seat of the project reads the same set** - crons have no per-seat
-   * owner - and nothing pops here: Ved ruled the row need only show and open,
+   * **A cron is owned by the seat that created it** (`team_role`, `None` for
+   * the lead), so the row keeps its own label's set, like the connectors row
+   * beside it. Nothing pops here: Ved ruled the row need only show and open,
    * so a schedule appearing or leaving simply changes the list, and the rows
    * are inert (no destination behind a schedule).
    */
@@ -109,7 +110,7 @@
       type="button"
       class="sg-tog"
       aria-expanded={open}
-      aria-label="the schedules this project holds"
+      aria-label="the schedules this seat created"
       onclick={() => {
         if (open) open = false;
         else hold();

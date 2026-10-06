@@ -15,11 +15,6 @@ export class Mcp {
     this.#rows = [...(rows ?? [])];
   }
 
-  /** How many rows there are: servers, or a read that failed. */
-  count(): number {
-    return this.#rows.length;
-  }
-
   /** Whether there is anything to draw at all. */
   anything(): boolean {
     return this.#rows.length > 0;

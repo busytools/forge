@@ -40,23 +40,19 @@ const SERVERS: McpRow[] = [
     name: 'forge',
     k: 'forge \u{b7} session',
     v: '24 tools',
-    tools: [
-      { name: 'roster', description: null },
-      { name: 'session', description: null },
-    ],
+    tools: ['roster', 'session'],
     command: 'node /opt/mcp-servers/forge-server.js',
     reason: null,
+    synthetic: false,
   },
   {
     name: 'context7',
     k: 'context7 \u{b7} sdk',
     v: '2 tools',
-    tools: [
-      { name: 'query-docs', description: 'Ask the docs' },
-      { name: 'resolve-library-id', description: null },
-    ],
+    tools: ['query-docs', 'resolve-library-id'],
     command: 'npx -y @upstash/context7-mcp',
     reason: null,
+    synthetic: false,
   },
   {
     name: 'vercel',
@@ -65,6 +61,7 @@ const SERVERS: McpRow[] = [
     tools: [],
     command: null,
     reason: 'OAuth token expired',
+    synthetic: false,
   },
 ];
 
@@ -283,8 +280,24 @@ describe("the MCP row's interaction state machine", () => {
     // Rows key on the server's name, and the state text is what they share:
     // keyed by a drawn figure, this pair throws.
     draw([
-      { name: 'a', k: 'a \u{b7} session', v: '2 tools', tools: [], command: null, reason: null },
-      { name: 'b', k: 'b \u{b7} session', v: '2 tools', tools: [], command: null, reason: null },
+      {
+        name: 'a',
+        k: 'a \u{b7} session',
+        v: '2 tools',
+        tools: [],
+        command: null,
+        reason: null,
+        synthetic: false,
+      },
+      {
+        name: 'b',
+        k: 'b \u{b7} session',
+        v: '2 tools',
+        tools: [],
+        command: null,
+        reason: null,
+        synthetic: false,
+      },
     ]);
     toggle()?.click();
     flushSync();

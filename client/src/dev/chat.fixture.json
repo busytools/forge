@@ -806,25 +806,19 @@
       "name": "forge",
       "k": "forge · session",
       "v": "4 tools",
-      "tools": [
-        { "name": "roster", "description": null },
-        { "name": "session", "description": null },
-        { "name": "agents", "description": null },
-        { "name": "processes", "description": null }
-      ],
+      "tools": ["roster", "session", "agents", "processes"],
       "command": "node /opt/mcp-servers/forge-server.js",
-      "reason": null
+      "reason": null,
+      "synthetic": false
     },
     {
       "name": "context7",
       "k": "context7 · sdk",
       "v": "2 tools",
-      "tools": [
-        { "name": "query-docs", "description": "Ask the docs" },
-        { "name": "resolve-library-id", "description": null }
-      ],
+      "tools": ["query-docs", "resolve-library-id"],
       "command": "npx -y @upstash/context7-mcp",
-      "reason": null
+      "reason": null,
+      "synthetic": false
     },
     {
       "name": "vercel",
@@ -832,7 +826,8 @@
       "v": "needs sign-in",
       "tools": [],
       "command": null,
-      "reason": "OAuth token expired"
+      "reason": "OAuth token expired",
+      "synthetic": false
     }
   ]
 }

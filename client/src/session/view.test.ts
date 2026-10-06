@@ -479,7 +479,10 @@ describe('the git section', () => {
 
 describe('the schedule countdown', () => {
   it('reads a time already past as due rather than counting into the past', () => {
-    expect(untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000)).toBe('in a minute');
+    expect(
+      untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000),
+      'a passed fire read as future',
+    ).toBe('due now');
     expect(untilOf({ secs_since_epoch: 1_700_003_600 }, 1_700_000_000_000)).toBe('in 1h');
     expect(untilOf(null, 0)).toBe('due now');
   });
@@ -780,11 +783,12 @@ describe('the dictation overrides', () => {
 });
 
 describe('the MCP rows the strip draws', () => {
-  it('says which of the two an empty MCP read is', () => {
+  it('states the state, and leaves the reason to the row line beneath', () => {
     expect(mcpState({ name: 'forge', status: 'failed', error: '  ' })).toBe('failed');
-    expect(mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' })).toBe(
-      'the CLI refused',
-    );
+    expect(
+      mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' }),
+      'the reason drew in the state cell as well as its own line',
+    ).toBe('failed');
     expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
     expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
   });
@@ -821,14 +825,15 @@ describe('the MCP rows the strip draws', () => {
       name: 'context7',
       k: 'context7 \u{b7} session',
       v: '2 tools',
+      tools: ['query-docs', 'resolve-library-id'],
       command: 'npx -y @upstash/context7-mcp',
       reason: null,
+      synthetic: false,
     });
-    expect(rows[0]?.tools.map((tool) => tool.name)).toEqual(['query-docs', 'resolve-library-id']);
     expect(rows[1], 'a failed server carries its reason and reaches its URL').toMatchObject({
       name: 'forge',
       k: 'forge \u{b7} session',
-      v: 'the CLI refused',
+      v: 'failed',
       command: 'https://mcp.example.test',
       reason: 'the CLI refused',
     });
@@ -852,6 +857,7 @@ describe('the MCP rows the strip draws', () => {
       k: 'servers',
       v: 'failed',
       reason: 'the CLI refused',
+      synthetic: true,
     });
   });
 });
@@ -1112,6 +1118,29 @@ describe("the project's schedule rows", () => {
 
     expect(rows[0]?.key, 'the first line of the prompt, not all of it').toBe('audit the plugins');
     expect(rows[0]?.value, 'a one-shot is a one-shot').toBe('in 27d \u{b7} one-shot');
+  });
+
+  /**
+   * **A cron names the seat that created it** (`team_role`, absent for the
+   * lead), so the page keeps its own label's set - the same ownership rule
+   * the connector row applies.
+   */
+  it("keeps another seat's crons off this page, and this seat's own on it", () => {
+    const home = withProject({
+      crons: [cron(), cron({ id: 'c-w1', description: 'the worker sweep', team_role: 'w1' })],
+    });
+
+    const lead = seatScheduleRows(home, LEAD, NOW);
+    expect(
+      lead.map((row) => row.key),
+      "a worker's cron drew on the lead's page",
+    ).toEqual(['rules sweep']);
+
+    const worker = seatScheduleRows(home, { ...LEAD, label: 'w1' }, NOW);
+    expect(
+      worker.map((row) => row.key),
+      "the lead's cron drew on a worker's page",
+    ).toEqual(['the worker sweep']);
   });
 
   it('keeps two schedules reading the same words apart by their ids', () => {

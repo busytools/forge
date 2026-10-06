@@ -814,10 +814,17 @@
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
   /* The status depth under a server row: the tools it offers and what backs
-     it, wrapping rather than eliding. */
+     it, wrapping rather than eliding - the strip is nowrap, so the wrap has
+     to be asked for here. */
   .sg-sub { padding: 0 13px 7px 26px; font-family: var(--mono);
-    font-size: var(--fs-data); color: var(--muted); overflow-wrap: anywhere; }
+    font-size: var(--fs-data); color: var(--muted); white-space: normal;
+    overflow-wrap: anywhere; }
   .sg-sub.bad { color: var(--bad); }
+  /* A row that leads with its name: the accent name takes what is left and
+     elides, so a long key - a cron's description, a process headline - gives
+     way instead of pushing the right figure out. */
+  .sg-list .sg-it .nm.lead { flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -2444,12 +2451,13 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-slack"/></svg>
               3 subscriptions</button>
           </span>
-          <!-- The schedules row, fourth: the PROJECT's crons with their
-               countdowns - every seat of the project reads the same set, the
-               rows are inert, and the inspector has no schedules section any
-               more. A row leading with a long key elides (the sheet's own
-               `.nm.lead`), so a sentence-length description never buries the
-               countdown. -->
+          <!-- The schedules row, fourth: this SEAT's crons with their
+               countdowns - a cron names the seat that created it (`team_role`,
+               None for the lead), so the row keeps its own set, like the
+               connectors row beside it. The rows are inert, and the inspector
+               has no schedules section any more. A row leading with a long key
+               elides (the sheet's own `.nm.lead`), so a sentence-length
+               description never buries the countdown. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-schedules"/></svg>

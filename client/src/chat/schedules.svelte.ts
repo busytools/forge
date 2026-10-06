@@ -3,8 +3,8 @@
  *
  * Held as the record is: one seat is on screen, so one list, replaced whole
  * when the home moves or the page's clock ticks - the countdown is part of the
- * row, so a stale list would count toward the past. Crons carry no per-seat
- * owner, so every seat of the project reads the same set.
+ * row, so a stale list would count toward the past. A cron names the seat that
+ * created it, so the list is one seat's own set rather than the project's.
  */
 import type { SeatScheduleRow } from '../session/view';
 

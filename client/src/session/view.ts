@@ -9,10 +9,9 @@
  * only when the record has something behind it - a section that is always
  * there says nothing when it is empty.
  *
- * Four of the seven sections do not read the seat's own record. A project's
- * tasks, its schedules and the connector views are keyed by PROJECT on the
- * home's snapshot, and the home is the subscription the shell already holds
- * for the rest of the app.
+ * Some of these do not read the seat's own record. A project's tasks and its
+ * schedules are keyed by PROJECT on the home's snapshot, and the home is the
+ * subscription the shell already holds for the rest of the app.
  */
 
 import {
@@ -116,14 +115,6 @@ export interface GitView {
   open: boolean;
 }
 
-/** One row of a section body: a key, a value, and how the value is weighted. */
-export interface Kv {
-  k: string;
-  v: string;
-  /** The value carries the accent: what a row means rather than what it is. */
-  accent?: boolean;
-}
-
 /** One task as its row draws it. */
 export interface TaskRow {
   klass: string;
@@ -141,12 +132,18 @@ export interface McpRow {
   /** What the row says beside it: tool count, or why it is not up. */
   v: string;
   /** The tools the server offers when it is connected, as its status depth. */
-  tools: { name: string; description: string | null }[];
+  tools: string[];
   /** What backs a subprocess-backed server, when its config names one: the
    *  command it runs, or the URL it reaches. */
   command: string | null;
   /** The failure reason a Failed read carries, shown as the detail line. */
   reason: string | null;
+  /**
+   * Whether this row stands for the READ rather than a server: an empty read
+   * that failed draws as itself, and a toggle must not count it as a server
+   * the session has.
+   */
+  synthetic: boolean;
 }
 
 /**
@@ -799,10 +796,11 @@ export interface SeatScheduleRow {
 /**
  * The project's schedules, as the seat's strip row draws them.
  *
- * **Crons carry no per-seat owner** - a schedule belongs to the project and
- * fires into it - so every seat of the project reads the same set, unlike the
- * connector row beside it. The countdown reads against the page's one clock,
- * so the caller re-reads as that clock moves.
+ * **Ownership is `team_role`**: a cron names the worker label it was created
+ * by, and `None` targets the project lead - so the lead's page reads the None
+ * set and a worker's page reads its own label's, the same rule the connector
+ * row beside it applies. The countdown reads against the page's one clock, so
+ * the caller re-reads as that clock moves.
  */
 export function seatScheduleRows(
   home: HomeWire,
@@ -810,7 +808,10 @@ export function seatScheduleRows(
   now: number,
 ): SeatScheduleRow[] {
   const crons = projectOf(home, slot)?.crons ?? [];
-  return crons.map((cron) => ({
+  const mine = crons.filter((cron) =>
+    slot.label === 'lead' ? (cron.team_role ?? null) === null : cron.team_role === slot.label,
+  );
+  return mine.map((cron) => ({
     id: cron.id,
     key: cronLabel(cron),
     value: `${untilOf(cron.next_fire, now)} \u{b7} ${kindOf(cron.kind)}`,
@@ -830,6 +831,7 @@ function kindOf(kind: unknown): string {
 export function untilOf(at: { secs_since_epoch: number } | null, now: number): string {
   if (at === null) return 'due now';
   const remaining = at.secs_since_epoch - Math.floor(now / 1000);
+  if (remaining <= 0) return 'due now';
   if (remaining <= 59) return 'in a minute';
   if (remaining < 3600) return `in ${Math.floor(remaining / 60)}m`;
   if (remaining < 86_400) return `in ${Math.floor(remaining / 3600)}h`;
@@ -1030,6 +1032,7 @@ export function mcpRows(record: SessionRecord | null): McpRow[] {
             tools: [],
             command: null,
             reason: servers.error.trim() === '' ? null : servers.error.trim(),
+            synthetic: true,
           },
         ];
   }
@@ -1040,17 +1043,16 @@ export function mcpRows(record: SessionRecord | null): McpRow[] {
     tools: mcpTools(server),
     command: mcpCommand(server),
     reason: server.error?.trim() ? server.error.trim() : null,
+    synthetic: false,
   }));
 }
 
 /** The tools a server offers, as its status depth names them. */
-function mcpTools(server: McpServer): { name: string; description: string | null }[] {
+function mcpTools(server: McpServer): string[] {
   return array(server.tools).flatMap((entry) => {
     const held = isRecord(entry) ? entry : {};
     const name = held['name'];
-    if (typeof name !== 'string' || name === '') return [];
-    const description = held['description'];
-    return [{ name, description: typeof description === 'string' ? description : null }];
+    return typeof name === 'string' && name !== '' ? [name] : [];
   });
 }
 
@@ -1087,10 +1089,10 @@ export function mcpState(server: McpServer): string {
   switch (server.status) {
     case 'connected':
       return server.tools === undefined ? 'connected' : toolSummary(server.tools.length);
-    case 'failed': {
-      const error = server.error?.trim() ?? '';
-      return error === '' ? 'failed' : error;
-    }
+    case 'failed':
+      // The reason is the row's own line beneath, not this cell: the terminal
+      // draws it once, and a cell carrying it again would say it twice.
+      return 'failed';
     case 'needs-auth':
       return 'needs sign-in';
     case 'pending':
