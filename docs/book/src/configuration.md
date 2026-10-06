@@ -451,7 +451,7 @@ On by default, so a restart leaves it serving.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Whether the listener starts with forge. `false` is the opt-out, and the TUI is identical either way. |
+| `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
 | `port` | integer | `8790` | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot. |
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
 
