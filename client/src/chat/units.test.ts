@@ -404,6 +404,71 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe('# Ux\n\nDo it.');
   });
 
+  it('hangs a body the CLI marked synthetic on its call, without the plumbing line', () => {
+    // **The mark, not the text** (#1543): a launched skill's body can arrive
+    // with neither the plumbing line nor a matching heading - the timesheet
+    // fill's did - and the one signal every injected body carries is the
+    // synthetic mark. It rides the call that loaded the skill, by position,
+    // and never draws as the reader's own turn.
+    const load = said([use('toolu_fill', 'Skill', { skill: 'timesheet-fill' })]);
+    // Neither recognizer's shape: no plumbing line, and no heading either -
+    // the fresh case drew as a turn precisely because both missed it.
+    const body = heard([text('You are filling a timesheet. Ask for the week first.')], {
+      isSynthetic: true,
+    });
+
+    const units = fold([load, body]);
+    expect(kinds(units), 'the call unit alone, no turn of the reader').toEqual(['leaves']);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the call opens onto the body the mark claims').toContain(
+      'You are filling a timesheet',
+    );
+  });
+
+  it('draws an unclaimed synthetic body as a notice, never as the reader', () => {
+    const body = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
+    const units = fold([body]);
+
+    expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
+  });
+
+  it('leaves a stamped heading with no matching call off a call that is waiting', () => {
+    // Only the nameless marked body pairs by position; a named frame that
+    // matches no waiting call must never ride one that happens to be waiting.
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const heading = heard([text('# Beta Report\n\nBeta body words.')], { isSynthetic: true });
+
+    const units = fold([load, heading]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the waiting call keeps waiting').toBeNull();
+    expect(kinds(units), 'and the heading falls through as an ordinary frame').toEqual([
+      'leaves',
+      'user',
+    ]);
+  });
+
+  it('claims nothing for a whitespace-only stamped frame', () => {
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const blank = heard([text('   \n\t  ')], { isSynthetic: true });
+
+    const units = fold([load, blank]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'a whitespace-only stamped frame claims nothing').toBeNull();
+  });
+
+  it('takes the mark as the harness talking, and an unmarked frame as the reader', () => {
+    const plain = heard([text('the reader typed this')]);
+    const stamped = heard([text('a line nobody typed, and no family claims it')], {
+      isSynthetic: true,
+    });
+
+    expect(kinds(fold([plain])), 'an ordinary frame still draws as the reader').toEqual(['user']);
+    expect(kinds(fold([stamped])), "a stamped frame drew as the reader's own").toEqual(['notice']);
+  });
+
   it('draws nothing for the local-command family, by decision', () => {
     // The reader's typing in the LAUNCH terminal arrives as plumbing, and the
     // terminal's own chat filters the same heads. Ved's ruling, 2026-10-03:
@@ -438,11 +503,16 @@ describe('one turn folded into the units a view draws', () => {
         ],
       },
     ]);
-    const note = heard([
-      text(
-        '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it - the mark is why a
+    // reader of the fold has to claim it HERE, before the mark's own branch.
+    const note = heard(
+      [
+        text(
+          '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([read, picture, note]);
     const [group] = units;
@@ -457,13 +527,17 @@ describe('one turn folded into the units a view draws', () => {
     );
     expect(kinds(units), 'nothing of the reader draws here').toEqual(['leaves']);
 
-    // A note with no picture behind it still draws, as a line of its own.
+    // A note with no picture behind it still draws, as a line of its own -
+    // stamped like the rest, so the claim order is what the mark branch sees.
     const orphan = fold([
-      heard([
-        text(
-          '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
-        ),
-      ]),
+      heard(
+        [
+          text(
+            '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+          ),
+        ],
+        { isSynthetic: true },
+      ),
     ]);
     expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
   });
@@ -524,11 +598,16 @@ describe('one turn folded into the units a view draws', () => {
       uuid: 'cb-1',
       compact_metadata: { trigger: 'auto', pre_tokens: 68_031, post_tokens: 9_149 },
     };
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. And so on.',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it: the continuation is
+    // claimed by its own recognizer, so the mark must not reach it first.
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. And so on.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([boundary, summary]);
     expect(kinds(units), 'one row, not a turn beside it').toEqual(['compaction']);
@@ -542,11 +621,14 @@ describe('one turn folded into the units a view draws', () => {
   it('draws a continuation prompt with no boundary as the compaction it is', () => {
     // The cut happened whether or not its frame reached this fold; the row
     // carries what it has, and the summary is what it has.
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. More.',
-      ),
-    ]);
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. More.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([summary]);
     expect(kinds(units)).toEqual(['compaction']);
@@ -653,10 +735,9 @@ describe('one turn folded into the units a view draws', () => {
 
   it("draws the harness skill reminder as a line of its own, not the reader's turn", () => {
     // The CLI tells the MODEL that a skill was already loaded; nobody typed it.
-    // The terminal drops it live (every wire user text is treated as an input
-    // echo there) and renders it as a user turn on resume, so this is the
-    // client's own shape rather than parity - a notice, because rule 25 says
-    // it still has to be drawn.
+    // The frame reaches the wire stamped, and the terminal draws every stamped
+    // user frame as an info row on both paths, live and resume - so this is
+    // parity, not the client's own shape, and rule 25 is why it draws at all.
     const reminder = heard([
       text(
         'Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation - follow those instructions now, including any setup steps.',
