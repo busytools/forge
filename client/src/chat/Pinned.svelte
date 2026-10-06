@@ -1,8 +1,12 @@
 <script lang="ts">
   import ConnectorsSegment from './ConnectorsSegment.svelte';
+  import McpSegment from './McpSegment.svelte';
   import ProcessesSegment from './ProcessesSegment.svelte';
+  import SchedulesSegment from './SchedulesSegment.svelte';
   import Strip from './Strip.svelte';
+  import BrowserSegment from './BrowserSegment.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
+  import type { Connection } from '../socket';
   import type { TurnInfo } from './units';
 
   /**
@@ -18,7 +22,7 @@
    * one fact has two readers: this row, and the turn's own that must stand
    * aside while the pin holds it.
    */
-  let { info }: { info: TurnInfo | null } = $props();
+  let { info, connection }: { info: TurnInfo | null; connection: Connection } = $props();
 </script>
 
 {#if info !== null}
@@ -27,7 +31,10 @@
          own auto margin would split the free space between them. -->
     <div class="ti">
       <Strip {info} />
-      <span class="sg-fill"><SubagentSegment /><ProcessesSegment /><ConnectorsSegment /></span>
+      <span class="sg-fill"
+        ><BrowserSegment {connection} /><SubagentSegment /><ProcessesSegment /><ConnectorsSegment
+        /><SchedulesSegment /><McpSegment /></span
+      >
     </div>
   </div>
 {/if}

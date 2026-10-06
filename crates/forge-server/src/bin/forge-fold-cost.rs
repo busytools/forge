@@ -43,18 +43,16 @@
 //! per-byte cost cannot afford.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use forge_primitives::SessionSlot;
-use forge_server::live::Live;
 use forge_server::surface::ViewSurface;
 use forge_server::testing::Fleet;
 use forge_server::transport::TransportState;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
-use forge_server::work::WorkCache;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -341,6 +339,8 @@ async fn attach(
         // this client's reply, and a measurement must not change the thing it
         // measures.
         answering: false,
+        // Not hosting either, for the same reason.
+        browser: false,
     };
     socket.send(Message::Text(serde_json::to_string(&opening)?.into())).await?;
     let mut uncounted = Measured::default();
@@ -361,16 +361,22 @@ async fn work(
     let asks = if args.arm == Arm::Subscribe { 1 } else { args.asks };
     for _ in 0..asks {
         let asked = match args.arm {
-            Arm::Subscribe => {
-                ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
-            }
+            Arm::Subscribe => ClientMessage::Subscribe {
+                what: Subject::Session(seat.clone()),
+                answering: false,
+                browser: false,
+            },
             // The client's own order: let the seat go, then ask for it again.
             // Nothing answers an unsubscribe, so the read below waits for the
             // subscribe's snapshot.
             Arm::Refresh => {
                 let let_go = ClientMessage::Unsubscribe { what: Subject::Session(seat.clone()) };
                 socket.send(Message::Text(serde_json::to_string(&let_go)?.into())).await?;
-                ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
+                ClientMessage::Subscribe {
+                    what: Subject::Session(seat.clone()),
+                    answering: false,
+                    browser: false,
+                }
             }
             Arm::Idle | Arm::More => ClientMessage::More {
                 conversation: seat.clone(),
@@ -527,13 +533,10 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         println!("{}", breakdown(&surface, &seat, &args.dir.join(&args.project))?);
     }
 
-    let state = Arc::new(TransportState {
-        surface,
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        client: forge_primitives::ClientConfig::default(),
-    });
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::ClientConfig::default(),
+    ));
     // The seat's conversation, put where a `Connected` would have left it.
     //
     // **The transport does not read a transcript**, so a server left to

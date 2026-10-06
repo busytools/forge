@@ -366,6 +366,8 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
     /// Slack draft answers the prompt dispatched: `(draft id, approved)`.
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_slack_posts: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
+    /// Browser hand-off answers the prompt dispatched: `(hand-off id, done)`.
+    #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_browser_hand_offs: std::cell::RefCell<Vec<(uuid::Uuid, bool)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_notifications: std::cell::RefCell<Vec<(super::notify::NotifyEvent, super::notify::NotifyContext)>>,
     /// Per-session state buckets, keyed by the session's slot - the
@@ -1015,6 +1017,7 @@ impl App {
             workspace: Some(workspace),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_slack_posts: std::cell::RefCell::new(Vec::new()),
+            #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_browser_hand_offs: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
             sessions,

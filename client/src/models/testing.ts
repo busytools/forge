@@ -211,6 +211,10 @@ export function fakeConnection() {
     skew: () => null,
     status: () => 'open',
     close: () => {},
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
   };
 
   return {

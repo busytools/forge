@@ -9,7 +9,7 @@ pub mod target;
 
 use std::sync::Arc;
 
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
@@ -39,7 +39,7 @@ pub(crate) fn add_shared_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 fn json_output(body: &serde_json::Value) -> ToolOutput {
@@ -1041,6 +1041,7 @@ mod tests {
     use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
     use crate::mcp::peers::facade::{MockWorkspaceFacade, WorkspaceFacade};
     use crate::mcp::peers::types::PeerLiveness;
+    use crate::mcp::test_support::text_of;
     use crate::mcp::workers::facade::{
         CallerProject, MockWorkerFacade, WorkerCapacity, WorkerFacade,
     };
@@ -1153,7 +1154,7 @@ mod tests {
         }
         let output = tool.call(ToolInput { value: args }).await;
         assert!(!output.is_error, "list must not error: {:?}", output.blocks);
-        serde_json::from_str(&output.blocks[0].text).expect("list returns a JSON array")
+        serde_json::from_str(text_of(&output)).expect("list returns a JSON array")
     }
 
     /// The despawn trigger is shipped text a session reads at the moment it
@@ -1266,7 +1267,7 @@ mod tests {
         let output = call_send(&host, target("other", "proj", Some("w1")), "hi").await;
         assert!(!output.is_error, "the send must land: {:?}", output.blocks);
         let parsed: serde_json::Value =
-            serde_json::from_str(&output.blocks[0].text).expect("send returns JSON");
+            serde_json::from_str(text_of(&output)).expect("send returns JSON");
         assert_eq!(parsed["status"], "sent");
         let id = parsed["id"].as_str().expect("the result carries the send's id");
         assert!(id.starts_with("m-"), "ids name the send: {id}");
@@ -1320,7 +1321,7 @@ mod tests {
         let tool = Whoami { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "whoami must resolve the caller: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["slot"]["org"], "acme");
         assert_eq!(parsed["slot"]["project"], "core");
         assert_eq!(parsed["slot"]["label"], LEAD_LABEL);
@@ -1348,7 +1349,7 @@ mod tests {
         let tool = Whoami { dispatcher: Arc::clone(&host.dispatcher), slot: worker_caller() };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "whoami must resolve a worker caller: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["slot"]["label"], "w2");
         assert_eq!(parsed["slot"]["project"], "core");
     }
@@ -1360,7 +1361,7 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "list must answer a worker caller: {:?}", output.blocks);
         let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&output.blocks[0].text).expect("JSON array");
+            serde_json::from_str(text_of(&output)).expect("JSON array");
         assert!(
             rows.iter().any(|row| row["slot"]["label"] == "w1"),
             "a worker sees its project's pool: {rows:?}",
@@ -1385,7 +1386,7 @@ mod tests {
         // The reserved label takes the lead path, and only that path:
         // the worker path would look for a worker labelled `lead` in the
         // caller's pool and refuse.
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["status"], "sent");
     }
 
@@ -1407,7 +1408,7 @@ mod tests {
             Capacity { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
         let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!output.is_error, "capacity must answer: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["available"], 0, "a cap under the live count leaves no free slot");
     }
 
@@ -1445,7 +1446,7 @@ mod tests {
             .await;
         assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
         assert_eq!(output.blocks.len(), 1, "the answer stays one text block: {output:?}");
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["resumed"], true, "resumed is a field a caller can branch on");
         assert_eq!(
             parsed["session_choice"], "resumed",
@@ -1501,7 +1502,7 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(
             parsed["worker"]["session_id"], "fresh-session",
             "the row is the occupant that was just spawned, not the failed predecessor: {parsed}",
@@ -1533,7 +1534,7 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["resumed"], false, "a fresh spawn says so");
         assert_eq!(parsed["session_choice"], "fresh");
         assert!(parsed.get("worktree").is_none(), "no worktree, no path: {parsed}");
@@ -1563,7 +1564,7 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["resumed"], false, "nothing was resumed");
         assert_eq!(parsed["session_choice"], "fresh_without_prior", "and the fallback is named");
     }
@@ -1639,9 +1640,9 @@ mod tests {
         let empty = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
         assert!(empty.is_error, "an update naming no field is refused");
         assert!(
-            empty.blocks[0].text.contains("at least one"),
+            text_of(&empty).contains("at least one"),
             "the refusal says what to supply: {}",
-            empty.blocks[0].text,
+            text_of(&empty),
         );
         assert!(host.workers.update_calls.lock().is_empty(), "nothing reached the facade");
 
@@ -1651,8 +1652,7 @@ mod tests {
             })
             .await;
         assert!(!supplied.is_error, "one supplied field is enough: {:?}", supplied.blocks);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&supplied.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&supplied)).expect("JSON");
         assert_eq!(
             parsed["updated"],
             serde_json::json!(["charter"]),
@@ -1671,7 +1671,7 @@ mod tests {
             Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
         assert!(!output.is_error, "a blocked despawn is not a tool error: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["status"], "blocked");
         assert_eq!(parsed["reason"], "3 uncommitted files", "the reason reaches the caller");
         assert!(
@@ -1693,7 +1693,7 @@ mod tests {
             .call(ToolInput { value: serde_json::json!({ "label": "w1", "force": true }) })
             .await;
         assert!(!output.is_error, "the despawn must be answered: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["status"], "despawned", "a clean despawn reports it");
         assert_eq!(
             parsed["worktree_cleanup_warning"], "the directory lingers",
@@ -1734,9 +1734,9 @@ mod tests {
             "the supplied resume_kick reaches the facade",
         );
         assert!(
-            output.blocks[0].text.contains("resume_kick"),
+            text_of(&output).contains("resume_kick"),
             "the reply names the changed field: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
     }
 
@@ -1756,9 +1756,9 @@ mod tests {
             .await;
         assert!(output.is_error, "an absent worker is refused, not reported as revised");
         assert!(
-            output.blocks[0].text.contains("agents__spawn"),
+            text_of(&output).contains("agents__spawn"),
             "the refusal points at spawn: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
     }
 
@@ -1772,9 +1772,9 @@ mod tests {
             .await;
         assert!(output.is_error, "a whitespace-only field is refused");
         assert!(
-            output.blocks[0].text.contains("kick must be non-empty after trim"),
+            text_of(&output).contains("kick must be non-empty after trim"),
             "the refusal names the offending field: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
         assert!(host.workers.update_calls.lock().is_empty(), "refused before touching the store");
     }
@@ -1792,9 +1792,9 @@ mod tests {
             .await;
         assert!(output.is_error, "a blank label is refused, not accepted as a revision");
         assert!(
-            output.blocks[0].text.contains("label must be non-empty after trim"),
+            text_of(&output).contains("label must be non-empty after trim"),
             "the refusal names the label: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
         assert!(host.workers.update_calls.lock().is_empty(), "refused before touching the store");
     }
@@ -1823,9 +1823,9 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
         assert!(output.is_error, "a worker caller is refused");
         assert!(
-            output.blocks[0].text.to_lowercase().contains("lead-only"),
+            text_of(&output).to_lowercase().contains("lead-only"),
             "the refusal says why: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
         assert!(host.workers.despawn_calls.lock().is_empty(), "refused before the facade");
     }
@@ -1838,9 +1838,9 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "   " }) }).await;
         assert!(output.is_error, "a blank label is refused");
         assert!(
-            output.blocks[0].text.to_lowercase().contains("label"),
+            text_of(&output).to_lowercase().contains("label"),
             "the refusal names the label: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
     }
 
@@ -1855,9 +1855,9 @@ mod tests {
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "ghost" }) }).await;
         assert!(output.is_error, "a label with no live worker is refused, not reported as gone");
         assert!(
-            output.blocks[0].text.contains("ghost"),
+            text_of(&output).contains("ghost"),
             "the refusal names the label: {}",
-            output.blocks[0].text,
+            text_of(&output),
         );
     }
 
@@ -1874,7 +1874,7 @@ mod tests {
             Despawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
         let output = tool.call(ToolInput { value: serde_json::json!({ "label": "w1" }) }).await;
         assert!(!output.is_error, "a kept branch is not an error: {:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(parsed["status"], "despawned", "a despawn with a kept branch still reports it");
         assert!(
             parsed["branch_cleanup_warning"]
@@ -1938,7 +1938,7 @@ mod tests {
             .await;
 
         assert!(!output.is_error, "{:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert_eq!(
             parsed["mcp_families"],
             serde_json::json!(["tasks", "slack"]),
@@ -1964,7 +1964,7 @@ mod tests {
             .await;
 
         assert!(!output.is_error, "{:?}", output.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&output)).expect("JSON");
         assert!(parsed.get("mcp_families").is_none(), "no key when nothing is narrowed: {parsed}");
         assert_eq!(host.workers.spawn_calls.lock()[0].7, None);
     }
@@ -1989,7 +1989,7 @@ mod tests {
                 .await;
 
             assert!(output.is_error, "{bad} must refuse");
-            assert!(output.blocks[0].text.contains(needle), "{bad}: {}", output.blocks[0].text);
+            assert!(text_of(&output).contains(needle), "{bad}: {}", text_of(&output));
             assert!(host.workers.spawn_calls.lock().is_empty(), "{bad} persists nothing");
         }
     }
@@ -2007,9 +2007,9 @@ mod tests {
             .await;
         assert!(!output.is_error, "{:?}", output.blocks);
         assert!(
-            output.blocks[0].text.contains("mcp_families"),
+            text_of(&output).contains("mcp_families"),
             "the update names what changed: {}",
-            output.blocks[0].text
+            text_of(&output)
         );
         assert_eq!(host.workers.update_calls.lock()[0].5, Some(vec!["cron".to_owned()]));
 

@@ -45,7 +45,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![forge_sdk::mcp::tool::ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// Format a `SystemTime` as a UTC RFC3339 string for tool output.
@@ -381,6 +381,7 @@ impl Tool for Delete {
 mod tests {
     use super::*;
     use crate::mcp::tasks::facade::{MockTasksFacade, RemovedTaskTree};
+    use crate::mcp::test_support::text_of;
 
     fn lead_slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "myproj")
@@ -463,8 +464,8 @@ mod tests {
             .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
-        let json: serde_json::Value = serde_json::from_str(&out.blocks[0].text)
-            .expect("the result is the task record, not prose");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the task record, not prose");
         assert_eq!(json["id"], "t-1", "the record names the task it moved: {json}");
         assert_eq!(json["subject"], "Merge peers and workers");
         assert_eq!(json["status"], "in_progress", "and the state it now holds");
@@ -487,7 +488,7 @@ mod tests {
         assert!(!out.is_error, "delete succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],
@@ -510,7 +511,7 @@ mod tests {
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["descendants_removed"], 0, "a leaf states its count: {json}");
     }
 

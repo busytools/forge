@@ -74,6 +74,8 @@ export const REDRAWS = new Set([
   // the row can only draw it if this side re-reads on the news.
   'slack_post_pending',
   'slack_draft_resolved',
+  'browser_hand_off_pending',
+  'browser_hand_off_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
   // moved. The home's own row draws all three sections, so the update is a

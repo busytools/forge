@@ -796,5 +796,38 @@
       "key": "field-notes",
       "value": "mentions anywhere · mentions only"
     }
+  ],
+  "schedules": [
+    { "id": "c-1", "key": "rules sweep", "value": "in 27d · recurring" },
+    { "id": "c-2", "key": "plugin audit", "value": "in 27d · one-shot" }
+  ],
+  "mcp": [
+    {
+      "name": "forge",
+      "k": "forge · session",
+      "v": "4 tools",
+      "tools": ["roster", "session", "agents", "processes"],
+      "command": "node /opt/mcp-servers/forge-server.js",
+      "reason": null,
+      "synthetic": false
+    },
+    {
+      "name": "context7",
+      "k": "context7 · sdk",
+      "v": "2 tools",
+      "tools": ["query-docs", "resolve-library-id"],
+      "command": "npx -y @upstash/context7-mcp",
+      "reason": null,
+      "synthetic": false
+    },
+    {
+      "name": "vercel",
+      "k": "vercel · session",
+      "v": "needs sign-in",
+      "tools": [],
+      "command": null,
+      "reason": "OAuth token expired",
+      "synthetic": false
+    }
   ]
 }

@@ -806,6 +806,14 @@
   /* The strip's rows share one right-hand fill, the sheet's own rule. */
   .sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
     row-gap: 2px; }
+  /* The browser row, beside the agents row (the sheet's own `.bz-seg` rules,
+     drawn here as the specimen). */
+  .bz-seg { position: relative; display: inline-flex; }
+  .bz-seg .bz-tog { display: flex; align-items: center; gap: 8px; background: none;
+    border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
+    font: inherit; color: var(--muted); }
+  .bz-seg .bz-tog:hover, .bz-seg.open .bz-tog { border-color: var(--line); color: var(--text); }
+  .bz-seg .bz-tog .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   /* The agents row: the count at the strip's right, and the way into each
      instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
   .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
@@ -813,6 +821,18 @@
     border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+  /* The status depth under a server row: the tools it offers and what backs
+     it, wrapping rather than eliding - the strip is nowrap, so the wrap has
+     to be asked for here. */
+  .sg-sub { padding: 0 13px 7px 26px; font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--muted); white-space: normal;
+    overflow-wrap: anywhere; }
+  .sg-sub.bad { color: var(--bad); }
+  /* A row that leads with its name: the accent name takes what is left and
+     elides, so a long key - a cron's description, a process headline - gives
+     way instead of pushing the right figure out. */
+  .sg-list .sg-it .nm.lead { flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -2414,6 +2434,18 @@ branch main, nothing to commit</div>
                that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
           <span id="lv-cost" style="display:none">$4.82 cumulative</span>
+          <!-- The browser row, beside the agents row: how many named contexts
+               this client holds. Opened, its list carries the role line (who
+               drives the browser), a Take over where this client is capable
+               and not holding, the Show browser control with its restart cost
+               on the same panel, and a close on every context row - the door
+               a context whose owning session is gone comes back through.
+               Drawn CLOSED here: the open list is runtime state. -->
+          <span class="bz-seg">
+            <button type="button" class="bz-tog">
+              <svg class="ic"><use href="#i-web"/></svg>
+              browser <span class="n">2 contexts</span></button>
+          </span>
           <!-- The agents row, at the strip's right: the seat's instances, the
                count it has out and the count it has finished. It is where a
                subagent is announced outside the chat, and the way into each
@@ -2449,6 +2481,29 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-gotify"/></svg>
               <svg class="ic"><use href="#i-slack"/></svg>
               3 subscriptions</button>
+          </span>
+          <!-- The schedules row, fourth: this SEAT's crons with their
+               countdowns - a cron names the seat that created it (`team_role`,
+               None for the lead), so the row keeps its own set, like the
+               connectors row beside it. The rows are inert, and the inspector
+               has no schedules section any more. A row leading with a long key
+               elides (the sheet's own `.nm.lead`), so a sentence-length
+               description never buries the countdown. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-schedules"/></svg>
+              2 schedules</button>
+          </span>
+          <!-- The MCP row, fifth: this SESSION's servers, the count in the
+               toggle. The open list carries the status depth the inspector's
+               section used to hold - each server's tools, the command or URL
+               backing it, a failure's reason - and the run-a-command page
+               hangs off these rows later. The inspector has no mcp servers
+               section any more. Drawn CLOSED here, like its siblings. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-mcp"/></svg>
+              3 servers</button>
           </span>
           </span>
         </div>
@@ -2647,32 +2702,6 @@ branch main, nothing to commit</div>
           <div class="tk done"><span class="b"></span><span>
             <div class="s">Merge, release and install the layout pass</div>
             <div class="meta"><b>lead</b> &#183; completed 24m ago</div></span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-schedules"/></svg> schedules
-          <span class="c2">4</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">weekly bench</span>
-            <span class="v">Sat 10:30 &#183; recurring</span></div>
-          <div class="kv"><span class="k">deps sweep</span>
-            <span class="v">10:23 on the 3rd &#183; recurring</span></div>
-          <div class="kv"><span class="k">rules sweep</span>
-            <span class="v">10:00 on the 1st, 15th</span></div>
-          <div class="kv"><span class="k">plugin audit</span>
-            <span class="v">in 27d &#183; one-shot</span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-mcp"/></svg> mcp servers
-          <span class="c2">2</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
-          <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
         </div>
       </details>
 

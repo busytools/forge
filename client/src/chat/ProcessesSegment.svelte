@@ -252,7 +252,7 @@
                 <Icon name="check" class="ok" />
               {/if}
             {/if}
-            <span class="nm">{row.headline}</span>
+            <span class="nm lead">{row.headline}</span>
             <span class="n">{figureOf(row)}</span>
           </button>
         {/each}

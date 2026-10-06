@@ -32,6 +32,8 @@ async fn macro_generated_tool_works() {
     assert_eq!(t.name(), "double");
     let out = t.call(ToolInput { value: json!({"n": 7}) }).await;
     assert!(!out.is_error);
-    let ToolOutputBlock { text } = &out.blocks[0];
+    let ToolOutputBlock::Text { text } = &out.blocks[0] else {
+        panic!("a text tool returns a text block");
+    };
     assert_eq!(text, "14");
 }

@@ -7,12 +7,17 @@ export default tseslint.config(
   // The shell's crate target dir holds generated .js (tauri-build's API script
   // and the codegen'd assets), which this project has no tsconfig for, and
   // Stryker's sandbox and reports carry bundled .js this project does not own.
+  //
+  // `src-tauri/browser-stack/` is the vendored browser: half a gigabyte of
+  // Chrome, node and the driver, none of it this project's code and none of it
+  // covered by a tsconfig.
   {
     ignores: [
       'dist/',
       'node_modules/',
       'src-tauri/target/',
       'src-tauri/gen/',
+      'src-tauri/browser-stack/',
       '.stryker-tmp/',
       'reports/',
     ],

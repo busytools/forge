@@ -345,6 +345,7 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
             test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),
+            test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
             // A stub workspace pretends the listener is bound: the
@@ -360,6 +361,7 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
+            browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
@@ -401,6 +403,7 @@ impl Workspace {
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
+            browser_handoffs: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -522,6 +525,12 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_spawn_listing(&self) -> crate::workspace::RecordedListing {
         self.test_spawn_listing.lock().clone()
+    }
+
+    /// The `forge` MCP server the last spawn composed, so a test can drive a
+    /// tool through the spawn's OWN wiring rather than a copy of it.
+    pub fn test_spawn_server(&self) -> Option<forge_sdk::mcp::server::McpServer> {
+        self.test_spawn_server.lock().clone()
     }
 
     pub fn seed_test_gateway_ready(&self, ready: bool) {

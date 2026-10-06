@@ -169,6 +169,22 @@ describe("the processes row's interaction state machine", () => {
     ).toContain('local_bash');
   });
 
+  it('lets a long headline elide instead of pushing its figure out', () => {
+    draw([
+      registryRow({
+        tool_use_id: 'tu-1',
+        description: 'sweep every transcript for the usage figures the report needs',
+      }),
+    ]);
+    toggle()?.click();
+    flushSync();
+
+    expect(
+      rows()[0]?.querySelector('.nm')?.classList.contains('lead'),
+      'the headline takes the row and gives way to the right figure',
+    ).toBe(true);
+  });
+
   it('closes the panel when focus leaves the segment entirely', () => {
     draw();
     toggle()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
