@@ -444,12 +444,12 @@ impl Workspace {
     }
 
     /// Append a worker reply to `comment_id` on `(project, branch)` and
-    /// return the thread's status after the append (Open -> Addressed;
-    /// Resolved / Outdated unchanged). Records the reply in `caller`'s
-    /// turn activity buffer so the reviewer is notified at turn end. `Err`
-    /// when the store is closed, the write fails, or no comment with that
-    /// id exists in this scope, so a stale or cross-branch id is rejected
-    /// rather than silently ignored.
+    /// return the comment's anchor with the status after the append (Open
+    /// -> Addressed; Resolved / Outdated unchanged). Records the reply in
+    /// `caller`'s turn activity buffer so the reviewer is notified at turn
+    /// end. `Err` when the store is closed, the write fails, or no comment
+    /// with that id exists in this scope, so a stale or cross-branch id is
+    /// rejected rather than silently ignored.
     pub fn review_reply(
         &self,
         caller: &SessionSlot,
@@ -459,11 +459,16 @@ impl Workspace {
         author_label: &str,
         text: &str,
         at: &str,
-    ) -> Result<ReviewStatus, String> {
-        let status = {
+    ) -> Result<crate::mcp::review::CommentAnchorView, String> {
+        let anchor = {
             let guard = self.db.lock();
             let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
-            crate::store::review::append_reply(
+            // The anchor is read BEFORE the write: a read failure then
+            // means nothing has landed and a failure is honest. The same
+            // read failing after the append would report a landed reply as
+            // failed, and a retry would duplicate it.
+            let (thread, reviews) = comment_anchor_parts(db, project, branch, comment_id)?;
+            let status = crate::store::review::append_reply(
                 db,
                 project,
                 branch,
@@ -482,26 +487,30 @@ impl Workspace {
                     "appending a review reply failed",
                 );
                 format!("{error:#}")
-            })?
+            })?;
+            crate::mcp::review::comment_anchor(&thread, &reviews, status)
         };
         self.note_review_activity(caller, project, branch, comment_id, true);
-        Ok(status)
+        Ok(anchor)
     }
 
-    /// Mark `comment_id` on `(project, branch)` Resolved and record the
-    /// resolve in `caller`'s turn activity buffer. `Err` when the store is
-    /// closed, the write fails, or no comment with that id exists in this
-    /// scope.
+    /// Mark `comment_id` on `(project, branch)` Resolved and return the
+    /// comment's anchor with its new status. Records the resolve in
+    /// `caller`'s turn activity buffer. `Err` when the store is closed,
+    /// the write fails, or no comment with that id exists in this scope.
     pub fn review_resolve(
         &self,
         caller: &SessionSlot,
         project: &str,
         branch: &str,
         comment_id: &str,
-    ) -> Result<(), String> {
-        {
+    ) -> Result<crate::mcp::review::CommentAnchorView, String> {
+        let anchor = {
             let guard = self.db.lock();
             let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            // Read before the write, as `review_reply` does: a failure here
+            // is reported before anything has landed.
+            let (thread, reviews) = comment_anchor_parts(db, project, branch, comment_id)?;
             match crate::store::review::set_status(
                 db,
                 project,
@@ -525,9 +534,10 @@ impl Workspace {
                     return Err(format!("{error:#}"));
                 }
             }
-        }
+            crate::mcp::review::comment_anchor(&thread, &reviews, ReviewStatus::Resolved)
+        };
         self.note_review_activity(caller, project, branch, comment_id, false);
-        Ok(())
+        Ok(anchor)
     }
 
     /// Append one review action to `caller`'s turn buffer, resolving the
@@ -668,6 +678,29 @@ impl Workspace {
             })
             .collect()
     }
+}
+
+/// The thread a reply or resolve names, and the branch's reviews: the
+/// parts an anchor echo is built from. Read before the write, so a
+/// failure cannot make a landed write look failed - and both calls
+/// double as the "no such comment" check, whose error the result would
+/// otherwise only surface as a missing thread.
+fn comment_anchor_parts(
+    db: &crate::store::Db,
+    project: &str,
+    branch: &str,
+    comment_id: &str,
+) -> Result<
+    (forge_primitives::review::ReviewThread, Vec<forge_primitives::review::ReviewSet>),
+    String,
+> {
+    let missing = || format!("no review comment {comment_id} on ({project}, {branch})");
+    let thread = crate::store::review::find_thread_by_id(db, project, branch, comment_id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(missing)?;
+    let reviews = crate::store::review::load_reviews(db, project, branch)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok((thread, reviews))
 }
 
 #[cfg(test)]
@@ -1257,7 +1290,7 @@ mod tests {
                 "2026-07-23T12:00:00Z",
             )
             .expect("reply");
-        assert_eq!(status, ReviewStatus::Addressed, "a reply flips Open -> Addressed");
+        assert_eq!(status.status, "addressed", "a reply flips Open -> Addressed");
         let list = ws.review_list("forge", "feat").expect("list");
         assert_eq!((list[0].open, list[0].addressed), (1, 1));
 
@@ -1277,6 +1310,224 @@ mod tests {
             ws.review_resolve(&caller, "forge", "other", "a").is_err(),
             "resolve: a lives on feat, not other",
         );
+    }
+
+    /// A reply and a resolve both answer with the comment's anchor and the
+    /// review round its turn is filed in, so the caller can name the spot
+    /// and the round instead of only the comment id.
+    ///
+    /// **`c-71` spans rounds and the branch runs on past it**: it is filed
+    /// in rounds 1 and 2, and a third round then stamps nothing (`c-1`'s
+    /// only turn is already filed), so the newest round exists and no
+    /// comment is in it. The number must be the round this comment's
+    /// LATEST turn is filed in (2) - the thread's first round reads 1 and
+    /// the branch's newest reads 3, and both are wrong here. Its side is
+    /// Old while the other fixture is New, so a hardcoded side fails too.
+    #[test]
+    fn reply_and_resolve_echo_the_comment_anchor() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let thread = |id: &str, path: &str, line: u32, side: ReviewSide| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: path.to_owned(),
+                side,
+                line,
+                content_hash: 1,
+                context: vec!["const glyph = ...".to_owned()],
+                base_ref: "main".to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: format!("look at {id}"),
+                at: "2026-07-23T10:00:00Z".to_owned(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: "2026-07-23T10:00:00Z".to_owned(),
+            updated_at: "2026-07-23T10:00:00Z".to_owned(),
+            commit: None,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[
+                thread("c-1", "src/other.rs", 3, ReviewSide::New),
+                thread("c-71", "src/chat/units.ts", 919, ReviewSide::Old),
+            ],
+        );
+        let reviewer = SessionSlot::from_str_for_test("reviewer");
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["c-1".to_owned(), "c-71".to_owned()],
+            reviewer.clone(),
+        )
+        .expect("first round seals both");
+        // A fresh user turn on c-71, so the second round has something to
+        // seal and the thread spans two rounds.
+        let mut threads = ws.load_review_threads("forge", "feat").expect("load");
+        let c71 = threads.iter_mut().find(|t| t.id == "c-71").expect("c-71 is there");
+        c71.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still unguarded".to_owned(),
+            at: "2026-07-24T10:00:00Z".to_owned(),
+            review_id: None,
+        });
+        ws.save_review_threads("forge", "feat", &threads);
+        ws.submit_review("forge", "feat", None, &["c-71".to_owned()], reviewer.clone())
+            .expect("second round");
+        ws.submit_review("forge", "feat", None, &["c-1".to_owned()], reviewer)
+            .expect("third round, c-71 in neither the first nor the last");
+        let caller = SessionSlot::from_str_for_test("worker");
+
+        let replied = ws
+            .review_reply(&caller, "forge", "feat", "c-71", "implementer", "replay-only", "t")
+            .expect("reply");
+        assert_eq!(replied.comment_id, "c-71");
+        assert_eq!(replied.file, "src/chat/units.ts", "the file the comment is anchored to");
+        assert_eq!(replied.line, 919);
+        assert_eq!(replied.side, "old", "the side the anchor holds, not a default");
+        assert_eq!(replied.number, Some(2), "the round this comment's latest turn is filed in");
+        assert_eq!(replied.status, "addressed");
+
+        let resolved = ws.review_resolve(&caller, "forge", "feat", "c-71").expect("resolve");
+        assert_eq!(resolved.comment_id, "c-71");
+        assert_eq!(resolved.file, "src/chat/units.ts", "the anchor survives the resolve");
+        assert_eq!(resolved.line, 919);
+        assert_eq!(resolved.side, "old");
+        assert_eq!(resolved.number, Some(2));
+        assert_eq!(resolved.status, "resolved");
+    }
+
+    /// A corrupt reviews row refuses the reply BEFORE the write lands: the
+    /// thread is found (the read that can fail is the reviews side), so
+    /// this is the one arrangement where read-before-write and
+    /// write-before-read differ. If the read ran after the append, this
+    /// reply would be reported failed while it had already landed, and a
+    /// retry would duplicate it.
+    #[test]
+    fn a_reply_whose_anchor_cannot_be_read_lands_nothing() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[ReviewThread {
+                id: "c-1".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: vec!["ctx".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "look here".to_owned(),
+                    at: "2026-07-23T10:00:00Z".to_owned(),
+                    review_id: None,
+                }],
+                status: ReviewStatus::Open,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+                updated_at: "2026-07-23T10:00:00Z".to_owned(),
+                commit: None,
+            }],
+        );
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["c-1".to_owned()],
+            SessionSlot::from_str_for_test("reviewer"),
+        )
+        .expect("a reviews row exists to corrupt");
+        {
+            let guard = ws.db.lock();
+            crate::store::review::write_corrupt_reviews_row_for_test(
+                guard.as_ref().expect("db installed"),
+                "forge",
+                "feat",
+            )
+            .expect("corrupt the reviews row");
+        }
+        let caller = SessionSlot::from_str_for_test("worker");
+
+        let err = ws
+            .review_reply(&caller, "forge", "feat", "c-1", "implementer", "fixed", "t")
+            .expect_err("the anchor's read fails, so the reply is refused");
+
+        assert!(!err.is_empty(), "the failure is reported: {err}");
+        let threads = ws.load_review_threads("forge", "feat").expect("the threads row still reads");
+        assert_eq!(
+            threads[0].comments.len(),
+            1,
+            "nothing landed behind the refused read, so a retry duplicates nothing",
+        );
+        assert_eq!(threads[0].status, ReviewStatus::Open, "and the status is untouched");
+    }
+
+    /// A comment filed in no review answers a null number through the real
+    /// store path, not only at the tool's mock: there is no round to name
+    /// yet, and the key is still the shape every answer carries.
+    #[test]
+    fn an_unfiled_comment_answers_a_null_number() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.save_review_threads(
+            "forge",
+            "feat",
+            &[ReviewThread {
+                id: "c-9".to_owned(),
+                anchor: ReviewAnchor {
+                    path: "src/x.rs".to_owned(),
+                    side: ReviewSide::New,
+                    line: 1,
+                    content_hash: 1,
+                    context: vec!["ctx".to_owned()],
+                    base_ref: "main".to_owned(),
+                },
+                comments: vec![ReviewComment {
+                    author: ReviewAuthor::User,
+                    text: "unfiled".to_owned(),
+                    at: "2026-07-23T10:00:00Z".to_owned(),
+                    review_id: None,
+                }],
+                status: ReviewStatus::Open,
+                created_at: "2026-07-23T10:00:00Z".to_owned(),
+                updated_at: "2026-07-23T10:00:00Z".to_owned(),
+                commit: None,
+            }],
+        );
+        let caller = SessionSlot::from_str_for_test("worker");
+
+        let replied = ws
+            .review_reply(&caller, "forge", "feat", "c-9", "implementer", "x", "t")
+            .expect("a reply on an unfiled thread still lands");
+
+        assert_eq!(replied.comment_id, "c-9");
+        assert_eq!(replied.number, None, "no review is filed yet, so there is no round to name");
+        assert_eq!(replied.status, "addressed");
     }
 
     #[test]
