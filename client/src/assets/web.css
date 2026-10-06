@@ -886,6 +886,11 @@ details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-sp
    prose tone rather than the row's own muting, so a mark reads as a mark. */
 details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+/* A thought's expansion is reasoning, not the turn's own words: it reads as a
+   quiet block off the column - a hairline and the muted tone - instead of more
+   prose. Both folds draw through this one row. */
+details.leaf.think > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+details.leaf.think > .body .prose { color: var(--muted); }
 /* A dispatch row's own fields, joined from the record's card: the agent type,
    the background chip, and - once settled - the figures at the row's right.
    Namespaced `sg-` so no bare name of the sheet's other surfaces catches
