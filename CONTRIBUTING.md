@@ -17,9 +17,10 @@ we can agree the direction before you write it.
 just check
 ```
 
-That is `cargo fmt --check`, the Unicode punctuation gate, the client's
-Prettier check, ESLint, `svelte-check` and `tsc --noEmit` and then its
-vitest run, `cargo clippy --all-targets --workspace -- -D warnings` once
+That is `cargo fmt --check`, the Unicode punctuation gate, the release
+scripts' tests, the client's Prettier check, ESLint, `svelte-check` and
+`tsc --noEmit` and then its vitest run,
+`cargo clippy --all-targets --workspace -- -D warnings` once
 per feature set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and

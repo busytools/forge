@@ -69,7 +69,8 @@ just check
 ```
 
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
-the client's Prettier check, its ESLint, `svelte-check` and `tsc --noEmit`
+the release scripts' tests (`script-tests`), the client's Prettier check,
+its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
