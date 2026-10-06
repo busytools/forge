@@ -54,6 +54,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     more: () => false,
     devices: () => false,
     frame: () => false,
+    onBrowserAsk: () => () => {},
     onMessage: () => () => {},
     onStatus: () => () => {},
     store: () => undefined,

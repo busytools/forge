@@ -117,6 +117,13 @@ impl Fleet {
         Arc::clone(&self.surface)
     }
 
+    /// The workspace under the fixture, for a test that has to build
+    /// something FROM it - the transport a binary builds, above all, whose
+    /// browser relay has to be this workspace's own.
+    pub fn workspace(&self) -> Arc<Workspace> {
+        Arc::clone(&self.workspace)
+    }
+
     /// Arm dictation for `key`: an engine over a temp models directory
     /// whose weights are absent, and the seat marked live, so a test can
     /// drive a take without hardware, a model or a CLI. The returned

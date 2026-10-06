@@ -231,7 +231,7 @@ macro_rules! assert_serde_names {
 census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
-        Devices struct, Reply struct, Error struct,
+        Devices struct, Reply struct, Error struct, BrowserAsk struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
@@ -297,7 +297,10 @@ census!(Command,
 // client writes these tags by hand, so a rename here fails nothing until the
 // command does nothing when it is pressed.
 census!(ClientMessage,
-    [Subscribe struct, Unsubscribe struct, Command struct, More struct, Devices struct],
+    [
+        Subscribe struct, Unsubscribe struct, Command struct, More struct, Devices struct,
+        BrowserAnswer struct,
+    ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
 /// Where the records live, named by the protocol the server speaks rather
@@ -479,6 +482,12 @@ fn frames_record() -> Value {
             // own.
             seat: Some(seat.clone()),
         },
+        ServerMessage::BrowserAsk {
+            id: 1,
+            seat: seat.clone(),
+            tool: "browser_navigate".to_owned(),
+            args: json!({ "url": "https://example.com" }),
+        },
     ];
 
     for sample in &samples {
@@ -515,7 +524,7 @@ fn frames_record() -> Value {
     // All five, because they are cheap and the client writes these tags by
     // hand: nothing else in the tree would notice one moving.
     let client_messages = [
-        ClientMessage::Subscribe { what: Subject::Home, answering: false },
+        ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true },
         ClientMessage::Unsubscribe { what: Subject::Home },
         ClientMessage::Command {
             command: Box::new(Command::OpenUrl { url: String::new() }),
@@ -523,6 +532,11 @@ fn frames_record() -> Value {
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
         ClientMessage::Devices,
+        ClientMessage::BrowserAnswer {
+            id: 1,
+            parts: vec![forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() }],
+            error: None,
+        },
     ];
     for sample in &client_messages {
         let encoded = serde_json::to_value(sample).expect("a client message encodes");
@@ -595,6 +609,18 @@ fn frames_record() -> Value {
             configured: Some("a-mic".to_owned()),
         }),
     );
+    // The ask, whose fields a client writes by hand on the way back: the id it
+    // answers under, the seat it acts for, the tool, and the arguments it was
+    // given.
+    payload_sampled.insert(
+        "BrowserAsk".to_owned(),
+        shape_of(&ServerMessage::BrowserAsk {
+            id: 1,
+            seat: seat.clone(),
+            tool: "browser_navigate".to_owned(),
+            args: json!({ "url": "https://example.com" }),
+        }),
+    );
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),
@@ -603,8 +629,9 @@ fn frames_record() -> Value {
         "command": named(COMMAND_VARIANTS),
         "client_message": named(CLIENT_MESSAGE_VARIANTS),
         "payload_sampled": payload_sampled,
+        "client_sampled": client_sampled(),
         "command_sampled": command_sampled(&seat),
-        "dictate_frame": dictate_frame_record(),
+        "binary_frames": binary_frame_record(),
     })
 }
 
@@ -643,58 +670,122 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
     sampled
 }
 
-/// The dictate frame's byte-level contract, asserted and then recorded.
+/// The binary frames' byte-level contract, asserted and then recorded.
 ///
-/// A frame is raw bytes rather than a serde enum, so this pins the two
-/// things a reader can check about it: the header and cap the server
-/// enforces, and a fixed vector whose BYTES decode to the samples they
-/// carry, which is what pins byte order and scaling together. The server
-/// only decodes, so the fixture runs that way: bytes in, samples out.
-fn dictate_frame_record() -> Value {
-    use forge_server::transport::frame::{self, HEADER_BYTES, MAX_PAYLOAD_BYTES};
+/// A frame is raw bytes rather than a serde enum, so this pins the things a
+/// reader can check about it: the header lengths and caps the server enforces,
+/// the kind tags, and a fixed vector per kind whose BYTES decode to what they
+/// carry - which is what pins byte order and scaling for the samples, and byte
+/// order for an image's id, together. The server only decodes, so the fixtures
+/// run that way.
+fn binary_frame_record() -> Value {
+    use forge_server::transport::frame::{
+        self, HEADER_BYTES, IMAGE_HEADER_BYTES, MAX_IMAGE_BYTES, MAX_PAYLOAD_BYTES,
+    };
 
-    // The fixture: one of each interesting sample, little-endian i16 on the
-    // wire. A big-endian read of these bytes, or a /32767 scale, moves the
-    // decoded samples and fails the assertion below.
-    const FIXTURE: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
+    // The dictation fixture: one of each interesting sample, little-endian
+    // i16 on the wire. A big-endian read of these bytes, or a /32767 scale,
+    // moves the decoded samples and fails the assertion below.
+    const AUDIO: &[i16] = &[0, 16384, -32768, 8192, -8192, 32767, -16384, 4096];
+    // The image fixture: the answer's id big-endian, then the bytes.
+    const ID: u64 = 0x0102_0304_0506_0708;
+    const IMAGE: &[u8] = &[0x89, 0x50, 0x4e, 0x47];
 
-    // Every codec, one list expanded twice: the `match` has no wildcard
-    // arm, so a codec added or removed is a compile error here before it is
-    // a failing record.
-    let codecs: Vec<Value> = [frame::Codec::PcmI16]
+    // Every kind, one list expanded twice: the `match` has no wildcard arm,
+    // so a kind added or removed is a compile error here before it is a
+    // failing record.
+    let kinds: Vec<Value> = [frame::Kind::Dictation, frame::Kind::BrowserImage]
         .into_iter()
-        .map(|codec| {
-            let name = match codec {
-                frame::Codec::PcmI16 => "PcmI16",
+        .map(|kind| {
+            let name = match kind {
+                frame::Kind::Dictation => "Dictation",
+                frame::Kind::BrowserImage => "BrowserImage",
             };
-            json!({ "name": name, "tag": codec.tag() })
+            json!({ "name": name, "tag": kind.tag() })
         })
         .collect();
 
-    let mut bytes = vec![frame::Codec::PcmI16.tag()];
-    for sample in FIXTURE {
-        bytes.extend_from_slice(&sample.to_le_bytes());
+    let mut dictation = vec![frame::Kind::Dictation.tag()];
+    for sample in AUDIO {
+        dictation.extend_from_slice(&sample.to_le_bytes());
     }
-    let expected: Vec<f32> = FIXTURE.iter().map(|&s| f32::from(s) / 32768.0).collect();
-
-    let decoded = frame::decode(&bytes).expect("the recorded fixture is a frame this server takes");
+    let samples: Vec<f32> = AUDIO.iter().map(|&s| f32::from(s) / 32768.0).collect();
     assert_eq!(
-        decoded.samples, expected,
+        frame::decode(&dictation).expect("the recorded fixture is a frame this server takes"),
+        frame::Frame::Audio(samples.clone()),
         "the recorded fixture's bytes must decode to the samples they carry"
     );
 
-    let hex = bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    });
+    let mut image = vec![frame::Kind::BrowserImage.tag()];
+    image.extend_from_slice(&ID.to_be_bytes());
+    image.extend_from_slice(IMAGE);
+    assert_eq!(
+        frame::decode(&image).expect("the recorded fixture is a frame this server takes"),
+        frame::Frame::Image { id: ID, bytes: IMAGE.to_vec() },
+        "the recorded fixture's bytes must decode to the id and the bytes they carry"
+    );
 
     json!({
         "header_bytes": HEADER_BYTES,
+        "image_header_bytes": IMAGE_HEADER_BYTES,
         "max_payload_bytes": MAX_PAYLOAD_BYTES,
-        "codecs": codecs,
-        "fixture": { "hex": hex, "samples": expected },
+        "max_image_bytes": MAX_IMAGE_BYTES,
+        "kinds": kinds,
+        "fixtures": {
+            "dictation": { "hex": hex_of(&dictation), "samples": samples },
+            "browser_image": { "hex": hex_of(&image), "id": ID.to_string(), "bytes": IMAGE },
+        },
     })
+}
+
+/// A byte vector as one hex string.
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
+}
+
+/// The client messages a client writes by hand, and the fields it writes them
+/// with.
+///
+/// The census above pins only their tags, and a tag is what a rename moves -
+/// but a field renamed on the server would leave a client's own literal
+/// writing a key nothing reads, with both suites green. `browser_answer` is
+/// the one with fields on both sides of the wire: the parts, an image part's
+/// mime type, and the failure arm - and `subscribe` is where the browser
+/// capability is declared.
+fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
+    let mut sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
+    let sample = |message: ClientMessage| {
+        let mut shape = Shape::default();
+        shape.record(&serde_json::to_value(message).expect("a message encodes"), "");
+        shape
+            .paths
+            .iter()
+            .map(|(path, keys)| (path.clone(), json!(keys.iter().collect::<Vec<_>>())))
+            .collect()
+    };
+    sampled.insert(
+        "BrowserAnswer".to_owned(),
+        sample(ClientMessage::BrowserAnswer {
+            id: 1,
+            parts: vec![
+                forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() },
+                forge_primitives::browser::BrowserPart::Image {
+                    mime_type: "image/png".to_owned(),
+                    bytes: Vec::new(),
+                },
+            ],
+            error: Some("the driver is not running".to_owned()),
+        }),
+    );
+    sampled.insert(
+        "Subscribe".to_owned(),
+        sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true }),
+    );
+    sampled
 }
 
 /// An enum's variants, each against the wire name it encodes as.

@@ -40,6 +40,7 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
+use crate::mcp::browser::facade::BrowserFacade;
 use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
@@ -50,6 +51,7 @@ use crate::mcp::tasks::facade::TasksFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
+pub mod browser;
 pub(crate) mod caller_context;
 pub mod cron;
 pub(crate) mod deleted;
@@ -59,6 +61,8 @@ pub mod review;
 pub mod slack;
 pub mod systemone;
 pub mod tasks;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
@@ -188,6 +192,12 @@ pub(crate) fn canonical_mcp_families(names: &[String]) -> Result<Option<Vec<Stri
         if name == "agents" {
             return Err("`agents` is always on for every worker and cannot be listed".to_owned());
         }
+        // The browser is the other always-on group, for a different reason:
+        // it is one machine-global client rather than a project's scope, so
+        // there is nothing a project could withhold.
+        if name == "browser" {
+            return Err("`browser` is always on for every session and cannot be listed".to_owned());
+        }
         let Some(family) = McpFamily::parse(name) else {
             let selectable: Vec<&str> =
                 McpFamily::ALL.iter().map(|family| family.as_str()).collect();
@@ -243,6 +253,7 @@ pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'sta
 pub struct ForgeServerFacades {
     pub workspace: Arc<dyn WorkspaceFacade>,
     pub worker: Arc<dyn WorkerFacade>,
+    pub browser: Arc<dyn BrowserFacade>,
     pub review: Arc<dyn ReviewFacade>,
     pub cron: Arc<dyn CronFacade>,
     pub gotify: Arc<dyn GotifyFacade>,
@@ -290,14 +301,28 @@ pub fn build_forge_server(
     slot: SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
-    let ForgeServerFacades { workspace, worker, review, cron, gotify, slack, tasks, systemone } =
-        facades;
+    let ForgeServerFacades {
+        workspace,
+        worker,
+        browser,
+        review,
+        cron,
+        gotify,
+        slack,
+        tasks,
+        systemone,
+    } = facades;
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
     let dispatcher = Arc::new(AgentDispatcher::new(workspace, worker.clone()));
     builder = agents::add_shared_tools(builder, dispatcher, slot.clone());
     if matches!(kind, SessionKind::Lead) {
         builder = agents::add_lead_tools(builder, worker, slot.clone());
     }
+    // Unconditional for both kinds: the browser is one machine-global client
+    // rather than a per-project scope, so every session may drive it, and a
+    // session with no browser-capable client connected gets the named error
+    // from the tool rather than a surface that varies by who is running.
+    builder = browser::add_tools(builder, browser, slot.clone());
     if families.contains(&McpFamily::Review) {
         builder = review::add_tools(builder, review, slot.clone());
     }
@@ -326,6 +351,7 @@ pub fn build_forge_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::browser::facade::MockBrowserFacade;
     use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
@@ -361,6 +387,7 @@ mod tests {
             ForgeServerFacades {
                 workspace: MockWorkspaceFacade::new().into_arc(),
                 worker: MockWorkerFacade::new().into_arc(),
+                browser: MockBrowserFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
@@ -420,8 +447,17 @@ mod tests {
     ];
 
     /// Every group that is any-caller: both session kinds manage their
-    /// own project's reviews, crons, tasks, subscriptions and decisions.
-    const ANY_CALLER_TOOLS: [&str; 30] = [
+    /// own project's reviews, crons, tasks, subscriptions and decisions,
+    /// and both may drive the one machine-global browser.
+    const ANY_CALLER_TOOLS: [&str; 38] = [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_evaluate",
+        "browser_run_code_unsafe",
+        "browser_wait_for",
+        "browser_close",
         "review__list",
         "review__get",
         "review__reply",
@@ -519,9 +555,14 @@ mod tests {
         }
     }
 
-    /// Withhold every toggleable family and only the always-on agents
-    /// core survives: the four shared verbs for a worker, all eight for
-    /// a lead.
+    /// Withhold every toggleable family and only the always-on cores
+    /// survive: the three shared verbs plus the browser surface for a
+    /// worker, all seven for a lead.
+    ///
+    /// **The browser tools are here rather than in a family, and that is the
+    /// rule this test now pins**: they register for a session whose every
+    /// toggleable family was withheld, because the browser is one
+    /// machine-global client rather than a scope a project can be denied.
     #[test]
     fn withholding_every_family_leaves_only_the_agents_core() {
         let none: std::collections::BTreeSet<McpFamily> = std::collections::BTreeSet::new();
@@ -533,8 +574,20 @@ mod tests {
         worker.sort();
         assert_eq!(
             worker,
-            ["agents__list", "agents__send_message", "agents__whoami"],
-            "a withheld family leaves no trace in a worker's tool list"
+            [
+                "agents__list",
+                "agents__send_message",
+                "agents__whoami",
+                "browser_click",
+                "browser_close",
+                "browser_evaluate",
+                "browser_navigate",
+                "browser_run_code_unsafe",
+                "browser_snapshot",
+                "browser_type",
+                "browser_wait_for",
+            ],
+            "a withheld family leaves no trace, and the browser core is not one"
         );
 
         let lead = names_of(&forge_server_families(SessionKind::Lead, &none, None));
@@ -563,6 +616,14 @@ mod tests {
                 "agents__list",
                 "agents__send_message",
                 "agents__whoami",
+                "browser_click",
+                "browser_close",
+                "browser_evaluate",
+                "browser_navigate",
+                "browser_run_code_unsafe",
+                "browser_snapshot",
+                "browser_type",
+                "browser_wait_for",
                 "cron__create",
                 "cron__delete",
                 "cron__list",
@@ -657,6 +718,24 @@ mod tests {
             withheld_family_lines(&effective_mcp_families(Some(&selected), false)).contains(&line),
             "[systemone] off is withheld for the worker's prompt as well as its tools",
         );
+    }
+
+    /// The two groups a spawn CANNOT list are refused by name, saying they
+    /// are always on: a caller listing one is asking for a narrower surface
+    /// than the one it already has, and `unknown family` would send it
+    /// looking for a spelling.
+    #[test]
+    fn the_always_on_groups_are_refused_by_name() {
+        for (name, why) in [("agents", "worker"), ("browser", "session")] {
+            let refused = canonical_mcp_families(&[name.to_owned()])
+                .expect_err("an always-on group cannot be listed");
+            assert!(refused.contains(name), "the refusal names it: {refused}");
+            assert!(
+                refused.contains("always on") && refused.contains(why),
+                "and says it is always on for every {why}: {refused}",
+            );
+            assert!(!refused.contains("unknown"), "it is not a spelling problem: {refused}");
+        }
     }
 
     /// A stored row holding only unselectable names is corrupt, not a

@@ -157,20 +157,12 @@ fn run() -> anyhow::Result<()> {
         let config = workspace.web_config();
         if config.enabled {
             let addr = std::net::SocketAddr::new(config.bind, config.port);
-            let state = std::sync::Arc::new(forge_server::transport::TransportState {
-                surface: std::sync::Arc::new(forge_server::surface::ViewSurface::new(
-                    std::sync::Arc::clone(&workspace),
-                )),
-                work: std::sync::Arc::new(forge_server::work::WorkCache::new()),
-                conversations: std::sync::Arc::new(
-                    forge_server::transport::conversation::Conversations::new(),
-                ),
-                // This process is another viewer of the same seats, so the
-                // attachment count has to see it: a turn finishing on a seat
-                // this terminal is showing is one the reader watched.
-                live: std::sync::Mutex::new(forge_server::live::Live::new()),
-                config,
-            });
+            // Built from the workspace so every piece the socket needs is
+            // derived where the workspace is in hand - the browser relay
+            // above all, which must be the one the sessions ask through.
+            let state = std::sync::Arc::new(
+                forge_server::transport::TransportState::for_workspace(&workspace, config),
+            );
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
                     let bound = listener.local_addr().unwrap_or(addr);

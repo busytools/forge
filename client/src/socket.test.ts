@@ -31,15 +31,36 @@ async function stubServer() {
 
   /** Everything the client has sent, in order. */
   const received: ClientMessage[] = [];
+  /** Every binary frame the client sent, in order - a browser image's bytes. */
+  const binary: Buffer[] = [];
+  /**
+   * Both kinds in ONE log, in arrival order.
+   *
+   * The order is the contract for a browser answer - the answer first, then
+   * its image frames - and two separate arrays cannot state it: a frame that
+   * overtook its answer would look exactly like one that followed it.
+   */
+  const arrivals: ({ kind: 'json'; message: ClientMessage } | { kind: 'frame'; bytes: Buffer })[] =
+    [];
   server.on('connection', (socket) => {
-    socket.on('message', (data) => {
-      received.push(JSON.parse(frame(data)) as ClientMessage);
+    socket.on('message', (data: RawData, isBinary: boolean) => {
+      if (isBinary) {
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        binary.push(bytes);
+        arrivals.push({ kind: 'frame', bytes });
+        return;
+      }
+      const message = JSON.parse(frame(data)) as ClientMessage;
+      received.push(message);
+      arrivals.push({ kind: 'json', message });
     });
   });
 
   return {
     url: `ws://127.0.0.1:${port}/socket`,
     received,
+    binary,
+    arrivals,
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -143,12 +164,22 @@ describe('the connection', () => {
 
     conn.subscribe(HOME, { answering: true });
     await until(() => server.received.length === 1, 'the subscribe to arrive');
-    expect(server.received[0]).toEqual({ kind: 'subscribe', what: HOME, answering: true });
+    expect(server.received[0]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: true,
+      browser: false,
+    });
 
     // Off unless said otherwise, so a read-only client cannot hang a turn.
     conn.subscribe('usage');
     await until(() => server.received.length === 2, 'the second subscribe');
-    expect(server.received[1]).toEqual({ kind: 'subscribe', what: 'usage', answering: false });
+    expect(server.received[1]).toEqual({
+      kind: 'subscribe',
+      what: 'usage',
+      answering: false,
+      browser: false,
+    });
   });
 
   /**
@@ -165,7 +196,12 @@ describe('the connection', () => {
 
     conn.subscribe(HOME);
     await until(() => server.received.length === 1, 'the subscribe to arrive');
-    expect(server.received[0]).toEqual({ kind: 'subscribe', what: HOME, answering: false });
+    expect(server.received[0]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      browser: false,
+    });
   });
 
   /** The greeting is what configures the client before it draws anything. */
@@ -437,7 +473,12 @@ describe('the connection', () => {
     server.drop();
     await until(() => server.received.length >= 2, 'the re-subscribe');
     // The re-ask carries the same subject and the same declaration.
-    expect(server.received[1]).toEqual({ kind: 'subscribe', what: HOME, answering: false });
+    expect(server.received[1]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      browser: false,
+    });
     // And the store is still holding what it had while the server answers.
     expect(conn.store(HOME)?.snapshot()).toEqual({ projects: ['a'] });
 
@@ -468,7 +509,12 @@ describe('the connection', () => {
 
     server.drop();
     await until(() => server.received.length >= 4, 'the re-ask');
-    expect(server.received[3]).toEqual({ kind: 'subscribe', what: HOME, answering: true });
+    expect(server.received[3]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: true,
+      browser: false,
+    });
 
     // One entry is left, so exactly one re-ask: a second would mean the count
     // came back as two.
@@ -779,5 +825,177 @@ describe('the connection', () => {
       warned.mock.calls.flat().join(' '),
       'a listener that threw was silenced without a word',
     ).toContain('a message listener threw');
+  });
+});
+
+describe('the browser role', () => {
+  /**
+   * The capability is declared on the subscribe and kept across a reconnect:
+   * a drop that re-asked for the subject without it would leave the client
+   * attached, drawing, and unable to host anything the session asked for.
+   */
+  it('declares the capability, and re-declares it when the socket comes back', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { browser: true });
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    expect(server.received[0]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      browser: true,
+    });
+
+    server.drop();
+    await until(() => server.received.length >= 2, 'the re-ask');
+    expect(server.received[1]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      browser: true,
+    });
+  });
+
+  /**
+   * One ask in, one answer out, under the ask's own id: the parts the handler
+   * returned cross as the answer, and a failure crosses as the reason rather
+   * than as an empty result.
+   */
+  it('answers an ask with the parts its handler returned', async () => {
+    const { server, conn } = await connected();
+    conn.onBrowserAsk(async (ask) => {
+      // A promise, because the shell's own handler is one: it goes to the
+      // Tauri side and comes back.
+      await Promise.resolve();
+      return {
+        parts: [
+          { type: 'text', text: `${ask.tool} -> ${String((ask.args as { url: string }).url)}` },
+        ],
+      };
+    });
+
+    server.send({
+      kind: 'browser_ask',
+      id: 7,
+      seat: LEAD,
+      tool: 'browser_navigate',
+      args: { url: 'https://example.com' },
+    });
+    await until(() => server.received.length === 1, 'the answer to arrive');
+    expect(server.received[0]).toEqual({
+      kind: 'browser_answer',
+      id: 7,
+      parts: [{ type: 'text', text: 'browser_navigate -> https://example.com' }],
+      error: null,
+    });
+  });
+
+  /**
+   * An image part's mime crosses on the answer and its BYTES ride a binary
+   * frame under the same id: the tag, the id big-endian, then the bytes.
+   */
+  it('sends an image part as a mime on the answer and bytes in their own frame', async () => {
+    const { server, conn } = await connected();
+    conn.onBrowserAsk(() => ({
+      parts: [
+        { type: 'text', text: 'captured' },
+        { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x89, 0x50]) },
+      ],
+    }));
+
+    server.send({
+      kind: 'browser_ask',
+      id: 9,
+      seat: LEAD,
+      tool: 'browser_take_screenshot',
+      args: {},
+    });
+    await until(() => server.received.length === 1 && server.binary.length === 1, 'the answer');
+
+    expect(server.received[0]).toEqual({
+      kind: 'browser_answer',
+      id: 9,
+      parts: [
+        { type: 'text', text: 'captured' },
+        { type: 'image', mime_type: 'image/png' },
+      ],
+      error: null,
+    });
+    const frame = server.binary[0];
+    expect(frame?.[0], 'the browser-image kind tag').toBe(1);
+    expect(frame?.readBigUInt64BE(1), 'the answer id, big-endian').toBe(9n);
+    expect([...(frame?.subarray(9) ?? [])], 'the image bytes').toEqual([0x89, 0x50]);
+
+    // **The answer goes FIRST.** A frame that overtook the answer declaring
+    // its image is a pair the server refuses - and fails the call over - so
+    // the order is asserted as it arrived, rather than from two separate
+    // lists that cannot tell an overtaking frame from a following one.
+    expect(
+      server.arrivals.map((arrival) => arrival.kind),
+      'the answer crossed before the frame it belongs to',
+    ).toEqual(['json', 'frame']);
+  });
+
+  /**
+   * **A frame that could not be sent cannot be skipped.** The answer is
+   * already on the wire, so its image can never arrive and the tool call
+   * would wait on a promise this client cannot keep. The connection drops
+   * instead: the server fails that ask naming the host that went away, and
+   * the reconnect re-declares the capability.
+   */
+  it('drops the connection when an image frame cannot be sent', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { browser: true });
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    conn.onBrowserAsk(() => ({
+      parts: [{ type: 'image', mime_type: 'image/png', bytes: new Uint8Array([1]) }],
+    }));
+
+    // The fault is a FRAME that cannot be sent, not the answer: the answer is
+    // a string and goes through, and the frame after it is what fails.
+    const send = vi.spyOn(WebSocket.prototype, 'send').mockImplementation((data: unknown) => {
+      if (typeof data !== 'string') throw new Error('the socket is gone');
+    });
+    server.send({
+      kind: 'browser_ask',
+      id: 3,
+      seat: LEAD,
+      tool: 'browser_take_screenshot',
+      args: {},
+    });
+    await until(
+      () => conn.status() !== 'open',
+      'the connection to drop rather than leave the answer half-sent',
+    );
+    send.mockRestore();
+  });
+
+  /**
+   * A handler that throws is a failed tool call with the reason named, and a
+   * connection that cannot host answers the same shape: the session's turn
+   * gets an answer either way rather than waiting on one that never comes.
+   */
+  it('answers a failure rather than nothing when it cannot serve the ask', async () => {
+    const { server, conn } = await connected();
+    conn.onBrowserAsk(() => {
+      throw new Error('the driver is not running');
+    });
+    server.send({ kind: 'browser_ask', id: 1, seat: LEAD, tool: 'browser_close', args: {} });
+    await until(() => server.received.length === 1, 'the failed answer');
+    const failed = server.received[0];
+    expect(failed).toMatchObject({ kind: 'browser_answer', id: 1, parts: [] });
+    const why = server.received.find((m) => m.kind === 'browser_answer')?.error ?? '';
+    expect(why).toContain('the driver is not running');
+
+    // No handler at all is the same shape: a client that was sent an ask it
+    // has no way to serve says so.
+    const alone = await connected();
+    alone.server.send({ kind: 'browser_ask', id: 2, seat: LEAD, tool: 'browser_close', args: {} });
+    await until(() => alone.server.received.length === 1, 'the refusal');
+    expect(alone.server.received[0]).toMatchObject({
+      kind: 'browser_answer',
+      id: 2,
+      parts: [],
+      error: 'this client cannot host the browser',
+    });
   });
 });

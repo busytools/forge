@@ -1333,6 +1333,7 @@ version = "1.0.115"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "dirs",
  "forge-primitives",
  "getrandom 0.3.4",

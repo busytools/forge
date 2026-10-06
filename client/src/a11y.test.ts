@@ -45,6 +45,7 @@ function untouched(): Connection {
     more: refuse,
     devices: refuse,
     frame: refuse,
+    onBrowserAsk: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,
