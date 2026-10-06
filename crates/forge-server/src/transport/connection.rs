@@ -1,6 +1,7 @@
 //! One connection: the upgrade, what the server says first, and the loop
 //! that answers what a client asks for.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,6 +12,8 @@ use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
 use forge_primitives::SessionSlot;
+use forge_primitives::browser::BrowserPart;
+use forge_workspace::browser::{BrowserRelay, BrowserRequest};
 
 use super::PROTOCOL_VERSION;
 use super::TransportState;
@@ -61,9 +64,72 @@ impl Drop for Holds<'_> {
     }
 }
 
+/// The browser role this connection holds, and what is in flight under it.
+struct Hosting {
+    /// The asks the relay routes here, in the order they were made.
+    asks: mpsc::UnboundedReceiver<BrowserRequest>,
+    /// The asks sent to the client and not yet answered, by id.
+    in_flight: HashMap<u64, InFlight>,
+    /// The role itself, given back when this drops, a panic included.
+    _role: BrowserRole,
+}
+
+impl Hosting {
+    /// Take the role for `id` if no connection holds it.
+    ///
+    /// `None` is the ordinary case of a second capable client: it stays a
+    /// view like any other, and only the host is sent asks. A connection
+    /// that does not hold the role never tries again on its own - the role
+    /// is offered on a subscribe, so it is the client's next subscribe (a
+    /// reconnect does one) that offers it again.
+    fn take(relay: &Arc<BrowserRelay>, id: u64) -> Option<Self> {
+        let (to_host, asks) = mpsc::unbounded_channel();
+        relay.register(id, to_host).then(|| Self {
+            asks,
+            in_flight: HashMap::new(),
+            _role: BrowserRole { relay: Arc::clone(relay), id },
+        })
+    }
+}
+
+/// Gives the browser role back on the way out, however the connection ends.
+///
+/// A guard rather than a line at the end of the loop, for the same reason
+/// [`Holds`] is one: a panic while encoding an answer would otherwise leave
+/// the role held by a dead connection, and no client could take it again.
+struct BrowserRole {
+    relay: Arc<BrowserRelay>,
+    id: u64,
+}
+
+impl Drop for BrowserRole {
+    fn drop(&mut self) {
+        self.relay.unregister(self.id);
+    }
+}
+
+/// One ask sent to the host, waiting for its answer - and then, when the
+/// answer declared images, for the frames that carry their bytes.
+struct InFlight {
+    /// The tool call's answer, on its way back to the relay.
+    reply: oneshot::Sender<Result<Vec<BrowserPart>, String>>,
+    /// The parts the answer declared, in order; `None` until it arrives.
+    parts: Option<Vec<BrowserPart>>,
+    /// The indices of `parts` that are images, in order.
+    images: Vec<usize>,
+    /// How many of `images` have had their bytes filled in.
+    filled: usize,
+}
+
 /// Take the upgrade and give the connection its own task.
+///
+/// The frame limit is raised to the image cap here: a browser answer's image
+/// rides one binary frame, and the default limit is smaller than a screenshot.
+/// Frames the server refuses are refused by [`super::frame`] on their own
+/// terms; this is only what the socket will carry at all.
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<TransportState>>) -> Response {
-    ws.on_upgrade(move |socket| greet(socket, state))
+    let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES;
+    ws.max_frame_size(limit).max_message_size(limit).on_upgrade(move |socket| greet(socket, state))
 }
 
 /// Greet, then serve the client until it goes.
@@ -132,10 +198,21 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
+    // None until a subscribe declares the browser capability and the role is
+    // free. Dropping it hands the role back.
+    let mut hosting: Option<Hosting> = None;
 
-    let outcome =
-        run_connection(socket, state, &mut watched, &mut holds, &mut updates, &mut dictate, me)
-            .await;
+    let outcome = run_connection(
+        socket,
+        state,
+        &mut watched,
+        &mut holds,
+        &mut updates,
+        &mut dictate,
+        &mut hosting,
+        me,
+    )
+    .await;
 
     // Every take this connection started ends with it: each is DROPPED
     // rather than submitted - its reader is gone, so nothing it produced
@@ -180,6 +257,7 @@ async fn run_connection(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     dictate: &mut Vec<SessionSlot>,
+    hosting: &mut Option<Hosting>,
     me: u64,
 ) -> anyhow::Result<()> {
     let mut held = Batch::default();
@@ -193,7 +271,8 @@ async fn run_connection(
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
-                handle_client(socket, state, watched, holds, updates, dictate, me, msg).await?;
+                handle_client(socket, state, watched, holds, updates, dictate, hosting, me, msg)
+                    .await?;
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -215,6 +294,33 @@ async fn run_connection(
                 if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
                     held.push(Instant::now(), update);
                 }
+            }
+            // One browser tool call, on its way out to this host. The answer
+            // comes back by the relay's own id, so two sessions asking at once
+            // cannot be paired with each other's results.
+            ask = next_ask(hosting) => {
+                let Some(request) = ask else { break };
+                if let Some(hosting) = hosting.as_mut() {
+                    hosting.in_flight.insert(
+                        request.id,
+                        InFlight {
+                            reply: request.reply,
+                            parts: None,
+                            images: Vec::new(),
+                            filled: 0,
+                        },
+                    );
+                }
+                send(
+                    socket,
+                    ServerMessage::BrowserAsk {
+                        id: request.id,
+                        seat: request.seat,
+                        tool: request.tool,
+                        args: request.args,
+                    },
+                )
+                .await?;
             }
             // The deadline is a value, not a condition: with nothing held the
             // branch is disabled and this instant is never waited on.
@@ -280,6 +386,17 @@ async fn next_update(
     }
 }
 
+/// The relay's next ask, or a future that never resolves while this
+/// connection does not hold the browser role - the same shape as
+/// [`next_update`], and for the same reason: a disabled `select!` branch is
+/// what keeps a connection the role was never given out of the way.
+async fn next_ask(hosting: &mut Option<Hosting>) -> Option<BrowserRequest> {
+    match hosting.as_mut() {
+        Some(hosting) => hosting.asks.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Answer one client message.
 async fn handle_client(
     socket: &mut WebSocket,
@@ -288,16 +405,20 @@ async fn handle_client(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
     dictate: &mut Vec<SessionSlot>,
+    hosting: &mut Option<Hosting>,
     me: u64,
     msg: Message,
 ) -> anyhow::Result<()> {
     let text = match msg {
         Message::Text(text) => text,
-        // A binary message is a dictation frame and nothing else. It is
-        // never answered: a take's audio has no reply channel, and the
-        // take's own outcome is what a reader sees either way.
+        // A binary message is a frame of one of the two kinds. Neither is
+        // answered: a take's audio has no reply channel, and an image frame
+        // completes an answer that is already on its way back.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate.as_slice(), me, &bytes);
+            match frame_route(&bytes, dictate.as_slice()) {
+                FrameRoute::Image { id, bytes } => browser_image_bytes(hosting, id, &bytes),
+                other => take_frame(&state.surface, dictate.as_slice(), me, other),
+            }
             return Ok(());
         }
         _ => return Ok(()),
@@ -314,7 +435,17 @@ async fn handle_client(
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what, answering } => {
+        ClientMessage::Subscribe { what, answering, browser } => {
+            // **The browser role, offered once per connection.** A capable
+            // client declares it on every subscribe it makes; the first
+            // declaration while the role is free takes it, and a later one
+            // finds this connection already holding it. A declaration that
+            // arrives while another client holds the role changes nothing -
+            // one host drives the one browser, and being the second is not
+            // an error.
+            if browser && hosting.is_none() {
+                *hosting = Hosting::take(&state.browser, me);
+            }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
@@ -644,6 +775,47 @@ async fn handle_client(
                 .unwrap_or_else(|join| Err(join.to_string()));
             send(socket, devices_answer(outcome)).await
         }
+        ClientMessage::BrowserAnswer { id, parts, error } => {
+            let Some(hosting) = hosting.as_mut() else {
+                tracing::debug!(
+                    event_name = "browser_answer_without_the_role",
+                    id,
+                    "a browser answer arrived on a connection that does not hold the role",
+                );
+                return Ok(());
+            };
+            let Some(mut in_flight) = hosting.in_flight.remove(&id) else {
+                tracing::debug!(
+                    event_name = "browser_answer_unmatched",
+                    id,
+                    "a browser answer named an ask nothing on this connection is waiting on",
+                );
+                return Ok(());
+            };
+            // A failure is the call's whole answer, and the driver's own
+            // sentence is what the tool returns.
+            if let Some(message) = error {
+                in_flight.reply.send(Err(message)).ok();
+                return Ok(());
+            }
+            let images: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| matches!(part, BrowserPart::Image { .. }))
+                .map(|(at, _)| at)
+                .collect();
+            if images.is_empty() {
+                in_flight.reply.send(Ok(parts)).ok();
+                return Ok(());
+            }
+            // The images' bytes ride their own frames, which follow this
+            // answer on the same socket; the ask is answered when the last
+            // one lands.
+            in_flight.parts = Some(parts);
+            in_flight.images = images;
+            hosting.in_flight.insert(id, in_flight);
+            Ok(())
+        }
         ClientMessage::Unsubscribe { what } => {
             // No answer: the client asked to stop hearing, and there is
             // nothing to say back.
@@ -705,11 +877,15 @@ fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
 /// Where one binary message went, decided without touching a take.
 #[derive(Debug, PartialEq)]
 enum FrameRoute {
-    /// The samples of a frame, for the seats this connection started.
-    Frame(Vec<f32>),
+    /// The samples of a dictation frame, for the seats this connection
+    /// started.
+    Audio(Vec<f32>),
+    /// One browser answer's image bytes, under the answer's id.
+    Image { id: u64, bytes: Vec<u8> },
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
-    /// A frame, but this connection has not started a take to give it to.
+    /// A dictation frame, but this connection has not started a take to give
+    /// it to.
     NoTake,
 }
 
@@ -726,10 +902,18 @@ fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
         Ok(decoded) => decoded,
         Err(refusal) => return FrameRoute::Refused(refusal),
     };
-    if dictate.is_empty() {
-        return FrameRoute::NoTake;
+    match decoded {
+        // An image frame carries the answer's id, which is what pairs it with
+        // the answer that declared the image - and it needs no take, because
+        // no take sent it.
+        super::frame::Frame::Image { id, bytes } => FrameRoute::Image { id, bytes },
+        super::frame::Frame::Audio(samples) => {
+            if dictate.is_empty() {
+                return FrameRoute::NoTake;
+            }
+            FrameRoute::Audio(samples)
+        }
     }
-    FrameRoute::Frame(decoded.samples)
 }
 
 /// Push one dictation frame into this connection's takes, recording
@@ -739,9 +923,9 @@ fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, bytes: &[u8]) {
-    match frame_route(bytes, dictate) {
-        FrameRoute::Frame(samples) => {
+fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, route: FrameRoute) {
+    match route {
+        FrameRoute::Audio(samples) => {
             // Offered to each seat this connection started, kept only where
             // the live take is THIS connection's - a seat's take can be
             // another connection's, and its audio is not this one's to feed.
@@ -753,16 +937,72 @@ fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, bytes: &[
                 );
             }
         }
+        // An image frame never reaches here: it is routed by id, and the
+        // caller's own arm is the one place it goes.
+        FrameRoute::Image { .. } => {}
         FrameRoute::Refused(refusal) => tracing::debug!(
-            event_name = "dictate_frame_refused",
+            event_name = "binary_frame_refused",
             reason = %refusal.reason(),
-            "a binary message was not a dictation frame",
+            "a binary message was not a frame this server takes",
         ),
         FrameRoute::NoTake => tracing::debug!(
             event_name = "dictate_frame_without_a_take",
-            bytes = bytes.len(),
             "a dictation frame arrived on a connection that has not started a take",
         ),
+    }
+}
+
+/// Fill one image part with the bytes its frame carried, and answer the ask
+/// once the last image is filled.
+///
+/// **Which part a frame fills is its order**, not anything the frame says:
+/// the frames follow their answer on one socket, so the first carries the
+/// first image part. The id says which ANSWER a frame belongs to, which is
+/// what two sessions asking at once need to be told apart.
+fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
+    let Some(hosting) = hosting.as_mut() else {
+        tracing::debug!(
+            event_name = "browser_image_without_the_role",
+            id,
+            "an image frame arrived on a connection that does not hold the browser role",
+        );
+        return;
+    };
+    let Some(in_flight) = hosting.in_flight.get_mut(&id) else {
+        tracing::debug!(
+            event_name = "browser_image_unmatched",
+            id,
+            "an image frame named an ask nothing on this connection is waiting on",
+        );
+        return;
+    };
+    let Some(parts) = in_flight.parts.as_mut() else {
+        tracing::debug!(
+            event_name = "browser_image_before_its_answer",
+            id,
+            "an image frame arrived before the answer that declared the image",
+        );
+        return;
+    };
+    let Some(&at) = in_flight.images.get(in_flight.filled) else {
+        tracing::debug!(
+            event_name = "browser_image_with_no_part_waiting",
+            id,
+            "an image frame arrived with every image part of its answer already filled",
+        );
+        return;
+    };
+    if let Some(BrowserPart::Image { bytes: into, .. }) = parts.get_mut(at) {
+        *into = bytes.to_vec();
+    }
+    in_flight.filled += 1;
+    if in_flight.filled == in_flight.images.len() {
+        let Some(in_flight) = hosting.in_flight.remove(&id) else {
+            return;
+        };
+        if let Some(parts) = in_flight.parts {
+            in_flight.reply.send(Ok(parts)).ok();
+        }
     }
 }
 
@@ -1144,6 +1384,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         // A client observing, with two updates queued and nobody reading them.
@@ -1177,6 +1418,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let mut updates = Some((state.surface.subscribe_client(true), true));
@@ -1219,10 +1461,10 @@ mod tests {
         );
     }
 
-    /// A binary message at the wire's shape: the codec tag, then the
+    /// A binary message at the wire's shape: the kind tag, then the
     /// samples.
     fn payload(samples: &[i16]) -> Vec<u8> {
-        let mut bytes = vec![super::super::frame::Codec::PcmI16.tag()];
+        let mut bytes = vec![super::super::frame::Kind::Dictation.tag()];
         for sample in samples {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
@@ -1237,7 +1479,7 @@ mod tests {
         let seat = SessionSlot::lead("TestOrg", "proj");
         assert_eq!(
             frame_route(&payload(&[16384]), &[seat]),
-            FrameRoute::Frame(vec![0.5]),
+            FrameRoute::Audio(vec![0.5]),
             "the samples the bytes carry"
         );
     }
@@ -1260,7 +1502,7 @@ mod tests {
         );
         assert_eq!(
             frame_route(&[9, 0], &[seat]),
-            FrameRoute::Refused(super::super::frame::Refusal::UnknownCodec(9))
+            FrameRoute::Refused(super::super::frame::Refusal::UnknownKind(9))
         );
     }
 
@@ -1475,6 +1717,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1610,6 +1853,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1667,6 +1911,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1738,6 +1983,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");

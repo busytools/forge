@@ -1783,6 +1783,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         // The transport does not read a transcript, so the seat's
         // conversation is put where a `Connected` would have left it.
@@ -1896,6 +1897,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -1942,6 +1944,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded =
@@ -1983,6 +1986,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded =
@@ -2010,6 +2014,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let before =
@@ -2064,6 +2069,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
         fleet
             .hold_conversation(&state, "TestOrg", "proj", "lead")
@@ -2130,6 +2136,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded =
@@ -2167,6 +2174,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded =
@@ -2210,6 +2218,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2262,6 +2271,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2306,6 +2316,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded =
@@ -2385,6 +2396,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Usage).await.expect("encode");
@@ -2515,6 +2527,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2579,6 +2592,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let session =
@@ -2613,6 +2627,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2638,6 +2653,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2665,6 +2681,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2738,6 +2755,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2801,6 +2819,7 @@ mode = \"toggle\"
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             config: forge_primitives::WebConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");

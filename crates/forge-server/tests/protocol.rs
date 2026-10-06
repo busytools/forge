@@ -48,6 +48,7 @@ async fn a_server() -> (String, Fleet) {
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
+        browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

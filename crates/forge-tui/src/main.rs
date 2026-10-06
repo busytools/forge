@@ -163,6 +163,7 @@ fn run() -> anyhow::Result<()> {
                 // attachment count has to see it: a turn finishing on a seat
                 // this terminal is showing is one the reader watched.
                 live: std::sync::Mutex::new(forge_server::live::Live::new()),
+                browser: workspace.browser_relay(),
                 config,
             });
             match tokio::net::TcpListener::bind(addr).await {

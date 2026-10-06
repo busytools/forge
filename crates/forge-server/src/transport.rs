@@ -65,7 +65,17 @@ pub mod wire;
 /// record's `composer` loses its `take` and `notice` for the same reason -
 /// a take's meter, phases and words are not a fact any other reader may
 /// draw. `baselines/socket/4/` is the record a v4 server emitted.
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// **v6 is a bump for the browser's ask and answer.** The socket gains its
+/// first request in the server-to-client direction: `browser_ask` carries one
+/// tool call to whichever client holds the browser role, `browser_answer`
+/// carries the result back under the same id, and a subscription declares
+/// whether a client can host that role at all. A second binary frame kind
+/// joins the dictation frames - a browser answer's image bytes, under its
+/// answer's id - so a client with no vocabulary for any of it would read
+/// frames as nothing rather than as news. `baselines/socket/5/` is the record
+/// a v5 server emitted.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations
@@ -83,6 +93,11 @@ pub struct TransportState {
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
     pub config: WebConfig,
+    /// The browser relay the core owns: a capable connection registers into
+    /// it, and the browser tools ask through it. Passed in rather than built
+    /// here, because it has to be the SAME relay the sessions' tool handlers
+    /// hold - see [`Workspace::browser_relay`](forge_workspace::Workspace::browser_relay).
+    pub browser: Arc<forge_workspace::browser::BrowserRelay>,
 }
 
 /// Serve the socket on `listener` until the process ends.

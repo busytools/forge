@@ -341,6 +341,8 @@ async fn attach(
         // this client's reply, and a measurement must not change the thing it
         // measures.
         answering: false,
+        // Not hosting either, for the same reason.
+        browser: false,
     };
     socket.send(Message::Text(serde_json::to_string(&opening)?.into())).await?;
     let mut uncounted = Measured::default();
@@ -361,16 +363,22 @@ async fn work(
     let asks = if args.arm == Arm::Subscribe { 1 } else { args.asks };
     for _ in 0..asks {
         let asked = match args.arm {
-            Arm::Subscribe => {
-                ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
-            }
+            Arm::Subscribe => ClientMessage::Subscribe {
+                what: Subject::Session(seat.clone()),
+                answering: false,
+                browser: false,
+            },
             // The client's own order: let the seat go, then ask for it again.
             // Nothing answers an unsubscribe, so the read below waits for the
             // subscribe's snapshot.
             Arm::Refresh => {
                 let let_go = ClientMessage::Unsubscribe { what: Subject::Session(seat.clone()) };
                 socket.send(Message::Text(serde_json::to_string(&let_go)?.into())).await?;
-                ClientMessage::Subscribe { what: Subject::Session(seat.clone()), answering: false }
+                ClientMessage::Subscribe {
+                    what: Subject::Session(seat.clone()),
+                    answering: false,
+                    browser: false,
+                }
             }
             Arm::Idle | Arm::More => ClientMessage::More {
                 conversation: seat.clone(),
@@ -533,6 +541,7 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         config: forge_primitives::WebConfig::default(),
+        browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
     });
     // The seat's conversation, put where a `Connected` would have left it.
     //

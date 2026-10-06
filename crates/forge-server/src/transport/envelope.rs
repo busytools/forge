@@ -5,6 +5,7 @@
 //! message is without knowing its shape. **The tag is the contract**:
 //! adding a variant is compatible and renaming one is not.
 
+use forge_primitives::browser::BrowserPart;
 use forge_primitives::{SessionSlot, WebConfig};
 use forge_workspace::DictateAxes;
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,15 @@ pub enum ClientMessage {
         /// before it forwards anything.
         #[serde(default)]
         answering: bool,
+        /// Whether this client can host the browser.
+        ///
+        /// A client declares this only when it really can: the browser has one
+        /// host at a time and every ask routes to it, so a client counted as
+        /// able to drive answers asks it cannot serve. Off unless said
+        /// otherwise, and additive - a client built before the field reads as
+        /// unable rather than as refused.
+        #[serde(default)]
+        browser: bool,
     },
     Unsubscribe {
         what: Subject,
@@ -105,6 +115,21 @@ pub enum ClientMessage {
     /// stack, and a subscription is re-read on every reconnect, so watching it
     /// would be a permission check per connection instead of one per picker.
     Devices,
+    /// The host's answer to one `browser_ask`.
+    ///
+    /// `parts` are what the tool returned, in order. An image part's BYTES do
+    /// not cross here: they ride their own binary frame under this same id,
+    /// one frame per image part in the order the parts are listed, because a
+    /// screenshot is megabytes and base64 pays a third again for it. `error`
+    /// is the call's failure - the driver's own sentence - and a failed answer
+    /// carries no parts.
+    BrowserAnswer {
+        id: u64,
+        #[serde(default)]
+        parts: Vec<BrowserPart>,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 /// What the server sends.
@@ -167,6 +192,25 @@ pub enum ServerMessage {
         /// no seat is read the way it always was.
         seat: Option<SessionSlot>,
     },
+    /// One browser tool call, sent to the client that holds the browser role.
+    ///
+    /// **The first request this socket carries in this direction.** A tool's
+    /// handler cannot run on this side - a snapshot's `target` refs only mean
+    /// something inside the client's page state - so the call is forwarded to
+    /// the host and its answer comes back on the same id. `id` is minted by
+    /// the relay, unique for the process's life, so it stays unambiguous
+    /// across a host change.
+    BrowserAsk {
+        id: u64,
+        /// The seat whose session is asking, for a client that shows who
+        /// drives what.
+        seat: SessionSlot,
+        /// Upstream's own tool name, unprefixed.
+        tool: String,
+        /// The arguments the CLI sent, verbatim: the driver validates them
+        /// against the same schema the tool published.
+        args: serde_json::Value,
+    },
 }
 
 /// What the client draws with, from `forge.toml` by way of the server.
@@ -205,6 +249,99 @@ impl ClientSettings {
 mod tests {
     use super::*;
 
+    /// The ask a browser tool call makes, and the answer the host sends back.
+    ///
+    /// The id is what pairs them, and the seat is what a client shows when it
+    /// says who is driving; the parts are the tool's own result.
+    #[test]
+    fn a_browser_ask_and_its_answer_round_trip() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let asked = ServerMessage::BrowserAsk {
+            id: 7,
+            seat: seat.clone(),
+            tool: "browser_navigate".to_owned(),
+            args: serde_json::json!({ "url": "https://example.com" }),
+        };
+        let json = serde_json::to_string(&asked).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_ask\""), "{json}");
+        let ServerMessage::BrowserAsk { id, seat: asked_for, tool, args } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 7, "the id the answer comes back under");
+        assert_eq!(asked_for, seat, "the seat whose session asked");
+        assert_eq!(tool, "browser_navigate");
+        assert_eq!(args["url"], "https://example.com", "the arguments cross verbatim");
+
+        let answered = ClientMessage::BrowserAnswer {
+            id: 7,
+            parts: vec![
+                forge_primitives::browser::BrowserPart::Text { text: "navigated".to_owned() },
+                forge_primitives::browser::BrowserPart::Image {
+                    mime_type: "image/png".to_owned(),
+                    bytes: Vec::new(),
+                },
+            ],
+            error: None,
+        };
+        let json = serde_json::to_string(&answered).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_answer\""), "{json}");
+        let ClientMessage::BrowserAnswer { id, parts, error } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 7, "the same id the ask carried");
+        assert_eq!(parts.len(), 2, "both parts cross");
+        assert!(
+            matches!(&parts[1], forge_primitives::browser::BrowserPart::Image { mime_type, .. }
+                if mime_type == "image/png"),
+            "the image part crosses with its mime: {parts:?}",
+        );
+        assert!(error.is_none(), "and no failure rides a result");
+
+        let failed = ClientMessage::BrowserAnswer {
+            id: 8,
+            parts: Vec::new(),
+            error: Some("the driver is not running".to_owned()),
+        };
+        let json = serde_json::to_string(&failed).expect("encode");
+        let ClientMessage::BrowserAnswer { id, parts, error } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 8);
+        assert!(parts.is_empty(), "a failure carries no parts");
+        assert_eq!(error.as_deref(), Some("the driver is not running"), "and names its reason");
+    }
+
+    /// A subscribe declares whether the client can host the browser, and one
+    /// that says nothing about it is not a host: the field is additive, so a
+    /// client built before it reads as unable rather than as a refusal.
+    #[test]
+    fn a_subscribe_declares_the_browser_capability_and_defaults_to_none() {
+        let sent =
+            ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true };
+        let json = serde_json::to_string(&sent).expect("encode");
+        assert!(json.contains("\"browser\":true"), "{json}");
+        let ClientMessage::Subscribe { browser, .. } = serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert!(browser, "the declaration survives the round trip");
+
+        // The shape a client that predates the field sends.
+        let older: ClientMessage =
+            serde_json::from_str(r#"{"kind":"subscribe","what":"home","answering":false}"#)
+                .expect("an older subscribe decodes");
+        let ClientMessage::Subscribe { browser, .. } = older else {
+            panic!("an older subscribe is still a subscribe")
+        };
+        assert!(!browser, "a client that says nothing is not a host");
+    }
+
     /// The on-demand read a picker makes, and the answer it gets.
     ///
     /// Asked rather than subscribed: the walk opens the microphone stack, and
@@ -238,12 +375,13 @@ mod tests {
 
     #[test]
     fn a_subscribe_round_trips_through_json() {
-        let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true };
+        let sent =
+            ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"subscribe\""), "{json}");
 
         let back: ClientMessage = serde_json::from_str(&json).expect("decode");
-        let ClientMessage::Subscribe { what, answering } = back else {
+        let ClientMessage::Subscribe { what, answering, .. } = back else {
             panic!("{json} decoded into another message");
         };
         assert_eq!(what, Subject::Home, "the subject survives the round trip");

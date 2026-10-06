@@ -120,7 +120,9 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
         // This instrument drives the socket the way a view does, so it
         // declares itself able to answer: a client that cannot show a prompt
         // must not be counted as one, but this one walks the reply path.
-        "subscribe" => Ok(ClientMessage::Subscribe { what: subject(rest)?, answering: true }),
+        "subscribe" => {
+            Ok(ClientMessage::Subscribe { what: subject(rest)?, answering: true, browser: false })
+        }
         "unsubscribe" => Ok(ClientMessage::Unsubscribe { what: subject(rest)? }),
         "more" => {
             let mut parts = rest.split_whitespace();
