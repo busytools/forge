@@ -19,6 +19,7 @@ import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
+  backgroundTaskFrom,
   issuesFrom,
   monitorFrom,
   prFrom,
@@ -154,7 +155,7 @@ export const HANDLERS: Record<string, Apply> = {
   // `background_tasks`, so the payload is read by the frame's own name.
   background_tasks_changed: (held, payload) => ({
     ...held,
-    background_tasks: list(payload['tasks']),
+    background_tasks: list(payload['tasks']).flatMap(backgroundTaskFrom),
   }),
 
   // The frame names its set `snapshot` and the record's field is `processes`.

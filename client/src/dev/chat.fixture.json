@@ -607,5 +607,185 @@
       "tail": [],
       "usage": null
     }
+  ],
+  "processes": {
+    "scanned_at": { "secs_since_epoch": 1750000000, "nanos_since_epoch": 0 },
+    "processes": [
+      {
+        "pid": 4266,
+        "parent_pid": 4210,
+        "name": "node",
+        "command": "node vitest run --coverage",
+        "memory_bytes": 524288000
+      },
+      {
+        "pid": 4210,
+        "parent_pid": 1,
+        "name": "node",
+        "command": "vite --port 4175",
+        "memory_bytes": 314572800
+      },
+      {
+        "pid": 4302,
+        "parent_pid": 1,
+        "name": "forge",
+        "command": "forge --config-dir",
+        "memory_bytes": 209715200
+      },
+      {
+        "pid": 4380,
+        "parent_pid": 4302,
+        "name": "claude",
+        "command": "claude --append-system-prompt",
+        "memory_bytes": 104857600
+      },
+      {
+        "pid": 4401,
+        "parent_pid": 4380,
+        "name": "node",
+        "command": "node /opt/mcp-servers/forge-server.js",
+        "memory_bytes": 96468992
+      },
+      {
+        "pid": 4409,
+        "parent_pid": 4380,
+        "name": "node",
+        "command": "node /opt/mcp-servers/gotify-bridge.js",
+        "memory_bytes": 88162304
+      },
+      {
+        "pid": 4415,
+        "parent_pid": 4380,
+        "name": "zsh",
+        "command": "zsh -c source ~/.zshrc",
+        "memory_bytes": 18874368
+      },
+      {
+        "pid": 4423,
+        "parent_pid": 4415,
+        "name": "ripgrep",
+        "command": "rg --json BackgroundTask crates/",
+        "memory_bytes": 75497472
+      },
+      {
+        "pid": 22850,
+        "parent_pid": 22823,
+        "name": "node",
+        "command": "node /Users/vedhavyas/Projects/forge/.claude/worktrees/session-design/client/node_modules/.bin/eslint .",
+        "memory_bytes": 1395864371
+      },
+      {
+        "pid": 95464,
+        "parent_pid": 4415,
+        "name": "zsh",
+        "command": "/bin/zsh -c source /Users/vedhavyas/.claude/shell-snapshots/snapshot-zsh-1791200565159-w521xt.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && unalias -m '*' && cd /Users/vedhavyas/Projects/forge",
+        "memory_bytes": 48234496
+      },
+      {
+        "pid": 96282,
+        "parent_pid": 4415,
+        "name": "node",
+        "command": "node /Users/vedhavyas/.npm/_npx/9833c18b2d85bc59/node_modules/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:9222",
+        "memory_bytes": 35651584
+      },
+      {
+        "pid": 4431,
+        "parent_pid": 4415,
+        "name": "git",
+        "command": "git status --porcelain",
+        "memory_bytes": 12582912
+      },
+      {
+        "pid": 4438,
+        "parent_pid": 4380,
+        "name": "node",
+        "command": "node /opt/mcp-servers/playwright-mcp.js",
+        "memory_bytes": 146800640
+      },
+      {
+        "pid": 4446,
+        "parent_pid": 4438,
+        "name": "chrome-headless-shell",
+        "command": "chrome-headless-shell --remote-debugging-port",
+        "memory_bytes": 209715200
+      },
+      {
+        "pid": 4452,
+        "parent_pid": 4415,
+        "name": "cargo",
+        "command": "cargo nextest run -p forge-server",
+        "memory_bytes": 419430400
+      },
+      {
+        "pid": 4460,
+        "parent_pid": 4415,
+        "name": "rustc",
+        "command": "rustc --crate-name forge_server",
+        "memory_bytes": 314572800
+      },
+      {
+        "pid": 4468,
+        "parent_pid": 4415,
+        "name": "sccache",
+        "command": "sccache --start-server",
+        "memory_bytes": 62914560
+      },
+      {
+        "pid": 4475,
+        "parent_pid": 4380,
+        "name": "node",
+        "command": "node /opt/mcp-servers/slack-connector.js",
+        "memory_bytes": 71303168
+      },
+      {
+        "pid": 4482,
+        "parent_pid": 4415,
+        "name": "tail",
+        "command": "tail -f /tmp/forge-review.log",
+        "memory_bytes": 4194304
+      },
+      {
+        "pid": 4490,
+        "parent_pid": 4415,
+        "name": "fswatch",
+        "command": "fswatch -r client/src",
+        "memory_bytes": 33554432
+      },
+      {
+        "pid": 4497,
+        "parent_pid": 4452,
+        "name": "forge-server",
+        "command": "forge-server --test",
+        "memory_bytes": 96468992
+      },
+      {
+        "pid": 4503,
+        "parent_pid": 4415,
+        "name": "python3",
+        "command": "python3 /tmp/pretty-probe/check.py",
+        "memory_bytes": 29360128
+      }
+    ]
+  },
+  "background_tasks": [
+    {
+      "task_id": "t-suite",
+      "task_type": "local_bash",
+      "description": "run the full client suite",
+      "command": "vitest run",
+      "tool_use_id": "tu-bash"
+    },
+    {
+      "task_id": "t-vite",
+      "task_type": "local_bash",
+      "description": "serve the dev client",
+      "command": "vite --port 4175"
+    },
+    {
+      "task_id": "t-tail",
+      "task_type": "local_bash",
+      "description": "tail the forge log",
+      "command": "tail -f forge.log"
+    }
   ]
 }
