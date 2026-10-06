@@ -13,10 +13,11 @@
 
 use std::io::Cursor;
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::{Error, SAMPLE_RATE};
+use crate::{Config, Error, SAMPLE_RATE, Stages};
 
 /// Which clips a run scores against, in the names the page uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -223,6 +224,273 @@ fn corpus_id(clips: &[Clip]) -> CorpusId {
     }
 }
 
+/// The words a mishearing shows up in, across the whole corpus. A term
+/// survives when it comes out whole and spelled right, case-insensitively -
+/// which is the figure a bench exists to move.
+const KNOWN_TERMS: [&str; 11] = [
+    "playwright",
+    "tauri",
+    "forge",
+    "redb",
+    "mcp",
+    "gguf",
+    "fleurs",
+    "parakeet",
+    "cohere",
+    "granite",
+    "whisper",
+];
+
+/// The passage's own terms: every word in it the vocabulary knows, whole
+/// words only, deduplicated, in the passage's order.
+pub fn terms(passage: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for word in words(passage) {
+        if KNOWN_TERMS.contains(&word.as_str()) && !found.contains(&word) {
+            found.push(word);
+        }
+    }
+    found
+}
+
+/// Term accuracy and word error rate of `text` against `truth`.
+///
+/// **Term accuracy is the share of `terms` that survived** as whole words -
+/// `playwright` misspelled as `playright` is a miss, in the middle of an
+/// otherwise perfect sentence. WER is Levenshtein edits over words over
+/// the truth's word count; a truth with no words reads as no error rather
+/// than dividing by zero. Neither figure is meaningful for a take, whose
+/// truth is a model's own output; only the read-aloud passage carries
+/// words somebody knows were said.
+pub fn score(text: &str, truth: &str, terms: &[String]) -> (f64, f64) {
+    let survived = terms.iter().filter(|term| words(text).contains(term)).count();
+    let truth_words = words(truth);
+    let accuracy = ratio(survived, terms.len());
+    let wer = ratio(edits(&words(text), &truth_words), truth_words.len());
+    (accuracy, wer)
+}
+
+/// A string's words: lowercased, split on anything that is not a letter or
+/// a digit, blanks dropped. The one spelling both axes compare on.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// One count's share of another, `0.0` when there is nothing to divide by.
+///
+/// The conversions go through `u32` because [`f64::from`] only takes
+/// those: every count this module forms is words, terms or clips, and
+/// four billion of any is far past what a corpus or a sentence holds, so
+/// the saturation arm is unreachable in fact and only keeps the function
+/// total.
+fn ratio(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    f64::from(u32::try_from(part).unwrap_or(u32::MAX))
+        / f64::from(u32::try_from(whole).unwrap_or(u32::MAX))
+}
+
+/// A count of samples as seconds at the model's own rate.
+fn samples_seconds(samples: usize) -> f64 {
+    f64::from(u32::try_from(samples).unwrap_or(u32::MAX)) / f64::from(SAMPLE_RATE)
+}
+
+/// Word-level Levenshtein distance: the edits between two word sequences.
+fn edits(text: &[String], truth: &[String]) -> usize {
+    let mut previous: Vec<usize> = (0..=truth.len()).collect();
+    let mut current = vec![0_usize; truth.len() + 1];
+    for (row, word) in text.iter().enumerate() {
+        current[0] = row + 1;
+        for (column, against) in truth.iter().enumerate() {
+            let substitute = previous[column] + usize::from(word != against);
+            current[column + 1] = substitute.min(previous[column + 1] + 1).min(current[column] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[truth.len()]
+}
+
+/// One clip's outcome, as the callback sees it while a run is out.
+pub struct ClipRun {
+    pub index: usize,
+    pub text: String,
+    pub stages: Stages,
+    pub wall: Duration,
+    /// Whether the run's words are the same as what this clip already
+    /// carries - another model's output: the in-use model's own text for a
+    /// saved take, or a fixture's baseline. `None` on a read-aloud clip,
+    /// whose truth is a passage rather than a model, and on a take that
+    /// saved none.
+    pub matched: Option<bool>,
+}
+
+/// Where one run's time went, summed over its clips.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StageTotals {
+    pub model_load_ms: u64,
+    pub resample_ms: u64,
+    pub mel_ms: u64,
+    pub encode_ms: u64,
+    pub decode_ms: u64,
+    pub normalize_ms: u64,
+}
+
+/// What one run measured.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Metrics {
+    pub clips: usize,
+    pub audio_seconds: f64,
+    pub wall_seconds: f64,
+    /// The headline speed: audio seconds per wall second, the feed's own
+    /// axis.
+    pub xrt_wall: f64,
+    /// The share of the passage's known terms that survived. `None`
+    /// without a read-aloud clip, because nothing else has words anybody
+    /// knows were said.
+    pub term_accuracy: Option<f64>,
+    /// Mean word error rate against every clip that carries a truth - a
+    /// fixture's baseline included, which is another model's output, so
+    /// this number is distance from that output rather than ground error.
+    pub wer: Option<f64>,
+    /// How many clips the run agreed with word-for-word, of the clips
+    /// that had something to compare against. The consensus signal;
+    /// `None` when no clip did.
+    pub matched: Option<(usize, usize)>,
+    pub stages_ms: StageTotals,
+}
+
+/// One clip's transcription as the loop needs it.
+struct ClipOutcome {
+    text: String,
+    stages: Stages,
+}
+
+/// Walk the corpus, handing each clip's outcome to `on_clip`; a `Break`
+/// stops the run where it stands.
+fn walk(
+    corpus: &Corpus,
+    mut transcribe: impl FnMut(usize, &Clip) -> Result<ClipOutcome, Error>,
+    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+) -> Result<Vec<ClipRun>, Error> {
+    let mut runs = Vec::new();
+    for (index, clip) in corpus.clips.iter().enumerate() {
+        let started = std::time::Instant::now();
+        let outcome = transcribe(index, clip)?;
+        let wall = started.elapsed();
+        let against = match clip.source {
+            ClipSource::ReadAloud => None,
+            _ => clip.recorded.as_ref().or(clip.truth.as_ref()),
+        };
+        let matched = against.map(|other| words(&outcome.text) == words(other));
+        let run = ClipRun { index, text: outcome.text, stages: outcome.stages, wall, matched };
+        let stopped = on_clip(&run) == std::ops::ControlFlow::Break(());
+        runs.push(run);
+        if stopped {
+            return Err(Error::Cancelled);
+        }
+    }
+    Ok(runs)
+}
+
+/// Run one corpus through one config, reporting each clip as it lands.
+///
+/// The engine is built and made ready first, so a model that will not load
+/// fails here rather than on the first clip. A `Break` from `on_clip`
+/// returns [`Error::Cancelled`]: what ran is not a result, and the caller
+/// saves nothing.
+pub fn run(
+    cfg: &Config,
+    corpus: &Corpus,
+    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+) -> Result<Metrics, Error> {
+    let engine = crate::Engine::new(cfg.clone())?;
+    engine.wait_ready()?;
+
+    let runs = walk(
+        corpus,
+        |index, clip| {
+            let outcome = engine.transcribe(crate::Samples::mono(clip.audio.clone()))?.recv()?;
+            match outcome {
+                crate::Outcome::Transcript(transcript) => {
+                    Ok(ClipOutcome { text: transcript.text, stages: transcript.stages })
+                }
+                // A clip with no audio is the corpus's problem rather than
+                // recognition's: the material is supposed to be speech.
+                other @ crate::Outcome::NoAudio { .. } => Err(Error::Bench {
+                    message: format!("clip {index} produced no transcript: {other:?}"),
+                }),
+            }
+        },
+        &mut on_clip,
+    )?;
+    if runs.is_empty() {
+        return Err(Error::Bench { message: "the corpus has no clips to run".to_owned() });
+    }
+
+    // The passage is the only truth whose words are known; every other
+    // clip's truth is another model's output.
+    let term_accuracy =
+        corpus.clips.iter().position(|clip| clip.source == ClipSource::ReadAloud).and_then(
+            |index| {
+                let truth = corpus.clips.get(index)?.truth.clone()?;
+                let passage_terms = terms(&truth);
+                runs.iter()
+                    .find(|run| run.index == index)
+                    .map(|run| score(&run.text, &truth, &passage_terms).0)
+            },
+        );
+
+    let audio_samples: usize = corpus.clips.iter().map(|clip| clip.audio.len()).sum();
+    let audio_seconds = samples_seconds(audio_samples);
+    let wall_seconds: f64 = runs.iter().map(|run| run.wall.as_secs_f64()).sum();
+
+    let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    let mut stages_ms = StageTotals::default();
+    for run in &runs {
+        stages_ms.model_load_ms += ms(run.stages.model_load);
+        stages_ms.resample_ms += ms(run.stages.resample);
+        stages_ms.mel_ms += ms(run.stages.mel);
+        stages_ms.encode_ms += ms(run.stages.encode);
+        stages_ms.decode_ms += ms(run.stages.decode);
+        stages_ms.normalize_ms += run.stages.normalize.map_or(0, ms);
+    }
+
+    let mut edits_total = 0_usize;
+    let mut truth_total = 0_usize;
+    for run in &runs {
+        let Some(clip) = corpus.clips.get(run.index) else { continue };
+        let Some(truth) = clip.truth.as_deref() else { continue };
+        let truth_words = words(truth);
+        if truth_words.is_empty() {
+            continue;
+        }
+        edits_total += edits(&words(&run.text), &truth_words);
+        truth_total += truth_words.len();
+    }
+    let wer = (truth_total > 0).then(|| ratio(edits_total, truth_total));
+
+    let scored: Vec<&ClipRun> = runs.iter().filter(|run| run.matched.is_some()).collect();
+    let matched = (!scored.is_empty()).then(|| {
+        let agreed = scored.iter().filter(|run| run.matched == Some(true)).count();
+        (agreed, scored.len())
+    });
+
+    Ok(Metrics {
+        clips: runs.len(),
+        audio_seconds,
+        wall_seconds,
+        xrt_wall: if wall_seconds > 0.0 { audio_seconds / wall_seconds } else { 0.0 },
+        term_accuracy,
+        wer,
+        matched,
+        stages_ms,
+    })
+}
+
 /// Decode one 16-bit mono wav at the model's own rate, refusing anything
 /// else by name rather than resampling it.
 fn decode_wav(path: &Path) -> Result<Vec<f32>, Error> {
@@ -373,5 +641,111 @@ mod tests {
 
         let gold = corpus(Tier::ReadAloud, empty.path(), empty.path()).unwrap();
         assert!(gold.clips.is_empty(), "no passage recorded, no read-aloud tier");
+    }
+
+    /// **Term accuracy counts the passage's terms that survived.** A miss
+    /// lands in the middle of an otherwise perfect sentence - the shape a
+    /// misheard proper noun actually has - and moves the figure; nothing
+    /// else does.
+    #[test]
+    fn term_accuracy_counts_the_passages_terms_that_survived() {
+        let truth = "Push the Playwright suite and then check redb.";
+        let found = terms(truth);
+        assert_eq!(found.len(), 2, "the passage names two known terms: {found:?}");
+
+        let (accuracy, _) = score("Push the Playright suite and then check redb.", truth, &found);
+        assert!((accuracy - 0.5).abs() < f64::EPSILON, "one of two survived, got {accuracy}");
+
+        let (perfect, _) = score(truth, truth, &found);
+        assert!((perfect - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// WER is edits over the truth's words, by word.
+    #[test]
+    fn wer_is_edits_over_the_passages_words() {
+        let (_, wer) = score("one two three", "one two four three", &[]);
+
+        assert!((wer - 0.25).abs() < 1e-9, "one insertion in four words, got {wer}");
+    }
+
+    /// A `Break` from the callback stops the walk where it stands, and the
+    /// caller hears a cancellation rather than a truncated result.
+    #[test]
+    fn a_break_from_the_callback_stops_the_loop_early() {
+        let dir = tempfile::tempdir().unwrap();
+        write_take(dir.path(), 1, 8, "one");
+        write_take(dir.path(), 2, 8, "two");
+        write_take(dir.path(), 3, 8, "three");
+        let empty = tempfile::tempdir().unwrap();
+        let built = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+
+        let mut called = 0;
+        let mut transcribed = 0;
+        let outcome = walk(
+            &built,
+            |_index, _clip| {
+                transcribed += 1;
+                Ok(ClipOutcome { text: "word".to_owned(), stages: Stages::default() })
+            },
+            |run| {
+                called += 1;
+                if run.index == 1 {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            },
+        );
+
+        assert!(matches!(outcome, Err(Error::Cancelled)), "a stop is a cancellation");
+        assert_eq!(called, 2, "the callback saw the clip that broke and no later one");
+        assert_eq!(transcribed, 2, "and nothing was transcribed past the break");
+    }
+
+    /// The agreement axis: a take is compared against the in-use model's
+    /// own recorded words, word-for-word once case and punctuation are
+    /// out of the way; a read-aloud clip carries no comparison at all.
+    #[test]
+    fn a_clip_is_matched_against_the_other_models_words_not_the_passage() {
+        let dir = tempfile::tempdir().unwrap();
+        write_take(dir.path(), 1, 8, "Hello, world!");
+        write_take(dir.path(), 2, 8, "Something else entirely.");
+        let empty = tempfile::tempdir().unwrap();
+        let built = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+
+        let runs = walk(
+            &built,
+            |_index, clip| {
+                let text = if clip.recorded.as_deref() == Some("Hello, world!") {
+                    "hello world".to_owned()
+                } else {
+                    "different words".to_owned()
+                };
+                Ok(ClipOutcome { text, stages: Stages::default() })
+            },
+            |_| std::ops::ControlFlow::Continue(()),
+        )
+        .unwrap();
+
+        assert_eq!(runs[0].matched, Some(true), "case and punctuation are out of the way");
+        assert_eq!(runs[1].matched, Some(false));
+
+        let passage = Clip {
+            source: ClipSource::ReadAloud,
+            audio: vec![0.0; 8],
+            truth: Some("a passage".to_owned()),
+            recorded: None,
+        };
+        let gold = Corpus { id: corpus_id(std::slice::from_ref(&passage)), clips: vec![passage] };
+        let runs = walk(
+            &gold,
+            |_index, _clip| {
+                Ok(ClipOutcome { text: "a passage".to_owned(), stages: Stages::default() })
+            },
+            |_| std::ops::ControlFlow::Continue(()),
+        )
+        .unwrap();
+
+        assert_eq!(runs[0].matched, None, "a passage is scored by term accuracy, not by agreement");
     }
 }
