@@ -20,6 +20,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -27,5 +28,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0ODY3NTNBRUYzNkU2NzAKUldSdzVqYnZPbldHUk5LdVA5M2ZSRDJDNzhGWWltMDFGZkl1N2ZhWTRtb2c5L3UzMTEvdUNacWkK",
+      "endpoints": ["https://github.com/busytools/forge/releases/latest/download/latest.json"]
+    }
   }
 }

@@ -3,6 +3,7 @@
   import Card from '../components/Card.svelte';
   import Row from '../components/Row.svelte';
   import { PROTOCOL_VERSION } from '../protocol';
+  import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
   import { countsOf, homeView } from './view';
 
@@ -59,6 +60,24 @@
       {#if view.header.update}{' \u{b7} '}<span class="upd"
           >{'\u{2191}'} v{view.header.update} available</span
         >{/if}
+      <!-- This app's own update, beside the CLI notice it shares the idiom
+           with: the client half is the one this window can act on, so it is
+           the half that is a control. -->
+      {#if $updateState.stage === 'available'}
+        {' \u{b7} '}<button class="upd" onclick={install}
+          >client {'\u{2191}'} v{$updateState.version} available</button
+        >
+      {:else if $updateState.stage === 'installing'}
+        {' \u{b7} '}<span class="upd">client {'\u{2191}'} v{$updateState.version} updating...</span>
+      {:else if $updateState.stage === 'restart'}
+        {' \u{b7} '}<button class="upd" onclick={restart}
+          >client v{$updateState.version} ready - restart to finish</button
+        >
+      {:else if $updateState.stage === 'failed'}
+        {' \u{b7} '}<button class="upd" onclick={install}
+          >client v{$updateState.version} - update failed, retry</button
+        >
+      {/if}
     </div>
     <div class="totals">
       <!-- `.n` on the first two only: the sheet weights the fleet's own
