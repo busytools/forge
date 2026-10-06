@@ -294,6 +294,18 @@ describe('the chat column as it draws', () => {
     ).not.toBeNull();
   });
 
+  it('keeps the waking line up for a worker seat the core is spawning', () => {
+    // The roster can name a WORKER Spawning (its lead's spawn), and the
+    // not-running refusal there would read as a dead seat at the moment it is
+    // coming up - the inner arm has to answer for any spawning seat, not
+    // only a lead.
+    const server = stub();
+    draw({ spawning: true, slot: { ...LEAD, label: 'w1' } }, server);
+
+    expect(drawn(), 'a spawning worker read as a dead seat').toContain('Waking up agent...');
+    expect(drawn(), 'a spawning worker drew the refusal').not.toContain('not running');
+  });
+
   it('draws a seat that has no session behind it as its own state', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);

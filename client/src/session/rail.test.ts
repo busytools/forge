@@ -218,7 +218,12 @@ describe('a closed seat', () => {
       expect(leadRow, 'the closed lead kept a live dot').toContain(
         '<span class="dot off settling"></span>',
       );
-      expect(withLead, "the closed lead's project stayed out of asleep").toContain('asleep');
+      // The GROUP heading, not the word `asleep`: the sleeper fold's own
+      // "1 asleep" would satisfy a looser assertion while the project sat in
+      // the working group.
+      expect(withLead, "the closed lead's project stayed out of asleep").toContain(
+        '<span class="gh">asleep</span>',
+      );
     } finally {
       forgetClosed({ ...homeWire, agents: [] });
     }

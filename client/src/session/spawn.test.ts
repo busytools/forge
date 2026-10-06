@@ -179,6 +179,29 @@ describe("starting a project's lead from its own page", () => {
     ]);
   });
 
+  it('asks the core to start a lead the roster names logged out', () => {
+    const { sent } = openWith(homeAs('LoggedOut'));
+
+    expect(sent, 'a logged-out lead was opened and nothing asked').toHaveLength(1);
+  });
+
+  /**
+   * The latch is cleared the moment the seat is up, so a seat that comes up
+   * and goes away again in the same mount is a FRESH wake: holding the latch
+   * past the landing would leave the second wake with a promise nothing
+   * keeps.
+   */
+  it('asks again when a seat that landed goes away again in the same mount', () => {
+    const { sent, page } = open(false);
+
+    page().home = home(true);
+    flushSync();
+    page().home = home(false);
+    flushSync();
+
+    expect(sent, 'the second wake was never asked for').toHaveLength(2);
+  });
+
   /**
    * The promise has a state it must not make: a seat this client just closed
    * carries the mark because the click was made here, and a roster landing it
