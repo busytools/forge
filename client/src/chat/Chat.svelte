@@ -271,6 +271,8 @@
   let pinEcho: number | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
+  /** The signature of the keys above the anchor at the last parked pass. */
+  let ordered: string | null = null;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -365,7 +367,12 @@
   function captureAnchor(): void {
     if (viewport === null) return;
     const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
-    if (landed !== null) anchor = landed;
+    if (landed !== null) {
+      anchor = landed;
+      // The signature is taken against the freshly captured anchor, so the
+      // next pass records rather than schedules.
+      ordered = null;
+    }
   }
 
   /**
@@ -838,31 +845,26 @@
   // transitions that set it are the two below.
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
-    const foot = land();
-    // **And once more after this frame's layout - but only when the layout
-    // moved.** The foot a pin asks for is the one that is true at the moment
-    // it asks, and a row's own content - code, a disclosure opening, a table
-    // - is laid out after this column's effects have run. On a seat whose
-    // history is already written that is the whole of the difference between
-    // opening at the newest turn and opening most of a screen above it.
-    // **One pass per size change** (issue #1710): a second look that finds
-    // the same height has nothing to correct, and asking anyway is a write
-    // and an event per frame.
-    const settled = requestAnimationFrame(() => {
-      if (viewport !== null && viewport.scrollHeight !== foot) land();
-    });
-    return () => cancelAnimationFrame(settled);
+    land();
   });
 
   /**
    * The place a reader away from the foot is holding, put back whenever the
    * conversation changes around them.
    *
-   * **The other half of the follow's own pass.** That one pins the foot for a
-   * reader who is at it; this one holds the row for a reader who is not, and
-   * it runs on the same signal - a conversation change - with the same
-   * once-more-after-this-frame's-layout pass, because the row that moved was
-   * laid out after this column's effects ran.
+   * **The other half of the follow's pass.** That one pins the foot for a
+   * reader who is at it; this one holds the row for a reader who is not.
+   *
+   * **Scheduled only when the rows above the anchor REORDERED** (#1734). A
+   * size change under them is the observer's pass - it fires post-layout and
+   * the `restored` counter below guards the overlap - and a frame that moved
+   * nothing schedules nothing, where a pass per frame was the per-frame rAF
+   * cost the issue measured. What is left is the move no observer event
+   * reports: an equal-height reorder puts the anchor row somewhere else with
+   * the sizes unchanged, and the signature of the keys above it is the data
+   * that says so. (The follow's own second look is gone for the same reason:
+   * at the foot an equal-height move changes nothing, and any size change is
+   * the observer's.)
    *
    * **Skipped while the prepend compensation is on**: that path holds the
    * reader by the list's own shift as older turns arrive above them, and two
@@ -871,19 +873,39 @@
   $effect(() => {
     const park = held;
     const moving = shift;
-    if (anchor === null || park.following || !park.loaded || moving) return;
-    // **Not gated on the height like the pin's pass, but gated on the
-    // observer** (issue #1710): a size change is the one way the layout
-    // reports itself, and the observer's pass is post-layout - so when it has
-    // already put the parked reader back for this change, this frame's own
-    // pass would only repeat the same read. It stays for the moves the
-    // observer cannot see, where nothing else answers at all.
+    if (anchor === null || park.following || !park.loaded || moving) {
+      // No anchor, no signature to hold: the next parked pass records one.
+      ordered = null;
+      return;
+    }
+    const above = keysAbove();
+    const prior = ordered;
+    ordered = above;
+    if (prior === null || prior === above) return;
     const seen = restored;
     const settled = requestAnimationFrame(() => {
       if (restored === seen) restoreAnchor();
     });
     return () => cancelAnimationFrame(settled);
   });
+
+  /**
+   * The ordered keys of the drawn rows above the anchor, as one signature.
+   *
+   * Read off the document rather than the model because the fold decides the
+   * order - the rows are what the reader sees move - and attribute reads
+   * force no layout, unlike a box.
+   */
+  function keysAbove(): string {
+    if (viewport === null || anchor === null) return '';
+    const keys: string[] = [];
+    for (const row of viewport.querySelectorAll('[data-k]')) {
+      const key = row.getAttribute('data-k') ?? '';
+      if (key === anchor.key) break;
+      keys.push(key);
+    }
+    return keys.join('|');
+  }
 
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {

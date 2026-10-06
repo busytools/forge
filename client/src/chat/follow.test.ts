@@ -307,12 +307,12 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the frame is what put these here').toEqual([PIN]);
   });
 
-  it('takes its second look only when the layout moved between the passes', async () => {
-    // **One pass per size change** (issue #1710). A row laid out after this
-    // update's effects ran moves the foot a moment later, and the frame's own
-    // second look is for exactly that; a look that finds the same height has
-    // nothing to correct and is skipped. The height is moved here between the
-    // two passes, the way a late layout moves it.
+  it('re-pins the foot when the observer reports a late layout', async () => {
+    // **The observer owns the post-layout pass** (#1710, #1734): a row laid
+    // out after this update's effects ran moves the foot a moment later, and
+    // a size change is the one way the layout reports itself - so the pass is
+    // the observer's, fired here as a browser fires it, rather than an rAF
+    // scheduled on every frame that arrived.
     const server = stub();
     await draw(server);
     readerAt(FOOT);
@@ -320,14 +320,11 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     server.frame();
-    // The draw lands a painted frame after the frame arrives - the pin - and
-    // the second look is the pass after that; the height moves between them,
-    // the way a row laid out late moves it.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    await settle();
+    // The late layout, after the frame's own pin has landed.
     element.height = TOTAL + 80;
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
-    flushSync();
+    resized();
+    await settle();
 
     const grown = Math.floor(TOTAL + 80);
     expect(pinned(), 'the late layout lands one more pin, at the new foot').toEqual([
@@ -460,9 +457,10 @@ describe('whether the column follows the newest end', () => {
     const before = layout.reads;
     await settle();
 
-    // The frame's own passes read the height twice - the pin's land and its
-    // post-layout second look - and the echo reads it none.
-    expect(layout.reads - before, 'the echo read the layout back').toBe(2);
+    // The frame's own pass reads the height once - the pin's land; the
+    // post-layout look is the observer's now (#1734) - and the echo reads it
+    // none. Were the echo read, this would count two.
+    expect(layout.reads - before, 'the echo read the layout back').toBe(1);
   });
 
   it('leaves a reader parked a few pixels short of the end alone', async () => {
@@ -985,12 +983,50 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // The first row grows by 200, so the reader's row starts 200 further down.
+    // The first row grows by 200, so the reader's row starts 200 further
+    // down; the observer reports the size change and restores, the way a
+    // browser fires it (#1734: the pass is the observer's, not a per-frame
+    // rAF's).
     layOut(40, 240);
-    server.frame();
+    resized();
     await settle();
 
     expect(element.offset, "the reader's row carried them down with it").toBe(250);
+  });
+
+  /**
+   * **The move no observer event reports** (#1734): an equal-height reorder
+   * puts the anchor row somewhere else with every size unchanged - the
+   * ResizeObserver fires nothing, and a height check sees the same total. The
+   * parked pass is scheduled on exactly this: the signature of the keys above
+   * the anchor, a data comparison over the drawn rows that needs no layout
+   * read.
+   */
+  it('holds a parked reader through an equal-height reorder', async () => {
+    const server = stub();
+    await draw(server);
+    // Keys of their own: `draw` has already paged t1/t2, and a page reusing
+    // those keys hands the list DOM it has already drawn.
+    server.page([spoken('a'), spoken('b'), spoken('c'), spoken('d')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    // A frame after the capture, so the pass has recorded the order it will
+    // compare against - the capture itself takes the signature fresh.
+    server.frame();
+    await settle();
+    clear();
+
+    // The reorder as a page that carries it would: the anchor's turn and its
+    // neighbour swap places, so every rect stays 40px tall and the total does
+    // not move - the keys and the boxes travel together.
+    server.page([spoken('a'), spoken('c'), spoken('b'), spoken('d')]);
+    flushSync();
+    layOut(40);
+    await settle();
+
+    expect(element.offset, "the reader's row carried them with it").toBe(90);
   });
 
   /**
