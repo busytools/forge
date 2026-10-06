@@ -2,7 +2,7 @@
 import { createRequire } from 'node:module';
 
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
@@ -10,9 +10,21 @@ import { rememberAddress } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
 import { fontStack } from '../theme';
+import { watchUpdate } from '../update/state';
 import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
 import type { SessionSlot } from '../wire/types';
 import Shell from './Shell.svelte';
+
+/**
+ * The launch's update check, wrapped so a test can count it: the module's own
+ * exports stay real, because the pages read them.
+ */
+vi.mock('../update/state', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../update/state')>();
+  return { ...real, watchUpdate: vi.fn() };
+});
+
+const mockWatchUpdate = vi.mocked(watchUpdate);
 
 /**
  * A socket and a server that a test in this realm can use, required through
@@ -198,6 +210,7 @@ function appliedFont(): string {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
+  mockWatchUpdate.mockClear();
 });
 
 afterEach(async () => {
@@ -222,6 +235,17 @@ describe('the shell at launch', () => {
     await openAt('/', null);
 
     expect(fieldAddress(), 'the door did not open on the default address').toBe(DEFAULT_ADDRESS);
+  });
+
+  /**
+   * The update check is a launch act like opening the door, and the notice it
+   * feeds draws wherever the home does. Once per launch: a loop here would
+   * re-ask the release endpoint for the life of the window.
+   */
+  it('checks for the client update once at launch', async () => {
+    await openAt('/', null);
+
+    expect(mockWatchUpdate).toHaveBeenCalledTimes(1);
   });
 
   /**

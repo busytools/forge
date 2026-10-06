@@ -11,6 +11,7 @@
   import { forgetClosed, removedLanding, watchRemovals } from '../session/close';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
+  import { watchUpdate } from '../update/state';
   import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
   import Router from './Router.svelte';
 
@@ -61,6 +62,10 @@
       history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
     void open();
+    // Once per launch, whatever route it opened on - the notice draws wherever
+    // the home does, and a check the reader has to revisit the home for is a
+    // check that is not made.
+    void watchUpdate();
   });
 
   /**

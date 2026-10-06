@@ -17,7 +17,7 @@ nothing to draw, and the client never falls back to bundled data.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, an update notice, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; `agents` and `projects` counted |
+| Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line, and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
 | Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
 | Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, with each row's task from `projects` |
@@ -83,6 +83,13 @@ line under it.
   has one strictly newer than the installed CLI. Both sides have to resolve
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
+- **This app's own update**: the header draws `client ↑ vX available` when a
+  newer release is published, checked once at launch. It is a control, where
+  the CLI notice beside it is not: clicking installs the update and the line
+  becomes `ready - restart to finish`, which is the click that swaps into the
+  new build. A failed install draws `- update failed, retry`, and a browser
+  tab against the same forge draws none of this - there is no shell to
+  update.
 - **Connected, waiting for the first read**: the door has gone and the fleet
   has not arrived. The server builds a home snapshot by reading each
   project's working tree, so the window is not instant, and it is its own

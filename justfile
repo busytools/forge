@@ -297,6 +297,22 @@ client-tauri-check:
 #
 # **A window on every run is why this is not the routine gate.**
 client-tauri-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # The updater key, as `client-release` reads it: the bundle target emits
+    # the update tarball and cannot sign one without this.
+    up="$HOME/.tauri/forge-updater.properties"
+    export TAURI_SIGNING_PRIVATE_KEY=$(sed -n 's/^keyFile=//p' "$up" 2>/dev/null || true)
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' "$up" 2>/dev/null || true)
+    if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+        echo "[ERROR] the updater signing key is not set up - mint it once:" >&2
+        echo "        npm run tauri -- signer generate -w ~/.tauri/forge-updater.key" >&2
+        echo "        then write ~/.tauri/forge-updater.properties with keyFile and keyPassword" >&2
+        echo "        (client/README.md, The client's own update)" >&2
+        exit 1
+    fi
+
     npm --prefix client run tauri -- build --ci -- --locked
 
 # Bundle the client as an app and install it over /Applications/forge.app.
@@ -345,6 +361,28 @@ client-release version:
     # client started inside that window would be replaced just as quietly.
     refuse_if_in_use
 
+    # The update tarball and its signature from any earlier build, removed so
+    # what the read-back below finds was produced by THIS build: a stale pair
+    # satisfies an existence check exactly as well as a fresh one.
+    rm -f client/src-tauri/target/release/bundle/macos/forge.app.tar.gz \
+        client/src-tauri/target/release/bundle/macos/forge.app.tar.gz.sig
+
+    # `createUpdaterArtifacts` signs the app bundle's update tarball, so the
+    # release key is required here the way the Android half requires its
+    # keystore. Both halves of the keypair live outside the repo
+    # (`client/README.md`, The client's own update); losing them ends updates
+    # for every installed client.
+    up="$HOME/.tauri/forge-updater.properties"
+    export TAURI_SIGNING_PRIVATE_KEY=$(sed -n 's/^keyFile=//p' "$up" 2>/dev/null || true)
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' "$up" 2>/dev/null || true)
+    if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+        echo "[ERROR] the updater signing key is not set up - mint it once:" >&2
+        echo "        npm run tauri -- signer generate -w ~/.tauri/forge-updater.key" >&2
+        echo "        then write ~/.tauri/forge-updater.properties with keyFile and keyPassword" >&2
+        echo "        (client/README.md, The client's own update)" >&2
+        exit 1
+    fi
+
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
 
     if [ ! -e "$built" ]; then
@@ -357,6 +395,11 @@ client-release version:
         echo "[ERROR] the built client is version $got, expected {{version}}" >&2
         exit 1
     fi
+
+    # The CLI signs with whatever key the environment names and only warns
+    # when it is not the pinned one, so the pair is read back here - before
+    # anything is swapped in - the way the Android half reads its signer back.
+    ./scripts/check_updater_signature.py . {{version}}
 
     # Staged beside the target, and the old bundle moved aside rather than
     # deleted, so a failed copy leaves the installed client untouched and the

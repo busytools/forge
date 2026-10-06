@@ -1,9 +1,10 @@
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
+import { updateState } from '../update/state';
 import type { Gate, HomeWire } from '../wire/home';
 import Home from './Home.svelte';
 
@@ -142,5 +143,49 @@ describe('the home page as it draws', () => {
     expect(body, 'the row drew no lifecycle class').toContain('class="row idle"');
     expect(body).toContain('class="dot live"');
     expect(body, 'the row drew no link to its seat').toContain('href="/session/TestOrg/proj/lead"');
+  });
+});
+
+describe("the client's own update", () => {
+  afterEach(() => {
+    updateState.set({ stage: 'current' });
+  });
+
+  it('draws the version an update would install, as a control', () => {
+    updateState.set({ stage: 'available', version: '9.9.9' });
+
+    const body = draw();
+    expect(body).toContain('v9.9.9 available');
+    expect(body, 'the notice is text where it should be a control').toMatch(/<button[^>]*>client /);
+  });
+
+  it('draws none of it on a build that is current', () => {
+    expect(draw()).not.toContain('v9.9.9');
+  });
+
+  it('draws the installing stage, offering nothing to press', () => {
+    updateState.set({ stage: 'installing', version: '9.9.9' });
+
+    const body = draw();
+    expect(body).toContain('v9.9.9 updating...');
+    expect(body, 'the stage offers an action while one is already in flight').not.toMatch(
+      /<button[^>]*>client /,
+    );
+  });
+
+  it('offers the restart once the update is installed', () => {
+    updateState.set({ stage: 'restart', version: '9.9.9' });
+
+    expect(draw()).toContain('restart to finish');
+  });
+
+  it('draws a failed install with a retry, and its reason on the control', () => {
+    updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the signature did not match' });
+
+    const body = draw();
+    expect(body).toContain('update failed, retry');
+    expect(body, 'the reason the install failed was dropped').toContain(
+      'title="the signature did not match"',
+    );
   });
 });

@@ -20,6 +20,10 @@ npm run typecheck
 `1420` is fixed rather than defaulted, because the Tauri shell points its
 `devUrl` at it.
 
+A `node_modules` from before the client's own update existed fails seven test
+files at import until `npm install` refreshes it: the update calls are what
+brought `@tauri-apps/api` in.
+
 `just client-dev` runs the app itself in development: the window over that
 dev server, reloading on a frontend edit, with nothing installed and no
 bundle built.
@@ -79,6 +83,45 @@ The version is this crate's own rather than the workspace's: it sits in this
 crate's `Cargo.toml`, because the shell is its own workspace root and the
 workspace bump cannot reach it. `just release` bumps it to the release
 version, so the tag and the installed app carry the same number.
+
+## The client's own update
+
+The desktop shell checks for a newer release once at launch: one request to
+`releases/latest/download/latest.json` on `busytools/forge`, from the
+`plugins.updater` block in `tauri.conf.json`. The home header draws a
+`client ↑ v1.0.116 available` line when there is one; clicking downloads and
+installs it, and the line then offers the restart that finishes the swap.
+Nothing restarts on its own. A browser tab against the same forge draws none
+of it - there is no shell to update.
+
+The bundles are signed with a minisign keypair of their own, separate from
+the app's codesign and from the Android release keystore:
+
+```sh
+mkdir -p ~/.tauri && chmod 700 ~/.tauri
+npm run tauri -- signer generate -w ~/.tauri/forge-updater.key
+```
+
+The public half is inlined in `tauri.conf.json` (`plugins.updater.pubkey`).
+The private key and its password live only under `~/.tauri/` - never in the
+repo - and the release recipes read them through
+`~/.tauri/forge-updater.properties` (`keyFile`, `keyPassword`).
+
+**Back all three files up.** Losing the private key or its password means no
+future release can be signed for the desktops that exist: every installed
+client would need a manual reinstall onto a new key. The same discipline the
+release keystore carries, for the same reason.
+
+`bundle.createUpdaterArtifacts` makes the app bundle target emit
+`forge.app.tar.gz` and its `.sig` beside it. The release recipes fail rather
+than skip when the key is missing, the way the Android half fails on its
+keystore, because a release that publishes no signed tarball is a release
+no client can update from. And `client-release` reads the built pair back
+before swapping anything in: the CLI signs with whatever key the environment
+names and only warns when that is not the pinned one, so
+`scripts/check_updater_signature.py` compares the signature's key id with
+`tauri.conf.json`'s pubkey and the signed version with the release's, the way
+`client-android-release` reads the APK's signer back.
 
 ## The Android target
 
