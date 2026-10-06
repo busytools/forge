@@ -63,13 +63,16 @@ describe('installUpdate', () => {
   });
 
   /**
-   * The one place the stage is narrowed: a value the shell never sends draws
-   * the desktop's line rather than a stage nothing defines.
+   * The one place the stage is narrowed, and it is loud: a value with no
+   * words would otherwise become a restart control the platform answers with
+   * nothing.
    */
-  it('narrows anything else to the restart', async () => {
+  it('refuses a stage it has no words for', async () => {
     mockInvoke.mockResolvedValue('something-else');
 
-    await expect(installUpdate()).resolves.toBe('restart');
+    await expect(installUpdate()).rejects.toThrow(
+      'the shell answered an unknown update stage: something-else',
+    );
   });
 
   it('propagates a failed install for the surface to draw', async () => {
