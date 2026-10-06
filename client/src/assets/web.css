@@ -1653,13 +1653,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .dev .chev { margin-left: auto; color: var(--dim); }
 .pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
   overflow: hidden; }
-.pop .row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+.pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
   border: 0; border-bottom: 1px solid var(--line); background: none; cursor: pointer;
   text-align: left; }
-.pop .row:last-child { border-bottom: 0; }
-.pop .row:hover { background: var(--s2); }
-.pop .row .nm { font-size: var(--fs-base); color: var(--text); }
-.pop .row .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+.pop .drow:last-child { border-bottom: 0; }
+.pop .drow:hover { background: var(--s2); }
+.pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+.pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .pop .ft { padding: 13px 15px 14px; }
 .pop .rst { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);

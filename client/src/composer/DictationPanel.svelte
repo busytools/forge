@@ -286,11 +286,11 @@
         {:else if refused !== null}
           <div class="note bad">{refused}</div>
         {:else}
-          <button class="row" type="button" onclick={() => choose(null)}>
+          <button class="drow" type="button" onclick={() => choose(null)}>
             <span class="nm">{defaultRow()}</span>
           </button>
           {#each devices ?? [] as held, at (held.id)}
-            <button class="row" type="button" onclick={() => choose(held.id)}>
+            <button class="drow" type="button" onclick={() => choose(held.id)}>
               <span class="nm">{held.label || `Microphone ${at + 1}`}</span>
             </button>
           {/each}

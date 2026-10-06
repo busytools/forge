@@ -182,11 +182,11 @@
   .pop .dev.missing .nm { color: var(--bad); }
   .pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
     overflow: hidden; }
-  .pop .row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+  .pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
     border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; }
-  .pop .row:last-child { border-bottom: 0; }
-  .pop .row .nm { font-size: var(--fs-base); color: var(--text); }
-  .pop .row .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  .pop .drow:last-child { border-bottom: 0; }
+  .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+  .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
   .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
@@ -665,9 +665,9 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="lbl">INPUT DEVICE</div>
           <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">System default</span><span class="chev">&#9656;</span></div>
           <div class="list">
-            <div class="row"><span class="nm">System default</span></div>
-            <div class="row"><span class="nm">Microphone 1</span></div>
-            <div class="row"><span class="nm">Microphone 2</span></div>
+            <div class="drow"><span class="nm">System default</span></div>
+            <div class="drow"><span class="nm">Microphone 1</span></div>
+            <div class="drow"><span class="nm">Microphone 2</span></div>
           </div>
           <div class="note">the browser's own list &#183; names appear once this page has been allowed the microphone</div>
         </div>
