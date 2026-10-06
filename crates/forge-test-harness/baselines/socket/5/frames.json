@@ -25,6 +25,7 @@
     "DictateDevicePin": "dictate_device_pin",
     "DictateEnded": "dictate_ended",
     "DictateLevel": "dictate_level",
+    "DictateModelsChanged": "dictate_models_changed",
     "DictateOverrides": "dictate_overrides",
     "DictateProgress": "dictate_progress",
     "DictateStarted": "dictate_started",
@@ -83,6 +84,7 @@
     "WorkerStatusChanged": "worker_status_changed"
   },
   "subject": {
+    "DictateModels": "dictate_models",
     "Home": "home",
     "Session": "session",
     "Usage": "usage"
@@ -97,6 +99,7 @@
     "DeliverWorkerPrompt": "deliver_worker_prompt",
     "DeliverWorkerPromptToLead": "deliver_worker_prompt_to_lead",
     "DespawnWorker": "despawn_worker",
+    "DictateCatalogueCheck": "dictate_catalogue_check",
     "DictateStart": "dictate_start",
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",

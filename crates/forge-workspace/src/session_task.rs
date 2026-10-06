@@ -1558,6 +1558,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverWorkerPromptToLead { .. }
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
+        | Command::DictateCatalogueCheck
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

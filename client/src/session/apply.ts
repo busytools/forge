@@ -398,6 +398,9 @@ export const IGNORED: readonly string[] = [
   'cron_prompt_appended',
   'dictate_availability',
   'dictate_device_pin',
+  // The models page reads the catalogue through its own subject; a
+  // session page has nothing of it to draw.
+  'dictate_models_changed',
   // The core echoes the terminal's own `/dictate` overrides; this client
   // holds its axes itself, so the echo reaches nothing here.
   'dictate_overrides',

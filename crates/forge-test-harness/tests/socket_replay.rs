@@ -236,7 +236,7 @@ census!(ServerMessage,
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
-    [Home struct, Session tuple, Usage struct],
+    [Home struct, Session tuple, Usage struct, DictateModels struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,
@@ -270,6 +270,7 @@ census!(SessionUpdate,
         ReviewActivityNotice struct, DictateAvailability struct,
         DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
         DictateProgress struct, DictateEnded struct, FatalError tuple,
+        DictateModelsChanged struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
@@ -280,7 +281,8 @@ census!(Command,
         NewSession struct,
         ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
-        SetDictateDevice struct, ReconnectMcpServer struct, ToggleMcpServer struct,
+        SetDictateDevice struct, DictateCatalogueCheck struct,
+        ReconnectMcpServer struct, ToggleMcpServer struct,
         SpawnProject struct, SpawnSession struct, StartDefault struct, DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, OpenUrl struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
