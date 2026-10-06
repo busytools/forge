@@ -1127,13 +1127,10 @@ no_reset_cooldown_secs = 90
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("absent section loads");
         assert!(config.server.enabled, "the listener is on unless it is turned off");
-        // Two assertions, two changes: one bumps the const without the book's
-        // table and the client's default address, the other lets the Default
-        // impl drift from the const.
-        assert_eq!(
-            DEFAULT_SERVER_PORT, 8790,
-            "8790 is the number the book's table and the client's default address carry",
-        );
+        // Two assertions, two changes: one drifts the const from the number
+        // the book's table documents, the other lets the Default impl drift
+        // from the const.
+        assert_eq!(DEFAULT_SERVER_PORT, 8790, "the number the book's [server] table documents");
         assert_eq!(config.server.port, DEFAULT_SERVER_PORT, "an absent section takes that port");
         assert_eq!(config.server.bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
