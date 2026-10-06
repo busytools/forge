@@ -1,8 +1,23 @@
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(desktop)]
+use std::time::Duration;
 
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
+
+/// Bound on each update request - the check and the download alike. A stalled
+/// connection otherwise holds the header's "updating..." for the session.
+#[cfg(desktop)]
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[cfg(desktop)]
+fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    app.updater_builder()
+        .timeout(UPDATE_TIMEOUT)
+        .build()
+        .map_err(|err| err.to_string())
+}
 
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
@@ -48,8 +63,7 @@ pub fn run() {
 #[cfg(desktop)]
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let updater = app.updater().map_err(|err| err.to_string())?;
-    match updater.check().await {
+    match updater(&app)?.check().await {
         Ok(found) => Ok(found.map(|update| update.version)),
         Err(err) => Err(err.to_string()),
     }
@@ -60,8 +74,7 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
 #[cfg(desktop)]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|err| err.to_string())?;
-    let update = updater
+    let update = updater(&app)?
         .check()
         .await
         .map_err(|err| err.to_string())?
