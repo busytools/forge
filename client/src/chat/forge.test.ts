@@ -216,7 +216,10 @@ describe('the tasks card', () => {
   });
 
   it("lists a project's tasks as rows, each naming its own state", () => {
-    const rows = [RECORD, { ...RECORD, id: 't-2', subject: 'Sweep', status: 'pending' }];
+    const rows = [
+      RECORD,
+      { ...RECORD, id: 't-2', subject: 'Sweep', status: 'pending', owner: null, estimate: null },
+    ];
     const card = forgeCardOf('mcp__forge__tasks__list', {}, result(JSON.stringify(rows)));
     expect(card?.title).toBe('tasks');
     expect(card?.figure).toBe('2 in flight');
@@ -226,14 +229,14 @@ describe('the tasks card', () => {
         state: { text: 'in progress', tone: 'info' },
         text: RECORD.subject,
         tag: null,
-        when: 'lead',
+        when: 'lead \u{b7} 2h',
       },
       {
         id: 't-2',
         state: { text: 'pending', tone: 'dim' },
         text: 'Sweep',
         tag: null,
-        when: 'lead',
+        when: 'unclaimed',
       },
     ]);
   });

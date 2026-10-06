@@ -77,7 +77,7 @@ export interface ForgeCard {
    * word it is read by: a despawn that stopped at a dirty worktree says so on
    * the row, where a failed CALL says its reason there too.
    */
-  tail?: { text: string; tone: 'warn' | 'bad' } | null;
+  tail?: { text: string; tone: 'warn' } | null;
   /**
    * The mark this row draws instead of its family's, for a card whose subject
    * is not the family's: a capacity reads as a gauge, not as the worker glyph
@@ -425,7 +425,6 @@ interface TaskRecord {
   detail: string | null;
   artifact: string | null;
   estimate: string | null;
-  active_form: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -535,7 +534,7 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
   if (asked !== null && asked.trim() !== '') chips.push(statusChip(asked));
   if (verb === 'spawn') {
     const label = str(held, 'label');
-    if (label === null) return null;
+    if (label === null || label.trim() === '') return null;
     const pieces: ForgePiece[] = [];
     const charter = str(held, 'charter');
     if (charter !== null && charter.trim() !== '') {
@@ -548,7 +547,7 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
     // The input carries an id and never a name, so the title spells it as
     // given: a `#` on an id would dress it as a channel.
     const channel = str(held, 'conversation');
-    if (channel === null) return null;
+    if (channel === null || channel.trim() === '') return null;
     const said = str(held, 'text');
     return {
       title: postTitle(str(held, 'workspace'), channel, 'posting'),
@@ -559,7 +558,7 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
   }
   if (verb === 'edit') {
     const channel = str(held, 'conversation');
-    if (channel === null) return null;
+    if (channel === null || channel.trim() === '') return null;
     const dropped = held['delete'] === true;
     return {
       title: `${dropped ? 'deleting' : 'updating'} a message in ${channel}`,
@@ -1210,7 +1209,7 @@ function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
         state: statusChip(record.status),
         text: record.subject,
         tag: null,
-        when: record.owner ?? record.estimate,
+        when: taskWhen(record),
       });
     }
     return {
@@ -1279,10 +1278,22 @@ function taskOf(value: unknown): TaskRecord | null {
     detail: str(held, 'detail'),
     artifact: str(held, 'artifact'),
     estimate: str(held, 'estimate'),
-    active_form: str(held, 'active_form'),
     created_at: str(held, 'created_at'),
     updated_at: str(held, 'updated_at'),
   };
+}
+
+/**
+ * A task list row's trailing column: who holds it and how long it is, with
+ * the artifact standing in for a holder that has none - an unheld task says
+ * so rather than leaving the column empty.
+ */
+function taskWhen(record: TaskRecord): string | null {
+  const parts: string[] = [];
+  if (record.owner !== null && record.owner.trim() !== '') parts.push(record.owner);
+  if (record.estimate !== null && record.estimate.trim() !== '') parts.push(record.estimate);
+  if (parts.length === 0) parts.push(record.artifact ?? 'unclaimed');
+  return parts.join(' \u{b7} ');
 }
 
 /** The chip a task's status draws: the word the wire sends, spaced and toned. */
