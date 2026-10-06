@@ -100,6 +100,12 @@ impl StackPaths {
     }
 }
 
+/// Why the takeover cannot open yet: the engine seam. The Mac draws the view
+/// with a CEF embed and Android with its own WebView; neither is compiled in
+/// yet, and a dock that was told "open" must hear the reason rather than see
+/// an empty screen - it falls back to the headed window it has always had.
+const TAKEOVER_ENGINE_ABSENT: &str = "the in-app browser view is not built into this client yet";
+
 /// The host: the browser's own context, the named ones, and where everything
 /// lives.
 pub struct BrowserHost {
@@ -315,6 +321,33 @@ impl BrowserHost {
         chromium::show(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
+    /// Bring the in-app browser view up over the client's window, under the
+    /// bar the web side draws: the approved takeover.
+    ///
+    /// **The engine seam.** `bar_px` is how much of the top the web side's bar
+    /// occupies, so the engine's view fills exactly what is left. Until an
+    /// engine is compiled in this answers [`TAKEOVER_ENGINE_ABSENT`], and the
+    /// dock falls back to the headed window - the browser itself is brought up
+    /// first either way, because a person waiting on a cold launch is the one
+    /// wait worth removing.
+    pub async fn takeover_open(&self, _bar_px: f64) -> Result<(), String> {
+        let paths = self.paths.clone()?;
+        let _active = self.active_browser(&paths).await?;
+        Err(TAKEOVER_ENGINE_ABSENT.to_owned())
+    }
+
+    /// Take the view back down. Idempotent: back, Done and a reloaded window
+    /// may each ask.
+    pub async fn takeover_close(&self) -> Result<(), String> {
+        self.paths.clone().map(|_| ())
+    }
+
+    /// Whether the shell is holding a takeover up - what a reloaded window
+    /// reads to re-draw the screen it was on.
+    pub async fn takeover_active(&self) -> Result<bool, String> {
+        self.paths.clone().map(|_| false)
+    }
+
     /// Whether a WINDOW is up on the browser this client hosts.
     ///
     /// The marker a headed launch leaves, plus a browser still answering as
@@ -436,6 +469,29 @@ pub async fn browser_window(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<
     host.window_up().await
 }
 
+/// Bring the in-app browser view up over the client's window, under the bar
+/// the web side draws. Answers why while no engine is compiled in.
+#[tauri::command]
+pub async fn browser_takeover_open(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    bar_px: f64,
+) -> Result<(), String> {
+    host.takeover_open(bar_px).await
+}
+
+/// Take the view back down.
+#[tauri::command]
+pub async fn browser_takeover_close(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
+    host.takeover_close().await
+}
+
+/// Whether the shell is holding a takeover up, for a window that has just
+/// reloaded.
+#[tauri::command]
+pub async fn browser_takeover_state(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
+    host.takeover_active().await
+}
+
 /// One named context, as the client's own browser strip draws it.
 #[derive(Debug, serde::Serialize)]
 pub struct ContextRow {
@@ -524,6 +580,20 @@ mod tests {
             Err("the browser stack was never vendored".to_owned()),
             "the start says why rather than panicking at the app's boot",
         );
+    }
+
+    /// The engine seam: a host whose directories did not resolve answers that
+    /// before anything else, closing is idempotent, and nothing is held up.
+    #[tokio::test]
+    async fn a_takeover_on_an_unavailable_host_answers_the_reason_and_holds_nothing() {
+        let host = BrowserHost::unavailable("the browser stack was never vendored".to_owned());
+        assert_eq!(
+            host.takeover_open(44.0).await,
+            Err("the browser stack was never vendored".to_owned()),
+            "the missing directories answer first",
+        );
+        assert!(host.takeover_close().await.is_ok(), "closing is idempotent");
+        assert!(!host.takeover_active().await.unwrap_or(true), "nothing is held up");
     }
 
     /// A host nothing has named holds no contexts, and answers the strip with

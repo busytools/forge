@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { browserWindowUp, showBrowser } from '../browser/host';
+import { browserWindowUp, openTakeover, showBrowser } from '../browser/host';
+import { takeover } from '../browser/takeover.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -16,6 +17,11 @@ vi.mock('../browser/host', async (importOriginal) => {
     ...actual,
     showBrowser: vi.fn(actual.showBrowser),
     browserWindowUp: vi.fn(() => Promise.resolve(false)),
+    // No engine in tests, which is the fallback path: the dock hears the
+    // refusal and reaches for the headed window it has always had.
+    openTakeover: vi.fn(() => Promise.reject(new Error('no engine'))),
+    closeTakeover: vi.fn(() => Promise.resolve()),
+    takeoverActive: vi.fn(() => Promise.resolve(false)),
   };
 });
 
@@ -132,6 +138,10 @@ afterEach(() => {
   if (second !== null) void unmount(second);
   app = null;
   second = null;
+  // The takeover is a module singleton: a test that opened it must not leave
+  // the next one with the screen already replaced.
+  takeover.active = false;
+  takeover.asking = null;
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
@@ -4257,6 +4267,31 @@ describe('the dock', () => {
     expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
   });
 
+  /** **The takeover first, the headed window only as the fallback**: with an
+   * engine present the dock's Open brings the view up and never a window. */
+  it('opens the in-app takeover when the engine answers', async () => {
+    vi.mocked(openTakeover).mockResolvedValueOnce(undefined);
+    vi.mocked(showBrowser).mockClear();
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await vi.waitFor(() => expect(takeover.active, 'the screen is the browser').toBe(true));
+
+    expect(openTakeover, 'the view the approval is for').toHaveBeenCalledTimes(1);
+    expect(showBrowser, 'and no window was raised beside it').not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(drawn()).toContain('The browser window is up.'));
+  });
+
+  /** The bar's Done is the dock's own answer: the dock arms it while its
+   * hand-off is the one up, and the answer crosses from either door. */
+  it('arms the bar with the hand-off its dock holds', () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    expect(takeover.asking?.id, 'the bar answers THIS hand-off').toBe(
+      '0192e1c0-0000-7000-8000-0000000000aa',
+    );
+  });
+
   /** Open is the client's own act, and **its claim follows its answer**:
    * outside the shell nothing raises, so the dock says so rather than
    * claiming "the browser is up" over a click that did nothing. */
@@ -4264,12 +4299,11 @@ describe('the dock', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    // The raise answers on a microtask; one flush after it lands.
-    await Promise.resolve();
-    flushSync();
+    // The takeover refuses (no engine) and the headed fallback answers a hop
+    // later; the line lands when both have.
+    await vi.waitFor(() => expect(drawn()).toContain('could not be raised here'));
 
     expect(drawn(), 'no false "up"').not.toContain('The browser window is up.');
-    expect(drawn()).toContain('could not be raised here');
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
 
@@ -4280,11 +4314,10 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    await Promise.resolve();
-    flushSync();
-
-    expect(drawn(), 'the claim follows the raise that answered').toContain(
-      'The browser window is up.',
+    await vi.waitFor(() =>
+      expect(drawn(), 'the claim follows the raise that answered').toContain(
+        'The browser window is up.',
+      ),
     );
     expect(drawn()).not.toContain('could not be raised here');
   });

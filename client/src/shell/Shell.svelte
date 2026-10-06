@@ -2,6 +2,8 @@
   import { onMount, untrack } from 'svelte';
 
   import Sprite from '../components/Sprite.svelte';
+  import TakeoverScreen from '../browser/TakeoverScreen.svelte';
+  import { takeover } from '../browser/takeover.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
   import { rememberedAddress } from '../connect/remembered';
@@ -62,6 +64,9 @@
       history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
     void open();
+    // A window that reloaded while the takeover was up: the shell still holds
+    // the view, so the screen it belongs to comes back.
+    void takeover.sync();
     // Once per launch, whatever route it opened on - the notice draws wherever
     // the home does, and a check the reader has to revisit the home for is a
     // check that is not made.
@@ -304,6 +309,12 @@
     connected={connection !== null}
     onconnect={connect}
   />
+{/if}
+
+<!-- The takeover covers everything, the door included: while it is up, the
+     screen IS the browser. -->
+{#if takeover.active}
+  <TakeoverScreen address={displayAddress(address)} />
 {/if}
 
 <style>

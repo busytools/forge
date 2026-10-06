@@ -2,6 +2,7 @@
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import { browserWindowUp, showBrowser } from '../browser/host';
+  import { takeover } from '../browser/takeover.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -545,25 +546,49 @@
   );
 
   /**
-   * Bring the browser up visibly, which is the client's own act rather than
-   * the core's.
+   * Bring the browser up, which is the client's own act rather than the
+   * core's: the in-app takeover first, and the headed window only where no
+   * engine is built in.
    *
-   * **The claim follows the answer.** `showBrowser` says whether a browser
-   * was really raised, and only a raise moves this dock to "the browser is
-   * up" - a line that lied would have the person press Done and tell the
-   * session they acted.
+   * **The claim follows the answer.** A raise that did not happen must not
+   * move this dock to "the browser is up" - a line that lied would have the
+   * person press Done and tell the session they acted.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    void showBrowser().then((raised) => {
-      if (raised) {
+    void takeover.open().then(
+      () => {
         openedFor = id;
-      } else {
-        raiseFailedFor = id;
-      }
-    });
+      },
+      () => {
+        void showBrowser().then((raised) => {
+          if (raised) {
+            openedFor = id;
+          } else {
+            raiseFailedFor = id;
+          }
+        });
+      },
+    );
   }
+
+  /**
+   * The bar's Done answers the same hand-off this dock holds: armed while
+   * this dock's prompt is the one up, so the answer crosses from the takeover
+   * exactly as it would from here.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'browser_hand_off') {
+      takeover.asking = { id: held.request.id, done: () => handOff(true) };
+    } else {
+      takeover.asking = null;
+    }
+    return () => {
+      takeover.asking = null;
+    };
+  });
 
   /** A hand-off's answer, which is the only release for its blocked handler. */
   function handOff(done: boolean): void {

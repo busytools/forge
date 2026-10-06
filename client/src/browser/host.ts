@@ -144,6 +144,39 @@ export async function browserWindowUp(): Promise<boolean> {
 }
 
 /**
+ * Bring the in-app browser view up over the client's window, under the bar
+ * the web side draws (`barPx` is how much of the top the bar takes).
+ *
+ * **Rejects while no engine is compiled into the shell**, which is what sends
+ * the dock to its headed fallback - the approved takeover is in-app, and a
+ * click that cannot deliver it says so rather than opening a window the
+ * person did not ask for.
+ */
+export async function openTakeover(barPx: number): Promise<void> {
+  if (!canHost()) throw new Error('this page is not the client');
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_takeover_open', { barPx });
+}
+
+/** Take the view back down. Idempotent, and silent outside the shell. */
+export async function closeTakeover(): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_takeover_close');
+}
+
+/** Whether the shell still holds a takeover up, for a window that reloaded. */
+export async function takeoverActive(): Promise<boolean> {
+  if (!canHost()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('browser_takeover_state');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Close a named context from the client's own UI: the strip's row, acting
  * for the person rather than for a session - the door a context whose
  * owning session is gone comes back through.
