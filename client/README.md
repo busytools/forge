@@ -20,6 +20,10 @@ npm run typecheck
 `1420` is fixed rather than defaulted, because the Tauri shell points its
 `devUrl` at it.
 
+A `node_modules` from before the client's own update existed fails seven test
+files at import until `npm install` refreshes it: the update calls are what
+brought `@tauri-apps/api` in.
+
 `just client-dev` runs the app itself in development: the window over that
 dev server, reloading on a frontend edit, with nothing installed and no
 bundle built.

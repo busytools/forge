@@ -74,11 +74,15 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
 #[cfg(desktop)]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    let update = updater(&app)?
+    let mut update = updater(&app)?
         .check()
         .await
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "no update is available".to_string())?;
+    // A found update carries no timeout of its own - `check` builds it with
+    // `timeout: None` and the download only bounds itself when this is set -
+    // so the bound is put back on before the download runs.
+    update.timeout = Some(UPDATE_TIMEOUT);
     update
         .download_and_install(|_, _| {}, || {})
         .await
