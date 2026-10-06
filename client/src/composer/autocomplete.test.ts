@@ -75,7 +75,7 @@ describe('which list a draft opens', () => {
 
   it('reads the token the draft ENDS in, so a closed token opens nothing', () => {
     // The end anchor is the whole of it: a draft ending in whitespace has no
-    // final token. The scan behind this reads backwards (#1822), where the
+    // final token. The scan behind this reads backwards, where the
     // regex it replaced went quadratic the moment a long token was followed
     // by a space - and it must keep answering the same.
     expect(offer('/m ', sources), 'a space did not close the command').toBeNull();
