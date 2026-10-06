@@ -234,7 +234,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 fn json_or_error<T: Serialize>(value: &T) -> ToolOutput {
@@ -334,7 +334,7 @@ fn list_output(
     if out.is_error {
         return out;
     }
-    out.blocks.push(ToolOutputBlock {
+    out.blocks.push(ToolOutputBlock::Text {
         text: format!("this project also has reviews on: {}.", others.join(", ")),
     });
     out
@@ -529,6 +529,7 @@ impl Tool for ReviewResolve {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::test_support::{block_text, text_of};
     use forge_primitives::review::{ReviewAnchor, ReviewComment};
 
     fn review(id: &str, number: u32, summary: Option<&str>) -> ReviewSet {
@@ -693,7 +694,7 @@ mod tests {
         let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "list happy path: {:?}", out.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed[0]["review_id"], "r1");
         assert_eq!(parsed[0]["addressed"], 1);
     }
@@ -706,11 +707,11 @@ mod tests {
         let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(out.is_error, "an unresolved scope must surface as an error");
-        assert_eq!(out.blocks[0].text, ScopeError::SessionCwdUnknown.message());
+        assert_eq!(text_of(&out), ScopeError::SessionCwdUnknown.message());
         assert!(
-            !out.blocks[0].text.contains("detached"),
+            !text_of(&out).contains("detached"),
             "a non-HEAD failure must not claim a detached HEAD: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -723,7 +724,7 @@ mod tests {
         let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(out.is_error, "a review filed against another branch must not read as 'none'");
-        let text = &out.blocks[0].text;
+        let text = text_of(&out);
         assert!(text.contains("no reviews on feat"), "{text}");
         assert!(text.contains("main") && text.contains("worktree-impl"), "{text}");
         assert!(!text.contains(": feat"), "the caller's own branch is not listed back: {text}");
@@ -741,9 +742,9 @@ mod tests {
         let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "a populated list is not an error: {:?}", out.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed[0]["review_id"], "r1", "the rows stay the first block, still json");
-        let hint = out.blocks.get(1).map_or("", |b| b.text.as_str());
+        let hint = out.blocks.get(1).map_or("", block_text);
         assert!(hint.contains("worktree-impl"), "{hint}");
         assert!(!hint.contains("feat"), "the caller's own branch is not listed back: {hint}");
     }
@@ -766,7 +767,7 @@ mod tests {
         let tool = ReviewList { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
         assert!(!out.is_error, "a project with no reviews anywhere is not an error");
-        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed, serde_json::json!([]));
     }
 
@@ -783,7 +784,7 @@ mod tests {
         let tool = ReviewGet { facade, slot: caller_slot() };
         let hit = tool.call(ToolInput { value: serde_json::json!({ "review_id": "r1" }) }).await;
         assert!(!hit.is_error);
-        let parsed: serde_json::Value = serde_json::from_str(&hit.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&hit)).expect("json");
         assert_eq!(parsed["review_id"], "r1");
         let miss = tool.call(ToolInput { value: serde_json::json!({ "review_id": "r9" }) }).await;
         assert!(miss.is_error, "an unknown review_id is an error");
@@ -800,7 +801,7 @@ mod tests {
             })
             .await;
         assert!(!out.is_error, "reply happy path: {:?}", out.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed["status"], "addressed");
         assert_eq!(parsed["comment_id"], "c1");
         let calls = mock.reply_calls.lock();
@@ -818,7 +819,7 @@ mod tests {
             .call(ToolInput { value: serde_json::json!({ "comment_id": "c1", "text": "x" }) })
             .await;
         assert!(out.is_error, "a cross-scope / unknown comment id must error");
-        assert!(out.blocks[0].text.contains("no review comment"));
+        assert!(text_of(&out).contains("no review comment"));
         assert_eq!(mock.reply_calls.lock().len(), 0, "a rejected reply captures no call");
     }
 
@@ -829,7 +830,7 @@ mod tests {
         let tool = ReviewResolve { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c2" }) }).await;
         assert!(!out.is_error, "resolve happy path: {:?}", out.blocks);
-        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed["status"], "resolved");
         assert_eq!(*mock.resolve_calls.lock(), vec!["c2".to_owned()]);
     }
@@ -841,7 +842,7 @@ mod tests {
         let tool = ReviewReply { facade, slot: caller_slot() };
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c1" }) }).await;
         assert!(out.is_error, "missing 'text' is an error");
-        assert!(out.blocks[0].text.to_lowercase().contains("invalid"));
+        assert!(text_of(&out).to_lowercase().contains("invalid"));
     }
 
     #[test]

@@ -45,7 +45,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![forge_sdk::mcp::tool::ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// Format a `SystemTime` as a UTC RFC3339 string for tool output.

@@ -286,6 +286,11 @@ pub struct Workspace {
     /// process ends. Set by `Command::SetDictateDevice`; a Reset
     /// clears it. Volatile, never persisted.
     pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
+    /// The browser relay: the one client connection that drives the browser.
+    /// The workspace owns it because both halves need the same one - the
+    /// tools in `mcp::browser` ask through it, and the transport registers
+    /// the connection that answers into it.
+    pub(crate) browser: Arc<crate::browser::BrowserRelay>,
     /// Fan-in [`SessionUpdate`] sender: every producer inside the
     /// workspace holds a clone, and it fans each update out to whatever
     /// subscribed at [`Self::subscribe`].
@@ -1482,6 +1487,7 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
+            browser: Arc::new(crate::browser::BrowserRelay::new()),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
@@ -1558,6 +1564,14 @@ impl Workspace {
     /// never does.
     pub fn web_config(&self) -> forge_primitives::WebConfig {
         self.config.web.clone()
+    }
+
+    /// The browser relay: the one client connection that drives the browser.
+    /// Read by the binary entry point, which hands it to the transport so a
+    /// capable connection can take the role, and by the browser family's
+    /// facade, which sends asks through it.
+    pub fn browser_relay(&self) -> Arc<crate::browser::BrowserRelay> {
+        Arc::clone(&self.browser)
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
@@ -2012,6 +2026,8 @@ impl Workspace {
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
+            let browser_facade =
+                crate::mcp::browser::facade::ProdBrowserFacade::from_relay(self.browser_relay());
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
@@ -2031,6 +2047,7 @@ impl Workspace {
                 crate::mcp::ForgeServerFacades {
                     workspace: workspace_facade,
                     worker: worker_facade,
+                    browser: browser_facade,
                     review: review_facade,
                     cron: cron_facade,
                     gotify: gotify_facade,
@@ -7853,6 +7870,24 @@ mod tests {
         assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
     }
 
+    /// The relay is the workspace's and one per process, because two of them
+    /// are two roles: the transport would register a host into one while
+    /// every tool asked through the other, and every call would answer
+    /// "no browser-capable client connected" with a client connected.
+    #[test]
+    fn the_browser_relay_is_one_and_starts_free() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        let first = ws.browser_relay();
+        assert!(
+            Arc::ptr_eq(&first, &ws.browser_relay()),
+            "every caller reaches the same relay, or the role and the asks live in different ones",
+        );
+        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
+        assert!(first.register(1, to_host), "no connection has taken the role at boot");
+    }
+
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
@@ -12665,6 +12700,9 @@ mod worker_respawn_tests {
             crate::mcp::ForgeServerFacades {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
+                browser: crate::mcp::browser::facade::ProdBrowserFacade::from_relay(
+                    workspace.browser_relay(),
+                ),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),

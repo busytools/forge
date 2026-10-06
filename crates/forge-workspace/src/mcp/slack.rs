@@ -18,7 +18,7 @@ use forge_primitives::slack::{
     SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
 };
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 use uuid::Uuid;
 
 use crate::SessionSlot;
@@ -64,7 +64,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// The conversation's name, or the DM partner's user id when Slack omits
@@ -1248,6 +1248,7 @@ impl Tool for Bookmarks {
 mod tests {
     use super::*;
     use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome};
+    use crate::mcp::test_support::text_of;
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
     };
@@ -1321,16 +1322,16 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
 
-        assert!(!out.is_error, "the list succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "the list succeeds: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains(&mentions.id.to_string()),
+            text_of(&out).contains(&mentions.id.to_string()),
             "the class target's id is reachable: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         assert!(
-            out.blocks[0].text.contains("mentions anywhere"),
+            text_of(&out).contains("mentions anywhere"),
             "and it is named as the target it is: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1348,9 +1349,9 @@ mod tests {
             .await;
 
         assert!(
-            out.blocks[0].text.contains(&id.to_string()),
+            text_of(&out).contains(&id.to_string()),
             "the created id is what a caller unsubscribes with: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1369,9 +1370,9 @@ mod tests {
             .await;
 
         assert!(
-            out.blocks[0].text.contains("1790186552.442169"),
+            text_of(&out).contains("1790186552.442169"),
             "the posted ts is the handle the next call needs: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1488,12 +1489,8 @@ mod tests {
         let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
-        assert!(!out.is_error, "a configured workspace succeeds: {}", out.blocks[0].text);
-        assert!(
-            out.blocks[0].text.contains("C1"),
-            "the row reaches the output: {}",
-            out.blocks[0].text
-        );
+        assert!(!out.is_error, "a configured workspace succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("C1"), "the row reaches the output: {}", text_of(&out));
         assert_eq!(
             mock.conversations_calls.lock().as_slice(),
             [Some("acme".to_owned())],
@@ -1518,7 +1515,7 @@ mod tests {
                 "conversations": [{ "id": "C1", "mode": "mentions" }],
             })))
             .await;
-        assert!(!out.is_error, "a valid subscribe succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a valid subscribe succeeds: {}", text_of(&out));
 
         let calls = mock.subscribe_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -1545,9 +1542,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(out.is_error, "a call naming nothing to watch must not create records");
         assert!(
-            out.blocks[0].text.contains("direct_messages"),
+            text_of(&out).contains("direct_messages"),
             "the error says what to pass: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         assert!(mock.subscribe_calls.lock().is_empty(), "nothing reaches the facade");
     }
@@ -1563,9 +1560,9 @@ mod tests {
             .await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("nope"),
+            text_of(&out).contains("nope"),
             "the error names the label that failed: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1599,9 +1596,9 @@ mod tests {
         let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
-        assert!(!out.is_error, "list succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "list succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the output is JSON");
+            serde_json::from_str(text_of(&out)).expect("the output is JSON");
         let by_id = |id: &str| {
             listed["conversations"]
                 .as_array()
@@ -1632,9 +1629,9 @@ mod tests {
         let tool = List { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
-        assert!(!out.is_error, "a known kind succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a known kind succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the output is JSON");
+            serde_json::from_str(text_of(&out)).expect("the output is JSON");
         let ids: Vec<&str> = listed["conversations"]
             .as_array()
             .expect("an array of rows")
@@ -1657,9 +1654,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "kind": "chanels" }))).await;
         assert!(out.is_error, "a typo must not read as an empty workspace");
         assert!(
-            out.blocks[0].text.contains("chanels"),
+            text_of(&out).contains("chanels"),
             "the error names what was rejected: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         assert!(
             mock.conversations_calls.lock().is_empty(),
@@ -1683,8 +1680,8 @@ mod tests {
         let tool = Search { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({ "query": "hello", "count": 5 }))).await;
-        assert!(!out.is_error, "a search succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("general"), "got: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a search succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("general"), "got: {}", text_of(&out));
         assert_eq!(
             mock.search_calls.lock().as_slice(),
             [(None, "hello".to_owned(), 5)],
@@ -1704,8 +1701,8 @@ mod tests {
         let tool = User { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({ "user": "U1" }))).await;
-        assert!(!out.is_error, "a lookup succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("Vedhavyas S"), "got: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("Vedhavyas S"), "got: {}", text_of(&out));
         assert_eq!(mock.user_calls.lock().as_slice(), [(None, "U1".to_owned())]);
     }
 
@@ -1729,12 +1726,12 @@ mod tests {
         let tool = Pins { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
-        assert!(!out.is_error, "a read succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("the pinned text"), "got: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("the pinned text"), "got: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("1700000000.000100"),
+            text_of(&out).contains("1700000000.000100"),
             "the ts reaches the caller verbatim: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         assert_eq!(
             mock.pins_calls.lock().as_slice(),
@@ -1754,12 +1751,12 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(!out.is_error);
-        assert!(out.blocks[0].text.contains("readable"), "got: {}", out.blocks[0].text);
+        assert!(text_of(&out).contains("readable"), "got: {}", text_of(&out));
         assert_eq!(
-            out.blocks[0].text.matches("ts").count(),
+            text_of(&out).matches("ts").count(),
             1,
             "a message-less row contributes nothing: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1771,11 +1768,7 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(out.is_error, "a failed read is an error, not an empty list");
-        assert!(
-            out.blocks[0].text.contains("boom"),
-            "the cause reaches the LLM: {}",
-            out.blocks[0].text,
-        );
+        assert!(text_of(&out).contains("boom"), "the cause reaches the LLM: {}", text_of(&out));
     }
 
     #[tokio::test]
@@ -1789,8 +1782,8 @@ mod tests {
         let tool = Bookmarks { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
-        assert!(!out.is_error, "a read succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("Runbook"), "got: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("Runbook"), "got: {}", text_of(&out));
         assert_eq!(
             mock.bookmarks_calls.lock().as_slice(),
             [(None, "C1".to_owned())],
@@ -1806,9 +1799,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
         assert!(out.is_error, "a call naming neither a file nor a path must not reach Slack");
         assert!(
-            out.blocks[0].text.contains("file_id") && out.blocks[0].text.contains("path"),
+            text_of(&out).contains("file_id") && text_of(&out).contains("path"),
             "the error says what to pass: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         assert!(mock.fetch_calls.lock().is_empty(), "nothing reaches the facade");
         assert!(mock.upload_calls.lock().is_empty());
@@ -1828,11 +1821,11 @@ mod tests {
                 "dir": offender.display().to_string(),
             })))
             .await;
-        assert!(out.is_error, "a file in the dir slot is an error: {}", out.blocks[0].text);
+        assert!(out.is_error, "a file in the dir slot is an error: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains(&offender.display().to_string()),
+            text_of(&out).contains(&offender.display().to_string()),
             "the rendered error names the path the caller chose: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -1844,10 +1837,6 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error, "a failed fetch is an error, not an empty list");
-        assert!(
-            out.blocks[0].text.contains("boom"),
-            "the cause reaches the LLM: {}",
-            out.blocks[0].text
-        );
+        assert!(text_of(&out).contains("boom"), "the cause reaches the LLM: {}", text_of(&out));
     }
 }

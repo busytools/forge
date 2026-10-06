@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
@@ -46,7 +46,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// Readable JSON for one subscription (the tool-output shape the LLM
@@ -374,6 +374,7 @@ impl Tool for Recent {
 mod tests {
     use super::*;
     use crate::mcp::gotify::facade::{MockGotifyFacade, SubscribeOutcome};
+    use crate::mcp::test_support::text_of;
     use std::time::SystemTime;
 
     fn caller_slot() -> SessionSlot {
@@ -405,8 +406,8 @@ mod tests {
         let out = tool
             .call(input(serde_json::json!({ "applications": ["alerts"], "min_priority": 5 })))
             .await;
-        assert!(!out.is_error, "valid subscribe succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains(&id.to_string()), "output carries the id");
+        assert!(!out.is_error, "valid subscribe succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains(&id.to_string()), "output carries the id");
 
         let calls = mock.subscribe_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -427,11 +428,11 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "applications": ["phone-agent"] }))).await;
 
         assert!(!out.is_error, "the subscription was created, so this is not an error");
-        assert!(out.blocks[0].text.contains(&id.to_string()), "the id still comes back");
+        assert!(text_of(&out).contains(&id.to_string()), "the id still comes back");
         assert!(
-            out.blocks[0].text.contains("index could not be refreshed"),
+            text_of(&out).contains("index could not be refreshed"),
             "the reply names the unresolved filter: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -444,9 +445,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("no Gotify server configured in forge.toml [gotify]"),
+            text_of(&out).contains("no Gotify server configured in forge.toml [gotify]"),
             "unconfigured error surfaced to the LLM: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -461,8 +462,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
         assert!(
-            out.blocks[0].text.contains(&a.to_string())
-                && out.blocks[0].text.contains(&b.to_string()),
+            text_of(&out).contains(&a.to_string()) && text_of(&out).contains(&b.to_string()),
             "both subscription ids appear in the list output",
         );
     }
@@ -520,11 +520,11 @@ mod tests {
         let tool = Apps { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
-        assert!(!out.is_error, "apps succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "apps succeeds: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("Backups") && out.blocks[0].text.contains("CI"),
+            text_of(&out).contains("Backups") && text_of(&out).contains("CI"),
             "both app names appear: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -537,9 +537,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("no Gotify server configured in forge.toml [gotify]"),
+            text_of(&out).contains("no Gotify server configured in forge.toml [gotify]"),
             "unconfigured error surfaced: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -550,11 +550,11 @@ mod tests {
         let tool = Recent { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
-        assert!(!out.is_error, "recent succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "recent succeeds: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("CI") && out.blocks[0].text.contains("build failed"),
+            text_of(&out).contains("CI") && text_of(&out).contains("build failed"),
             "notification fields serialized: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         let calls = mock.recent_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -588,9 +588,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("boom"),
+            text_of(&out).contains("boom"),
             "fetch failure surfaced to the LLM: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
