@@ -636,6 +636,7 @@ describe('the band', () => {
       tone: 'ready',
       value: 'bound :8787',
       detail: 'inference listener',
+      href: null,
     });
     expect(gateway({ ready: false, port: 8787, bind_error: null })?.tone).toBe('warn');
     expect(gateway({ ready: true, port: 9, bind_error: 'address in use' })).toEqual({
@@ -643,6 +644,7 @@ describe('the band', () => {
       tone: 'bad',
       value: 'failed :9',
       detail: 'address in use',
+      href: null,
     });
   });
 
@@ -662,6 +664,7 @@ describe('the band', () => {
       tone: 'ready',
       value: '2 ready',
       detail: 'probed',
+      href: null,
     });
     expect(accounts([row('loading')], false)?.tone, 'still probing').toBe('warn');
     expect(accounts([row('ready'), row('bailed')], true)).toEqual({
@@ -669,7 +672,20 @@ describe('the band', () => {
       tone: 'bad',
       value: '1 ready \u{b7} 1 bailed',
       detail: 'probed',
+      href: null,
     });
+  });
+
+  /**
+   * The dictation card is the way into the models page, and it is the only
+   * card that opens anything: the band is where a reader looks for
+   * dictation, and that page is what draws it.
+   */
+  it('opens the models page from the dictation card alone', () => {
+    const cards = homeView(homeWire, '').band;
+
+    expect(cards.map((entry) => entry.title)).toEqual(['gateway', 'web', 'dictation', 'accounts']);
+    expect(cards.map((entry) => entry.href)).toEqual([null, null, '/models', null]);
   });
 
   it('reads dictation as off when the config turned it off', () => {
@@ -685,7 +701,16 @@ describe('the band', () => {
         },
         'dictation',
       ),
-    ).toEqual({ title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' });
+    ).toEqual({
+      title: 'dictation',
+      tone: 'off',
+      value: 'off',
+      detail: 'enabled = false',
+      // The door stays: /models draws the off state and names the key that
+      // would switch it on, which is where a reader who is looking for
+      // dictation ends up.
+      href: '/models',
+    });
   });
 });
 

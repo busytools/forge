@@ -18,8 +18,6 @@
 import { displayAddress } from '../connect/attempt';
 import type {
   AgentRow,
-  DictateFailure,
-  DictateModelState,
   Gate,
   HomeWire,
   Lifecycle,
@@ -29,7 +27,7 @@ import type {
   WireTime,
   WorkState,
 } from '../wire/home';
-import type { SessionSlot } from '../wire/types';
+import type { DictateFailure, DictateModelState, SessionSlot } from '../wire/types';
 
 /** How loud a band card is. */
 export type Tone = 'ready' | 'warn' | 'bad' | 'off';
@@ -40,6 +38,14 @@ export interface BandCard {
   tone: Tone;
   value: string;
   detail: string;
+  /**
+   * Where the card opens, when it opens anywhere.
+   *
+   * The dictation card is the way into the models page: the band is where a
+   * reader looks for dictation, and the page is what draws it. The others are
+   * facts about this forge and open nothing.
+   */
+  href: string | null;
 }
 
 /**
@@ -346,6 +352,7 @@ export function band(wire: HomeWire, address: string): BandCard[] {
         tone: 'bad',
         value: `failed :${gateway.port}`,
         detail: gateway.bind_error,
+        href: null,
       }
     : gateway.ready
       ? {
@@ -353,20 +360,32 @@ export function band(wire: HomeWire, address: string): BandCard[] {
           tone: 'ready',
           value: `bound :${gateway.port}`,
           detail: 'inference listener',
+          href: null,
         }
-      : { title: 'gateway', tone: 'warn', value: 'binding', detail: 'inference listener' };
+      : {
+          title: 'gateway',
+          tone: 'warn',
+          value: 'binding',
+          detail: 'inference listener',
+          href: null,
+        };
 
   const models = wire.dictate.snapshot.models;
   const failure = wire.dictate.snapshot.failure;
+  // The one card that is a way in. It stays a door with dictation off, too:
+  // the models page draws the off state and names the key that would switch
+  // it on, which is where a reader who came looking for dictation lands.
+  const door = '/models';
   const dictation: BandCard =
     models.length === 0
-      ? { title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false' }
+      ? { title: 'dictation', tone: 'off', value: 'off', detail: 'enabled = false', href: door }
       : failure !== null
         ? {
             title: 'dictation',
             tone: 'bad',
             value: failureKind(failure),
             detail: failureFile(failure),
+            href: door,
           }
         : (() => {
             const ready = models.filter((model) => model.state === 'ready').length;
@@ -375,6 +394,7 @@ export function band(wire: HomeWire, address: string): BandCard[] {
               tone: ready === models.length ? 'ready' : 'warn',
               value: `${ready} of ${models.length} loaded`,
               detail: models.map((model) => modelState(model.state)).join(', '),
+              href: door,
             };
           })();
 
@@ -389,14 +409,21 @@ export function band(wire: HomeWire, address: string): BandCard[] {
   // vacuously true and a green `0 ready` would claim a pool that is not there.
   const accounts: BandCard =
     gateway.bind_error !== null
-      ? { title: 'accounts', tone: 'bad', value, detail: gateway.bind_error }
+      ? { title: 'accounts', tone: 'bad', value, detail: gateway.bind_error, href: null }
       : wire.accounts.loading.length === 0
-        ? { title: 'accounts', tone: 'off', value: 'none', detail: 'no accounts declared' }
+        ? {
+            title: 'accounts',
+            tone: 'off',
+            value: 'none',
+            detail: 'no accounts declared',
+            href: null,
+          }
         : {
             title: 'accounts',
             tone: bailed > 0 ? 'bad' : wire.accounts.all_loaded ? 'ready' : 'warn',
             value,
             detail: wire.accounts.all_loaded ? 'probed' : 'probing',
+            href: null,
           };
 
   // The address is the client's own: it connected to this forge, so it is
@@ -404,7 +431,13 @@ export function band(wire: HomeWire, address: string): BandCard[] {
   // than the socket URL it is held as, which is what a reader recognises.
   return [
     gatewayCard,
-    { title: 'web', tone: 'ready', value: displayAddress(address), detail: 'this page' },
+    {
+      title: 'web',
+      tone: 'ready',
+      value: displayAddress(address),
+      detail: 'this page',
+      href: null,
+    },
     dictation,
     accounts,
   ];

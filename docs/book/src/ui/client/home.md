@@ -29,6 +29,13 @@ HTML. A worker's seat with no session behind it is the one row that is not a
 link: its page refuses to open, so the name is drawn as text, the `what` cell
 says `asleep`, and the row carries no pointer, hover ground or chevron.
 
+**The dictation card is the way into the [models page](./dictate-models.md).**
+The band's cards are facts about this forge, and that one opens `/models`,
+where the pins, the catalogue check and the feed are drawn. It is a link at
+rest - a chevron on the card's title line, dimmed until the pointer is on it -
+because an affordance only the hover uncovers is one a touch reader cannot
+find. The other three cards open nothing.
+
 **The header draws the forge build, not this app's own version.** The header
 states which forge is serving, and the client is a different program, so the
 version in the shell crate's own manifest would name the wrong thing.

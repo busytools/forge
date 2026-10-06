@@ -21,12 +21,28 @@ const PAGE = readFileSync(
   'utf8',
 );
 
-/** The heading each sheet opens the block with, and the one that ends it. */
+/** The heading each sheet opens the block with. */
 const HEAD = "/* ---------- a forge call's own card ----------";
-const NEXT = '/* ---------- the chevron arrives';
 
-const SHEET_BLOCK = SHEET.slice(SHEET.indexOf(`${HEAD} */`), SHEET.indexOf(NEXT));
-const BOOK_BLOCK = PAGE.slice(PAGE.indexOf(HEAD), PAGE.indexOf(NEXT));
+/**
+ * The block's own text out of a sheet, from its heading to the NEXT section
+ * heading - whichever one that is.
+ *
+ * **Not "up to the chevron heading"**, which is what this read first and what
+ * a merge broke: main landed the models page's rules between this block and
+ * the chevron's, so the slice swallowed them and the count went to 94. The
+ * block ends where the next one starts, and what that next one is called is
+ * not this pin's business.
+ */
+function blockOf(sheet: string, head: string): string {
+  const from = sheet.indexOf(head);
+  if (from === -1) return '';
+  const next = sheet.indexOf('/* ---------- ', from + head.length);
+  return sheet.slice(from, next === -1 ? undefined : next);
+}
+
+const SHEET_BLOCK = blockOf(SHEET, `${HEAD} */`);
+const BOOK_BLOCK = blockOf(PAGE, HEAD);
 
 /** One rule's selector and its declarations, whitespace flattened. */
 interface Rule {
