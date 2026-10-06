@@ -1,6 +1,6 @@
 ---
 name: dev-stack
-description: Spin a per-feature scratch forge with its own config, ports and store, plus a dev client pointed at it, so a feature is built and verified live without touching the live forge or the maintainer's config. Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge. Not for one-line fixes; those take the ordinary PR loop.
+description: Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge: it spins a per-feature scratch forge under /tmp with its own config, ports and store plus a dev client pointed at it, so the feature is built and verified live without touching the live forge or the maintainer's config. Not for one-line fixes; those take the ordinary PR loop.
 ---
 
 # dev-stack
@@ -11,15 +11,17 @@ loop, one post-review re-look for feature-scale work, merge, teardown. The
 live forge, the live client and `~/.claude` are never part of the loop.
 
 **The first users refine this.** The recipe is measured, not sacred - when a
-step costs time, breaks, or reads wrong in real use, fix the skill in the same
-breath (a small PR) and say what changed. The spike's report and this file's
-history are the record.
+step costs time, breaks, or reads wrong in real use, say so to the lead; the
+lead lands the correction as a small PR against this file. This file's
+history is the record.
 
 ## The loop
 
 1. **Plan the feature and pick its label** (the label names the worker, its
    task row and the stack directory).
-2. **Spawn the worker.** Its charter is this skill's loop; kick it. **The
+2. **Spawn the worker with worktree isolation** (the recipe builds and boots
+   from that worktree, never the main checkout). Its charter is this skill's
+   loop; kick it. **The
    worker runs the model this session is running** - state which, and hold the
    worker to it (until #1825 lands the enforced `model` field on
    `agents__spawn`, verify by observation and say so). Interactive: true - the
@@ -48,23 +50,22 @@ history are the record.
 1. **The tree and config**
    - `mkdir -p $STACK/config/forge $STACK/home`
    - Write `$STACK/config/forge/forge.toml`:
-     - `[[accounts]]` - ONE account, its token copied read-only from the main
-       config (`~/.claude/forge/forge.toml`, `[accounts.env]`); name which
+     - `[[accounts]]` - ONE account, its flat `token` key copied read-only
+       from the main config (`~/.claude/forge/forge.toml`); name which
        account in the worker's report.
      - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `auto_start = true`,
        a `model`, `permission_mode = "auto"`.
      - `[server] enabled = true, bind = "127.0.0.1", port = 8791` and
        `[gateway] port = 8788` - a distinct port pair per stack (8791+idx /
        8788+idx for parallel stacks).
-     - **Never `[web]`** - the tree refuses it by name; the listener is
-       `[server]`.
 2. **The binary**
    - **Always build from the tree** (the worker's worktree) -
      `nice -n 10 cargo build -p forge-tui --bin forge -p forge-server --bin forge-protocol-client`
      - warm-cache it is about a minute, and the branch's server is what runs,
      which is the point. **Never the installed binary**: it predates the
-     `[server]` rename, so a scratch config is not its language - at best it
-     ignores the section and binds the defaults, which are the live ports.
+     `[server]` rename, and its parser denies unknown fields, so a
+     recipe-shaped scratch config fails the parse (`unknown field 'server'`)
+     and the process exits without binding anything.
 3. **Boot headless** - the TUI needs a pty, and `script(1)` is it (tmux is not
    installed on this machine):
    - Write `$STACK/boot.sh`: `export HOME=$STACK/home`, `export
@@ -98,8 +99,9 @@ history are the record.
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
-   ws://127.0.0.1:8791/socket --script <file> --seconds N` (subscribe,
-   prompt, assert) - the harness's own client.
+   ws://127.0.0.1:8791/socket --script <file> --seconds N` (its script verbs:
+   subscribe, unsubscribe, more, devices, command, ask - a prompt rides
+   `command` or `ask`) - the harness's own client.
 7. **The client's own bring-up** (a fresh worktree): `npm --prefix client ci`
    once (~2.5 min niced), then `npm --prefix client run dev` - vite on
    `http://localhost:1420` (port fixed, no browser opened by itself). **Reach
@@ -134,9 +136,9 @@ history are the record.
 2. **The build stamp goes stale in a linked worktree** (measured): `build.rs`
    watches `../../.git/HEAD` and friends, but a worktree's `.git` is a FILE,
    so the watches never arm and the binary can report the wrong commit while
-   running another. Until the forge-side fix lands, `touch` the build script
-   (mtime only) before a rebuild in a worktree, and read the boot log's stamp
-   with that in mind.
+   running another. Until the forge-side fix (#1829) lands, `touch` the build
+   script (mtime only) before a rebuild in a worktree, and read the boot log's
+   stamp with that in mind.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
 4. Both default ports are the live forge's (8790/8787); a taken gateway port
