@@ -187,10 +187,17 @@ describe('the models page as it draws', () => {
     expect(sheet, 'the hairline rule is back on the row, which kills it list-wide').not.toContain(
       '.models .cand:last-child',
     );
-    // Read as text, because the computed value is what jsdom cannot give:
-    // this is the half that says the li is where the hairline is drawn.
+    // Read as text, because the computed value is what jsdom cannot give.
+    // **Both halves, and the second is the one that needs its own pin**:
+    // `matches()` above never consults the stylesheet, and an ADD-rule regex
+    // alone is satisfied by the `li` rule, so deleting the drop rule (or
+    // flipping it to a selector that matches nothing) would ship a stray
+    // hairline under the last row with every test green.
     expect(sheet, 'nothing draws the hairline on the li').toMatch(
-      /\.models \.list li(?::last-child)? \{[^}]*border-bottom/,
+      /\.models \.list li \{[^}]*border-bottom/,
+    );
+    expect(sheet, "nothing drops the last row's hairline").toMatch(
+      /\.models \.list li:last-child \{[^}]*border-bottom: 0/,
     );
   });
 
