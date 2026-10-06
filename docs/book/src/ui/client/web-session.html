@@ -1236,6 +1236,17 @@
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">spawn failed</div>
       </div>
+      <div class="pj">
+        <div class="pr"><span class="dot live"></span><span class="nm">granite-core</span>
+          <span class="org">Granite</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+        <!-- A failure is not shared: a worker's diagnostic draws under the
+             worker's own row, dim as the terminal's sub-row draws it - on the
+             project's line it would read as the lead having failed. -->
+        <div class="wk"><span class="dot failed" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">canary</span><button class="x" type="button" title="close">&#10005;</button></div>
+        <div class="why">connection to claude subprocess failed</div>
+      </div>
 
       <div class="state">working</div>
       <div class="pj">
