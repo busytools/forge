@@ -450,7 +450,8 @@ mod tests {
         let state = Arc::new(crate::server::WebState::new(
             fleet.surface(),
             Arc::new(forge_server::work::WorkCache::new()),
-            forge_primitives::WebConfig::default(),
+            forge_primitives::ServerConfig::default(),
+            forge_primitives::ClientConfig::default(),
         ));
         let wiring = Wiring {
             bound: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),

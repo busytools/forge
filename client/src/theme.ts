@@ -1,6 +1,6 @@
 /**
- * The palettes and typefaces forge ships, by the names `[web] theme` and
- * `[web] font` take - the client half of `crates/forge-web/src/theme.rs`.
+ * The palettes and typefaces forge ships, by the names `[client] theme` and
+ * `[client] font` take - the client half of `crates/forge-web/src/theme.rs`.
  *
  * The greeting carries the NAMES - `dark`, `system`, `klin` - and this file
  * holds the values they resolve to. So the client reads no config file: one

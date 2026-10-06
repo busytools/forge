@@ -25,7 +25,7 @@ use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::slack::SlackConfig;
-use forge_primitives::web::WebConfig;
+use forge_primitives::{ClientConfig, ServerConfig};
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -64,10 +64,21 @@ struct ForgeToml {
     /// Optional `[gateway]` section - the inference listener's port.
     #[serde(default)]
     gateway: Option<GatewaySettings>,
-    /// Optional `[web]` section - the web view's listener. Absent
+    /// Optional `[server]` section - the socket's listener. Absent
     /// section means its defaults, which is on and on loopback.
     #[serde(default)]
-    web: WebConfig,
+    server: ServerConfig,
+    /// Optional `[client]` section - the sets a client draws with. Absent
+    /// section means every name unset, which is the built-in.
+    #[serde(default)]
+    client: ClientConfig,
+    /// Ghost of the renamed `[web]` section: read only so a stale
+    /// forge.toml fails the load naming the rename instead of being
+    /// refused as an unknown key. Not a warning like the other ghosts, and
+    /// not a back-compat alias: an ignored bind would reset an exposed
+    /// server to loopback.
+    #[serde(default)]
+    web: Option<toml::Value>,
     /// Ghost of the deleted `[workers]` section: read only so a stale
     /// synced forge.toml still carrying it warns at load instead of
     /// sitting there silently ignored.
@@ -363,9 +374,12 @@ pub(crate) struct LoadedConfig {
     pub gateway_port: u16,
     /// The gateway's rotation numbers. Absent keys keep the defaults.
     pub gateway_rotation: forge_gateway::rotation::RotationNumbers,
-    /// `[web]` section knobs. Absent section means the web view's
+    /// `[server]` section knobs. Absent section means the listener's
     /// defaults: on, on loopback.
-    pub web: WebConfig,
+    pub server: ServerConfig,
+    /// `[client]` section knobs. Absent section means every name unset,
+    /// which is the built-in rather than a pin.
+    pub client: ClientConfig,
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -465,7 +479,8 @@ impl LoadedConfig {
             plugins: PluginSettings::default(),
             gateway_port: DEFAULT_GATEWAY_PORT,
             gateway_rotation: forge_gateway::rotation::RotationNumbers::default(),
-            web: WebConfig::default(),
+            server: ServerConfig::default(),
+            client: ClientConfig::default(),
         }
     }
 }
@@ -498,49 +513,53 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
     }
 }
 
-/// The `[web]` section, refusing the two ports that cannot work: 0, which
-/// is OS-assigned and so unguessable from a browser, and the gateway's
-/// own port, where the listener that binds second loses at boot.
+/// The `[server]` section, refusing the two ports that cannot work: 0, which
+/// is OS-assigned and so unguessable, and the gateway's own port, where the
+/// listener that binds second loses at boot.
 ///
-/// A disabled view is not validated at all. Nothing will bind that port,
+/// A disabled listener is not validated at all. Nothing will bind that port,
 /// so a stale one left in a hand-authored file is not worth refusing the
 /// boot over.
-fn resolve_web(
-    web: WebConfig,
+fn resolve_server(
+    server: ServerConfig,
     gateway_port: u16,
     path: &Path,
-) -> Result<WebConfig, WorkspaceError> {
-    if !web.enabled {
-        return Ok(web);
+) -> Result<ServerConfig, WorkspaceError> {
+    if !server.enabled {
+        return Ok(server);
     }
-    if web.port == 0 {
-        return Err(WorkspaceError::WebPortInvalid { path: path.to_path_buf() });
+    if server.port == 0 {
+        return Err(WorkspaceError::ServerPortInvalid { path: path.to_path_buf() });
     }
-    if web.port == gateway_port {
-        return Err(WorkspaceError::WebPortTakenByGateway {
+    if server.port == gateway_port {
+        return Err(WorkspaceError::ServerPortTakenByGateway {
             path: path.to_path_buf(),
             port: gateway_port,
         });
     }
-    // An unset name is not an error and not a fallback: it means the
-    // built-in. A set one has to be a name forge ships, because a key that
-    // is quietly ignored reads as the key not working.
+    Ok(server)
+}
+
+/// The `[client]` section: an unset name is not an error and not a
+/// fallback, it means the built-in. A set one has to be a name forge ships,
+/// because a key that is quietly ignored reads as the key not working.
+fn resolve_client(client: ClientConfig, path: &Path) -> Result<ClientConfig, WorkspaceError> {
     for (key, value, shipped) in [
-        ("mark", web.mark.as_deref(), forge_primitives::web::MARK_NAMES),
-        ("theme", web.theme.as_deref(), forge_primitives::web::THEME_NAMES),
-        ("font", web.font.as_deref(), forge_primitives::web::FONT_NAMES),
+        ("mark", client.mark.as_deref(), forge_primitives::client::MARK_NAMES),
+        ("theme", client.theme.as_deref(), forge_primitives::client::THEME_NAMES),
+        ("font", client.font.as_deref(), forge_primitives::client::FONT_NAMES),
     ] {
         if let Some(value) = value
             && !shipped.contains(&value)
         {
-            return Err(WorkspaceError::WebNameUnknown {
+            return Err(WorkspaceError::ClientNameUnknown {
                 path: path.to_path_buf(),
                 key,
                 value: value.to_owned(),
             });
         }
     }
-    Ok(web)
+    Ok(client)
 }
 
 /// Load + validate `forge.toml`. Returns the parsed orgs + projects
@@ -550,6 +569,10 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     let parsed: ForgeToml = toml::from_str(&raw)
         .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
+
+    if parsed.web.is_some() {
+        return Err(WorkspaceError::WebSectionRenamed { path });
+    }
 
     if parsed.workers.is_some() {
         tracing::warn!(
@@ -848,7 +871,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         Some(gateway) => gateway.resolved_rotation(&path)?,
         None => forge_gateway::rotation::RotationNumbers::default(),
     };
-    let web = resolve_web(parsed.web, gateway_port, &path)?;
+    let server = resolve_server(parsed.server, gateway_port, &path)?;
+    // A listener that never binds never hands a client its names either, so
+    // a stale key there is not worth refusing the boot over - the call the
+    // pre-split section made for every key at once.
+    let client = if server.enabled { resolve_client(parsed.client, &path)? } else { parsed.client };
 
     let systemone = match parsed.systemone {
         Some(section) => {
@@ -871,7 +898,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         plugins: parsed.plugins,
         gateway_port,
         gateway_rotation,
-        web,
+        server,
+        client,
     })
 }
 
@@ -973,7 +1001,7 @@ pub(crate) fn expand_home(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::web::DEFAULT_WEB_PORT;
+    use forge_primitives::server::DEFAULT_SERVER_PORT;
     use std::fs;
     use std::net::{IpAddr, Ipv4Addr};
     use tempfile::tempdir;
@@ -1094,76 +1122,124 @@ no_reset_cooldown_secs = 90
     /// On unless it is turned off, and on loopback: "on by default" must
     /// not mean every machine starts listening on a network interface.
     #[test]
-    fn web_section_defaults_to_enabled_on_loopback() {
+    fn server_section_defaults_to_enabled_on_loopback() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("absent section loads");
-        assert!(config.web.enabled, "the web view is on unless it is turned off");
-        assert_eq!(config.web.port, DEFAULT_WEB_PORT);
-        assert_eq!(config.web.bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(config.server.enabled, "the listener is on unless it is turned off");
+        // Two assertions, two changes: one bumps the const without the book's
+        // table and the client's default address, the other lets the Default
+        // impl drift from the const.
+        assert_eq!(
+            DEFAULT_SERVER_PORT, 8790,
+            "8790 is the number the book's table and the client's default address carry",
+        );
+        assert_eq!(config.server.port, DEFAULT_SERVER_PORT, "an absent section takes that port");
+        assert_eq!(config.server.bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
 
     #[test]
-    fn web_section_reads_its_keys() {
+    fn server_section_reads_its_keys() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             &format!(
-                "{}\n[web]\nenabled = false\nport = 9100\nbind = \"10.0.0.5\"\n",
+                "{}\n[server]\nenabled = false\nport = 9100\nbind = \"10.0.0.5\"\n",
                 minimal_config()
             ),
         );
         let config = load_from_dir(dir.path()).expect("section loads");
-        assert!(!config.web.enabled);
-        assert_eq!(config.web.port, 9100);
-        assert_eq!(config.web.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+        assert!(!config.server.enabled);
+        assert_eq!(config.server.port, 9100);
+        assert_eq!(config.server.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+    }
+
+    /// An absent `[client]` leaves every name unset, and unset means the
+    /// built-in rather than a pinned value.
+    #[test]
+    fn client_section_reads_its_keys() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[client]\nmark = \"klin\"\ntheme = \"dark\"\nfont = \"system\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.client.mark.as_deref(), Some("klin"));
+        assert_eq!(config.client.theme.as_deref(), Some("dark"));
+        assert_eq!(config.client.font.as_deref(), Some("system"));
+
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert_eq!(config.client.mark, None, "an unset key is the built-in, not a pinned value");
+        assert_eq!(config.client.theme, None);
+        assert_eq!(config.client.font, None, "and the built-in face is what an unset font draws");
     }
 
     /// A section that never binds cannot stop the boot: a stale port on a
-    /// disabled view is the config's business only if something would use
-    /// it, and nothing will.
+    /// disabled listener is the config's business only if something would
+    /// use it, and nothing will. Nor are the client's names read: a listener
+    /// that never binds never hands a client its settings either, which is
+    /// the call the pre-split section made for every key at once.
     #[test]
-    fn a_disabled_web_section_is_not_validated() {
+    fn a_disabled_server_section_is_not_validated() {
         for port in [0, DEFAULT_GATEWAY_PORT] {
             let dir = tempdir().expect("tempdir");
             write_config(
                 dir.path(),
-                &format!("{}\n[web]\nenabled = false\nport = {port}\n", minimal_config()),
+                &format!("{}\n[server]\nenabled = false\nport = {port}\n", minimal_config()),
             );
-            let config = load_from_dir(dir.path()).expect("a disabled view must not fail the load");
-            assert!(!config.web.enabled, "the section stays disabled at port {port}");
+            let config =
+                load_from_dir(dir.path()).expect("a disabled listener must not fail the load");
+            assert!(!config.server.enabled, "the section stays disabled at port {port}");
         }
+
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[server]\nenabled = false\n[client]\nmark = \"anvilish\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("a disabled listener never reads a name");
+        assert_eq!(config.client.mark.as_deref(), Some("anvilish"), "the name is carried as given");
     }
 
     #[test]
-    fn web_section_rejects_an_unknown_key() {
-        let err = toml::from_str::<ForgeToml>("[web]\nportt = 9100\n")
-            .expect_err("a near-miss key must fail loudly");
-        assert!(err.to_string().contains("portt"), "got: {err}");
+    fn a_near_miss_key_fails_loudly_in_both_sections() {
+        for (section, key) in [("[server]", "portt"), ("[client]", "themes")] {
+            let err = toml::from_str::<ForgeToml>(&format!("{section}\n{key} = 0\n"))
+                .expect_err("a near-miss key must fail loudly");
+            assert!(err.to_string().contains(key), "{section} ignored {key}: {err}");
+        }
     }
 
     /// A browser is pointed at this port by hand, so an OS-assigned one
     /// is unguessable rather than merely unhelpful.
     #[test]
-    fn web_port_zero_is_refused_at_load() {
+    fn server_port_zero_is_refused_at_load() {
         let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), &format!("{}\n[web]\nport = 0\n", minimal_config()));
+        write_config(dir.path(), &format!("{}\n[server]\nport = 0\n", minimal_config()));
         let err = load_from_dir(dir.path()).expect_err("port 0 must not load");
         assert!(
-            err.to_string().contains("web port 0"),
+            err.to_string().contains("server port 0"),
             "the error names the unusable port, got: {err}",
         );
     }
 
     /// Compared against the gateway's resolved port rather than its
-    /// default: whichever listener binds second loses, and the web view
-    /// being on by default means the loss reads as the web view broken.
+    /// default: whichever listener binds second loses, and the listener
+    /// being on by default means the loss reads as the listener broken.
     #[test]
-    fn web_port_on_the_gateway_port_is_refused_at_load() {
+    fn server_port_on_the_gateway_port_is_refused_at_load() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
-            &format!("{}\n[gateway]\nport = 9100\n\n[web]\nport = 9100\n", minimal_config()),
+            &format!("{}\n[gateway]\nport = 9100\n\n[server]\nport = 9100\n", minimal_config()),
         );
         let err = load_from_dir(dir.path()).expect_err("the gateway's port must not load");
         let message = err.to_string();
@@ -1175,23 +1251,22 @@ no_reset_cooldown_secs = 90
 
     /// A name picks from the set forge ships, and a name outside it stops
     /// the boot rather than falling back to the built-in: a setting that is
-    /// quietly ignored reads as the key not working. An absent key is not
-    /// an error - it means the built-in.
+    /// quietly ignored reads as the key not working.
     #[test]
-    fn a_web_name_outside_the_shipped_set_is_refused_at_load() {
+    fn a_client_name_outside_the_shipped_set_is_refused_at_load() {
         let load = |key: &str, value: &str| {
             let dir = tempdir().expect("tempdir");
             write_config(
                 dir.path(),
-                &format!("{}\n[web]\n{key} = \"{value}\"\n", minimal_config()),
+                &format!("{}\n[client]\n{key} = \"{value}\"\n", minimal_config()),
             );
             let loaded = load_from_dir(dir.path());
             (dir, loaded)
         };
         let named = |config: &crate::config::LoadedConfig, key: &str| match key {
-            "mark" => config.web.mark.clone(),
-            "font" => config.web.font.clone(),
-            _ => config.web.theme.clone(),
+            "mark" => config.client.mark.clone(),
+            "font" => config.client.font.clone(),
+            _ => config.client.theme.clone(),
         };
 
         // Every name key validates the same way, so one walk covers them
@@ -1215,13 +1290,29 @@ no_reset_cooldown_secs = 90
                 "the error names the key and the name it refused, got: {message}",
             );
         }
+    }
 
+    /// The retired section is not a ghost that merely warns: a stale `[web]`
+    /// in a hand-authored forge.toml must fail the load naming the rename,
+    /// because an ignored bind silently resets an exposed server to loopback.
+    #[test]
+    fn a_web_section_is_refused_naming_the_rename() {
         let dir = tempdir().expect("tempdir");
-        write_config(dir.path(), minimal_config());
-        let config = load_from_dir(dir.path()).expect("absent keys load");
-        assert_eq!(config.web.mark, None, "an unset key is the built-in, not a pinned value");
-        assert_eq!(config.web.theme, None);
-        assert_eq!(config.web.font, None, "and the built-in face is what an unset font draws");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[web]\nenabled = false\nport = 9100\nbind = \"10.0.0.5\"\n",
+                minimal_config()
+            ),
+        );
+        let err = load_from_dir(dir.path()).expect_err("the retired section must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("[web]")
+                && message.contains("[server]")
+                && message.contains("[client]"),
+            "the error names the retired section and both its replacements, got: {message}",
+        );
     }
 
     #[test]

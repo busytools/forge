@@ -1787,7 +1787,7 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         // The transport does not read a transcript, so the seat's
         // conversation is put where a `Connected` would have left it.
@@ -1900,7 +1900,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -1947,7 +1947,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded =
@@ -1988,7 +1988,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded =
@@ -2015,7 +2015,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let before =
@@ -2069,7 +2069,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         fleet
             .hold_conversation(&state, "TestOrg", "proj", "lead")
@@ -2135,7 +2135,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded =
@@ -2172,7 +2172,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded =
@@ -2215,7 +2215,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2267,7 +2267,7 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2311,7 +2311,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded =
@@ -2390,7 +2390,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Usage).await.expect("encode");
@@ -2520,7 +2520,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
@@ -2584,7 +2584,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let session =
@@ -2618,7 +2618,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2643,7 +2643,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2670,7 +2670,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2743,7 +2743,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
@@ -2806,7 +2806,7 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");

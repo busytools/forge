@@ -1571,12 +1571,18 @@ impl Workspace {
         Ok(workspace)
     }
 
-    /// Effective `[web]` settings: whether the web view starts, where it
-    /// listens, and which of the sets forge ships it draws with. Read by
-    /// the binary entry point, which starts the server - the workspace
-    /// never does.
-    pub fn web_config(&self) -> forge_primitives::WebConfig {
-        self.config.web.clone()
+    /// Effective `[server]` settings: whether the socket's listener starts
+    /// and where it binds. Read by the binary entry point, which serves the
+    /// socket - the workspace never does.
+    pub fn server_config(&self) -> forge_primitives::ServerConfig {
+        self.config.server.clone()
+    }
+
+    /// Effective `[client]` settings: which of the sets forge ships a
+    /// client draws with. Carried by the greeting, so a client never reads
+    /// `forge.toml` itself.
+    pub fn client_config(&self) -> forge_primitives::ClientConfig {
+        self.config.client.clone()
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by

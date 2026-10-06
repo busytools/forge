@@ -8,7 +8,7 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use forge_primitives::WebConfig;
+use forge_primitives::{ClientConfig, ServerConfig};
 use forge_server::surface::ViewSurface;
 use maud::{Markup, PreEscaped, html};
 
@@ -49,20 +49,27 @@ pub enum WebError {
 }
 
 /// What the view serves: the core it reads, the cache it keeps, the live
-/// state its stream fills, and the config it draws with.
+/// state its stream fills, the listener it came up on, and the sets it
+/// draws with.
 pub struct WebState {
     pub surface: Arc<ViewSurface>,
     pub work: Arc<WorkCache>,
     /// What the stream has told the view, which is the state no verb can
     /// answer because it is about this viewer rather than about the core.
     pub live: Mutex<Live>,
-    pub config: WebConfig,
+    pub server: ServerConfig,
+    pub client: ClientConfig,
 }
 
 impl WebState {
     /// A view that has learned nothing from the stream yet.
-    pub fn new(surface: Arc<ViewSurface>, work: Arc<WorkCache>, config: WebConfig) -> Self {
-        Self { surface, work, live: Mutex::new(Live::new()), config }
+    pub fn new(
+        surface: Arc<ViewSurface>,
+        work: Arc<WorkCache>,
+        server: ServerConfig,
+        client: ClientConfig,
+    ) -> Self {
+        Self { surface, work, live: Mutex::new(Live::new()), server, client }
     }
 }
 
@@ -75,14 +82,14 @@ pub(crate) struct Wiring {
 
 /// Bind the web view and serve it on a background task.
 ///
-/// Returns the address it bound, or `None` when `[web] enabled` is
+/// Returns the address it bound, or `None` when `[server] enabled` is
 /// false. The caller owns the failure: the view is not a prerequisite
 /// for anything, so a boot that cannot bind still boots.
 pub async fn start(state: WebState) -> Result<Option<SocketAddr>, WebError> {
-    if !state.config.enabled {
+    if !state.server.enabled {
         return Ok(None);
     }
-    let addr = SocketAddr::new(state.config.bind, state.config.port);
+    let addr = SocketAddr::new(state.server.bind, state.server.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| WebError::Bind { addr, source })?;
@@ -382,9 +389,9 @@ async fn home_page(State(wiring): State<Wiring>) -> Markup {
         work: &wiring.state.work,
         live: &wiring.state.live,
         bound: wiring.bound,
-        mark: wiring.state.config.mark.as_deref(),
-        theme: wiring.state.config.theme.as_deref(),
-        font: wiring.state.config.font.as_deref(),
+        mark: wiring.state.client.mark.as_deref(),
+        theme: wiring.state.client.theme.as_deref(),
+        font: wiring.state.client.font.as_deref(),
     })
     .await
 }
@@ -398,9 +405,9 @@ pub(crate) async fn home_region(state: &WebState, bound: SocketAddr) -> Markup {
         work: &state.work,
         live: &state.live,
         bound,
-        mark: state.config.mark.as_deref(),
-        theme: state.config.theme.as_deref(),
-        font: state.config.font.as_deref(),
+        mark: state.client.mark.as_deref(),
+        theme: state.client.theme.as_deref(),
+        font: state.client.font.as_deref(),
     })
     .await
 }
@@ -421,8 +428,8 @@ async fn web_css() -> impl IntoResponse {
 async fn favicon(State(wiring): State<Wiring>) -> impl IntoResponse {
     let body = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" color="{}">{}</svg>"#,
-        theme::accent(wiring.state.config.theme.as_deref()),
-        brand::mark_path(wiring.state.config.mark.as_deref()),
+        theme::accent(wiring.state.client.theme.as_deref()),
+        brand::mark_path(wiring.state.client.mark.as_deref()),
     );
     ([(header::CONTENT_TYPE, "image/svg+xml")], body)
 }

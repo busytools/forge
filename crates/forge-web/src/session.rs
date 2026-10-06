@@ -257,9 +257,9 @@ pub(crate) fn context(state: &WebState, bound: SocketAddr) -> Home<'_> {
         work: &state.work,
         live: &state.live,
         bound,
-        mark: state.config.mark.as_deref(),
-        theme: state.config.theme.as_deref(),
-        font: state.config.font.as_deref(),
+        mark: state.client.mark.as_deref(),
+        theme: state.client.theme.as_deref(),
+        font: state.client.font.as_deref(),
     }
 }
 
