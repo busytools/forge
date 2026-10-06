@@ -522,17 +522,20 @@
   );
 
   /**
-   * **A window already up is read when the hand-off appears**, because Open
-   * must not be offered over one: the click cannot raise another app's
-   * window, it just answers Ok, and the button reads as broken.
+   * **A window already up is read on every ask object, not once per id.**
+   * Open must not be offered over a window that is already up - the click
+   * cannot raise another app's window, it just answers Ok - and the answer
+   * must not freeze in the other direction either: the record replaces the
+   * ask on every frame, so reading per object keeps the up answer as fresh as
+   * the false one, and a window the reader closes while the dock is up stops
+   * being claimed.
    */
   $effect(() => {
     const held = ask;
     if (held === null || held.kind !== 'browser_hand_off') return;
-    if (windowUpFor === held.request.id) return;
     const id = held.request.id;
     void browserWindowUp().then((up) => {
-      if (up) windowUpFor = id;
+      windowUpFor = up ? id : null;
     });
   });
   /** And which one a raise was asked for and did not happen, by the same id. */

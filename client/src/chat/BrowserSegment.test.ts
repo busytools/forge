@@ -65,6 +65,22 @@ const click = (el: Element | null | undefined): void => {
   flushSync();
 };
 
+/** The toggle, where the family's pointer handling lives. */
+function toggle(target: HTMLElement): HTMLButtonElement {
+  const el = target.querySelector<HTMLButtonElement>('.bz-tog');
+  if (el === null) throw new Error('no toggle');
+  return el;
+}
+
+function list(target: HTMLElement): Element | null {
+  return target.querySelector('.bz-list');
+}
+
+/** A pointer event of the kind the browser synthesises, with its device said. */
+function pointer(type: string, pointerType: string): PointerEvent {
+  return new PointerEvent(type, { pointerType, bubbles: false });
+}
+
 describe('the browser segment', () => {
   it('rests as a count and opens onto the role and the contexts', async () => {
     const shown = show();
@@ -152,18 +168,89 @@ describe('the browser segment', () => {
 
   it('opens on hover and closes once the pointer leaves', async () => {
     const shown = show(false, true);
-    const segment = shown.target.querySelector('.bz-seg');
-    if (!(segment instanceof HTMLElement)) throw new Error('no segment');
-    expect(shown.target.querySelector('.bz-list'), 'closed at rest').toBeNull();
+    expect(list(shown.target), 'closed at rest').toBeNull();
 
-    segment.dispatchEvent(new PointerEvent('pointerenter'));
+    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    expect(shown.target.querySelector('.bz-list'), 'the pointer arriving opens it').not.toBeNull();
+    expect(list(shown.target), 'the pointer arriving opens it').not.toBeNull();
 
-    segment.dispatchEvent(new PointerEvent('pointerleave'));
+    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
     await vi.waitFor(() => {
-      expect(shown.target.querySelector('.bz-list'), 'and leaving closes it').toBeNull();
+      expect(list(shown.target), 'and leaving closes it').toBeNull();
     });
+    shown.stop();
+  });
+
+  it('reads a tap as open: the synthesised enter must not eat the click', () => {
+    const shown = show(false, true);
+    // A finger: pointerenter arrives with pointerType touch, then the click.
+    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'touch'));
+    toggle(shown.target).click();
+    flushSync();
+
+    expect(list(shown.target), 'the first tap leaves the panel open').not.toBeNull();
+    shown.stop();
+  });
+
+  it('reads a tap as open when the press itself focuses the toggle first', () => {
+    // Chromium's measured tap order: pointerdown and pointerup complete
+    // first, then the compat mousedown, the focus it causes, and the click.
+    // The focus a press puts there must not open the panel for the click to
+    // shut - an open the reader never saw.
+    const shown = show(false, true);
+    window.dispatchEvent(pointer('pointerdown', 'touch'));
+    window.dispatchEvent(pointer('pointerup', 'touch'));
+    toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    toggle(shown.target).dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    toggle(shown.target).click();
+    flushSync();
+
+    expect(list(shown.target), 'the tap opens and stays open').not.toBeNull();
+    shown.stop();
+  });
+
+  it('keeps the panel while the pointer crosses into it', async () => {
+    const shown = show(false, true);
+    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
+    const panel = list(shown.target);
+    if (!(panel instanceof HTMLElement)) throw new Error('no panel');
+    panel.dispatchEvent(pointer('pointerenter', 'mouse'));
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(list(shown.target), 'the crossing is not a departure').not.toBeNull();
+    shown.stop();
+  });
+
+  it('keeps the panel while a control inside it holds focus', async () => {
+    const shown = show(false, true);
+    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    if (control === null) throw new Error('no control');
+    control.focus();
+
+    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(list(shown.target), 'a leave does not unmount the focused control').not.toBeNull();
+    shown.stop();
+  });
+
+  it('leaves focus on the toggle when Escape closes', () => {
+    const shown = show(false, true);
+    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    if (control === null) throw new Error('no control');
+    control.focus();
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(list(shown.target), 'Escape closes the panel').toBeNull();
+    expect(document.activeElement, 'and the toggle takes the focus').toBe(toggle(shown.target));
     shown.stop();
   });
 

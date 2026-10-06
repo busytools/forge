@@ -4303,6 +4303,32 @@ describe('the dock', () => {
     expect(drawn(), 'and the button that cannot serve is gone').not.toContain('Open browser');
   });
 
+  /** The read must not freeze: the record replaces the ask on every frame, so
+   * the up answer refreshes as often as the false one. */
+  it('re-reads whether a window is up whenever the ask is replaced', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(1));
+
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+
+    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(2));
+  });
+
+  /** And the other direction: a window closed while the dock is up stops
+   * being claimed, so Open comes back as the door that can serve. */
+  it('stops claiming the window is up when a later read says it is not', async () => {
+    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
+    const open_ = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    await vi.waitFor(() => expect(drawn()).toContain('The browser window is up.'));
+
+    vi.mocked(browserWindowUp).mockResolvedValueOnce(false);
+    open_.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+
+    await vi.waitFor(() => expect(drawn()).toContain('Open browser'));
+  });
+
   it("draws the question's own mark for its header, not a character-cell glyph", () => {
     open({ record: record({ pending_asks: [questionAsk()] }) });
 

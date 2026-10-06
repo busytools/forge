@@ -71,32 +71,97 @@
 
   /**
    * How the panel closes when the pointer leaves: with a grace period, because
-   * a 6px gap sits between the toggle and the panel and a pointer crossing it
+   * a gap sits between the toggle and the panel and a pointer crossing it
    * would otherwise never reach the rows.
    */
   let leaving: ReturnType<typeof setTimeout> | null = null;
 
   /** Open, and read the contexts fresh, which is what every opening does. */
-  function show(): void {
+  function hold(): void {
+    if (leaving !== null) clearTimeout(leaving);
+    leaving = null;
     open = true;
     void readContexts();
   }
 
-  function entered(): void {
-    if (leaving !== null) {
-      clearTimeout(leaving);
-      leaving = null;
-    }
-    show();
-  }
-
-  function left(): void {
+  function arm(): void {
     if (leaving !== null) clearTimeout(leaving);
     leaving = setTimeout(() => {
       leaving = null;
       open = false;
-    }, 200);
+    }, 120);
   }
+
+  /**
+   * Leaving arms the close, with the two guards every sibling row carries: a
+   * pointer leave arriving over the panel's own gap is not a departure while
+   * the segment is still hovered, and a leave may close while the TOGGLE
+   * holds focus but not while a panel control does - closing would unmount
+   * the control the reader is on.
+   */
+  function release(event?: FocusEvent): void {
+    if (event === undefined) {
+      if (segEl !== null && segEl.matches(':hover')) return;
+      const active = document.activeElement;
+      const toggle = segEl?.querySelector('button') ?? null;
+      if (segEl !== null && active instanceof Node && segEl.contains(active) && active !== toggle) {
+        return;
+      }
+      arm();
+      return;
+    }
+    const next = event.relatedTarget ?? document.activeElement;
+    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    arm();
+  }
+
+  /** A pointer that can hover, which a finger cannot: a tap's synthesised
+   *  enter must not arm the hover path, or the click that follows toggles the
+   *  panel straight back shut. */
+  const hovering = (event: PointerEvent) => event.pointerType === 'mouse';
+
+  /**
+   * A compatibility press is in flight.
+   *
+   * **A tap focuses the toggle through its compat `mousedown`**, so focus
+   * opens the panel only while a press is in flight; `mouseup` ends every
+   * quiet press.
+   */
+  let pointed = false;
+
+  $effect(() => {
+    const press = () => (pointed = true);
+    const settle = () => (pointed = false);
+    window.addEventListener('mousedown', press);
+    window.addEventListener('mouseup', settle);
+    window.addEventListener('click', settle);
+    window.addEventListener('pointercancel', settle);
+    return () => {
+      window.removeEventListener('mousedown', press);
+      window.removeEventListener('mouseup', settle);
+      window.removeEventListener('click', settle);
+      window.removeEventListener('pointercancel', settle);
+    };
+  });
+
+  /** The toggle took focus: opening from it, unless a press put it there. */
+  function focusIn(): void {
+    if (pointed) {
+      pointed = false;
+      return;
+    }
+    hold();
+  }
+
+  /** Put focus back on the toggle, which is where a dismissal leaves a reader. */
+  function toToggle(): void {
+    segEl?.querySelector('button')?.focus();
+  }
+
+  // A close armed when the segment unmounts would write to a dead instance.
+  $effect(() => () => {
+    if (leaving !== null) clearTimeout(leaving);
+  });
 
   /**
    * What the collapsed row says this client holds.
@@ -127,15 +192,27 @@
     return () => document.removeEventListener('pointerdown', away);
   });
 
-  /** The toggle opens: touch has no hover, and closing is the pointer leaving,
-   * Escape, or a click outside. */
+  /** The toggle collapses, like every sibling row: touch has no hover, so this
+   * is both its open and its close. */
   function toggle(): void {
-    show();
+    if (open) {
+      if (leaving !== null) clearTimeout(leaving);
+      leaving = null;
+      open = false;
+      return;
+    }
+    hold();
   }
 
-  /** Escape closes from either of the list's controls. */
+  /** Escape closes from either of the list's controls, and focus goes back to
+   * the toggle first - closing under the focused control would drop the focus
+   * to the body, where Escape reaches nothing. */
   function esc(event: KeyboardEvent): void {
-    if (event.key === 'Escape') open = false;
+    if (event.key !== 'Escape') return;
+    toToggle();
+    if (leaving !== null) clearTimeout(leaving);
+    leaving = null;
+    open = false;
   }
 
   /** The person's close: saves, frees the name, and the row falls away. */
@@ -152,15 +229,40 @@
   }
 </script>
 
-<span class="bz-seg" class:open bind:this={segEl} onpointerenter={entered} onpointerleave={left}>
-  <button type="button" class="bz-tog" aria-expanded={open} onclick={toggle} onkeydown={esc}>
+<span class="bz-seg" class:open bind:this={segEl}>
+  <button
+    type="button"
+    class="bz-tog"
+    aria-expanded={open}
+    onclick={toggle}
+    onpointerenter={(event) => {
+      if (hovering(event)) hold();
+    }}
+    onpointerleave={(event) => {
+      if (hovering(event)) release();
+    }}
+    onfocusin={focusIn}
+    onfocusout={release}
+    onkeydown={esc}
+  >
     <Icon name="web" />
     browser
     <span class="n">{count}</span>
   </button>
 
   {#if open}
-    <div class="bz-list" role="group" aria-label="the browser's contexts">
+    <div
+      class="bz-list"
+      role="group"
+      aria-label="the browser's contexts"
+      onpointerenter={(event) => {
+        if (hovering(event)) hold();
+      }}
+      onpointerleave={(event) => {
+        if (hovering(event)) release();
+      }}
+      onfocusout={release}
+    >
       <div class="bz-role">
         <span class="tx">
           {hosting
