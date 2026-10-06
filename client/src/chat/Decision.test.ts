@@ -41,8 +41,11 @@ describe('the block one decision draws', () => {
 
   it('draws the whole question over the answer, and each option its description', () => {
     const body = drawn({
-      question: 'Is this mechanical?\nOr does it touch the shared module?',
-      criteria: { yes: 'a single import line', no: 'anything else moves' },
+      question: { text: 'Is this mechanical?\nOr does it touch the shared module?', raw: null },
+      criteria: {
+        yes: { text: 'a single import line', raw: null },
+        no: { text: 'anything else moves', raw: null },
+      },
     });
     expect(body, 'the whole question, joined and its marks kept').toContain(
       'Is this mechanical? Or does it touch the shared module?',
@@ -94,9 +97,9 @@ describe('the block one decision draws', () => {
         kind: 'score',
         score: 1.79,
         levels: [
-          { name: 'Routine', value: 0.08 },
-          { name: 'Soon', value: 0.31 },
-          { name: 'Urgent', value: 0.61 },
+          { name: 'Routine', value: 0.08, raw: null },
+          { name: 'Soon', value: 0.31, raw: null },
+          { name: 'Urgent', value: 0.61, raw: null },
         ],
         confidence: null,
       },
@@ -119,9 +122,9 @@ describe('the block one decision draws', () => {
         kind: 'score',
         score: 1.5,
         levels: [
-          { name: 'Routine', value: 0.5 },
-          { name: 'Soon', value: null },
-          { name: 'Urgent', value: 0.4 },
+          { name: 'Routine', value: 0.5, raw: null },
+          { name: 'Soon', value: null, raw: null },
+          { name: 'Urgent', value: 0.4, raw: null },
         ],
         confidence: null,
       },
@@ -160,9 +163,9 @@ describe('the block one decision draws', () => {
     // verdict reading "between Soon and Urgent" over rows named the full
     // descriptions, a combination no input can make).
     const levels = [
-      { name: 'Routine - no deadline pressure', value: 0.08 },
-      { name: 'Soon - worth doing this week', value: 0.31 },
-      { name: 'Urgent - blocks others right now', value: 0.61 },
+      { name: 'Routine - no deadline pressure', value: 0.08, raw: null },
+      { name: 'Soon - worth doing this week', value: 0.31, raw: null },
+      { name: 'Urgent - blocks others right now', value: 0.61, raw: null },
     ];
     const body = drawn({ answer: { kind: 'score', score: 1.79, levels, confidence: null } });
 
@@ -172,6 +175,110 @@ describe('the block one decision draws', () => {
     for (const level of levels) {
       expect(PAGE, `with the row "${level.name}"`).toContain(level.name);
     }
+  });
+
+  it('draws a structured question as its line, with the value one click away', () => {
+    const body = drawn({
+      question: {
+        text: 'Is the claim `just check` green?',
+        raw: {
+          question: 'Is the claim `just check` green?',
+          evidence: { verdict: 'all green' },
+        },
+      },
+    });
+    expect(body, 'the naming field draws as the line').toContain(
+      'Is the claim `just check` green?',
+    );
+    expect(body, 'and the disclosure says what it holds').toContain(
+      'structured instructions - 2 fields',
+    );
+    expect(body, 'with the value inside it').toContain('all green');
+  });
+
+  it('draws a structured criterion behind its own disclosure, and a string one without', () => {
+    const body = drawn({
+      answer: {
+        kind: 'choice',
+        choice: 'billing',
+        probabilities: [
+          { name: 'billing', value: 0.84 },
+          { name: 'frontend', value: 0.16 },
+        ],
+        confidence: null,
+      },
+      criteria: {
+        billing: {
+          text: 'owns the ledger and the settlement path',
+          raw: { label: 'owns the ledger and the settlement path', files: ['a.rs'] },
+        },
+        frontend: { text: 'the surface is the web client only', raw: null },
+      },
+    });
+    expect(body, 'the named text draws where a description always did').toContain(
+      'owns the ledger and the settlement path',
+    );
+    expect(body, 'the disclosure is labelled by what it holds').toContain(
+      'structured value - 2 fields',
+    );
+    expect(body, 'and the value draws inside it').toContain('a.rs');
+    expect(
+      [...body.matchAll(/class="raw"/g)],
+      'one disclosure, for the one structured value - the string draws none',
+    ).toHaveLength(1);
+  });
+
+  it('carries a level value behind its own disclosure, the note naming the same words', () => {
+    const body = drawn({
+      answer: {
+        kind: 'score',
+        score: 1.79,
+        levels: [
+          { name: 'Routine', value: 0.08, raw: null },
+          { name: 'Soon', value: 0.31, raw: { label: 'Soon', scope: 'worth doing this week' } },
+          { name: 'structured value', value: 0.61, raw: { urgency: 'high' } },
+        ],
+        confidence: null,
+      },
+    });
+    expect(body, 'the note names the level the way its row does').toContain(
+      'of 2 - between Soon and structured value',
+    );
+    expect(
+      [...body.matchAll(/class="raw"/g)],
+      'one disclosure per structured level, none for the string one',
+    ).toHaveLength(2);
+  });
+
+  it("composes the same disclosure the book's structured specimen draws", () => {
+    // The same tie the verdict test above keeps: the page's specimen can only
+    // draw words an input could produce, and the label over a disclosure is
+    // composed here.
+    const body = drawn({
+      answer: {
+        kind: 'choice',
+        choice: 'billing',
+        probabilities: [
+          { name: 'billing', value: 0.84 },
+          { name: 'frontend', value: 0.16 },
+        ],
+        confidence: null,
+      },
+      criteria: {
+        billing: {
+          text: 'owns the ledger and the settlement path',
+          raw: { label: 'owns the ledger and the settlement path', files: ['a.rs', 'ledger.rs'] },
+        },
+      },
+    });
+
+    expect(body, 'the block composes the disclosure label').toContain(
+      'structured value - 2 fields',
+    );
+    expect(PAGE, 'and the page draws it word for word').toContain('structured value - 2 fields');
+    expect(PAGE, "with the specimen's own words").toContain(
+      'owns the ledger and the settlement path',
+    );
   });
 
   it('leaves no separator behind for a result that named no model', () => {

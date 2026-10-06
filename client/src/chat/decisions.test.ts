@@ -48,7 +48,7 @@ describe('reading the three primitives', () => {
       model: 'jev-1.13.0',
       usage: { input_tokens: 392, output_tokens: 20, cost: null },
       answer: { kind: 'noul', noul: 0.93 },
-      question: 'Is this mechanical?',
+      question: { text: 'Is this mechanical?', raw: null },
       criteria: {},
     });
   });
@@ -68,12 +68,13 @@ describe('reading the three primitives', () => {
       },
       result(text),
     );
-    expect(noul?.question, 'the question whole, not its first line').toBe(
-      'Is this mechanical?\nOr does it touch the shared module?',
-    );
+    expect(noul?.question, 'the question whole, not its first line').toEqual({
+      text: 'Is this mechanical?\nOr does it touch the shared module?',
+      raw: null,
+    });
     expect(noul?.criteria, "and what yes and no meant, under the rows' own words").toEqual({
-      yes: 'a single import line',
-      no: 'anything else moves',
+      yes: { text: 'a single import line', raw: null },
+      no: { text: 'anything else moves', raw: null },
     });
 
     const choiceText = JSON.stringify({
@@ -85,9 +86,9 @@ describe('reading the three primitives', () => {
       { instructions: 'Which team?', criteria: { payments: 'owns the ledger', frontend: null } },
       result(choiceText),
     );
-    expect(choice?.question).toBe('Which team?');
+    expect(choice?.question).toEqual({ text: 'Which team?', raw: null });
     expect(choice?.criteria, 'a null description stands alone rather than drawing').toEqual({
-      payments: 'owns the ledger',
+      payments: { text: 'owns the ledger', raw: null },
     });
 
     // A score's levels ARE their descriptions, so nothing sits beside them.
@@ -96,7 +97,7 @@ describe('reading the three primitives', () => {
       answer: { type: 'score', score: 1.0, probabilities: { 0: 0.5, 1: 0.5 } },
     });
     const score = decisionOf('mcp__forge__systemone__ask_score', SCORE_INPUT, result(scoreText));
-    expect(score?.question).toBe('How urgent?');
+    expect(score?.question).toEqual({ text: 'How urgent?', raw: null });
     expect(score?.criteria).toEqual({});
   });
 
@@ -177,9 +178,9 @@ describe('reading the three primitives', () => {
       kind: 'score',
       score: 1.79,
       levels: [
-        { name: 'Routine', value: 0.08 },
-        { name: 'Soon', value: 0.31 },
-        { name: 'Urgent', value: 0.61 },
+        { name: 'Routine', value: 0.08, raw: null },
+        { name: 'Soon', value: 0.31, raw: null },
+        { name: 'Urgent', value: 0.61, raw: null },
       ],
       confidence: null,
     });
@@ -195,9 +196,9 @@ describe('reading the three primitives', () => {
       kind: 'score',
       score: 1.5,
       levels: [
-        { name: 'Routine', value: 0.5 },
-        { name: 'Soon', value: null },
-        { name: 'Urgent', value: null },
+        { name: 'Routine', value: 0.5, raw: null },
+        { name: 'Soon', value: null, raw: null },
+        { name: 'Urgent', value: null, raw: null },
       ],
       confidence: null,
     });
@@ -243,6 +244,133 @@ describe('reading the three primitives', () => {
     ).toEqual({
       kind: 'noul',
       noul: 0.4,
+    });
+  });
+});
+
+describe('a structured value, read the way the block draws it', () => {
+  // The tools take the API's own union for `instructions` and criteria values
+  // (#1771), and this block is the only surface that reads them back. The
+  // picked shape (Ved, 2026-10-06): a naming field names the row, the value in
+  // full rides for the disclosure, and nothing is dropped.
+
+  it('names its row from the naming field and keeps the value for the disclosure', () => {
+    const text = JSON.stringify({ model: 'm', answer: { type: 'noul', noul: 0.93 } });
+    const noul = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      {
+        state: 'a one-line import fix',
+        instructions: {
+          question: 'Is the claim `just check` green?',
+          evidence: { verdict: 'all green' },
+        },
+        criteria: { true: { label: 'the verdict line says all green' }, false: 'anything else' },
+      },
+      result(text),
+    );
+
+    expect(noul?.question, 'the naming field as the line, the value whole beside it').toEqual({
+      text: 'Is the claim `just check` green?',
+      raw: { question: 'Is the claim `just check` green?', evidence: { verdict: 'all green' } },
+    });
+    expect(
+      noul?.criteria,
+      'a named side draws as a string row, an unnamed one keeps its value',
+    ).toEqual({
+      yes: {
+        text: 'the verdict line says all green',
+        raw: { label: 'the verdict line says all green' },
+      },
+      no: { text: 'anything else', raw: null },
+    });
+  });
+
+  it('falls back to the structured words when nothing names the row', () => {
+    const text = JSON.stringify({ model: 'm', answer: { type: 'noul', noul: 0.52 } });
+    const noul = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      {
+        state: 'a rename',
+        instructions: { 'the ask': 'Should the rename touch the shared module now?' },
+        criteria: { true: { rule: 'renaming later is a second migration' }, false: null },
+      },
+      result(text),
+    );
+
+    expect(noul?.question).toEqual({
+      text: 'structured instructions',
+      raw: { 'the ask': 'Should the rename touch the shared module now?' },
+    });
+    expect(noul?.criteria, 'the unnamed side still draws; a null side still does not').toEqual({
+      yes: {
+        text: 'structured value',
+        raw: { rule: 'renaming later is a second migration' },
+      },
+    });
+  });
+
+  it('skips a naming field that is not a non-empty string', () => {
+    const text = JSON.stringify({ model: 'm', answer: { type: 'choice', choice: 'billing' } });
+    const choice = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      {
+        instructions: 'Which team?',
+        criteria: {
+          billing: { label: 3, name: '   ', text: 'the ledger and the settlement path' },
+          frontend: ['a.rs'],
+          infra: { name: 'the deploy keys', text: 'the ordered fallback' },
+        },
+      },
+      result(text),
+    );
+
+    expect(choice?.criteria['billing'], 'the first field that can name it wins').toEqual({
+      text: 'the ledger and the settlement path',
+      raw: { label: 3, name: '   ', text: 'the ledger and the settlement path' },
+    });
+    expect(choice?.criteria['frontend'], 'an array names nothing and still draws').toEqual({
+      text: 'structured value',
+      raw: ['a.rs'],
+    });
+    expect(
+      choice?.criteria['infra'],
+      'and where several could name it, the order settles it',
+    ).toEqual({
+      text: 'the deploy keys',
+      raw: { name: 'the deploy keys', text: 'the ordered fallback' },
+    });
+  });
+
+  it('keeps the whole distribution when a level is not a string', () => {
+    // One structured level used to take every row with it: `levelsOf` refused
+    // the criteria array and the block drew a bare number.
+    const text = JSON.stringify({
+      model: 'm',
+      answer: { type: 'score', score: 1.79, probabilities: { 0: 0.08, 1: 0.31, 2: 0.61 } },
+    });
+    const score = decisionOf(
+      'mcp__forge__systemone__ask_score',
+      {
+        state: 'a ticket',
+        instructions: 'How urgent?',
+        criteria: [
+          'Routine',
+          { label: 'Soon', scope: 'worth doing this week' },
+          { urgency: 'high' },
+        ],
+      },
+      result(text),
+    );
+
+    expect(score?.answer).toEqual({
+      kind: 'score',
+      score: 1.79,
+      levels: [
+        { name: 'Routine', value: 0.08, raw: null },
+        { name: 'Soon', value: 0.31, raw: { label: 'Soon', scope: 'worth doing this week' } },
+        { name: 'structured value', value: 0.61, raw: { urgency: 'high' } },
+      ],
+      confidence: null,
     });
   });
 });
