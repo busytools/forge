@@ -30,6 +30,11 @@
    * It is not a fallback. The page is loaded through a dynamic import behind
    * the DEV guard, so nothing ships that a page could draw in a server's
    * absence, and `fixture.test.ts` builds the app and fails if one does.
+   *
+   * **The connection answers every method the strip's rows read**, the
+   * browser row's role included: a row that reads one the fixture does not
+   * answer throws at mount, and the whole column takes the fault with it.
+   * `ChatFixture.test.ts` mounts this file and fails when that happens.
    */
 
   /** The canned page, and the seat it is answered for. */
@@ -89,6 +94,11 @@
           listening = null;
         };
       },
+      // The browser row reads the role as it draws and subscribes to it -
+      // without these the whole strip throws on the /fixture route.
+      browserRole: () => false,
+      onBrowserRole: () => () => undefined,
+      takeBrowserRole: () => undefined,
       onStatus: () => () => undefined,
       store: () => undefined,
       settings: () => null,
