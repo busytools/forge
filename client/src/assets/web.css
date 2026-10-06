@@ -1012,7 +1012,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-seg .bz-tog:hover, .bz-seg.open .bz-tog { border-color: var(--line); color: var(--text); }
 .bz-seg .bz-tog .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .bz-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 340px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  min-width: min(340px, calc(100vw - 28px)); max-height: 60vh; overflow-y: auto;
+  background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
 .bz-list::-webkit-scrollbar { width: 8px; }
@@ -1035,6 +1036,14 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
+/* A narrow window compacts the panel: the same rows, tighter, and never
+   taller than what the window can give it. */
+@media (max-width: 560px) {
+  .bz-list { min-width: min(296px, calc(100vw - 26px)); max-height: 46vh; }
+  .bz-list .bz-role { gap: 7px; padding: 6px 10px; }
+  .bz-list .bz-cost { padding: 0 10px 6px; }
+  .bz-list .bz-it { gap: 7px; padding: 5px 10px; }
+}
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
   font: inherit; color: var(--muted); }
