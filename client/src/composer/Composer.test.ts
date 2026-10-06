@@ -693,7 +693,7 @@ describe('the box', () => {
 
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
-      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'waking up agent', null],
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...', null],
       [
         {
           record: record({
@@ -720,7 +720,7 @@ describe('the box', () => {
             reason: 'no session has been started here',
           }),
         },
-        'waking up agent',
+        'Waking up agent...',
         null,
       ],
       [
@@ -759,7 +759,7 @@ describe('the box', () => {
   it('draws the waking line as a sweep, with no second animation beside it', () => {
     open({ seat: seatRead({ lifecycle: 'Spawning' }) });
 
-    expect(drawn()).toContain('waking up agent');
+    expect(drawn()).toContain('Waking up agent...');
     expect(document.querySelector('.b1 .shimmer'), 'the waking line does not sweep').not.toBeNull();
     expect(
       document.querySelector('.b1 .ring'),

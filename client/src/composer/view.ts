@@ -230,7 +230,7 @@ export function blocked(
     seat.lifecycle === 'LoggedOut'
   ) {
     if (lead) {
-      return { line: 'waking up agent', sub: null, bad: false, waiting: false, shimmer: true };
+      return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
     }
     return {
       line: 'not running',
@@ -239,7 +239,7 @@ export function blocked(
     };
   }
   if (seat.lifecycle === 'Spawning') {
-    return { line: 'waking up agent', sub: null, bad: false, waiting: false, shimmer: true };
+    return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
   }
   if (composer.compacting) {
     return { line: 'Compacting context...', sub: null, bad: false, waiting: true, shimmer: false };

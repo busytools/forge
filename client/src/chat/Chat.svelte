@@ -965,7 +965,7 @@
          the code keeps. A worker's seat has no spawn coming toward it -
          only its lead can start it - and its line claims nothing. -->
     {#if slot.label === 'lead'}
-      <div class="hold"><span class="shimmer">waking up agent</span></div>
+      <div class="hold"><span class="shimmer">Waking up agent...</span></div>
     {:else}
       <div class="hold off">
         not running

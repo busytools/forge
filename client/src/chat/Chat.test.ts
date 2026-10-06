@@ -275,7 +275,7 @@ describe('the chat column as it draws', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);
 
-    expect(drawn()).toContain('waking up agent');
+    expect(drawn()).toContain('Waking up agent...');
     expect(document.querySelector('.hold .shimmer'), 'the wake does not sweep').not.toBeNull();
     expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
   });

@@ -440,7 +440,7 @@
            seat has no spawn coming and says so. -->
       <div class="conv">
         {#if slot.label === 'lead'}
-          <div class="hold"><span class="shimmer">waking up agent</span></div>
+          <div class="hold"><span class="shimmer">Waking up agent...</span></div>
         {:else}
           <div class="hold off">
             not running
