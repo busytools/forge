@@ -2986,6 +2986,21 @@ provider = "anthropic"
             "the worker is told the id it runs under, not a placeholder: {}",
             reply.session_id,
         );
+        // The fixture project is a git repo, so this worker runs in its own
+        // worktree and the reply names it: the path a lead uses to find the
+        // worker's work has to be the directory the worker actually runs in.
+        let expected_worktree = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .path
+            .join(".claude/worktrees/tester");
+        assert_eq!(
+            reply.worktree.as_deref(),
+            Some(expected_worktree.to_string_lossy().into_owned().as_str()),
+            "the reply names the worktree the worker was spawned into",
+        );
         let entry = ws
             .list_projects()
             .into_iter()
@@ -4412,6 +4427,10 @@ provider = "anthropic"
             Some("Stargate"),
             "the bailed account is named in the reply, which is what raises the notice",
         );
+        // This fixture's projects are throwaway dirs, not git repos, so this
+        // worker runs in the project root: the reply must not name a worktree
+        // that was never created.
+        assert_eq!(reply.worktree, None, "a non-git project's worker has no worktree");
         workspace.release_session(&SessionSlot::from_str_for_test(reply.session_id));
     }
 
