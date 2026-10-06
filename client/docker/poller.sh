@@ -20,6 +20,16 @@ fetch() {
     curl -fsSL --max-time 60 --retry 2 "$1"
 }
 
+# sha256sum is what alpine has; shasum is what a mac has, and this script is
+# also run by web-image-check there.
+sha_of() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
 poll_once() {
     manifest=$(fetch "$latest_url") || {
         echo "[..] the manifest is not reachable"
@@ -44,7 +54,7 @@ poll_once() {
         rm -rf "$staging"
         return 0
     fi
-    if ! echo "$sum  $staging/web.tar.gz" | sha256sum -c - > /dev/null 2>&1; then
+    if [ "$(sha_of "$staging/web.tar.gz")" != "$sum" ]; then
         echo "[ERROR] the web archive does not match the manifest's sha256"
         rm -rf "$staging"
         return 1
@@ -61,7 +71,10 @@ poll_once() {
         ln -sfn "dist-$version" "$served/current"
         rm -f "$served/current.new"
     fi
-    printf '%s' "$manifest" > "$served/latest.json"
+    # The flip's own discipline: a browser reading this file mid-write would
+    # see half a manifest.
+    printf '%s' "$manifest" > "$served/latest.json.new"
+    mv -f "$served/latest.json.new" "$served/latest.json"
     # Everything older than the release being served, the seed included.
     for dir in "$served"/dist-*; do
         [ "$dir" = "$served/dist-$version" ] || rm -rf "$dir"

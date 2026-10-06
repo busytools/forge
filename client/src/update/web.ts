@@ -7,7 +7,10 @@
  */
 export async function latestPublished(): Promise<string | null> {
   try {
-    const response = await fetch('./latest.json');
+    // Rooted, not relative: a session deep link would otherwise look for the
+    // manifest under the session's own path, where the app's fallback
+    // answers 200 with the page - a silent null rather than an answer.
+    const response = await fetch('/latest.json');
     if (!response.ok) return null;
     const manifest = (await response.json()) as { version?: unknown };
     return typeof manifest.version === 'string' ? manifest.version : null;

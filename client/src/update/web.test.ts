@@ -10,14 +10,21 @@ beforeEach(() => {
 });
 
 describe('latestPublished', () => {
-  it('reads the version the manifest beside the app names', async () => {
+  it('reads the version the manifest beside the app names, from the root', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ version: '1.0.117', platforms: {}, web: {} }),
     });
 
     await expect(latestPublished()).resolves.toBe('1.0.117');
-    expect(mockFetch).toHaveBeenCalledWith('./latest.json');
+    expect(mockFetch).toHaveBeenCalledWith('/latest.json');
+    // Rooted, not relative: `./latest.json` from a session deep link would
+    // resolve under the session's path, where the app's own fallback answers
+    // 200 with the page - a silent null rather than an answer.
+    const called: unknown = mockFetch.mock.calls[0]?.[0];
+    expect(new URL(String(called), 'https://forge.hub/session/Org/Project/lead').pathname).toBe(
+      '/latest.json',
+    );
   });
 
   it('answers null when nothing serves a manifest', async () => {
