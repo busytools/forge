@@ -8,7 +8,11 @@
 //! document from another schema is refused by name rather than
 //! half-read.
 
-use serde::Deserialize;
+use std::io::Read as _;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
@@ -21,7 +25,7 @@ pub const SCHEMA: &str = "transcribe-catalog-v1";
 const REFERENCE_QUANTS: [&str; 3] = ["Q8_0", "F16", "BF16"];
 
 /// One variant's catalogue entry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueEntry {
     pub variant: String,
     /// Missing falls back to the variant itself.
@@ -97,7 +101,7 @@ impl CatalogueEntry {
 }
 
 /// The licence block, in the two forms the feed carries.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct License {
     #[serde(default)]
     pub spdx: String,
@@ -106,21 +110,21 @@ pub struct License {
 }
 
 /// What a variant can do, as far as the feed verifies it.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Capabilities {
     #[serde(default)]
     pub streaming: Support,
 }
 
 /// One capability's support flag.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Support {
     #[serde(default)]
     pub supported: bool,
 }
 
 /// The benchmark a variant's headline figure comes from.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeadlineBenchmark {
     #[serde(default)]
     pub dataset: String,
@@ -133,7 +137,7 @@ pub struct HeadlineBenchmark {
 }
 
 /// One downloadable quantisation of the variant.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Download {
     #[serde(default)]
     pub quant: String,
@@ -145,7 +149,7 @@ pub struct Download {
 
 /// One measured speed row. Many fields cross that nothing reads; the
 /// wall-clock realtime factor is the one the page compares on.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpeedRow {
     #[serde(default)]
     pub machine: String,
@@ -158,7 +162,7 @@ pub struct SpeedRow {
 }
 
 /// One measured accuracy row.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccuracyRow {
     #[serde(default)]
     pub dataset: String,
@@ -200,6 +204,270 @@ pub fn parse_entry(raw: &str) -> Result<CatalogueEntry, Error> {
         entry.display_name.clone_from(&entry.variant);
     }
     Ok(entry)
+}
+
+/// Bytes any single catalogue response may carry before the fetch
+/// refuses to buffer more. The feed's documents are about 13 KiB; the
+/// cap is what keeps a broken mirror from growing this process.
+const MAX_RESPONSE_BYTES: u64 = 4 << 20;
+
+/// How many entry documents are fetched at once. The feed is roughly 75
+/// small files, so this is what turns a ten-second serial walk into one
+/// that finishes while the page is still drawing its first frame.
+const FETCH_WORKERS: usize = 6;
+
+/// Where the feed is enumerated, fetched and versioned.
+#[derive(Debug, Clone)]
+pub struct CatalogueSource {
+    /// The endpoint listing the catalogue directory's files.
+    pub listing: String,
+    /// URL prefix an entry's own file name is appended to.
+    pub entry_base: String,
+    /// The project's latest release, whose tag labels the feed.
+    pub release: String,
+}
+
+impl Default for CatalogueSource {
+    fn default() -> Self {
+        Self {
+            listing: "https://api.github.com/repos/handy-computer/transcribe.cpp/contents/catalog"
+                .to_owned(),
+            entry_base:
+                "https://raw.githubusercontent.com/handy-computer/transcribe.cpp/main/catalog/"
+                    .to_owned(),
+            release: "https://api.github.com/repos/handy-computer/transcribe.cpp/releases/latest"
+                .to_owned(),
+        }
+    }
+}
+
+/// The feed as one fetch found it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Catalogue {
+    /// RFC 3339, stamped when the fetch ran.
+    pub fetched_at: String,
+    /// The upstream release tag the feed stood at, when it answered.
+    pub release: Option<String>,
+    pub entries: Vec<CatalogueEntry>,
+    /// How many listed documents did not become entries: a bad document
+    /// never fails the feed, and this is what keeps the loss visible.
+    pub skipped: usize,
+}
+
+/// Fetch the whole catalogue. Blocking, like everything else here.
+///
+/// The listing is the spine: without it this refuses. A single document
+/// that cannot be read is skipped and counted, and a feed whose every
+/// document failed is refused rather than answered empty - a page drawn
+/// over an empty catalogue reads the same as a page over a healthy one.
+pub fn fetch_catalogue(source: &CatalogueSource) -> Result<Catalogue, Error> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| Error::Http { url: source.listing.clone(), source: error })?;
+    let listing = get_bounded_text(&client, &source.listing, MAX_RESPONSE_BYTES)?;
+    let names = listed_files(&listing);
+    if names.is_empty() {
+        return Err(Error::Catalogue {
+            message: format!("the listing at {} named no entry documents", source.listing),
+        });
+    }
+
+    let chunk_size = names.len().div_ceil(FETCH_WORKERS).max(1);
+    let (entries, skipped) = std::thread::scope(|scope| {
+        let workers: Vec<_> = names
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let client = &client;
+                let base = source.entry_base.as_str();
+                scope.spawn(move || fetch_chunk(client, base, chunk))
+            })
+            .collect();
+        let mut entries = Vec::new();
+        let mut skipped = 0_usize;
+        for worker in workers {
+            let (chunk_entries, chunk_skipped) =
+                worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            entries.extend(chunk_entries);
+            skipped += chunk_skipped;
+        }
+        (entries, skipped)
+    });
+
+    if entries.is_empty() {
+        return Err(Error::Catalogue {
+            message: format!(
+                "none of the {} catalogue entries listed under {} could be read",
+                names.len(),
+                source.entry_base
+            ),
+        });
+    }
+
+    // The release is a label, not the feed: an answer this build cannot
+    // read costs the tag and nothing else.
+    let release = get_bounded_text(&client, &source.release, MAX_RESPONSE_BYTES)
+        .ok()
+        .and_then(|raw| release_tag(&raw));
+
+    Ok(Catalogue { fetched_at: rfc3339_now(), release, entries, skipped })
+}
+
+/// The entry documents a listing names: JSON files, never the
+/// underscore-prefixed schema and profile records beside them.
+fn listed_files(listing: &str) -> Vec<String> {
+    let Ok(files) = serde_json::from_str::<Vec<serde_json::Value>>(listing) else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .filter(|file| file.get("type").and_then(serde_json::Value::as_str) == Some("file"))
+        .filter_map(|file| file.get("name").and_then(serde_json::Value::as_str))
+        .filter(|name| {
+            Path::new(name).extension().is_some_and(|ext| ext == "json") && !name.starts_with('_')
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Fetch and parse one slice of the listing; a document that cannot be
+/// read is counted, not returned.
+fn fetch_chunk(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    names: &[String],
+) -> (Vec<CatalogueEntry>, usize) {
+    let mut entries = Vec::new();
+    let mut skipped = 0_usize;
+    for name in names {
+        let url = format!("{base}{name}");
+        match get_bounded_text(client, &url, MAX_RESPONSE_BYTES).and_then(|raw| parse_entry(&raw)) {
+            Ok(entry) => entries.push(entry),
+            Err(error) => {
+                skipped += 1;
+                tracing::debug!(
+                    event_name = "dictate_catalogue_entry_skipped",
+                    %url,
+                    %error,
+                    "a catalogue entry could not be read; the rest of the feed stands"
+                );
+            }
+        }
+    }
+    (entries, skipped)
+}
+
+/// GET one response, bounded: a status that is not success is its own
+/// error, and a body past `cap` is refused rather than buffered.
+fn get_bounded_text(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    cap: u64,
+) -> Result<String, Error> {
+    let response =
+        client.get(url).send().map_err(|source| Error::Http { url: url.to_owned(), source })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(Error::HttpStatus { url: url.to_owned(), status: status.as_u16() });
+    }
+    let mut body = String::new();
+    response.take(cap + 1).read_to_string(&mut body).map_err(|source| Error::Catalogue {
+        message: format!("{url} could not be read: {source}"),
+    })?;
+    if body.len() as u64 > cap {
+        return Err(Error::Catalogue {
+            message: format!("{url} answered more than {cap} bytes; refused unread"),
+        });
+    }
+    Ok(body)
+}
+
+/// The tag of a GitHub release document.
+fn release_tag(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()?
+        .get("tag_name")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Now, in RFC 3339 UTC. A clock before the epoch formats as the epoch
+/// rather than failing: a wrong label beats no feed.
+fn rfc3339_now() -> String {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    time::OffsetDateTime::from_unix_timestamp(i64::try_from(now.as_secs()).unwrap_or(0))
+        .ok()
+        .and_then(|at| at.format(&time::format_description::well_known::Rfc3339).ok())
+        .unwrap_or_default()
+}
+
+/// The record of the last fetched feed under [`read_catalogue_cache`]'s
+/// directory.
+const CATALOGUE_CACHE_FILE: &str = "catalogue.json";
+
+/// The record's own layout version. A file written by a layout this
+/// build does not know is ignored rather than misread.
+const CATALOGUE_CACHE_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct CatalogueFile {
+    version: u32,
+    fetched_at: String,
+    release: Option<String>,
+    entries: Vec<CatalogueEntry>,
+    skipped: usize,
+}
+
+/// Read the last fetched catalogue under `dir`, when there is one this
+/// build wrote.
+pub fn read_catalogue_cache(dir: &Path) -> Result<Option<Catalogue>, Error> {
+    let file = dir.join(CATALOGUE_CACHE_FILE);
+    let raw = match std::fs::read_to_string(&file) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(Error::Io { path: file, source }),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|source| Error::Catalogue {
+            message: format!("{} is not a catalogue cache: {source}", file.display()),
+        })?;
+    // The version is read before the shape: a file another layout wrote
+    // is no catalogue, not a corrupt one, and its fields are not this
+    // build's to require.
+    if value.get("version").and_then(serde_json::Value::as_u64)
+        != Some(u64::from(CATALOGUE_CACHE_VERSION))
+    {
+        return Ok(None);
+    }
+    let parsed: CatalogueFile =
+        serde_json::from_value(value).map_err(|source| Error::Catalogue {
+            message: format!("{} is not a catalogue cache: {source}", file.display()),
+        })?;
+    Ok(Some(Catalogue {
+        fetched_at: parsed.fetched_at,
+        release: parsed.release,
+        entries: parsed.entries,
+        skipped: parsed.skipped,
+    }))
+}
+
+/// Write the feed under `dir`, so a page reads the last-known rows
+/// without the network.
+pub fn write_catalogue_cache(dir: &Path, catalogue: &Catalogue) -> Result<(), Error> {
+    let body = serde_json::to_string(&CatalogueFile {
+        version: CATALOGUE_CACHE_VERSION,
+        fetched_at: catalogue.fetched_at.clone(),
+        release: catalogue.release.clone(),
+        entries: catalogue.entries.clone(),
+        skipped: catalogue.skipped,
+    })
+    .map_err(|source| Error::Catalogue {
+        message: format!("the catalogue did not serialise: {source}"),
+    })?;
+    std::fs::create_dir_all(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+    let file = dir.join(CATALOGUE_CACHE_FILE);
+    std::fs::write(&file, body).map_err(|source| Error::Io { path: file, source })
 }
 
 #[cfg(test)]
@@ -323,5 +591,223 @@ mod tests_catalogue {
         assert_eq!(entry.m4_metal_xrt_wall(), None, "no rows, no number");
         assert_eq!(entry.fleurs_en_wer(), None);
         assert!(!entry.streaming(), "absent capabilities are not a claim of support");
+    }
+}
+
+#[cfg(test)]
+mod tests_catalogue_fetch {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn fixture(name: &str) -> String {
+        let path = format!("{}/fixtures/catalogue/{name}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).expect("the fixture must be readable")
+    }
+
+    /// Loopback HTTP/1.1 server answering fixed paths, one request per
+    /// connection. Anything unrouted answers 404.
+    fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_err() {
+                    continue;
+                }
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let (status, body) = match routes.iter().find(|(route, _, _)| *route == path) {
+                    Some((_, status, body)) => (*status, body.clone()),
+                    None => (404, Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        base
+    }
+
+    fn listing(names: &[&str]) -> Vec<u8> {
+        let files: Vec<serde_json::Value> =
+            names.iter().map(|name| serde_json::json!({"name": name, "type": "file"})).collect();
+        serde_json::to_vec(&serde_json::Value::Array(files)).unwrap()
+    }
+
+    fn source(base: &str) -> CatalogueSource {
+        CatalogueSource {
+            listing: format!("{base}/catalog"),
+            entry_base: format!("{base}/catalog/"),
+            release: format!("{base}/release"),
+        }
+    }
+
+    /// The real feed shape: a listing of files, one document each, plus
+    /// the release the page stamps as the catalogue's version.
+    #[test]
+    fn every_listed_entry_is_fetched_and_parsed() {
+        let base = serve(vec![
+            ("/catalog", 200, listing(&["a.json", "b.json", "_schema.json", "README.md"])),
+            ("/catalog/a.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
+            ("/catalog/b.json", 200, fixture("granite-speech-5.0-470m-turboctc.json").into_bytes()),
+            ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
+        ]);
+
+        let catalogue = fetch_catalogue(&source(&base)).expect("the feed must assemble");
+
+        assert_eq!(catalogue.entries.len(), 2, "one entry per listed document");
+        assert_eq!(catalogue.skipped, 0, "nothing was skipped");
+        assert_eq!(catalogue.release.as_deref(), Some("v0.3.1"), "the release tag rides along");
+        assert!(!catalogue.fetched_at.is_empty(), "the fetch stamps when it ran");
+        assert!(
+            catalogue.entries.iter().any(|e| e.variant == "cohere-transcribe-03-2026"),
+            "the entries are the documents the listing named"
+        );
+    }
+
+    /// One unreadable document must not cost the whole feed: it is
+    /// skipped and counted, and the count crosses.
+    #[test]
+    fn an_entry_that_does_not_parse_is_skipped_and_counted() {
+        let base = serve(vec![
+            ("/catalog", 200, listing(&["good.json", "broken.json"])),
+            (
+                "/catalog/good.json",
+                200,
+                fixture("granite-speech-5.0-470m-turboctc.json").into_bytes(),
+            ),
+            ("/catalog/broken.json", 200, b"{ not an entry".to_vec()),
+            ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
+        ]);
+
+        let catalogue = fetch_catalogue(&source(&base)).expect("the good entry still assembles");
+
+        assert_eq!(catalogue.entries.len(), 1);
+        assert_eq!(catalogue.entries[0].variant, "granite-speech-5.0-470m-turboctc");
+        assert_eq!(catalogue.skipped, 1, "the count is what tells a reader rows are missing");
+    }
+
+    /// A feed where nothing parses is a refusal: answering an empty
+    /// catalogue would draw a healthy page over a broken fetch.
+    #[test]
+    fn a_feed_where_nothing_parses_is_refused_rather_than_answered_empty() {
+        let base = serve(vec![
+            ("/catalog", 200, listing(&["broken.json"])),
+            ("/catalog/broken.json", 200, b"{}".to_vec()),
+        ]);
+
+        let err = fetch_catalogue(&source(&base)).expect_err("an empty result is not a feed");
+        assert!(
+            err.to_string().contains("none of the 1") && err.to_string().contains("/catalog/"),
+            "the refusal must say nothing listed could be read and where it looked, got: {err}"
+        );
+    }
+
+    /// The listing is the feed's spine; without it there is nothing to
+    /// fetch and the status is what a reader needs to see.
+    #[test]
+    fn a_listing_that_answers_an_error_is_refused_with_its_status() {
+        let base = serve(vec![("/catalog", 502, b"bad gateway".to_vec())]);
+
+        let err = fetch_catalogue(&source(&base)).expect_err("a 502 listing is not a feed");
+        assert!(
+            err.to_string().contains("502"),
+            "the refusal must carry the status the server answered, got: {err}"
+        );
+    }
+
+    /// The release tag is a label; a feed whose release endpoint is
+    /// missing still has all its entries.
+    #[test]
+    fn a_missing_release_is_not_a_failed_fetch() {
+        let base = serve(vec![
+            ("/catalog", 200, listing(&["a.json"])),
+            ("/catalog/a.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
+            // /release unrouted: 404.
+        ]);
+
+        let catalogue = fetch_catalogue(&source(&base)).expect("the entries are the feed");
+        assert_eq!(catalogue.entries.len(), 1);
+        assert_eq!(catalogue.release, None, "no tag is None, not a failure");
+    }
+
+    /// A response past the cap is refused for that entry rather than
+    /// buffered: the fetch runs on a machine-local daemon, and a broken
+    /// mirror must not be able to grow its memory.
+    #[test]
+    fn an_oversized_entry_is_skipped_rather_than_buffered() {
+        let oversized = vec![b'x'; usize::try_from(MAX_RESPONSE_BYTES).unwrap() + 1];
+        let base = serve(vec![
+            ("/catalog", 200, listing(&["huge.json", "good.json"])),
+            ("/catalog/huge.json", 200, oversized),
+            ("/catalog/good.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
+        ]);
+
+        let catalogue = fetch_catalogue(&source(&base)).expect("the good entry assembles");
+        assert_eq!(catalogue.entries.len(), 1, "the oversized one never becomes an entry");
+        assert_eq!(catalogue.skipped, 1, "and it is counted as skipped");
+    }
+
+    /// The cache is what lets a page read the last-known feed offline,
+    /// so it round-trips whole and an absent one is simply no catalogue.
+    #[test]
+    fn the_cache_round_trips_and_an_absent_one_is_no_catalogue() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            read_catalogue_cache(dir.path()).expect("absent is not a failure").is_none(),
+            "a cache that was never written is no catalogue"
+        );
+
+        let catalogue = Catalogue {
+            fetched_at: "2026-10-06T06:12:00+05:30".to_owned(),
+            release: Some("v0.3.1".to_owned()),
+            entries: vec![
+                parse_entry(&fixture("cohere-transcribe-03-2026.json")).expect("parse"),
+                parse_entry(&fixture("granite-speech-5.0-470m-turboctc.json")).expect("parse"),
+            ],
+            skipped: 1,
+        };
+        write_catalogue_cache(dir.path(), &catalogue).expect("the write must land");
+
+        let back = read_catalogue_cache(dir.path())
+            .expect("the write must be readable")
+            .expect("a written cache is present");
+        assert_eq!(back, catalogue, "the cache carries the feed as it was fetched");
+    }
+
+    /// A cache this build cannot read is refused by name; the caller
+    /// decides whether that costs a refresh or only a warning.
+    #[test]
+    fn a_corrupt_cache_is_refused_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("catalogue.json"), b"{ not json").unwrap();
+
+        let err = read_catalogue_cache(dir.path()).expect_err("a corrupt cache is not a feed");
+        assert!(
+            err.to_string().contains("catalogue.json"),
+            "the refusal must name the file, got: {err}"
+        );
+
+        // A layout from another build is ignored rather than misread.
+        let older = serde_json::json!({"version": 99, "fetched_at": "x", "entries": []});
+        std::fs::write(dir.path().join("catalogue.json"), older.to_string()).unwrap();
+        assert!(
+            read_catalogue_cache(dir.path()).expect("a foreign layout is not an error").is_none(),
+            "a cache written by another layout is no catalogue, not a misread one"
+        );
     }
 }
