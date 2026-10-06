@@ -153,10 +153,15 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // A prompt frame is a user turn: neither arm below draws anything of
         // it, so the origin does not change what the fleet folds.
         SessionUpdate::ChatAppended { key, msg, .. } => match msg {
-            Message::Result { is_error, subtype, .. }
-                if is_success_result(*is_error, subtype) =>
-            {
-                FleetNews::Completed(key)
+            Message::Result { is_error, subtype, .. } => {
+                if is_success_result(*is_error, subtype) {
+                    FleetNews::Completed(key)
+                } else {
+                    // A failed turn can arm the row's failure mark, so the
+                    // rows are re-read; a cancelled turn only redraws the
+                    // rows it left.
+                    FleetNews::Redraw
+                }
             }
             Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
                 if parse_runtime_session_state(data.get("state")) == Some(RuntimeSessionState::Running)
@@ -325,18 +330,22 @@ mod tests {
         assert!(unseen.is_unseen(&untouched), "and the slot that did not keeps its diamond");
     }
 
-    /// Catches a diamond armed by the wrong result, and a page redrawn for
-    /// the conversation it does not show.
+    /// Catches a diamond armed by the wrong result, and a failed turn that
+    /// redraws the rows without arming one - the mark it arms is the
+    /// failure mark, not the diamond.
     #[test]
     fn only_a_finished_turn_arms_the_diamond() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
 
         assert!(
-            !live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
-            "a turn that failed is not a turn that finished",
+            live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
+            "a failed turn redraws the rows the failure mark rides",
         );
-        assert!(!live.snapshot().unseen.is_unseen(&slot), "so nothing is unseen");
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "but a turn that failed is not a turn that finished, so no diamond",
+        );
 
         assert!(
             live.apply(&appended(&slot, result_message("success", false))).fleet,

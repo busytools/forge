@@ -1641,9 +1641,12 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
-        // in-flight guards don't read a stale turn.
+        // in-flight guards don't read a stale turn. The failure mark goes
+        // with them: the row reads its failure from the lifecycle.
         domain.runtime_state = None;
         domain.turn_pending = false;
+        domain.pending_cancel = false;
+        domain.failed_turn_at = None;
         // No terminal `background_tasks_changed` follows a dead session,
         // so the last snapshot would stand forever - and the registry with
         // it, spinning rows over tasks a dead process never finished.
@@ -1652,6 +1655,25 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // process: left standing it draws rows for processes that are not
         // there, and nothing follows a dead session that would replace it.
         domain.process_snapshot = None;
+    }
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::Result { is_error, .. }, ..
+    } = event
+    {
+        // The stamp is spent on every outcome: a cancel that raced a turn
+        // the CLI had already finished must not exempt the next failure.
+        let cancelled = std::mem::take(&mut domain.pending_cancel);
+        // An errored `Result` marks the slot for the rail, unless the
+        // reader asked for the interruption - a cancel ends with the same
+        // failed result a genuine error does.
+        if *is_error && !cancelled {
+            domain.failed_turn_at = Some(std::time::SystemTime::now());
+        }
+    }
+    if let AgentEvent::SdkMessage { msg: forge_primitives::Message::Error { .. }, .. } = event {
+        // A transport death ends the turn too; nothing marks for it, but
+        // the stamp must not outlive the turn it was armed for.
+        domain.pending_cancel = false;
     }
     // The snapshot carries the whole set, so mirroring it is an
     // assignment and an empty one clears.
@@ -1720,6 +1742,10 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
         domain.turn_pending = false;
+        // The failure mark named the last occupant's turn, and so did any
+        // interrupt it was holding.
+        domain.pending_cancel = false;
+        domain.failed_turn_at = None;
         // A second Connected is a new occupant in the same slot, and the
         // CLI re-sends the whole background set only when it changes: a
         // registry left standing would spin a row over a task that went
@@ -3107,6 +3133,55 @@ mod tests {
 
         let (key, ..) = drained_notice(&mut update_rx).expect("a cancelled turn still notifies");
         assert_eq!(key, reviewer);
+    }
+
+    /// A turn that ends in error marks the slot - the fact the rail's
+    /// failure mark reads - and a result the reader asked to interrupt
+    /// does not: a cancel ends with the same failed `Result`.
+    #[test]
+    fn an_errored_result_marks_the_slot_unless_the_reader_cancelled() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("failed-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "failed-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        assert!(
+            task.domain.lock().failed_turn_at.is_some(),
+            "a genuine error marks the slot for the rail",
+        );
+
+        // The reader cancels the next turn: armed at Cancel routing when
+        // the turn is in flight, spent at the result, which must not mark.
+        task.domain.lock().failed_turn_at = None;
+        task.domain.lock().pending_cancel = true;
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "failed-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        assert!(
+            task.domain.lock().failed_turn_at.is_none(),
+            "a cancelled turn is the reader's own act, not a failure to flag",
+        );
+        assert!(!task.domain.lock().pending_cancel, "the stamp is spent at the result");
+
+        // And spent when unused: a cancel that raced a turn the CLI had
+        // already finished must not exempt the next genuine failure.
+        task.domain.lock().pending_cancel = true;
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "failed-rail".to_owned(),
+            msg: result_message("success", false),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "failed-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        assert!(
+            task.domain.lock().failed_turn_at.is_some(),
+            "a success spends the stamp, so the next real failure marks",
+        );
     }
 
     /// The gateway edge: a rate_limit_event whose status is not

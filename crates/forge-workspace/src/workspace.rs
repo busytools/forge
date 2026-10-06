@@ -4208,11 +4208,26 @@ impl Workspace {
             if let Some(sender) = senders.get(&key) {
                 // Stamp turn_pending only on the routed path (set + route
                 // together) so the in-flight guards can't race a Prompt
-                // whose wire-lagged `Running` echo hasn't landed yet.
+                // whose wire-lagged `Running` echo hasn't landed yet. The
+                // committed turn also spends the previous turn's failure
+                // mark: the newest turn is this one now.
                 if matches!(cmd, Command::Prompt { .. } | Command::PromptUnder { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
-                    domain.lock().turn_pending = true;
+                    let mut guard = domain.lock();
+                    guard.turn_pending = true;
+                    guard.failed_turn_at = None;
+                }
+                // Arm the cancel stamp on the routed path, so the turn's
+                // own failed `Result` can tell a reader's interrupt from a
+                // genuine error. An idle Cancel arms nothing.
+                if matches!(cmd, Command::Cancel { .. })
+                    && let Some(domain) = self.domain_session_for(&key)
+                {
+                    let mut guard = domain.lock();
+                    if guard.turn_in_flight() {
+                        guard.pending_cancel = true;
+                    }
                 }
                 return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
             }
@@ -5017,6 +5032,14 @@ impl Workspace {
     /// every view.
     pub fn has_background_work(&self, slot: &SessionSlot) -> bool {
         self.domain_session_for(slot).is_some_and(|domain| domain.lock().background_work)
+    }
+
+    /// When `slot`'s newest turn ended in failure, for the rail's mark.
+    /// `None` for a slot whose newest turn succeeded, never ran, was
+    /// cancelled by the reader, or has since been moved past with a new
+    /// turn.
+    pub fn session_failed_turn(&self, slot: &SessionSlot) -> Option<std::time::SystemTime> {
+        self.domain_session_for(slot).and_then(|domain| domain.lock().failed_turn_at)
     }
 
     /// What the session at `slot` is waiting on a person for, or `None`
@@ -10356,6 +10379,47 @@ provider = "anthropic"
         workspace.dispatch(Command::Cancel { key }).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
+    }
+
+    /// The two facts the failed-turn mark reads from the routing seam, on
+    /// the production path a registered sender puts a dispatch on: Cancel
+    /// arms the exempt stamp only while a turn is in flight, and a
+    /// committed prompt spends the previous failure.
+    #[test]
+    fn routing_arms_cancels_in_flight_and_spends_the_failure_mark_on_a_prompt() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("routing-seam");
+        workspace.register_domain_session(key.clone(), None);
+        // Registers the sender, so dispatch takes the routed path rather
+        // than the test-only synchronous fallback.
+        workspace.mark_test_session_live(&key);
+        let domain = workspace.domain_session_for(&key).expect("registered domain");
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(key.display()));
+
+        // An idle Cancel arms nothing: there is no turn to exempt.
+        workspace.dispatch(Command::Cancel { key: key.clone() }).expect("dispatch");
+        assert!(!domain.lock().pending_cancel, "an idle cancel arms nothing");
+
+        domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
+        domain.lock().turn_pending = true;
+        workspace.dispatch(Command::Cancel { key: key.clone() }).expect("dispatch");
+        assert!(domain.lock().pending_cancel, "a cancel over a live turn arms the stamp");
+        assert!(
+            workspace.session_failed_turn(&key).is_some(),
+            "and leaves the standing mark in place",
+        );
+
+        workspace
+            .dispatch(Command::Prompt {
+                key: key.clone(),
+                text: "go".to_owned(),
+                attachments: Vec::new(),
+            })
+            .expect("dispatch");
+        assert!(
+            workspace.session_failed_turn(&key).is_none(),
+            "a committed prompt moves past the failure: the newest turn is this one",
+        );
     }
 
     /// The review/close store writes route through the command

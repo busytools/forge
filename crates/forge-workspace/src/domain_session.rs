@@ -156,6 +156,16 @@ pub struct DomainSession {
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
     pub turn_pending: bool,
+    /// Whether the reader asked to stop the in-flight turn. Stamped
+    /// where `Command::Cancel` routes and spent when that turn's
+    /// `Result` lands: a cancelled turn ends with the same failed
+    /// `Result` a genuine error does, so `failed_turn_at` below cannot
+    /// tell the two apart without it.
+    pub pending_cancel: bool,
+    /// When the slot's newest turn ended in failure, for the rail's
+    /// mark. Cleared when a new turn is committed, dropped with the
+    /// occupant, and never set for a turn the reader cancelled.
+    pub failed_turn_at: Option<std::time::SystemTime>,
     /// Whether the CLI last reported live background work here - the
     /// `background_tasks_changed` snapshot, which carries the whole set
     /// each change, so an empty one clears. Held on the session rather
@@ -451,6 +461,8 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            pending_cancel: false,
+            failed_turn_at: None,
             background_work: false,
             background_tasks: Vec::new(),
             background_commands: HashMap::new(),
