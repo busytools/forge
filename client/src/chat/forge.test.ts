@@ -85,7 +85,7 @@ describe('a forge call with no card of its own', () => {
 });
 
 describe('a forge call the page cannot dress', () => {
-  it('falls back to the raw text for every case that is not a card', () => {
+  it('falls back to the raw text for each way a tasks result is not a card', () => {
     const update = 'mcp__forge__tasks__update';
     // A payload that PARSES, so each fallback is its guard's doing and not a
     // malformed body every return path would refuse anyway.
@@ -844,8 +844,8 @@ describe('the worker lifecycle cards', () => {
     expect(card?.pieces, 'a clean despawn carries no text').toEqual([]);
   });
 
-  it('keeps what a despawn could not clean as its warnings', () => {
-    const card = forgeCardOf(
+  it('keeps what a despawn could not clean as its warnings, and drops the chip that lies', () => {
+    const branch = forgeCardOf(
       'mcp__forge__agents__despawn',
       { label: 'card-smoke' },
       result(
@@ -855,10 +855,30 @@ describe('the worker lifecycle cards', () => {
         }),
       ),
     );
-    expect(card?.title).toBe("closed worker 'card-smoke'");
-    expect(card?.pieces).toEqual([
+    expect(branch?.title).toBe("closed worker 'card-smoke'");
+    expect(branch?.pieces).toEqual([
       { kind: 'warnline', label: 'branch', text: "branch 'worktree-w1' kept: 2 commits" },
     ]);
+    expect(branch?.chips, 'a kept branch still had its worktree removed').toEqual([
+      { text: 'worktree removed', tone: 'dim' },
+    ]);
+
+    // The other field, and the one that contradicts the chip: a worktree the
+    // teardown could not remove.
+    const worktree = forgeCardOf(
+      'mcp__forge__agents__despawn',
+      { label: 'card-smoke' },
+      result(
+        JSON.stringify({
+          status: 'despawned',
+          worktree_cleanup_warning: 'the directory lingers',
+        }),
+      ),
+    );
+    expect(worktree?.pieces).toEqual([
+      { kind: 'warnline', label: 'worktree', text: 'the directory lingers' },
+    ]);
+    expect(worktree?.chips, 'and the chip goes with it').toEqual([]);
   });
 
   it('draws a call still out from its own input, saying the wait it is in', () => {

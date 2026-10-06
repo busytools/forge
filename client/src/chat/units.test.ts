@@ -1039,6 +1039,15 @@ describe('one turn folded into the units a view draws', () => {
       inboundsOf(fold([unknown])[0])[0]?.title,
       'a fire whose frame was never seen falls back to the prompt first line',
     ).toBe('sweep the queue');
+
+    // A schedule registered with no description keeps the fallback too: the
+    // frame names nothing, and a row titled with nothing is worse than the
+    // prompt it is already showing.
+    const bare = heard([text('[Cron]\n\nrotate the logs')], { uuid: 'p-3377' });
+    cronNames.remember('p-3377', '');
+    expect(inboundsOf(fold([bare])[0])[0]?.title, 'an empty description is not a name').toBe(
+      'rotate the logs',
+    );
   });
 
   it('reads a Slack id the way the server reads one', () => {

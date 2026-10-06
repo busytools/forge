@@ -1168,7 +1168,7 @@ function tsOf(answer: unknown): string[] | null {
  *
  * The family segment is what picks the card; the verb picks the arm inside it.
  */
-export function verbOf(name: string): string {
+function verbOf(name: string): string {
   const parts = name.split('__');
   return parts.length === 0 ? '' : (parts[parts.length - 1] ?? '');
 }
