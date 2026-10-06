@@ -387,6 +387,17 @@ pub enum Command {
     DictateDeactivate {
         role: crate::dictate::DictateRole,
     },
+    /// Run one model over one tier of this machine's own material.
+    /// App-level, and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`] like the others: ticks as
+    /// it runs, then the result or the reason.
+    DictateBench {
+        target: crate::bench::BenchTarget,
+        tier: forge_dictate::bench::Tier,
+    },
+    /// Stop the bench in flight. What ran so far is discarded: a partial
+    /// corpus is not a result.
+    DictateBenchStop,
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -714,6 +725,8 @@ impl Command {
             | Self::DictateInstall { .. }
             | Self::DictateActivate { .. }
             | Self::DictateDeactivate { .. }
+            | Self::DictateBench { .. }
+            | Self::DictateBenchStop
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -864,6 +877,10 @@ impl std::fmt::Debug for Command {
             Self::DictateDeactivate { role } => {
                 f.debug_struct("DictateDeactivate").field("role", role).finish()
             }
+            Self::DictateBench { target, tier } => {
+                f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
+            }
+            Self::DictateBenchStop => f.write_str("DictateBenchStop"),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
@@ -2169,6 +2186,13 @@ pub enum DispatchError {
     /// is the `[dictate]` key that does.
     #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
     PinnedRole { key: String },
+    /// A bench holds the machine: it is measuring an engine, so a swap or
+    /// a second run waits for it to finish or stops it.
+    #[error("a bench is running; stop it before changing models")]
+    BenchRunning,
+    /// A stop arrived and nothing was running to stop.
+    #[error("no bench is running")]
+    BenchNotRunning,
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

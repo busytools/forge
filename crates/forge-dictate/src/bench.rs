@@ -286,7 +286,7 @@ fn words(text: &str) -> Vec<String> {
 /// four billion of any is far past what a corpus or a sentence holds, so
 /// the saturation arm is unreachable in fact and only keeps the function
 /// total.
-fn ratio(part: usize, whole: usize) -> f64 {
+pub fn ratio(part: usize, whole: usize) -> f64 {
     if whole == 0 {
         return 0.0;
     }

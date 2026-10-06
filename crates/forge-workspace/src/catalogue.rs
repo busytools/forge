@@ -48,6 +48,11 @@ pub struct DictateModelsSnapshot {
     pub activate: crate::install::ActivateState,
     /// Every model downloaded from the feed on this machine, oldest first.
     pub installed: Vec<crate::install::InstalledModel>,
+    /// Where the last bench got to: idle, running with its tick, or
+    /// failed with its reason.
+    pub bench: crate::bench::BenchState,
+    /// What benches have measured on this machine, newest first.
+    pub results: Vec<crate::bench::BenchResult>,
 }
 
 /// What the last catalogue check did.
@@ -407,6 +412,8 @@ impl crate::Workspace {
             install: self.dictate_install(),
             activate: self.dictate_activate(),
             installed: self.installed_models(),
+            bench: self.dictate_bench(),
+            results: self.bench_results(),
         }
     }
 
@@ -1107,6 +1114,12 @@ pub(crate) mod tests_catalogue_view {
         assert!(matches!(view.check, CatalogueCheck::Never));
         assert!(view.rows.is_empty(), "no fetched feed is no rows");
         assert!(view.updates.is_empty(), "and no update to propose");
+        assert_eq!(
+            view.bench,
+            crate::bench::BenchState::Idle,
+            "no bench is running on a fresh read"
+        );
+        assert!(view.results.is_empty(), "and nothing has been measured yet");
     }
 
     /// With `[dictate]` off the page reads no models in use and no

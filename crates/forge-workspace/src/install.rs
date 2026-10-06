@@ -134,6 +134,9 @@ impl Workspace {
         if !self.config.dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
+        if self.bench_running() {
+            return Err(DispatchError::BenchRunning);
+        }
         {
             let mut state = self.dictate_install.lock();
             if matches!(*state, InstallState::Downloading { .. }) {
@@ -181,7 +184,7 @@ impl Workspace {
     }
 
     /// The page's re-read, pushed the way a landed check pushes one.
-    fn push_models(&self) {
+    pub(crate) fn push_models(&self) {
         let models = self.dictate_models();
         let _ = self.update_sender().send(SessionUpdate::DictateModelsChanged { models });
     }
@@ -518,6 +521,9 @@ impl Workspace {
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
+        if self.bench_running() {
+            return Err(DispatchError::BenchRunning);
+        }
         {
             let mut state = self.dictate_activate.lock();
             if matches!(*state, ActivateState::Activating { .. }) {
@@ -549,6 +555,9 @@ impl Workspace {
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
+        }
+        if self.bench_running() {
+            return Err(DispatchError::BenchRunning);
         }
         let Some(pin) = self.pin_for(role) else {
             return Err(DispatchError::DictateOff);
@@ -722,7 +731,7 @@ impl Workspace {
 }
 
 /// A `SystemTime` as RFC 3339, the stamp a result is comparable by.
-fn rfc3339_now() -> String {
+pub(crate) fn rfc3339_now() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()

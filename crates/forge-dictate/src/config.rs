@@ -145,6 +145,11 @@ pub struct Config {
     /// machine-local directory of its own to put it in keeps the old
     /// cost rather than having one invented for it.
     pub digest_cache_dir: Option<PathBuf>,
+    /// Directory the read-aloud set lives in, when this machine has
+    /// recorded one: the passage and the take that read it, which
+    /// `crate::bench` reads back as the one corpus whose words are known.
+    /// `None` is a machine that never armed it.
+    pub read_aloud_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -160,6 +165,7 @@ impl Default for Config {
             silence_floor: -50.0,
             diagnostics_dir: None,
             digest_cache_dir: None,
+            read_aloud_dir: None,
         }
     }
 }
@@ -238,6 +244,13 @@ impl ConfigBuilder {
     /// unchanged since its last verification is not hashed again.
     pub fn digest_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.inner.digest_cache_dir = Some(dir.into());
+        self
+    }
+
+    /// Point the read-aloud set at a directory this host keeps, which is
+    /// what the bench's gold tier reads back.
+    pub fn read_aloud_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.inner.read_aloud_dir = Some(dir.into());
         self
     }
 

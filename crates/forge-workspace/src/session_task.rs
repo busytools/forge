@@ -1569,6 +1569,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateInstall { .. }
         | Command::DictateActivate { .. }
         | Command::DictateDeactivate { .. }
+        | Command::DictateBench { .. }
+        | Command::DictateBenchStop
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

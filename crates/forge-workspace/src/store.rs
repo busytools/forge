@@ -28,6 +28,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
+pub mod bench_results;
 pub mod cron;
 pub mod dictate_models;
 pub mod dynamic_workers;

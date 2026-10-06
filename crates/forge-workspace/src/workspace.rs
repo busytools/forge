@@ -299,6 +299,10 @@ pub struct Workspace {
     /// `Command::DictateActivate`, read by the models page through
     /// `dictate_activate`.
     pub(crate) dictate_activate: Mutex<crate::install::ActivateState>,
+    /// Where the last bench got to, and the flag its Stop sets. Read by
+    /// the models page through `dictate_bench` and `bench_results`.
+    pub(crate) dictate_bench: Mutex<crate::bench::BenchState>,
+    pub(crate) dictate_bench_cancel: std::sync::atomic::AtomicBool,
     /// A test's own catalogue source, so a check can run against a
     /// loopback server instead of GitHub. Not present in production
     /// builds.
@@ -1507,6 +1511,8 @@ impl Workspace {
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
+            dictate_bench: Mutex::new(crate::bench::BenchState::default()),
+            dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -4483,6 +4489,12 @@ impl Workspace {
                 }
                 Command::DictateDeactivate { role } => {
                     return self.start_deactivate(role);
+                }
+                Command::DictateBench { target, tier } => {
+                    return self.start_bench(target, tier);
+                }
+                Command::DictateBenchStop => {
+                    return self.stop_bench();
                 }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);

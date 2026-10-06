@@ -353,6 +353,8 @@ impl Workspace {
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
+            dictate_bench: Mutex::new(crate::bench::BenchState::default()),
+            dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]

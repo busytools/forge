@@ -284,6 +284,8 @@ mod tests {
                 install: forge_workspace::install::InstallState::Idle,
                 activate: forge_workspace::install::ActivateState::Idle,
                 installed: Vec::new(),
+                bench: forge_workspace::bench::BenchState::Idle,
+                results: Vec::new(),
             },
         };
 
