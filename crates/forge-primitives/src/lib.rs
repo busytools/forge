@@ -48,6 +48,7 @@
 
 pub mod account;
 pub mod background;
+pub mod browser;
 pub mod client;
 pub mod cloud;
 pub mod command;

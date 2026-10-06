@@ -201,6 +201,19 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String);
 pub(crate) type ParkedSlackDraft =
     (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
 
+/// One parked browser hand-off: the session that asked, the hand-off itself,
+/// and the sender the blocked `browser_hand_off` handler awaits.
+///
+/// It rides beside the sender for the same reason the Slack draft does - the
+/// update carries it once, so a view that attached after it landed has nothing
+/// else to draw the dock from - and the sender is what makes the wait end: no
+/// clock ends it, only an answer, or the handler's own drop.
+pub(crate) type ParkedBrowserHandOff = (
+    SessionSlot,
+    forge_primitives::browser::HandOff,
+    tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
+);
+
 /// What the last spawn handed `Agent::spawn` as its listing.
 ///
 /// Three cases, because a lead's listing and a spawn that never ran are
@@ -266,6 +279,13 @@ pub struct Workspace {
     /// unobservable.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_listing: Mutex<RecordedListing>,
+    /// The `forge` MCP server the last spawn built, for the same reason the
+    /// listing above is kept: a stand-in replaces `Agent::spawn`, so the
+    /// server it would have been handed is otherwise dropped unobserved -
+    /// and a test that has to drive a tool through the spawn's OWN
+    /// composition (which facade it was built with) needs it.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_server: Mutex<Option<forge_sdk::mcp::server::McpServer>>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -286,6 +306,11 @@ pub struct Workspace {
     /// process ends. Set by `Command::SetDictateDevice`; a Reset
     /// clears it. Volatile, never persisted.
     pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
+    /// The browser relay: the one client connection that drives the browser.
+    /// The workspace owns it because both halves need the same one - the
+    /// tools in `mcp::browser` ask through it, and the transport registers
+    /// the connection that answers into it.
+    pub(crate) browser: Arc<crate::browser::BrowserRelay>,
     /// The model catalogue: the last fetched feed and what the last check
     /// did. Loaded from its cache at boot, refreshed by
     /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
@@ -496,6 +521,12 @@ pub struct Workspace {
     /// beside it so an answer is only ever applied by the session it was
     /// addressed to.
     pub(crate) slack_drafts: Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>,
+    /// Browser hand-offs parked for the person at a client, keyed by their id
+    /// and carrying the session that asked. The owner is stored beside each so
+    /// an answer is only ever applied by the session it was addressed to; the
+    /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
+    /// for as long as the person takes.
+    pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -1487,6 +1518,8 @@ impl Workspace {
             test_spawn_handle: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_listing: Mutex::new(RecordedListing::None),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -1496,6 +1529,7 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
+            browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
@@ -1537,6 +1571,7 @@ impl Workspace {
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
+            browser_handoffs: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -1583,6 +1618,14 @@ impl Workspace {
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
         self.config.client.clone()
+    }
+
+    /// The browser relay: the one client connection that drives the browser.
+    /// Read by the binary entry point, which hands it to the transport so a
+    /// capable connection can take the role, and by the browser family's
+    /// facade, which sends asks through it.
+    pub fn browser_relay(&self) -> Arc<crate::browser::BrowserRelay> {
+        Arc::clone(&self.browser)
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
@@ -2037,6 +2080,8 @@ impl Workspace {
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
+            let browser_facade =
+                crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
@@ -2056,6 +2101,7 @@ impl Workspace {
                 crate::mcp::ForgeServerFacades {
                     workspace: workspace_facade,
                     worker: worker_facade,
+                    browser: browser_facade,
                     review: review_facade,
                     cron: cron_facade,
                     gotify: gotify_facade,
@@ -2078,6 +2124,10 @@ impl Workspace {
                 Some(listing) => RecordedListing::Listed(listing.clone()),
                 None => RecordedListing::NoListing,
             };
+            // Kept beside the listing: the stand-in below replaces the call
+            // the server would have been handed to, so this is the only way a
+            // test sees the one the spawn composed.
+            *self.test_spawn_server.lock() = Some(forge_server.clone());
         }
         let spawn_agent = || {
             forge_agent::Agent::spawn(
@@ -3502,6 +3552,12 @@ impl Workspace {
     /// fails the turn rather than hanging it. A subscriber that declares
     /// itself an observer is not counted as an answer.
     ///
+    /// **A browser hand-off fails closed differently**: nothing parks a
+    /// decision for it to cancel, so its registration hands the blocked call
+    /// a dead receiver instead and the tool answers the reason - no attached
+    /// client can show the hand-off - rather than holding a session on a
+    /// prompt no view can draw.
+    ///
     /// Who takes the pre-attach backlog is positional, not role-aware:
     /// an observer subscribing before the TUI is the first caller and
     /// takes whatever the workspace emitted beforehand, the boot notice
@@ -4141,6 +4197,15 @@ impl Workspace {
                     return Err(DispatchError::NoDraftWaiting { key: key.clone(), id: *id });
                 }
             }
+            Command::RespondBrowserHandOff { key, id, .. } => {
+                let waiting = self.browser_handoff_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoBrowserHandOffWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {
@@ -4429,6 +4494,23 @@ impl Workspace {
                     );
                     if !answered {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
+                    }
+                }
+                Command::RespondBrowserHandOff { key, id, done } => {
+                    // Same shape as the Slack arm above: the guard already
+                    // refused one that is not waiting, so a `false` here is a
+                    // resolve that landed between the two.
+                    let ending = if done {
+                        forge_primitives::browser::HandOffEnding::Done
+                    } else {
+                        forge_primitives::browser::HandOffEnding::NotNow
+                    };
+                    let answered = self.resolve_browser_hand_off(id, &key, ending);
+                    if !answered {
+                        return Err(DispatchError::NoBrowserHandOffWaiting {
+                            key: key.clone(),
+                            id,
+                        });
                     }
                 }
                 Command::OpenUrl { url } => {
@@ -5107,6 +5189,14 @@ impl Workspace {
             let parked = self.slack_drafts.lock();
             asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
                 |(_, draft, _)| crate::protocol::PendingAsk::SlackDraft(Box::new(draft.clone())),
+            ));
+        }
+        {
+            let parked = self.browser_handoffs.lock();
+            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
+                |(_, handoff, _)| {
+                    crate::protocol::PendingAsk::BrowserHandOff(Box::new(handoff.clone()))
+                },
             ));
         }
         if let Some(domain) = self.domain_session_for(slot) {
@@ -7879,6 +7969,25 @@ mod tests {
         assert!(!ws.pool.lock().contains_key(&key), "current owner removes the pool entry");
         assert!(!ws.command_senders.lock().contains_key(&key), "command sender removed");
         assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
+    }
+
+    /// The relay is the workspace's and one per process, because two of them
+    /// are two roles: the transport would register a host into one while
+    /// every tool asked through the other, and every call would answer
+    /// "no browser-capable client connected" with a client connected.
+    #[test]
+    fn the_browser_relay_is_one_and_starts_free() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        let first = ws.browser_relay();
+        assert!(
+            Arc::ptr_eq(&first, &ws.browser_relay()),
+            "every caller reaches the same relay, or the role and the asks live in different ones",
+        );
+        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
+        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
@@ -11399,6 +11508,37 @@ mod worker_activity_tests {
         );
     }
 
+    /// **A parked browser hand-off is in the READ as well as on the stream**:
+    /// a view that attached after it landed has nothing else to draw the dock
+    /// from, and the dock is the only place its answer can come from.
+    #[test]
+    fn a_parked_hand_off_is_in_the_pending_asks_read() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("caller-uuid");
+        let handoff = forge_primitives::browser::HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: "solve the CAPTCHA".to_owned(),
+            context: None,
+        };
+        let id = handoff.id;
+        let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff);
+
+        assert!(
+            ws.pending_asks(&key)
+                .iter()
+                .any(|ask| matches!(ask, crate::protocol::PendingAsk::BrowserHandOff(held)
+                    if held.id == id)),
+            "the hand-off is in the read a late view makes",
+        );
+        let other = SessionSlot::from_str_for_test("other-uuid");
+        assert!(
+            !ws.pending_asks(&other)
+                .iter()
+                .any(|ask| matches!(ask, crate::protocol::PendingAsk::BrowserHandOff(_))),
+            "and another seat's read does not carry it",
+        );
+    }
+
     /// What a view that attached after the prompt landed reads: the requests
     /// the core kept beside the answer's oneshots, which is the only place
     /// they survive a stream that carries each once.
@@ -12710,6 +12850,7 @@ mod worker_respawn_tests {
             crate::mcp::ForgeServerFacades {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
+                browser: crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(workspace),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),

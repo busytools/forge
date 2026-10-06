@@ -317,6 +317,8 @@ describe('what one update asks of the fleet', () => {
       { pending_interaction_resolved: { key: LEAD } },
       { slack_post_pending: { key: LEAD } },
       { slack_draft_resolved: { key: LEAD } },
+      { browser_hand_off_pending: { key: LEAD } },
+      { browser_hand_off_resolved: { key: LEAD } },
       { worker_status_changed: {} },
     ];
     for (const update of redraws) {
@@ -446,7 +448,7 @@ describe('the variant census', () => {
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(73);
+    ).toBe(75);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

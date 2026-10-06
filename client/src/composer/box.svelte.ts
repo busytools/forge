@@ -64,6 +64,11 @@ export class Box {
    * THIS draft from one for the next. Not `$state`: nothing draws from it.
    */
   shownDraft: string | null = null;
+  /**
+   * The held browser hand-off this box drew last, on [`shownDraft`]'s own
+   * terms: what tells a stand-down for THIS hand-off from one for the next.
+   */
+  shownHandOff: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**

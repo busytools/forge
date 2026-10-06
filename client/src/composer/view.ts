@@ -310,6 +310,27 @@ export function draftEndingLine(ending: unknown): { tone: string; text: string }
   return { tone: 'q', text: 'The Slack draft is no longer waiting.' };
 }
 
+/**
+ * What one browser hand-off ending says, drawn where the dock stood - the
+ * draft line's own twin, and the same subject: this view did not answer it,
+ * or its dock would be gone by its own doing.
+ */
+export function handOffEndingLine(ending: unknown): { tone: string; text: string } {
+  const kind = enumField(ending, 'type');
+  if (kind === 'done') {
+    return { tone: 'q', text: 'The browser hand-off was settled in another view.' };
+  }
+  if (kind === 'not_now') {
+    return { tone: 'q', text: 'The browser hand-off was declined in another view.' };
+  }
+  if (kind === 'abandoned') {
+    return { tone: 'q', text: "The browser hand-off's asking session went away." };
+  }
+  // An ending this client is older than still means the hand-off is gone, and
+  // saying less than that would leave the dock's disappearance unexplained.
+  return { tone: 'q', text: 'The browser hand-off is no longer waiting.' };
+}
+
 /** One field of an externally tagged enum's variant, or `undefined` for a unit variant. */
 function enumField(value: unknown, name: string): unknown {
   return typeof value === 'object' && value !== null

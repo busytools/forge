@@ -310,6 +310,29 @@ impl Composer {
                 // below is: the draft is gone from the core.
                 true
             }
+            SessionUpdate::BrowserHandOffPending { key, handoff } => {
+                let ask = Ask::BrowserHandOff(Box::new(handoff.clone()));
+                self.park(key, ask);
+                true
+            }
+            // Same as the draft's resolution: the hand-off left the core's
+            // registry, so a page that keeps drawing it offers a prompt no
+            // answer can reach.
+            SessionUpdate::BrowserHandOffResolved { key, id, .. } => {
+                let emptied = match self.asks.get_mut(key) {
+                    Some(queue) => {
+                        queue.retain(
+                            |ask| !matches!(ask, Ask::BrowserHandOff(held) if held.id == *id),
+                        );
+                        queue.is_empty()
+                    }
+                    None => false,
+                };
+                if emptied {
+                    self.asks.remove(key);
+                }
+                true
+            }
             // The prompt is settled, so its dock goes. This is the only
             // thing on the stream that says so: answering leaves the core's
             // pending set either way, and a view that answered from another
@@ -381,10 +404,15 @@ impl Composer {
         if queue.iter().any(|waiting| ask_key(waiting) == held) {
             return;
         }
-        let at = if matches!(ask, Ask::SlackDraft(_)) {
+        // The kinds held in the CORE's registries rather than in the
+        // session's own pending set lead: a draft and a browser hand-off are
+        // both answered by their own id, and the read orders them the same
+        // way, so a fold that appended one would disagree with the read
+        // about the front.
+        let at = if matches!(ask, Ask::SlackDraft(_) | Ask::BrowserHandOff(_)) {
             queue
                 .iter()
-                .position(|waiting| !matches!(waiting, Ask::SlackDraft(_)))
+                .position(|waiting| !matches!(waiting, Ask::SlackDraft(_) | Ask::BrowserHandOff(_)))
                 .unwrap_or(queue.len())
         } else {
             queue.len()
@@ -413,8 +441,8 @@ impl Composer {
 }
 
 /// The key an ask is held under: its call, and the round for a question - one
-/// tool call carries a whole batch and advances the index. A draft is answered
-/// by its own id and names no call.
+/// tool call carries a whole batch and advances the index. A draft and a
+/// browser hand-off are each answered by their own id and name no call.
 fn ask_key(ask: &Ask) -> (String, Option<u64>) {
     match ask {
         Ask::Permission(request) => (request.tool_call.tool_call_id.clone(), None),
@@ -422,6 +450,7 @@ fn ask_key(ask: &Ask) -> (String, Option<u64>) {
             (request.tool_call.tool_call_id.clone(), Some(request.question_index))
         }
         Ask::SlackDraft(draft) => (draft.id.to_string(), None),
+        Ask::BrowserHandOff(handoff) => (handoff.id.to_string(), None),
     }
 }
 
@@ -440,9 +469,10 @@ fn resolved(ask: &Ask, tool_id: &str, round: Option<u64>) -> bool {
             request.tool_call.tool_call_id == tool_id
                 && round.is_none_or(|index| index == request.question_index)
         }
-        // A draft is answered by its own id rather than by a tool call, so a
-        // resolved interaction never names one.
-        Ask::SlackDraft(_) => false,
+        // A draft and a browser hand-off are each answered by their own id
+        // rather than by a tool call, so a resolved interaction never names
+        // one.
+        Ask::SlackDraft(_) | Ask::BrowserHandOff(_) => false,
     }
 }
 
@@ -643,6 +673,44 @@ mod tests {
             key: slot.clone(),
             id: draft.id,
             ending: forge_primitives::slack::SlackDraftEnding::Expired,
+        });
+
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_q".to_owned(), Some(0)),
+            "and its resolution falls back to the question",
+        );
+    }
+
+    /// The same rule for a browser hand-off: it leads like the draft does -
+    /// its registry carries no arrival order either - and its resolution
+    /// falls back to whatever was waiting behind it.
+    #[test]
+    fn a_hand_off_leads_the_queue_and_its_resolution_falls_back() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let handoff = forge_primitives::browser::HandOff {
+            id: uuid::Uuid::parse_str("0192e1c0-0000-7000-8000-0000000000aa").expect("a uuid"),
+            reason: "solve the CAPTCHA".to_owned(),
+            context: Some("job-hunt".to_owned()),
+        };
+
+        composer.apply(&asked(&slot, question("toolu_q", 0)));
+        composer.apply(&SessionUpdate::BrowserHandOffPending {
+            key: slot.clone(),
+            handoff: handoff.clone(),
+        });
+
+        assert_eq!(
+            ask_key(composer.ask(&slot).expect("a front ask")),
+            (handoff.id.to_string(), None),
+            "the hand-off leads the question that was already waiting",
+        );
+
+        composer.apply(&SessionUpdate::BrowserHandOffResolved {
+            key: slot.clone(),
+            id: handoff.id,
+            ending: forge_primitives::browser::HandOffEnding::Done,
         });
 
         assert_eq!(

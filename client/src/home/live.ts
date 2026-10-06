@@ -14,6 +14,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { canHost } from '../browser/host';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome } from '../wire/fleet';
@@ -69,7 +70,12 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   }
 
   function watch(): void {
-    held = connection.subscribe('home');
+    // The home's subscription is also where the connection declares whether
+    // this client can host the browser: it is the first subscribe the app
+    // makes, and the capability belongs to the CONNECTION rather than to a
+    // page - a host that only claimed it on a session page would not be the
+    // host while the reader sits on the home.
+    held = connection.subscribe('home', { browser: canHost() });
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {

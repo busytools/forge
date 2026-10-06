@@ -212,6 +212,63 @@ pub(crate) fn dispatch_slack_post_outcome(
     }
 }
 
+/// Answer a parked browser hand-off. This is the only release for the blocked
+/// `browser_hand_off` handler, and `done` is what it awaits - a decline is
+/// the honest default for every exit that is not an explicit Done.
+///
+/// `session_key` is the session that asked, and the workspace checks it
+/// against the hand-off's owner: an answer for someone else's is refused
+/// rather than applied.
+pub(crate) fn dispatch_browser_hand_off_outcome(
+    app: &mut App,
+    session_key: &SessionSlot,
+    id: uuid::Uuid,
+    done: bool,
+) {
+    #[cfg(feature = "testing")]
+    app.test_dispatched_browser_hand_offs.borrow_mut().push((id, done));
+    let Some(workspace) = app.workspace.as_ref() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "browser_hand_off_dispatch_no_workspace",
+            slot = %session_key.display(),
+            handoff_id = %id,
+            "browser hand-off answer dropped: app.workspace is None - this should never happen in production",
+        );
+        return;
+    };
+    let cmd =
+        forge_workspace::Command::RespondBrowserHandOff { key: session_key.clone(), id, done };
+    if let Err(err) = workspace.dispatch(cmd) {
+        // The same race the permission and question answers meet: another
+        // view answered the hand-off before this click landed.
+        if matches!(err, forge_workspace::DispatchError::NoBrowserHandOffWaiting { .. }) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "browser_hand_off_dispatch_prompt_gone",
+                slot = %session_key.display(),
+                handoff_id = %id,
+                "browser hand-off answer dropped: it is no longer waiting",
+            );
+            crate::app::events::push_system_message_to_session(
+                app,
+                session_key,
+                Some(crate::app::SystemSeverity::Info),
+                "The browser hand-off is no longer waiting, so the answer was not applied.",
+            );
+            return;
+        }
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "browser_hand_off_dispatch_failed",
+            slot = %session_key.display(),
+            handoff_id = %id,
+            error = %err,
+            "failed to dispatch the browser hand-off answer",
+        );
+    }
+}
+
 /// Dispatch a [`forge_primitives::QuestionOutcome`] for `tool_id`
 /// via the workspace. Used by `app::questions` when the user picks
 /// an option. Under the `testing` Cargo feature, see
