@@ -11,7 +11,7 @@
  */
 
 import { untilOf } from '../session/view';
-import { forgeFamilyOf } from './families';
+import { forgeFamilyOf, type ForgeFamily } from './families';
 import { firstText, obj, parsedText, str } from './result-json';
 
 /** One word on a forge row. The tone colours the word; the word carries it. */
@@ -274,7 +274,7 @@ function cronCard(verb: string, answer: unknown): ForgeCard | null {
   if (verb === 'create') {
     const entry = cronOf(answer);
     if (entry === null) return null;
-    const pieces: ForgePiece[] = [{ kind: 'kv', pairs: [['fires into', 'this session']] }];
+    const pieces: ForgePiece[] = [{ kind: 'kv', pairs: [['lands in', 'this session']] }];
     const when = cronStamp(entry.next_fire);
     if (when !== null) pieces.push({ kind: 'kv', pairs: [['next fire', when]] });
     pieces.push({ kind: 'quote', text: entry.prompt });
@@ -437,6 +437,38 @@ export function forgeCardOf(
  * and resolve arms are titled by it. A list's chips are the four state words
  * with their counts, each word carrying itself.
  */
+/** The noun each family's rows are titled by when the call failed. */
+const FAMILY_NOUN: Record<ForgeFamily, string> = {
+  tasks: 'tasks',
+  cron: 'schedules',
+  gotify: 'notifications',
+  slack: 'conversations',
+  review: 'reviews',
+  agents: 'workers',
+};
+
+/**
+ * What a FAILED forge call's row is titled by.
+ *
+ * A failed call has no card - its result is the reason, and the reason draws
+ * as every failure does - so the title comes from the call's own input where
+ * that names a subject, and from the family's own noun where it does not.
+ * Never the tool: `forge: slack__list` is the plumbing a reader scans past.
+ */
+export function forgeFailureTitle(name: string, input: unknown): string | null {
+  const family = forgeFamilyOf(name);
+  if (family === null) return null;
+  const verb = verbOf(name);
+  const pending = pendingCard(verb, input);
+  if (pending !== null) return pending.title;
+  const held = obj(input);
+  const said = str(held, 'subject') ?? str(held, 'label');
+  if (said !== null && said.trim() !== '') return said;
+  const query = str(held, 'query');
+  if (query !== null && query.trim() !== '') return `search \u{b7} ${query}`;
+  return FAMILY_NOUN[family];
+}
+
 /**
  * A call still out, drawn from its own input.
  *

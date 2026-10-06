@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { forgeCardOf, type ForgeCard, type ForgeListItem, type ForgePiece } from './forge';
+import {
+  forgeCardOf,
+  forgeFailureTitle,
+  type ForgeCard,
+  type ForgeListItem,
+  type ForgePiece,
+} from './forge';
 
 /** A tool result as the wire delivers one: text parts, and whether it failed. */
 function result(text: string, is_error = false) {
@@ -51,6 +57,27 @@ function itemsOf(card: ForgeCard | null): ForgeListItem[] {
   );
   return list?.items ?? [];
 }
+
+describe('a forge call that failed', () => {
+  it('is titled by the subject its input named, else by the family own noun', () => {
+    expect(
+      forgeFailureTitle('mcp__forge__slack__list', {}),
+      'a read with no input to name a subject by',
+    ).toBe('conversations');
+    expect(
+      forgeFailureTitle('mcp__forge__tasks__create', { subject: 'Sweep the worktrees' }),
+      'a create names what it was making',
+    ).toBe('Sweep the worktrees');
+    expect(
+      forgeFailureTitle('mcp__forge__agents__spawn', { label: 'reviewer' }),
+      'a spawn keeps the wording its pending row uses',
+    ).toBe('spawning reviewer');
+    expect(forgeFailureTitle('mcp__forge__slack__search', { query: 'smoke test' })).toBe(
+      'search \u{b7} smoke test',
+    );
+    expect(forgeFailureTitle('Bash', {}), 'and no other call is titled here').toBeNull();
+  });
+});
 
 describe('a forge call the page cannot dress', () => {
   it('falls back to the raw text for every case that is not a card', () => {
@@ -184,7 +211,7 @@ describe('the cron card', () => {
     ]);
     expect(card?.figure, 'how long until it fires').toMatch(/^next /);
     expect(pairsOf(card), 'where it fires, and when, in the reader own clock').toEqual([
-      ['fires into', 'this session'],
+      ['lands in', 'this session'],
       ['next fire', expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(\d{2}:\d{2} UTC\)$/)],
     ]);
     expect(card?.pieces.at(-1), 'and the prompt is the quote').toEqual({

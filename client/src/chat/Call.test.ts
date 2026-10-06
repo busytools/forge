@@ -298,6 +298,30 @@ describe('the forge card row', () => {
     expect(drawn, 'and the body keeps the whole of it').toContain('errhint');
   });
 
+  it('states a reason that arrived as plain text, which is how an MCP tool fails', () => {
+    // The CLI wraps only its OWN refusals in `<tool_use_error>`; an MCP tool's
+    // `is_error` answer reaches the fold as text, so a tail that read only the
+    // error piece drew nothing at all for the failures a reader most needs.
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          status: 'failed',
+          forge: null,
+          body: [
+            {
+              kind: 'text',
+              text: 'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+            },
+          ],
+        }),
+        k: 't12',
+      },
+    }).body;
+
+    expect(drawn, 'the reason rides the row').toContain('fam-tail');
+    expect(drawn, 'in its own words').toContain('several Slack workspaces are configured');
+  });
+
   it('draws a card-supplied tail, which is a clean answer and not a failure', () => {
     // A blocked despawn answers cleanly; the tail is the card's, and the
     // row's own `failed` styling must not be needed for it to draw.

@@ -203,6 +203,35 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual(['a1#0', 'a2#0', 'c-toolu_01']);
   });
 
+  it('titles a failed forge call by its subject, never by the tool', () => {
+    // **An MCP tool's own error is plain text**: `is_error` with no
+    // `<tool_use_error>` envelope, which is the shape the CLI wraps only its
+    // own refusals in. A row that titled itself from the tool would read
+    // `forge: slack__list`, and one that looked only for the envelope would
+    // draw no reason at all.
+    const refused = (name: string, input: unknown, reason: string): unknown[] => [
+      said([use('toolu_f', name, input)]),
+      heard([{ type: 'tool_result', tool_use_id: 'toolu_f', content: reason, is_error: true }], {
+        uuid: 'u-result',
+      }),
+    ];
+
+    const units = fold(
+      refused(
+        'mcp__forge__slack__list',
+        {},
+        'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+      ),
+    );
+
+    const [call] = callsOf(units[0]);
+    expect(call?.leaf.title, 'the family own noun, not the tool').toBe('conversations');
+    expect(
+      call?.leaf.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
+      'and the reason is there for the row and the body',
+    ).toContain('several Slack workspaces are configured');
+  });
+
   it('folds a mutation into the run as its own family', () => {
     const units = fold([call('read', 0), call('edit', 1), call('read', 2)]);
 

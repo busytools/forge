@@ -11,7 +11,7 @@
   import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
-  import { searchHits } from './text';
+  import { firstLine, searchHits } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
   import { dispatchFrames } from './timeline';
@@ -224,11 +224,7 @@
    * row that did not fail and for one whose failure said nothing: a mark with
    * no words after it is a word a reader cannot act on.
    */
-  const failure = $derived(
-    call.row.kind !== 'forge' || !failed
-      ? null
-      : (call.body.find((piece) => piece.kind === 'error')?.message ?? null),
-  );
+  const failure = $derived(call.row.kind !== 'forge' || !failed ? null : reasonOf(call.body));
 
   /**
    * The row's tail: the failed call's reason, or the card's own when the call
@@ -241,6 +237,21 @@
 
   /** The proportion the card asks the row to meter, if it asks for one. */
   const meter = $derived(forge?.meter ?? null);
+
+  /**
+   * A failed call's own reason, as the row's tail draws it.
+   *
+   * Two shapes reach a forge row: the CLI's error envelope, which the fold
+   * unwraps into an `error` piece, and a plain-text result - which is what an
+   * MCP tool's own `is_error` answer arrives as, with no envelope at all.
+   * Either way the first line is the tail and the body keeps the whole of it.
+   */
+  function reasonOf(body: CallBody[]): string | null {
+    const error = body.find((piece) => piece.kind === 'error');
+    if (error !== undefined) return error.message;
+    const text = body.find((piece) => piece.kind === 'text');
+    return text === undefined ? null : firstLine(text.text);
+  }
 
   /** The row's mark: the card's own where it named one, else its family's. */
   const glyph = $derived(forge?.glyph ?? iconOf(call.row));
