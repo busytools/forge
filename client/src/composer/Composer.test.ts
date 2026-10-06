@@ -4303,9 +4303,11 @@ describe('the dock', () => {
     expect(drawn(), 'and the button that cannot serve is gone').not.toContain('Open browser');
   });
 
-  /** The read must not freeze: the record replaces the ask on every frame, so
-   * the up answer refreshes as often as the false one. */
+  /** **The read must not freeze in the up case.** The record replaces the ask
+   * on every frame and the id stays the same, so a read that caches by id
+   * would stop asking after its first true. */
   it('re-reads whether a window is up whenever the ask is replaced', async () => {
+    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
     await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(1));
 

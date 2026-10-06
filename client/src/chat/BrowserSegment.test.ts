@@ -224,6 +224,63 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  it('opens on a keyboard focus', () => {
+    const shown = show(false, true);
+    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+
+    expect(list(shown.target), 'focus opens it').not.toBeNull();
+    shown.stop();
+  });
+
+  it('opens on a keyboard focus after a press that focused nothing', () => {
+    // A press on the already-focused toggle: no focusin consumes the press,
+    // so the mouseup is what lets go - without it the next Tab would find
+    // the door shut.
+    const shown = show(false, true);
+    toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    toggle(shown.target).dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    flushSync();
+    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+
+    expect(list(shown.target), 'the keyboard focus still opens it').not.toBeNull();
+    shown.stop();
+  });
+
+  it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
+    const shown = show(false, true);
+    click(toggle(shown.target));
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    if (control === null) throw new Error('no control');
+
+    // Tabbing from the toggle into a control: a bubbling focusout whose
+    // related target is inside the segment is a crossing, not a leave.
+    control.focus();
+    toggle(shown.target).dispatchEvent(
+      new FocusEvent('focusout', { bubbles: true, relatedTarget: control }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(list(shown.target), 'the crossing keeps it').not.toBeNull();
+
+    toggle(shown.target).dispatchEvent(
+      new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(list(shown.target), 'and a real leave drops it').toBeNull();
+    shown.stop();
+  });
+
+  it('collapses on the toggle, like every sibling row', () => {
+    const shown = show(false, true);
+    click(toggle(shown.target));
+    expect(list(shown.target), 'opened').not.toBeNull();
+
+    click(toggle(shown.target));
+    expect(list(shown.target), 'and the same click closes what the reader saw').toBeNull();
+    shown.stop();
+  });
+
   it('keeps the panel while a control inside it holds focus', async () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
