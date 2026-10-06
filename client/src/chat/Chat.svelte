@@ -271,8 +271,19 @@
   let pinEcho: number | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
-  /** The signature of the keys above the anchor at the last parked pass. */
-  let ordered: string | null = null;
+  /**
+   * The signature of the keys above the anchor that a parked pass has PAID
+   * for: the restore has run against this order, so only a change to it owes
+   * another pass.
+   *
+   * **Stamped when the pass runs, never when it is scheduled** (#1734's fix
+   * round): the effect's teardown cancels a pending rAF on every re-run, and
+   * a second publish landing before the paint is ordinary - so a stamp at
+   * schedule time would drop the restore with the cancel, and the next run
+   * would find the debt already paid and never re-arm. Held here, the cancel
+   * leaves the debt standing.
+   */
+  let owed: string | null = null;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -369,9 +380,9 @@
     const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
     if (landed !== null) {
       anchor = landed;
-      // The signature is taken against the freshly captured anchor, so the
-      // next pass records rather than schedules.
-      ordered = null;
+      // A fresh capture owes nothing until an order moves under it; the next
+      // parked run schedules against a clean slate.
+      owed = null;
     }
   }
 
@@ -874,37 +885,44 @@
     const park = held;
     const moving = shift;
     if (anchor === null || park.following || !park.loaded || moving) {
-      // No anchor, no signature to hold: the next parked pass records one.
-      ordered = null;
+      // No anchor parked, nothing owed: the next parked run schedules against
+      // a clean slate rather than against an order from before the episode.
+      owed = null;
       return;
     }
     const above = keysAbove();
-    const prior = ordered;
-    ordered = above;
-    if (prior === null || prior === above) return;
+    if (above === null || above === owed) return;
+    const want = above;
     const seen = restored;
     const settled = requestAnimationFrame(() => {
+      // The debt is paid HERE, by the pass that runs - so a teardown's cancel
+      // before the paint leaves it standing for the next run to re-arm.
+      owed = want;
       if (restored === seen) restoreAnchor();
     });
     return () => cancelAnimationFrame(settled);
   });
 
   /**
-   * The ordered keys of the drawn rows above the anchor, as one signature.
+   * The ordered keys of the drawn rows above the anchor, as one signature -
+   * or `null` when the anchor row is not drawn at all.
    *
    * Read off the document rather than the model because the fold decides the
    * order - the rows are what the reader sees move - and attribute reads
-   * force no layout, unlike a box.
+   * force no layout, unlike a box. **`null` rather than a slice running to
+   * the window's end**: an anchor out of the drawn window has nothing for a
+   * pass to restore, and the window's own churn (rows entering and leaving it
+   * as the reader scrolls) is not a reorder.
    */
-  function keysAbove(): string {
-    if (viewport === null || anchor === null) return '';
+  function keysAbove(): string | null {
+    if (viewport === null || anchor === null) return null;
     const keys: string[] = [];
     for (const row of viewport.querySelectorAll('[data-k]')) {
       const key = row.getAttribute('data-k') ?? '';
-      if (key === anchor.key) break;
+      if (key === anchor.key) return JSON.stringify(keys);
       keys.push(key);
     }
-    return keys.join('|');
+    return null;
   }
 
   /** Where the reader is, and whether they have reached the top. */

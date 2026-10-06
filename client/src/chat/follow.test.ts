@@ -78,20 +78,27 @@ const spoken = (key: string): unknown => ({
 function layOut(height: number, leader = height): void {
   const root = document.querySelector('.conv');
   if (root === null) return;
-  [...root.querySelectorAll('.turn [data-k]')].forEach((row, at) => {
-    const tall = at === 0 ? leader : height;
-    const top = at * height + (at === 0 ? 0 : leader - height);
-    row.getBoundingClientRect = () => ({
-      top: top - element.offset,
-      bottom: top + tall - element.offset,
-      height: tall,
-      width: 0,
-      left: 0,
-      right: 0,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    });
+  const live = (): Element[] => [...root.querySelectorAll('.turn [data-k]')];
+  live().forEach((row) => {
+    // The place is read at ASK time, not at assignment time: a row that
+    // reorders with its key keeps its element (the list is keyed), so a
+    // position captured here would go stale the moment the order moved.
+    row.getBoundingClientRect = () => {
+      const at = live().indexOf(row);
+      const tall = at === 0 ? leader : height;
+      const top = at * height + (at === 0 ? 0 : leader - height);
+      return {
+        top: top - element.offset,
+        bottom: top + tall - element.offset,
+        height: tall,
+        width: 0,
+        left: 0,
+        right: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      };
+    };
   });
 }
 
@@ -1021,6 +1028,37 @@ describe('whether the column follows the newest end', () => {
     // The reorder as a page that carries it would: the anchor's turn and its
     // neighbour swap places, so every rect stays 40px tall and the total does
     // not move - the keys and the boxes travel together.
+    server.page([spoken('a'), spoken('c'), spoken('b'), spoken('d')]);
+    flushSync();
+    layOut(40);
+    await settle();
+
+    expect(element.offset, "the reader's row carried them with it").toBe(90);
+  });
+
+  /**
+   * **A second publish before the paint must not eat the restore.** A
+   * reorder's pass is owed on the paint after the detecting run, and the
+   * effect's teardown cancels a pending rAF on every re-run - so a publish
+   * landing in that window (every synchronous fold publish does: a page, a
+   * refusal, a follow decision) used to drop the debt with the signature
+   * already stamped, and no pass ever fired again.
+   */
+  it('still restores when a second publish lands before the paint', async () => {
+    const server = stub();
+    await draw(server);
+    server.page([spoken('a'), spoken('b'), spoken('c'), spoken('d')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    server.frame();
+    await settle();
+    clear();
+
+    server.page([spoken('a'), spoken('c'), spoken('b'), spoken('d')]);
+    // The second publish, in the window between the first one's schedule and
+    // the paint the pass was for: no tick between them.
     server.page([spoken('a'), spoken('c'), spoken('b'), spoken('d')]);
     flushSync();
     layOut(40);
