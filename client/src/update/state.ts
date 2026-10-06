@@ -19,6 +19,7 @@ export type UpdateState =
   | { stage: 'available'; version: string }
   | { stage: 'installing'; version: string }
   | { stage: 'restart'; version: string }
+  | { stage: 'install'; version: string }
   | { stage: 'failed'; version: string; detail: string };
 
 export const updateState = writable<UpdateState>({ stage: 'current' });
@@ -29,15 +30,17 @@ export async function watchUpdate(): Promise<void> {
   if (version !== null) updateState.set({ stage: 'available', version });
 }
 
-/** Install the found update. Nothing restarts until `restart` is called. */
+/** Install the found update, landing on the stage the shell says finishes it. */
 export async function install(): Promise<void> {
   const held = get(updateState);
-  if (held.stage !== 'available' && held.stage !== 'failed') return;
+  if (held.stage !== 'available' && held.stage !== 'failed' && held.stage !== 'install') {
+    return;
+  }
   const { version } = held;
   updateState.set({ stage: 'installing', version });
   try {
-    await installUpdate();
-    updateState.set({ stage: 'restart', version });
+    const stage = await installUpdate();
+    updateState.set({ stage, version });
   } catch (err) {
     updateState.set({
       stage: 'failed',

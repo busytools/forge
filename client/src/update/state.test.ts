@@ -43,8 +43,8 @@ describe('install', () => {
     let land = (): void => {};
     mockInstall.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
-          land = resolve;
+        new Promise<'restart'>((resolve) => {
+          land = () => resolve('restart');
         }),
     );
 
@@ -54,6 +54,15 @@ describe('install', () => {
     land();
     await installing;
     expect(get(updateState)).toEqual({ stage: 'restart', version: '1.0.116' });
+  });
+
+  it("offers the installer when the phone's shell answers with it", async () => {
+    updateState.set({ stage: 'available', version: '1.0.116' });
+    mockInstall.mockResolvedValue('install');
+
+    await install();
+
+    expect(get(updateState)).toEqual({ stage: 'install', version: '1.0.116' });
   });
 
   it('draws the failure with its reason, keeping the version for a retry', async () => {
@@ -84,7 +93,7 @@ describe('install', () => {
 
   it('retries from a failure', async () => {
     updateState.set({ stage: 'failed', version: '1.0.116', detail: 'the download failed' });
-    mockInstall.mockResolvedValue(undefined);
+    mockInstall.mockResolvedValue('restart');
 
     await install();
 
@@ -96,8 +105,8 @@ describe('install', () => {
     const lands: Array<() => void> = [];
     mockInstall.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
-          lands.push(resolve);
+        new Promise<'restart'>((resolve) => {
+          lands.push(() => resolve('restart'));
         }),
     );
 

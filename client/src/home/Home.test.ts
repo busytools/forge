@@ -179,6 +179,12 @@ describe("the client's own update", () => {
     expect(draw()).toContain('restart to finish');
   });
 
+  it('offers the installer once the download is checked on the phone', () => {
+    updateState.set({ stage: 'install', version: '9.9.9' });
+
+    expect(draw()).toContain('ready - install it');
+  });
+
   it('draws a failed install with a retry, and its reason on the control', () => {
     updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the signature did not match' });
 

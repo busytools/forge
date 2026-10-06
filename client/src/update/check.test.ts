@@ -49,11 +49,27 @@ describe('checkForUpdate', () => {
 });
 
 describe('installUpdate', () => {
-  it('asks the shell to install the found update', async () => {
-    mockInvoke.mockResolvedValue(undefined);
+  it('asks the shell to install the found update, and answers the stage that finishes it', async () => {
+    mockInvoke.mockResolvedValue('restart');
 
-    await installUpdate();
+    await expect(installUpdate()).resolves.toBe('restart');
     expect(mockInvoke).toHaveBeenCalledWith('install_update');
+  });
+
+  it('carries the phone installer stage through', async () => {
+    mockInvoke.mockResolvedValue('install');
+
+    await expect(installUpdate()).resolves.toBe('install');
+  });
+
+  /**
+   * The one place the stage is narrowed: a value the shell never sends draws
+   * the desktop's line rather than a stage nothing defines.
+   */
+  it('narrows anything else to the restart', async () => {
+    mockInvoke.mockResolvedValue('something-else');
+
+    await expect(installUpdate()).resolves.toBe('restart');
   });
 
   it('propagates a failed install for the surface to draw', async () => {
