@@ -8,7 +8,7 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Nine places it deliberately differs from the terminal, and each is a
+ * Eight places it deliberately differs from the terminal, and each is a
  * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
@@ -23,10 +23,6 @@
  *   own turn, and the three external kinds that carry something to read - a
  *   cron fire, a Slack message, a Gotify push - join the list as rows of
  *   their own kind, the same shape every other row draws;
- * - the harness's own reminder that a skill was already loaded draws as a
- *   notice rather than the reader's turn, where the terminal drops every wire
- *   user text live as an input echo and draws this one as a user turn on
- *   resume;
  * - a monitor is not in the conversation at all, because the inspector is its
  *   surface;
  * - a compaction boundary is a row at the cut, where the terminal draws none:
@@ -417,6 +413,8 @@ interface Frame {
   error?: unknown;
   usage?: unknown;
   tool_use_result?: unknown;
+  /** The CLI's own mark that a user frame is the harness talking, not the reader (#1543). */
+  isSynthetic?: unknown;
   state?: unknown;
   timestamp?: unknown;
   message?: {
@@ -516,9 +514,9 @@ function queuedText(prompt: unknown): string {
  * above); this is a NEW invocation...`.
  *
  * Nobody typed it, so it is a line the conversation carries rather than a turn
- * the reader took. Matched on the CLI's own sentence because that is all the
- * frame carries here - the `isMeta` flag that marks it on disk is not in the
- * wire type, so it does not survive to this fold.
+ * the reader took. Matched on the CLI's own sentence: the frame is also marked
+ * synthetic, but the reminder has its own decided treatment and the sentence is
+ * what names which reminder this is.
  */
 function isSkillReminder(text: string): boolean {
   return text.startsWith('Skill /') && text.includes('was loaded earlier');
@@ -528,9 +526,12 @@ function isSkillReminder(text: string): boolean {
  * A skill's body, which the CLI injects as the reader's own user frame.
  *
  * The frame is one text block: a plumbing line naming the skill's directory,
- * then the skill's markdown. That line is the only marker the wire carries -
- * the disk's own meta flag does not survive to it - so the row is built from
- * it, its name read off the path, and the line itself dropped from the body.
+ * then the skill's markdown, so the row is built from that line - its name read
+ * off the path and the line itself dropped from the body.
+ *
+ * **Not every body carries the line** (#1543): the frame reaches the fold
+ * marked `isSynthetic` either way, which is what the fold trusts when this
+ * recognizer finds nothing.
  */
 export function skillBody(text: string): { name: string; body: string } | null {
   const [lead, ...rest] = text.split('\n');
@@ -1554,15 +1555,18 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   let lastCompaction: number | null = null;
 
   /**
-   * Hang a skill's body on the call that loaded it, by name.
+   * Hang a skill's body on the call that loaded it.
    *
-   * The first unclaimed call naming that skill takes it - the order bodies
-   * arrive in is the order their calls were made - and the row is the leaf
-   * itself, so a run that flushed between the two changes nothing.
+   * The first unclaimed call takes it - the order bodies arrive in is the order
+   * their calls were made - and the row is the leaf itself, so a run that
+   * flushed between the two changes nothing. `name` is the body's own evidence
+   * where it carries one; `null` is a body whose text names no skill, claimed
+   * by position the way the synthetic mark says it should be (#1543).
    */
-  const attachSkillBody = (name: string, body: string): boolean => {
+  const attachSkillBody = (name: string | null, body: string): boolean => {
     for (const held of skillCalls) {
-      if (held.leaf.skill !== null || !namesSkill(held.want, name)) continue;
+      if (held.leaf.skill !== null) continue;
+      if (name !== null && !namesSkill(held.want, name)) continue;
       held.leaf.skill = body;
       return true;
     }
@@ -1951,6 +1955,22 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
               });
               continue;
             }
+          }
+          // **The mark the CLI gives every injected body** (#1543): a synthetic
+          // user frame that nothing above claimed - a skill's body arriving
+          // without the plumbing line or a matching heading - rides the first
+          // call still waiting for one, named by position the way the CLI
+          // injects it, right after the call that loaded the skill. With no
+          // call waiting it still draws, as a notice - never as the reader's
+          // own turn.
+          if (frame.isSynthetic === true) {
+            if (attachSkillBody(null, stripped.trim())) continue;
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: stripped },
+            });
+            continue;
           }
           if (isContinuation(stripped)) {
             attachContinuation(stripped, keyOf(at, frame, blockAt));

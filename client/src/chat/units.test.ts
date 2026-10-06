@@ -404,6 +404,41 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe('# Ux\n\nDo it.');
   });
 
+  it('hangs a body the CLI marked synthetic on its call, without the plumbing line', () => {
+    // **The mark, not the text** (#1543): a launched skill's body can arrive
+    // with neither the plumbing line nor a matching heading - the timesheet
+    // fill's did - and the one signal every injected body carries is the
+    // synthetic mark. It rides the call that loaded the skill, by position,
+    // and never draws as the reader's own turn.
+    const load = said([use('toolu_fill', 'Skill', { skill: 'timesheet-fill' })]);
+    // Neither recognizer's shape: no plumbing line, and no heading either -
+    // the fresh case drew as a turn precisely because both missed it.
+    const body = heard([text('You are filling a timesheet. Ask for the week first.')], {
+      isSynthetic: true,
+    });
+
+    const units = fold([load, body]);
+    expect(kinds(units), 'the call unit alone, no turn of the reader').toEqual(['leaves']);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the call opens onto the body the mark claims').toContain(
+      'You are filling a timesheet',
+    );
+  });
+
+  it('draws an unclaimed synthetic body as a notice, never as the reader', () => {
+    const body = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
+    const units = fold([body]);
+
+    expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
+  });
+
+  it('leaves a plain frame alone, mark or no mark', () => {
+    const plain = heard([text('the reader typed this')]);
+
+    expect(kinds(fold([plain])), 'an ordinary frame still draws as the reader').toEqual(['user']);
+  });
+
   it('draws nothing for the local-command family, by decision', () => {
     // The reader's typing in the LAUNCH terminal arrives as plumbing, and the
     // terminal's own chat filters the same heads. Ved's ruling, 2026-10-03:
