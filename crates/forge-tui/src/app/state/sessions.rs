@@ -355,6 +355,9 @@ impl super::App {
                         // reaction or upload must not read as slack__post.
                         AttentionKind::Permission { tool: draft.tool.clone() }
                     }
+                    crate::app::prompt::PromptSource::BrowserHandOff { .. } => {
+                        AttentionKind::Permission { tool: "browser_hand_off".to_owned() }
+                    }
                 };
                 (kind, prompt.enqueued_at)
             } else if let Some(replies) = session.review_replies_waiting.as_ref() {

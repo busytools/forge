@@ -168,6 +168,19 @@ export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+/** A browser hand-off as the core offers one, with whatever the test overrides. */
+export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'browser_hand_off',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000aa',
+      reason: 'The sign-in page is showing a CAPTCHA.',
+      context: 'job-hunt',
+      ...over,
+    },
+  };
+}
+
 /** One command the composer sent, as the connection received it. */
 export interface Sent {
   command: Record<string, Record<string, unknown>>;

@@ -5,10 +5,6 @@ use std::time::Duration;
 
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
-// `state` and `config` on the handle are the Manager trait's, and the phone's
-// commands reach the plugin through them.
-#[cfg(target_os = "android")]
-use tauri::Manager as _;
 
 /// Bound on each update request - the check and the download alike. A stalled
 /// connection otherwise holds the header's "updating..." for the session.
@@ -26,11 +22,14 @@ const STAGE_INSTALL: &str = "install";
 
 #[cfg(desktop)]
 fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    app.updater_builder()
-        .timeout(UPDATE_TIMEOUT)
-        .build()
-        .map_err(|err| err.to_string())
+    app.updater_builder().timeout(UPDATE_TIMEOUT).build().map_err(|err| err.to_string())
 }
+
+// `path` and `state` on the handle are the Manager trait's; one import serves
+// every target, the phone included.
+use tauri::Manager as _;
+
+pub mod browser;
 
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
@@ -40,32 +39,88 @@ pub fn run() {
     let log_file = log_file(&context.config().identifier);
 
     let builder = tauri::Builder::default().plugin(
-        tauri_plugin_log::Builder::new()
-            .level(tauri_plugin_log::log::LevelFilter::Info)
-            .build(),
+        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info).build(),
     );
 
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
     // platforms answer the same commands, so the client's update line is one
-    // surface either way.
+    // surface either way. The browser's commands ride the same handler - a
+    // second `invoke_handler` would replace this one rather than add to it -
+    // and the host itself is the client's on both platforms, so the mobile arm
+    // registers them too.
     #[cfg(desktop)]
-    let builder = builder
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
+        tauri::generate_handler![
+            browser::browser_call,
+            browser::browser_context_close,
+            browser::browser_contexts,
+            browser::browser_show,
+            browser::browser_window,
             check_update,
             install_update,
             restart_app
-        ]);
+        ],
+    );
+    #[cfg(not(desktop))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        browser::browser_call,
+        browser::browser_context_close,
+        browser::browser_contexts,
+        browser::browser_show,
+        browser::browser_window
+    ]);
 
+    // **`invoke_handler` REPLACES the handler, it does not add to it** - so
+    // the Android arm carries every command the desktop arm does, the
+    // browser's among them. The host is the client's on the phone too, and a
+    // webview that declares `browser: true` while its commands are
+    // unregistered would hold the exclusive role and fail every ask on a
+    // missing invoke.
     #[cfg(target_os = "android")]
-    let builder = builder
-        .plugin(android::init())
-        .invoke_handler(tauri::generate_handler![check_update, install_update]);
+    let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
+        browser::browser_call,
+        browser::browser_context_close,
+        browser::browser_contexts,
+        browser::browser_show,
+        browser::browser_window,
+        check_update,
+        install_update
+    ]);
 
     let run = builder
-        .setup(|_app| {
+        .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
+            // The browser host is handed to the frontend whether or not its
+            // directories resolve: a client that cannot host says so when it
+            // is asked, rather than refusing to start.
+            let host = match browser::StackPaths::resolve(app.handle()) {
+                Ok(paths) => {
+                    tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                    std::sync::Arc::new(browser::BrowserHost::new(paths))
+                }
+                Err(why) => {
+                    tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                    std::sync::Arc::new(browser::BrowserHost::unavailable(why))
+                }
+            };
+            // **The browser comes up with the app**, so it is there before
+            // any session asks for it: the launch takes seconds and a tool
+            // call should not pay for it, and a browser that cannot start
+            // says so here, in the client's log, rather than as a failed tool
+            // call nobody can attribute. Spawned rather than awaited - the
+            // window does not wait on a browser - and the driver stays lazy,
+            // since it exists to serve calls.
+            let starting = std::sync::Arc::clone(&host);
+            tauri::async_runtime::spawn(async move {
+                match starting.start().await {
+                    Ok(active) => {
+                        tauri_plugin_log::log::info!("the browser is up on port {}", active.port)
+                    }
+                    Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
+                }
+            });
+            app.manage(host);
             Ok(())
         })
         .run(context);
@@ -104,13 +159,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
     // `timeout: None` and the download only bounds itself when this is set -
     // so the bound is put back on before the download runs.
     update.timeout = Some(UPDATE_TIMEOUT);
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|err| {
-            tauri_plugin_log::log::warn!("the client update failed to install: {err}");
-            err.to_string()
-        })?;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|err| {
+        tauri_plugin_log::log::warn!("the client update failed to install: {err}");
+        err.to_string()
+    })?;
     Ok(STAGE_RESTART.to_string())
 }
 
@@ -189,11 +241,7 @@ async fn android_check(app: &tauri::AppHandle) -> Result<Option<android::Found>,
         version: app.package_info().version.to_string(),
         endpoint: update_endpoint(app)?,
     };
-    handle
-        .0
-        .run_mobile_plugin_async("check", args)
-        .await
-        .map_err(|err| err.to_string())
+    handle.0.run_mobile_plugin_async("check", args).await.map_err(|err| err.to_string())
 }
 
 /// The version an update check found, or `None` when this build is current.
@@ -225,10 +273,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         .0
         .run_mobile_plugin_async::<()>(
             "install",
-            android::InstallArgs {
-                version: found.version,
-                url: found.url,
-            },
+            android::InstallArgs { version: found.version, url: found.url },
         )
         .await
         .map_err(|err| err.to_string())?;

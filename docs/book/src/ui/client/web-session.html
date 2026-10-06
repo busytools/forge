@@ -806,6 +806,14 @@
   /* The strip's rows share one right-hand fill, the sheet's own rule. */
   .sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
     row-gap: 2px; }
+  /* The browser row, beside the agents row (the sheet's own `.bz-seg` rules,
+     drawn here as the specimen). */
+  .bz-seg { position: relative; display: inline-flex; }
+  .bz-seg .bz-tog { display: flex; align-items: center; gap: 8px; background: none;
+    border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
+    font: inherit; color: var(--muted); }
+  .bz-seg .bz-tog:hover, .bz-seg.open .bz-tog { border-color: var(--line); color: var(--text); }
+  .bz-seg .bz-tog .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   /* The agents row: the count at the strip's right, and the way into each
      instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
   .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
@@ -2403,6 +2411,18 @@ branch main, nothing to commit</div>
                that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
           <span id="lv-cost" style="display:none">$4.82 cumulative</span>
+          <!-- The browser row, beside the agents row: how many named contexts
+               this client holds. Opened, its list carries the role line (who
+               drives the browser), a Take over where this client is capable
+               and not holding, the Show browser control with its restart cost
+               on the same panel, and a close on every context row - the door
+               a context whose owning session is gone comes back through.
+               Drawn CLOSED here: the open list is runtime state. -->
+          <span class="bz-seg">
+            <button type="button" class="bz-tog">
+              <svg class="ic"><use href="#i-web"/></svg>
+              browser <span class="n">2 contexts</span></button>
+          </span>
           <!-- The agents row, at the strip's right: the seat's instances, the
                count it has out and the count it has finished. It is where a
                subagent is announced outside the chat, and the way into each

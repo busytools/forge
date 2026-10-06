@@ -25,6 +25,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { canHost } from '../browser/host';
 import { cronNames } from '../chat/cron-names.svelte';
 import { slotOf, subjectKey, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
@@ -173,7 +174,7 @@ export function watchSession(
     // have sent for itself.
     seat.answering = true;
     seat.opened += 1;
-    connection.subscribe(subject, { answering: true });
+    connection.subscribe(subject, { answering: true, browser: canHost() });
   }
 
   return { subscribe: seat.view.subscribe };
@@ -339,7 +340,10 @@ function createSeat(
   }
 
   function watch(): void {
-    seat.held = connection.subscribe(subject, { answering: seat.answering });
+    seat.held = connection.subscribe(subject, {
+      answering: seat.answering,
+      browser: canHost(),
+    });
     seat.opened += 1;
     // The subscription's own answer is the first whole record, and it is an
     // ask this page made: the subscribe is what the server answers.

@@ -39,6 +39,10 @@ function fakeConnection() {
     refresh(what) {
       refreshed.push(what);
     },
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
     onMessage(fn) {
       messages.add(fn);
       return () => {

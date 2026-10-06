@@ -593,6 +593,10 @@ function drivable(refused = false): Driveable {
     more: () => false,
     devices: () => false,
     frame: () => false,
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

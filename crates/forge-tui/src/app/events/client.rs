@@ -100,6 +100,17 @@ fn slack_draft_ending_line(ending: forge_primitives::slack::SlackDraftEnding) ->
     }
 }
 
+/// What one browser hand-off ending reads as, in the chat of the session that
+/// held it - the same shape as the draft's line, for the same reason.
+fn browser_hand_off_ending_line(ending: forge_primitives::browser::HandOffEnding) -> String {
+    use forge_primitives::browser::HandOffEnding as Ending;
+    match ending {
+        Ending::Done => "The browser hand-off was settled in another view.".to_owned(),
+        Ending::NotNow => "The browser hand-off was declined in another view.".to_owned(),
+        Ending::Abandoned => "The browser hand-off's asking session went away.".to_owned(),
+    }
+}
+
 /// Whether this update belongs to another view's dictation take.
 ///
 /// The terminal's own take - the one its push-to-talk key starts - is the
@@ -335,6 +346,45 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     &key,
                     Some(crate::app::SystemSeverity::Info),
                     &slack_draft_ending_line(ending),
+                );
+            }
+        }
+        SessionUpdate::BrowserHandOffPending { key, handoff } => {
+            // Queued on the ASKING session, like the draft: the prompt is
+            // answered by whoever reads the asking session's page.
+            let asking = key.clone();
+            let mut queued = false;
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_browser_hand_off(asking, handoff);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+                queued = true;
+            }
+            // The asking session's `browser_hand_off` is blocked on this
+            // answer with no timeout, so a prompt silently dropped here would
+            // hold it forever.
+            if !queued {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    slot = %key.display(),
+                    "browser hand-off prompt dropped: no session bucket for the asking session",
+                );
+                return;
+            }
+            app.notify(crate::app::notify::NotifyEvent::PermissionRequired, &key);
+        }
+        SessionUpdate::BrowserHandOffResolved { key, id, ending } => {
+            // Same as the draft's resolution: the hand-off left the core's
+            // registry, so a dock still queued here offers a decision no
+            // answer can reach.
+            let held = app
+                .session_mut(&key)
+                .is_some_and(|session| crate::app::prompt::retire_browser_hand_off(session, id));
+            if held {
+                super::push_system_message_to_session(
+                    app,
+                    &key,
+                    Some(crate::app::SystemSeverity::Info),
+                    &browser_hand_off_ending_line(ending),
                 );
             }
         }
@@ -4223,6 +4273,155 @@ mod tests {
         assert_eq!(
             slack_draft_ending_line(Ending::Abandoned),
             "The Slack draft's asking session went away.",
+        );
+    }
+
+    fn a_browser_hand_off(reason: &str) -> forge_primitives::browser::HandOff {
+        forge_primitives::browser::HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: reason.to_owned(),
+            context: None,
+        }
+    }
+
+    /// A parked hand-off queues its prompt on the ASKING session, and the
+    /// prompt is the hand-off's own kind - the one whose default answer is a
+    /// decline.
+    #[test]
+    fn a_hand_off_pending_queues_its_prompt_on_the_asking_session() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let handoff = a_browser_hand_off("solve the CAPTCHA");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffPending { key: key.clone(), handoff: handoff.clone() },
+        );
+
+        let session = app.sessions.get(&key).expect("the session");
+        let Some(prompt) = session.prompt_queue.front() else {
+            panic!("the dock is queued for the asking session");
+        };
+        assert!(
+            matches!(
+                &prompt.source,
+                crate::app::prompt::PromptSource::BrowserHandOff { handoff: held, .. }
+                    if held.id == handoff.id
+            ),
+            "and the prompt is the hand-off's own kind",
+        );
+    }
+
+    /// A hand-off the core has resolved retires only its own dock, and the
+    /// one still parked is the one the core did not resolve.
+    #[test]
+    fn a_resolved_hand_off_retires_only_its_own_queued_dock() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let first = a_browser_hand_off("first");
+        let second = a_browser_hand_off("second");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffPending { key: key.clone(), handoff: first.clone() },
+        );
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffPending { key: key.clone(), handoff: second.clone() },
+        );
+        assert_eq!(
+            app.sessions.get(&key).expect("the session").prompt_queue.len(),
+            2,
+            "both hand-offs park a dock in the queue",
+        );
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffResolved {
+                key: key.clone(),
+                id: first.id,
+                ending: forge_primitives::browser::HandOffEnding::Done,
+            },
+        );
+
+        let session = app.sessions.get(&key).expect("the session");
+        assert_eq!(
+            session.prompt_queue.len(),
+            1,
+            "one hand-off's stand-down must not take the other's dock with it",
+        );
+        let held = session.prompt_queue.front().expect("head");
+        assert!(
+            matches!(
+                &held.source,
+                crate::app::prompt::PromptSource::BrowserHandOff { handoff, .. }
+                    if handoff.id == second.id
+            ),
+            "the hand-off still waiting is the one the core did not resolve",
+        );
+        assert!(
+            app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("settled in another view"))
+                })
+            }),
+            "and the reader is told which ending took the resolved one",
+        );
+    }
+
+    /// The reader's own answer takes the dock before the stand-down lands, so
+    /// that update arrives with nothing queued: it says nothing, because the
+    /// reader's own click is not news.
+    #[test]
+    fn a_hand_off_this_view_answered_leaves_no_line() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let handoff = a_browser_hand_off("answered here");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffPending { key: key.clone(), handoff: handoff.clone() },
+        );
+        // The answer path pops the prompt before it dispatches, and the pop is
+        // what the stand-down meets here.
+        let popped = app.session_mut(&key).expect("the session").prompt_queue.pop_front().is_some();
+        assert!(popped, "the dock was queued for the reader to answer");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffResolved {
+                key: key.clone(),
+                id: handoff.id,
+                ending: forge_primitives::browser::HandOffEnding::Done,
+            },
+        );
+
+        assert!(
+            !app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("browser hand-off"))
+                })
+            }),
+            "the view that answered the hand-off does not narrate its own click",
+        );
+    }
+
+    /// Each hand-off ending reads as its own line, on the same rule the
+    /// draft's do: the terminal only says the endings of a dock it did NOT
+    /// answer.
+    #[test]
+    fn each_hand_off_ending_reads_as_its_own_line() {
+        use forge_primitives::browser::HandOffEnding as Ending;
+        assert_eq!(
+            browser_hand_off_ending_line(Ending::Done),
+            "The browser hand-off was settled in another view.",
+        );
+        assert_eq!(
+            browser_hand_off_ending_line(Ending::NotNow),
+            "The browser hand-off was declined in another view.",
+        );
+        assert_eq!(
+            browser_hand_off_ending_line(Ending::Abandoned),
+            "The browser hand-off's asking session went away.",
         );
     }
 

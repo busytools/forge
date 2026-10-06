@@ -1,6 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
+  import { browserWindowUp, showBrowser } from '../browser/host';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -438,6 +439,14 @@
       if (denyOption !== null) decide(denyWith);
       return;
     }
+    if (ask.kind === 'browser_hand_off') {
+      // A hand-off refuses with its own "not now", which is the answer the
+      // core reads as the session carrying on without the browser. Without
+      // this arm the parked call - which has no timeout - waits forever on a
+      // key the dock's own row advertises.
+      handOff(false);
+      return;
+    }
     // A held post refuses with its own "don't send", which is the answer the
     // core reads as the draft going nowhere.
     post(false);
@@ -489,6 +498,79 @@
     const id = ask.request.id;
     onanswer(id);
     answer({ respond_slack_post: { key: slot, id, approved } });
+  }
+
+  /** Which hand-off Open has brought the browser up for, by its own id. */
+  let openedFor = $state<string | null>(null);
+
+  /**
+   * The hand-off's own header line, built here rather than in the markup: a
+   * `{' · '}` interpolation beside an `{#if}` keeps its spacing - Svelte
+   * trims the block's own edges - and is a literal a lint (rightly) calls
+   * useless; one template string says it once.
+   */
+  const handOffTitle = $derived(
+    ask.kind === 'browser_hand_off' && ask.request.context !== null
+      ? `browser hand-off · ${ask.request.context}`
+      : 'browser hand-off',
+  );
+  const opened = $derived(ask.kind === 'browser_hand_off' && openedFor === ask.request.id);
+  /** A window this dock did not raise: one already up when the hand-off came. */
+  let windowUpFor = $state<string | null>(null);
+  const windowIsUp = $derived(
+    ask.kind === 'browser_hand_off' && (opened || windowUpFor === ask.request.id),
+  );
+
+  /**
+   * **A window already up is read on every ask object, not once per id.**
+   * Open must not be offered over a window that is already up - the click
+   * cannot raise another app's window, it just answers Ok - and the answer
+   * must not freeze in the other direction either: the record replaces the
+   * ask on every frame, so reading per object keeps the up answer as fresh as
+   * the false one, and a window the reader closes while the dock is up stops
+   * being claimed.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held === null || held.kind !== 'browser_hand_off') return;
+    const id = held.request.id;
+    void browserWindowUp().then((up) => {
+      windowUpFor = up ? id : null;
+    });
+  });
+  /** And which one a raise was asked for and did not happen, by the same id. */
+  let raiseFailedFor = $state<string | null>(null);
+  const raiseFailed = $derived(
+    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id,
+  );
+
+  /**
+   * Bring the browser up visibly, which is the client's own act rather than
+   * the core's.
+   *
+   * **The claim follows the answer.** `showBrowser` says whether a browser
+   * was really raised, and only a raise moves this dock to "the browser is
+   * up" - a line that lied would have the person press Done and tell the
+   * session they acted.
+   */
+  function open(): void {
+    if (ask.kind !== 'browser_hand_off') return;
+    const id = ask.request.id;
+    void showBrowser().then((raised) => {
+      if (raised) {
+        openedFor = id;
+      } else {
+        raiseFailedFor = id;
+      }
+    });
+  }
+
+  /** A hand-off's answer, which is the only release for its blocked handler. */
+  function handOff(done: boolean): void {
+    if (answered || ask.kind !== 'browser_hand_off') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({ respond_browser_hand_off: { key: slot, id, done } });
   }
 
   function move(step: number): void {
@@ -725,7 +807,7 @@
       {/if}
     </div>
     <div class="desc">{ask.request.header}</div>
-  {:else}
+  {:else if ask.kind === 'slack_draft'}
     <div class="d-head">
       <span class="dest">
         {ask.request.workspace} · {ask.request.conversationLabel}{#if ask.request.threadTs !== null}
@@ -742,6 +824,21 @@
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
     <div class="preview"><Prose text={ask.request.text} /></div>
+  {:else}
+    <div class="d-head">
+      <span class="tag warn">&#9888; needs you</span>
+      <span class="q mono">{handOffTitle}</span>
+    </div>
+    <!-- The reason verbatim: it is what the session needs, in its own words,
+         and a summary of it would be the client guessing at the act. -->
+    <div class="d-q">{ask.request.reason}</div>
+    <div class="desc">
+      {windowIsUp
+        ? 'The browser window is up. Do what is needed there, then press Done - closing it counts too.'
+        : raiseFailed
+          ? 'The browser could not be raised here - act in the desktop client if you have one, then press Done.'
+          : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
+    </div>
   {/if}
 
   {#if rows.length > 0}
@@ -890,6 +987,22 @@
         dictating · the words land in your draft either way
       </div>
     {/if}
+  {/if}
+
+  {#if ask.kind === 'browser_hand_off'}
+    <div class="acts">
+      <!-- Open is the client's own act, not the core's: it brings the app's
+           browser up visibly and answers nothing. **It is offered only while
+           no window is up** - nothing can raise another app's window, so a
+           second Open would answer Ok and change nothing on screen. Done is
+           the answer, and Not now declines - the session waits with no
+           timeout, so one of the two must be reachable from here. -->
+      {#if !windowIsUp}
+        <button class="btn p" onclick={open}>Open browser</button>
+      {/if}
+      <button class="btn" onclick={() => handOff(true)}>Done</button>
+      <button class="btn d" onclick={() => handOff(false)}>Not now</button>
+    </div>
   {/if}
 
   {#if notice !== null}

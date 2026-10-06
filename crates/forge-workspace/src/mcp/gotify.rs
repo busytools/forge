@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
@@ -46,7 +46,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// Readable JSON for one subscription (the tool-output shape the LLM
@@ -383,6 +383,7 @@ impl Tool for Recent {
 mod tests {
     use super::*;
     use crate::mcp::gotify::facade::{MockGotifyFacade, SubscribeOutcome};
+    use crate::mcp::test_support::text_of;
     use std::time::SystemTime;
 
     fn caller_slot() -> SessionSlot {
@@ -421,10 +422,10 @@ mod tests {
         let out = tool
             .call(input(serde_json::json!({ "applications": ["alerts"], "min_priority": 5 })))
             .await;
-        assert!(!out.is_error, "valid subscribe succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "valid subscribe succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the outcome stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the structured row");
+            serde_json::from_str(text_of(&out)).expect("the result is the structured row");
         assert_eq!(json["id"], id.to_string());
         assert_eq!(json["applications"], serde_json::json!(["alerts"]));
         assert_eq!(json["min_priority"], 5);
@@ -456,7 +457,7 @@ mod tests {
 
         assert!(!out.is_error, "the subscription was created, so this is not an error");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the structured row");
+            serde_json::from_str(text_of(&out)).expect("the result is the structured row");
         assert_eq!(json["id"], id.to_string(), "the id still comes back");
         assert_eq!(json["applications"], serde_json::json!(["phone-agent"]));
         assert!(
@@ -475,9 +476,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("no Gotify server configured in forge.toml [gotify]"),
+            text_of(&out).contains("no Gotify server configured in forge.toml [gotify]"),
             "unconfigured error surfaced to the LLM: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -492,8 +493,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
         assert!(
-            out.blocks[0].text.contains(&a.to_string())
-                && out.blocks[0].text.contains(&b.to_string()),
+            text_of(&out).contains(&a.to_string()) && text_of(&out).contains(&b.to_string()),
             "both subscription ids appear in the list output",
         );
     }
@@ -513,7 +513,7 @@ mod tests {
         assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],
@@ -563,11 +563,11 @@ mod tests {
         let tool = Apps { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
-        assert!(!out.is_error, "apps succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "apps succeeds: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("Backups") && out.blocks[0].text.contains("CI"),
+            text_of(&out).contains("Backups") && text_of(&out).contains("CI"),
             "both app names appear: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -580,9 +580,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("no Gotify server configured in forge.toml [gotify]"),
+            text_of(&out).contains("no Gotify server configured in forge.toml [gotify]"),
             "unconfigured error surfaced: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 
@@ -593,11 +593,11 @@ mod tests {
         let tool = Recent { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({}))).await;
-        assert!(!out.is_error, "recent succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "recent succeeds: {}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("CI") && out.blocks[0].text.contains("build failed"),
+            text_of(&out).contains("CI") && text_of(&out).contains("build failed"),
             "notification fields serialized: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
         let calls = mock.recent_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -631,9 +631,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("boom"),
+            text_of(&out).contains("boom"),
             "fetch failure surfaced to the LLM: {}",
-            out.blocks[0].text,
+            text_of(&out),
         );
     }
 

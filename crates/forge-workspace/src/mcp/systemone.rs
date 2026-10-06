@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 use forge_system_one::{AskOutcome, NoulCriteria, Question, SystemOneError};
 
 use crate::mcp::systemone::facade::SystemOneFacade;
@@ -35,7 +35,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// The tool-output shape: what answered, the typed answer, and what it
@@ -337,6 +337,7 @@ impl Tool for AskScore {
 mod tests {
     use super::*;
     use crate::mcp::systemone::facade::MockSystemOneFacade;
+    use crate::mcp::test_support::text_of;
     use forge_system_one::{Answer, Usage};
 
     fn input(value: serde_json::Value) -> ToolInput {
@@ -402,14 +403,10 @@ mod tests {
         assert!(
             !out.is_error,
             "a usage-less answer is still a delivered decision: {}",
-            out.blocks[0].text
+            text_of(&out)
         );
-        assert!(
-            !out.blocks[0].text.contains("usage"),
-            "no invented usage block: {}",
-            out.blocks[0].text
-        );
-        assert!(out.blocks[0].text.contains("\"noul\":0.5"), "{}", out.blocks[0].text);
+        assert!(!text_of(&out).contains("usage"), "no invented usage block: {}", text_of(&out));
+        assert!(text_of(&out).contains("\"noul\":0.5"), "{}", text_of(&out));
     }
 
     #[tokio::test]
@@ -426,9 +423,9 @@ mod tests {
             })))
             .await;
 
-        assert!(!out.is_error, "noul succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"noul\":0.83"), "{}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("test-model"), "{}", out.blocks[0].text);
+        assert!(!out.is_error, "noul succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("\"noul\":0.83"), "{}", text_of(&out));
+        assert!(text_of(&out).contains("test-model"), "{}", text_of(&out));
         let calls = mock.calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, serde_json::json!({"ticket": "x"}));
@@ -460,7 +457,7 @@ mod tests {
                 "criteria": {"true": {"rule": "Payments"}, "false": "Anything else"}
             })))
             .await;
-        assert!(!out.is_error, "structured noul arguments are accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "structured noul arguments are accepted: {}", text_of(&out));
 
         let choice = AskChoice { facade: mock.clone() };
         let out = choice
@@ -470,7 +467,7 @@ mod tests {
                 "criteria": {"billing": {"files": ["a.rs"]}, "frontend": null}
             })))
             .await;
-        assert!(!out.is_error, "structured choice values are accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "structured choice values are accepted: {}", text_of(&out));
 
         let score = AskScore { facade: mock.clone() };
         let out = score
@@ -480,7 +477,7 @@ mod tests {
                 "criteria": ["Routine", {"label": "Urgent", "scope": "page now"}]
             })))
             .await;
-        assert!(!out.is_error, "a structured score question is accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "a structured score question is accepted: {}", text_of(&out));
 
         let malformed = noul
             .call(input(serde_json::json!({
@@ -491,9 +488,9 @@ mod tests {
             .await;
         assert!(malformed.is_error, "a third noul key is still refused");
         assert!(
-            malformed.blocks[0].text.contains("exactly the keys `true` and `false`"),
+            text_of(&malformed).contains("exactly the keys `true` and `false`"),
             "{}",
-            malformed.blocks[0].text
+            text_of(&malformed)
         );
 
         let calls = mock.calls.lock();
@@ -567,11 +564,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "Is it?", "criteria": {"true": "yes"}}))).await;
 
         assert!(out.is_error);
-        assert!(
-            out.blocks[0].text.contains("exactly the keys `true` and `false`"),
-            "{}",
-            out.blocks[0].text
-        );
+        assert!(text_of(&out).contains("exactly the keys `true` and `false`"), "{}", text_of(&out));
         assert!(mock.calls.lock().is_empty(), "malformed criteria never reaches the facade");
     }
 
@@ -590,9 +583,9 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "Which team?", "criteria": {"billing": "Payments", "frontend": null}}))).await;
 
-        assert!(!out.is_error, "choice succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"choice\":\"billing\""), "{}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"probabilities\""), "{}", out.blocks[0].text);
+        assert!(!out.is_error, "choice succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("\"choice\":\"billing\""), "{}", text_of(&out));
+        assert!(text_of(&out).contains("\"probabilities\""), "{}", text_of(&out));
     }
 
     #[tokio::test]
@@ -607,7 +600,7 @@ mod tests {
             .await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("at least one option"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("at least one option"), "{}", text_of(&out));
         assert!(mock.calls.lock().is_empty());
     }
 
@@ -625,7 +618,7 @@ mod tests {
             .await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("256 options (max 255)"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("256 options (max 255)"), "{}", text_of(&out));
         assert!(mock.calls.lock().is_empty());
     }
 
@@ -657,10 +650,10 @@ mod tests {
             .call(input(serde_json::json!({"state": "x", "instructions": "How urgent?", "criteria": ["Routine", "Soon", "Urgent"]})))
             .await;
 
-        assert!(!out.is_error, "score succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"score\":1.79"), "{}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"legend\""), "{}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("\"probabilities\""), "{}", out.blocks[0].text);
+        assert!(!out.is_error, "score succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("\"score\":1.79"), "{}", text_of(&out));
+        assert!(text_of(&out).contains("\"legend\""), "{}", text_of(&out));
+        assert!(text_of(&out).contains("\"probabilities\""), "{}", text_of(&out));
         let calls = mock.calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(
@@ -682,7 +675,7 @@ mod tests {
         let choice = AskChoice { facade: mock.clone() };
 
         let out = choice.call(input(serde_json::json!({"state": "x", "instructions": "Which?", "criteria": {"only": null}}))).await;
-        assert!(!out.is_error, "one option is accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "one option is accepted: {}", text_of(&out));
 
         let wide: serde_json::Map<String, serde_json::Value> =
             (0..255).map(|index| (format!("o{index}"), serde_json::Value::Null)).collect();
@@ -691,11 +684,11 @@ mod tests {
                 serde_json::json!({"state": "x", "instructions": "Which?", "criteria": wide}),
             ))
             .await;
-        assert!(!out.is_error, "255 options are accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "255 options are accepted: {}", text_of(&out));
 
         let score = AskScore { facade: mock.clone() };
         let out = score.call(input(serde_json::json!({"state": "x", "instructions": "How bad?", "criteria": ["low", "high"]}))).await;
-        assert!(!out.is_error, "two levels are accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "two levels are accepted: {}", text_of(&out));
 
         assert_eq!(mock.calls.lock().len(), 3, "every boundary case reached the facade");
     }
@@ -712,7 +705,7 @@ mod tests {
             .await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("at least 2 levels (got 1)"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("at least 2 levels (got 1)"), "{}", text_of(&out));
         assert!(mock.calls.lock().is_empty());
     }
 
@@ -729,7 +722,7 @@ mod tests {
             .await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("11 levels (max 10)"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("11 levels (max 10)"), "{}", text_of(&out));
         assert!(mock.calls.lock().is_empty());
     }
 
@@ -743,12 +736,8 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("rejected the API key"), "{}", out.blocks[0].text);
-        assert!(
-            out.blocks[0].text.contains("`api_key` in forge.toml [systemone]"),
-            "{}",
-            out.blocks[0].text
-        );
+        assert!(text_of(&out).contains("rejected the API key"), "{}", text_of(&out));
+        assert!(text_of(&out).contains("`api_key` in forge.toml [systemone]"), "{}", text_of(&out));
     }
 
     #[tokio::test]
@@ -763,8 +752,8 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
 
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("HTTP 422"), "{}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("Field required"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("HTTP 422"), "{}", text_of(&out));
+        assert!(text_of(&out).contains("Field required"), "{}", text_of(&out));
     }
 
     #[tokio::test]
@@ -777,9 +766,9 @@ mod tests {
 
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("System One request failed: connection refused"),
+            text_of(&out).contains("System One request failed: connection refused"),
             "{}",
-            out.blocks[0].text
+            text_of(&out)
         );
     }
 
@@ -791,11 +780,11 @@ mod tests {
         *mock.result.lock() = Some(Err(SystemOneError::Timeout));
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("timed out"), "{}", out.blocks[0].text);
+        assert!(text_of(&out).contains("timed out"), "{}", text_of(&out));
         assert!(
-            out.blocks[0].text.contains("timeout_ms"),
+            text_of(&out).contains("timeout_ms"),
             "the hint half is the deviation the PR body rests on: {}",
-            out.blocks[0].text
+            text_of(&out)
         );
 
         *mock.result.lock() =
@@ -803,9 +792,9 @@ mod tests {
         let out = tool.call(input(serde_json::json!({"state": "x", "instructions": "y"}))).await;
         assert!(out.is_error);
         assert!(
-            out.blocks[0].text.contains("invalid answer: probability keys drift"),
+            text_of(&out).contains("invalid answer: probability keys drift"),
             "{}",
-            out.blocks[0].text
+            text_of(&out)
         );
     }
 }

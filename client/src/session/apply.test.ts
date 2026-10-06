@@ -704,6 +704,34 @@ describe('applyUpdate', () => {
       ).toEqual([]);
       expect(applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd2' } })).toBe(held);
     });
+
+    it('parks a browser hand-off, ahead of the asks already waiting, the way the read orders it', () => {
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const handoff = { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' };
+      const parked = applyUpdate(asked, { browser_hand_off_pending: { key: SLOT, handoff } });
+
+      expect(kinds(parked), 'the hand-off leads the question that was already waiting').toEqual([
+        'browser_hand_off',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { browser_hand_off_resolved: { key: SLOT, id: 'h1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+      expect(
+        applyUpdate(parked, { browser_hand_off_resolved: { key: SLOT, id: 'h2' } }),
+        'a resolution naming another hand-off leaves this one parked',
+      ).toBe(parked);
+    });
   });
 
   describe('the composer', () => {
@@ -1102,6 +1130,8 @@ const EVERY_VARIANT = [
   'slack_message_appended',
   'slack_post_pending',
   'slack_draft_resolved',
+  'browser_hand_off_pending',
+  'browser_hand_off_resolved',
   'prompt_queued_while_busy',
   'prompt_queued',
   'prompt_lifecycle',
@@ -1175,9 +1205,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (73 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (75 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(73);
+    ).toBe(75);
   });
 
   it('classifies every variant the core can send', () => {

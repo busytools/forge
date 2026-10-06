@@ -111,12 +111,23 @@ export interface SlackDraft {
   text: string;
 }
 
+/** A browser hand-off: a session asking the person to act in a browser tab. */
+export interface BrowserHandOff {
+  /** The hand-off's own id, which is what an answer is addressed by. */
+  id: string;
+  /** What the session needs done, in its own words - shown verbatim. */
+  reason: string;
+  /** The named context to raise, or null for the shared one. */
+  context: string | null;
+}
+
 /** The prompt the seat is parked on. */
 export type Ask =
   | { kind: 'permission'; request: PermissionRequest }
   | { kind: 'question'; request: QuestionRequest }
   /** A held Slack post, which this composer draws no dock for. */
-  | { kind: 'slack_draft'; request: SlackDraft };
+  | { kind: 'slack_draft'; request: SlackDraft }
+  | { kind: 'browser_hand_off'; request: BrowserHandOff };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -203,6 +214,8 @@ export function askFrom(value: unknown): Ask | null {
       return questionFrom(request);
     case 'slack_draft':
       return slackFrom(request);
+    case 'browser_hand_off':
+      return browserHandOffFrom(request);
     default:
       return null;
   }
@@ -272,6 +285,19 @@ function slackFrom(value: unknown): Ask {
       conversationLabel: text(held['conversation_label']) ?? '',
       threadTs: text(held['thread_ts']),
       text: text(held['text']) ?? '',
+    },
+  };
+}
+
+/** A browser hand-off: the reason is shown verbatim, the id is what an answer names. */
+function browserHandOffFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'browser_hand_off',
+    request: {
+      id: text(held['id']) ?? '',
+      reason: text(held['reason']) ?? '',
+      context: text(held['context']),
     },
   };
 }
