@@ -43,11 +43,19 @@ pub struct Driver {
 
 impl Driver {
     /// Start the driver against a browser's CDP endpoint.
+    ///
+    /// `context` picks which context this driver drives. `Some(path)` is a
+    /// NAMED context: the driver creates one of its own, isolated from every
+    /// other driver on the browser, and reads its cookies from `path` -
+    /// created empty when it is not there, since upstream reads the file at
+    /// context creation and a missing one fails the launch. `None` attaches
+    /// to the browser's own context, the profile's, which outlives everything.
     pub async fn start(
         node: &Path,
         cli: &Path,
         cdp_endpoint: &str,
         output_dir: &Path,
+        context: Option<&Path>,
     ) -> Result<Self, String> {
         if !node.is_file() || !cli.is_file() {
             return Err(format!(
@@ -58,11 +66,17 @@ impl Driver {
         }
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
+        if let Some(storage) = context {
+            ensure_storage_state(storage)?;
+        }
 
-        let transport = TokioChildProcess::new(tokio::process::Command::new(node).configure(
-            |cmd| {
-                cmd.arg(cli)
-                    .arg("--cdp-endpoint")
+        let transport =
+            TokioChildProcess::new(tokio::process::Command::new(node).configure(|cmd| {
+                cmd.arg(cli);
+                if let Some(storage) = context {
+                    cmd.arg("--isolated").arg("--storage-state").arg(storage);
+                }
+                cmd.arg("--cdp-endpoint")
                     .arg(cdp_endpoint)
                     .arg("--no-webmcp")
                     // Where upstream's own screenshot default lands: the
@@ -70,13 +84,13 @@ impl Driver {
                     // dropped there is one nobody finds.
                     .arg("--output-dir")
                     .arg(output_dir);
-            },
-        ))
-        .map_err(|why| format!("the driver would not start: {why}"))?;
+            }))
+            .map_err(|why| format!("the driver would not start: {why}"))?;
 
-        let service = ().serve(transport).await.map_err(|why| {
-            format!("the driver did not answer its MCP handshake: {why}")
-        })?;
+        let service = ()
+            .serve(transport)
+            .await
+            .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         let client = service.peer().clone();
         Ok(Self { _service: service, client })
     }
@@ -148,6 +162,20 @@ fn parts_of(result: &rmcp::model::CallToolResult) -> Result<Vec<ReplyPart>, Stri
     Ok(parts)
 }
 
+/// Write the empty storage state a named context starts from, if it is not
+/// there.
+fn ensure_storage_state(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|why| format!("the context's storage directory cannot be made: {why}"))?;
+    }
+    std::fs::write(path, r#"{"cookies": [], "origins": []}"#)
+        .map_err(|why| format!("the context's storage state cannot be written: {why}"))
+}
+
 /// The CLI inside the vendored package, run by the vendored node.
 pub fn cli_path(stack: &Path) -> PathBuf {
     stack.join("playwright-mcp/node_modules/@playwright/mcp/cli.js")
@@ -207,6 +235,30 @@ mod tests {
         )]);
         let refused = parts_of(&result).expect_err("an audio block is not carried");
         assert!(refused.contains("cannot carry"), "{refused}");
+    }
+
+    /// A named context's storage file is created empty when it is missing and
+    /// left alone when it exists: upstream reads it at context creation (a
+    /// missing file fails the launch), and it is where that context's own
+    /// logins live, so an existing one is never overwritten.
+    #[test]
+    fn a_missing_storage_state_is_created_empty_and_an_existing_one_is_kept() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let state = dir.path().join("contexts/alpha.json");
+
+        ensure_storage_state(&state).expect("the missing file is created");
+        let written = std::fs::read_to_string(&state).expect("the storage state is there");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&written).expect("the written state is JSON");
+        assert_eq!(parsed["cookies"], serde_json::json!([]), "{written}");
+        assert_eq!(parsed["origins"], serde_json::json!([]), "{written}");
+
+        std::fs::write(&state, r#"{"cookies": [{"name": "who"}]}"#).expect("a state with a login");
+        ensure_storage_state(&state).expect("an existing file is not an error");
+        assert!(
+            std::fs::read_to_string(&state).expect("read back").contains("who"),
+            "the context's own logins are never overwritten",
+        );
     }
 
     /// The driver's own paths are the vendoring's layout, pinned by name.

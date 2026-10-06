@@ -157,6 +157,7 @@ impl BrowserHost {
                 &driver::cli_path(&paths.stack),
                 &endpoint,
                 &paths.output,
+                None,
             )
             .await?;
             *inner = Some(Arc::new(started));
@@ -197,7 +198,8 @@ mod tests {
     /// take the whole app down for a feature nobody may ask for.
     #[tokio::test]
     async fn a_host_with_no_directories_answers_why() {
-        let host = BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
+        let host =
+            BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
         let refused = host.call("browser_close", Value::Null).await;
         assert_eq!(
             refused,
