@@ -446,18 +446,11 @@ mod tests {
         "agents__ask",
     ];
 
-    /// Every group that is any-caller: both session kinds manage their
-    /// own project's reviews, crons, tasks, subscriptions and decisions,
-    /// and both may drive the one machine-global browser.
-    const ANY_CALLER_TOOLS: [&str; 38] = [
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_click",
-        "browser_type",
-        "browser_evaluate",
-        "browser_run_code_unsafe",
-        "browser_wait_for",
-        "browser_close",
+    /// Every group that is any-caller BESIDE the browser: both session kinds
+    /// manage their own project's reviews, crons, tasks, subscriptions and
+    /// decisions. The browser's own names are read off its table instead -
+    /// one list per family, so a tool added there cannot leave this behind.
+    const ANY_CALLER_TOOLS: [&str; 30] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -528,13 +521,16 @@ mod tests {
 
     #[test]
     fn every_any_caller_group_registers_for_both_kinds() {
+        let browser: Vec<String> =
+            crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()).collect();
         for kind in [SessionKind::Lead, SessionKind::Worker] {
             let names = registered_names(kind);
-            for expected in ANY_CALLER_TOOLS {
-                assert!(
-                    names.contains(&expected.to_owned()),
-                    "{expected} must register for {kind:?}"
-                );
+            for expected in ANY_CALLER_TOOLS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .chain(browser.iter().cloned())
+            {
+                assert!(names.contains(&expected), "{expected} must register for {kind:?}");
             }
         }
     }
@@ -572,21 +568,14 @@ mod tests {
             Some(MockSystemOneFacade::new().into_arc()),
         ));
         worker.sort();
+        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+            .collect();
+        expected.sort();
         assert_eq!(
-            worker,
-            [
-                "agents__list",
-                "agents__send_message",
-                "agents__whoami",
-                "browser_click",
-                "browser_close",
-                "browser_evaluate",
-                "browser_navigate",
-                "browser_run_code_unsafe",
-                "browser_snapshot",
-                "browser_type",
-                "browser_wait_for",
-            ],
+            worker, expected,
             "a withheld family leaves no trace, and the browser core is not one"
         );
 
@@ -610,26 +599,14 @@ mod tests {
             [McpFamily::Cron].into_iter().collect();
         let mut names = names_of(&forge_server_families(SessionKind::Worker, &families, None));
         names.sort();
-        assert_eq!(
-            names,
-            [
-                "agents__list",
-                "agents__send_message",
-                "agents__whoami",
-                "browser_click",
-                "browser_close",
-                "browser_evaluate",
-                "browser_navigate",
-                "browser_run_code_unsafe",
-                "browser_snapshot",
-                "browser_type",
-                "browser_wait_for",
-                "cron__create",
-                "cron__delete",
-                "cron__list",
-            ],
-            "{names:?}"
-        );
+        let mut expected: Vec<String> = ["agents__list", "agents__send_message", "agents__whoami"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+            .chain(["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned))
+            .collect();
+        expected.sort();
+        assert_eq!(names, expected, "{names:?}");
     }
 
     /// A stored selection resolves to the canonical set: absent and

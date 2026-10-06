@@ -30,222 +30,15 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 #[cfg(test)]
 use forge_sdk::mcp::server::McpServer;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::mcp::browser::facade::BrowserFacade;
 
 pub mod facade;
 
-/// One upstream tool: the name the model calls it by, the description it
-/// reads, and the argument schema the CLI validates against.
-struct ToolSpec {
-    name: &'static str,
-    description: &'static str,
-    schema: Value,
-}
+pub mod specs;
 
-/// The core tools, in the order this phase lists them - which is the
-/// capture's order for the ones it takes.
-///
-/// The set is phase 1's: enough to prove the pipe by driving a page for real.
-/// The rest of the 25 land with the full-surface phase, as their own
-/// transcription of the same capture.
-fn specs() -> Vec<ToolSpec> {
-    vec![
-        ToolSpec {
-            name: "browser_navigate",
-            description: "Navigate to a URL",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to navigate to"
-                    }
-                },
-                "required": ["url"],
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_snapshot",
-            description: "Capture accessibility snapshot of the current page, this is better than screenshot",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "description": "Exact target element reference from the page snapshot, or a unique element selector",
-                        "type": "string"
-                    },
-                    "filename": {
-                        "description": "Save snapshot to a file instead of returning it in the response. Relative file names are resolved against the workspace root.",
-                        "type": "string"
-                    },
-                    "depth": {
-                        "description": "Limit the depth of the snapshot tree",
-                        "type": "number"
-                    },
-                    "boxes": {
-                        "description": "Include each element's bounding box as [box=x,y,width,height] in the snapshot. Coordinates are viewport-relative, in CSS pixels (Element.getBoundingClientRect)",
-                        "type": "boolean"
-                    }
-                },
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_click",
-            description: "Perform click on a web page",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "element": {
-                        "description": "Human-readable element description used to obtain permission to interact with the element",
-                        "type": "string"
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "Exact target element reference from the page snapshot, or a unique element selector"
-                    },
-                    "doubleClick": {
-                        "description": "Whether to perform a double click instead of a single click",
-                        "type": "boolean"
-                    },
-                    "button": {
-                        "description": "Button to click, defaults to left",
-                        "type": "string",
-                        "enum": ["left", "right", "middle"]
-                    },
-                    "modifiers": {
-                        "description": "Modifier keys to press",
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"]
-                        }
-                    }
-                },
-                "required": ["target"],
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_type",
-            description: "Type text into editable element",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "element": {
-                        "description": "Human-readable element description used to obtain permission to interact with the element",
-                        "type": "string"
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "Exact target element reference from the page snapshot, or a unique element selector"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type into the element"
-                    },
-                    "submit": {
-                        "description": "Whether to submit entered text (press Enter after)",
-                        "type": "boolean"
-                    },
-                    "slowly": {
-                        "description": "Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once.",
-                        "type": "boolean"
-                    }
-                },
-                "required": ["target", "text"],
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_evaluate",
-            description: "Evaluate JavaScript expression on page or element",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "element": {
-                        "description": "Human-readable element description used to obtain permission to interact with the element",
-                        "type": "string"
-                    },
-                    "target": {
-                        "description": "Exact target element reference from the page snapshot, or a unique element selector",
-                        "type": "string"
-                    },
-                    "function": {
-                        "type": "string",
-                        "description": "() => { /* code */ } or (element) => { /* code */ } when element is provided"
-                    },
-                    "filename": {
-                        "description": "File name to save the result to. Relative file names are resolved against the workspace root. If not provided, result is returned as text.",
-                        "type": "string"
-                    }
-                },
-                "required": ["function"],
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_run_code_unsafe",
-            description: "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent.",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "description": "A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: `async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }`",
-                        "type": "string"
-                    },
-                    "filename": {
-                        "description": "Load code from the specified file. Relative file names are resolved against the workspace root. If both code and filename are provided, code will be ignored.",
-                        "type": "string"
-                    }
-                },
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_wait_for",
-            description: "Wait for text to appear or disappear or a specified time to pass",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "time": {
-                        "description": "The time to wait in seconds, at most 30",
-                        "type": "number"
-                    },
-                    "text": {
-                        "description": "The text to wait for",
-                        "type": "string"
-                    },
-                    "textGone": {
-                        "description": "The text to wait for to disappear",
-                        "type": "string"
-                    }
-                },
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "browser_close",
-            description: "Close the page",
-            schema: json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        },
-    ]
-}
+use specs::ToolSpec;
 
 /// Build a standalone `forge` MCP server carrying only the browser tools.
 /// Test-only; production shares one `forge` server via
@@ -267,7 +60,7 @@ pub(crate) fn add_tools(
     slot: SessionSlot,
 ) -> McpServerBuilder {
     let mut builder = builder;
-    let mut specs = specs().into_iter().peekable();
+    let mut specs = specs::specs().into_iter().peekable();
     while let Some(spec) = specs.next() {
         if specs.peek().is_none() {
             return builder.tool(BrowserTool { spec, facade, slot });
@@ -340,6 +133,7 @@ fn parts_output(parts: Vec<BrowserPart>) -> ToolOutput {
 mod tests {
     use super::*;
     use crate::mcp::browser::facade::MockBrowserFacade;
+    use serde_json::json;
 
     fn seat() -> SessionSlot {
         SessionSlot::from_str_for_test("caller")
@@ -357,64 +151,66 @@ mod tests {
             .collect()
     }
 
-    /// The registered surface is exactly upstream's 8 core tools, unprefixed:
-    /// a prompt written against a Playwright MCP server names these, and a
-    /// `browser__*` prefix or a renamed tool is a prompt that no longer
-    /// resolves.
+    /// The registered surface is the whole table, UNPREFIXED: a prompt
+    /// written against a Playwright MCP server names `browser_navigate`, and
+    /// a `browser__*` prefix or a renamed tool is a prompt that no longer
+    /// resolves. Every name the table carries registers, and nothing else
+    /// does.
     ///
     /// Sorted rather than in upstream's order, because the server hands its
-    /// tools out of a map: what is pinned here is the SET that resolves, and
-    /// the order upstream lists them in is pinned by the shape test instead.
+    /// tools out of a map: what is pinned here is the SET that resolves,
+    /// against the table read as a set too, so a tool added to one and not
+    /// the other fails.
     #[test]
-    fn the_core_tools_register_with_upstreams_names() {
+    fn the_whole_surface_registers_with_the_tables_names() {
         let mut registered = names(MockBrowserFacade::new().into_arc());
         registered.sort();
+        let mut expected: Vec<&str> = specs::specs().iter().map(|spec| spec.name).collect();
+        expected.sort_unstable();
         assert_eq!(
-            registered,
-            [
-                "browser_click",
-                "browser_close",
-                "browser_evaluate",
-                "browser_navigate",
-                "browser_run_code_unsafe",
-                "browser_snapshot",
-                "browser_type",
-                "browser_wait_for",
-            ],
+            registered, expected,
+            "the registered names are the table's, and nothing else's"
+        );
+        assert!(
+            registered.iter().all(|name| !name.contains("__")),
+            "every browser tool crosses unprefixed: {registered:?}",
         );
     }
 
-    /// Each tool's argument shape is the one `@playwright/mcp` 0.0.83
-    /// published: the property names and which of them are required. A
-    /// dropped property is a call the CLI refuses before it is ever sent.
+    /// **The three shapes the live capture corrected**, and the arguments
+    /// this family adds beside upstream's - each transcribed independently
+    /// of the table in [`specs`], so the two agreeing is the check rather
+    /// than a shape pinned twice. A dropped argument here is a call the CLI
+    /// refuses before it is ever sent; an extra one upstream does not have is
+    /// a prompt that means something else here.
     #[test]
-    fn each_tool_carries_upstreams_argument_shape() {
-        // Transcribed from the 0.0.83 capture, independently of the specs
-        // above: the two agreeing is the check, so a typo in one shows as a
-        // disagreement rather than as a shape pinned twice.
+    fn the_corrected_shapes_and_the_added_arguments_are_what_the_capture_says() {
         const EXPECTED: &[(&str, &[&str], &[&str])] = &[
-            ("browser_navigate", &["url"], &["url"]),
-            ("browser_snapshot", &["target", "filename", "depth", "boxes"], &[]),
+            // `scale` is REQUIRED on a screenshot, which the prose
+            // transcription missed and the live schema does not.
+            (
+                "browser_take_screenshot",
+                &["element", "target", "type", "filename", "fullPage", "scale"],
+                &["scale"],
+            ),
+            // `filename` is on evaluate, which the prose transcription missed.
+            ("browser_evaluate", &["element", "target", "function", "filename"], &["function"]),
+            // And run_code_unsafe marks nothing required.
+            ("browser_run_code_unsafe", &["code", "filename"], &[]),
+            // Beyond upstream, on tools upstream already has.
             (
                 "browser_click",
-                &["element", "target", "doubleClick", "button", "modifiers"],
+                &["element", "target", "doubleClick", "button", "modifiers", "force"],
                 &["target"],
             ),
-            (
-                "browser_type",
-                &["element", "target", "text", "submit", "slowly"],
-                &["target", "text"],
-            ),
-            ("browser_evaluate", &["element", "target", "function", "filename"], &["function"]),
-            ("browser_run_code_unsafe", &["code", "filename"], &[]),
-            ("browser_wait_for", &["time", "text", "textGone"], &[]),
-            ("browser_close", &[], &[]),
+            ("browser_wait_for", &["time", "text", "textGone", "expression"], &[]),
         ];
-        let specs = specs();
-        assert_eq!(specs.len(), EXPECTED.len(), "the expected table covers every core tool");
-
-        for (spec, (name, properties, required)) in specs.iter().zip(EXPECTED) {
-            assert_eq!(spec.name, *name, "the table is in the tools' own order");
+        let all = specs::specs();
+        for (name, properties, required) in EXPECTED {
+            let spec = all
+                .iter()
+                .find(|spec| spec.name == *name)
+                .unwrap_or_else(|| panic!("{name} is not on the surface"));
             let schema = &spec.schema;
             let mut got: Vec<&str> = schema["properties"]
                 .as_object()
@@ -425,18 +221,22 @@ mod tests {
             got.sort_unstable();
             let mut want: Vec<&str> = properties.to_vec();
             want.sort_unstable();
-            assert_eq!(got, want, "{name}: the argument names are upstream's");
+            assert_eq!(got, want, "{name}: the argument names are the capture's");
 
             let got_required: Vec<&str> = schema["required"]
                 .as_array()
                 .map_or_else(Vec::new, |list| list.iter().filter_map(Value::as_str).collect());
-            assert_eq!(got_required, *required, "{name}: the required arguments are upstream's");
-            assert_eq!(
-                schema["additionalProperties"],
-                json!(false),
-                "{name}: upstream refuses arguments it does not know, and so does this",
-            );
+            assert_eq!(got_required, *required, "{name}: the required arguments are the capture's");
         }
+    }
+
+    /// One tool of the table, by name: a test that names the tool it drives
+    /// cannot be moved onto another one by a reordering of the surface.
+    fn spec_named(name: &str) -> ToolSpec {
+        specs::specs()
+            .into_iter()
+            .find(|spec| spec.name == name)
+            .unwrap_or_else(|| panic!("{name} is not on the surface"))
     }
 
     /// A call reaches the host with the arguments the CLI sent, and the
@@ -445,7 +245,7 @@ mod tests {
     async fn a_call_carries_the_arguments_and_the_callers_slot() {
         let mock = Arc::new(MockBrowserFacade::new());
         let tool = BrowserTool {
-            spec: specs().remove(0),
+            spec: spec_named("browser_navigate"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
             slot: seat(),
         };
@@ -472,7 +272,7 @@ mod tests {
         let mock = Arc::new(MockBrowserFacade::new());
         *mock.answer.lock() = Err(crate::browser::NO_BROWSER_CLIENT.to_owned());
         let tool = BrowserTool {
-            spec: specs().remove(0),
+            spec: spec_named("browser_navigate"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
             slot: seat(),
         };
@@ -498,7 +298,7 @@ mod tests {
             BrowserPart::Image { mime_type: "image/png".to_owned(), bytes: vec![1, 2] },
         ]);
         let tool = BrowserTool {
-            spec: specs().remove(1),
+            spec: spec_named("browser_take_screenshot"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
             slot: seat(),
         };
