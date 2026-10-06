@@ -2052,6 +2052,22 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    changed, and a row that can start at zero makes the list jump every time a
    frame lands. */
 .turn { min-height: 24px; }
+/* ---------- arriving at the foot ----------
+   The newest turn's last row settles in as it arrives. The mark rides the
+   item's own wrapper (`itemProps` in the column, where each item is the last
+   child of its own wrapper) and is dropped after its window, so an item the
+   list recreates on a later scroll carries nothing to replay; the row a
+   stream grows into is not remounted, so nothing replays at 50Hz. Opacity
+   only, in place - no movement, so nothing can fight the follow's own
+   arithmetic. A row mid-reveal keeps its own flash. */
+@keyframes arrive {
+  from { opacity: .35; }
+  to { opacity: 1; }
+}
+.conv .arriving [data-k]:last-child:not(.sg-hit) { animation: arrive 150ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
+}
 
 /* A search hit is a location and the line it matched, on two lines. The design
    drew them as one run with a newline character in it, which becomes two lines
