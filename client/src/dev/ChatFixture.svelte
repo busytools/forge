@@ -1,5 +1,6 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
+  import { connectors } from '../chat/connectors.svelte';
   import { processes } from '../chat/processes.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import type { ServerMessage } from '../protocol';
@@ -41,6 +42,8 @@
      * narrowed the same way. */
     processes?: unknown;
     background_tasks?: unknown[];
+    /** The seat's own connector subscriptions, already in row shape. */
+    connectors?: { kind: 'gotify' | 'slack'; id: string; key: string; value: string }[];
   }
 
   /**
@@ -254,6 +257,10 @@
         false,
         { calls: new Map(), owners: new Map() },
       );
+      // The record's connector subscriptions, seeded the same way: the
+      // strip's third row reads this store, and nothing else here would fill
+      // it.
+      connectors.sync(page.connectors ?? null);
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

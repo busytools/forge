@@ -284,38 +284,6 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * **A Slack target crosses as a bare string.** `SlackSubscriptionTarget` is
-   * an externally tagged enum, so `DirectMessages` and `Mentions` are strings
-   * on the wire and only `Conversation` is an object; a narrow that reads all
-   * three as objects misses both class arms and draws an empty row.
-   */
-  it('draws a slack target the wire sends as a bare string', async () => {
-    await open(sessionFixture, slackWire());
-    openSection('slack');
-
-    const body = drawn();
-    expect(sections()).toContain('slack');
-    expect(body, 'a class target drew an empty key').toContain('mentions anywhere');
-    expect(body).toContain('direct messages');
-    // And the mode follows the target rather than defaulting to every message.
-    expect(body).toContain('mentions only');
-  });
-
-  /**
-   * Two subscriptions in one workspace can draw the SAME words - two mentions
-   * watchers over one workspace is an ordinary thing to configure - so a row is
-   * keyed by the subscription's own id. Keyed by the drawn words instead, the
-   * two collide and Svelte throws, which is how this reached the browser. The
-   * fixture carries such a pair, because a fixture whose three targets all read
-   * differently would pass either way.
-   */
-  it('draws subscriptions that read the same words without colliding', async () => {
-    await open(sessionFixture, slackWire());
-    openSection('slack');
-    expect(document.querySelectorAll('.sb .subs > li')).toHaveLength(4);
-  });
-
-  /**
    * The mount the app actually makes, asserted rather than walked by hand: the
    * Router's session branch is what puts the page on screen, and nothing else
    * in the suite renders it.
@@ -458,64 +426,11 @@ function matchMediaTo(matches: boolean): void {
   });
 }
 
-/** A home whose slack workspace holds a conversation, a DM class and mentions. */
-function slackWire(): typeof homeWire {
-  const project = homeWire.projects[0];
-  if (project === undefined) throw new Error('the fixture holds no project');
-  return {
-    ...homeWire,
-    projects: [
-      {
-        ...project,
-        connectors: {
-          gotify: [],
-          slack: [
-            {
-              id: 's1',
-              workspace: 'Trust Machines',
-              target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
-            },
-            { id: 's2', workspace: 'Trust Machines', target: 'DirectMessages' },
-            { id: 's3', workspace: 'Trust Machines', target: 'Mentions' },
-            // The same words as s3: a row keyed by the target rather than by the
-            // subscription's own id throws on this pair.
-            { id: 's4', workspace: 'Trust Machines', target: 'Mentions' },
-          ],
-        },
-      },
-    ],
-    connectors: {
-      gotify: { connected: false },
-      slack: {
-        connected_workspaces: [['Trust Machines', true]],
-        load_failed: false,
-      },
-    },
-  };
-}
-
 /** The `data-k` of every section the page drew, in the order it drew them. */
 function sections(): string[] {
   return [...document.querySelectorAll('[data-k^="sec-"]')].map(
     (el) => el.getAttribute('data-k')?.slice('sec-'.length) ?? '',
   );
-}
-
-/**
- * Open a section, which is what a reader does before its body means anything.
- *
- * **A section draws its body when it is open and not before.** The summary is
- * all a closed section owes, so a test that reads a body has to open the thing
- * first - and this is the same pair the browser sends, the property and the
- * event `bind:open` listens for. jsdom does not implement `<summary>`
- * activation, so a `click` would toggle nothing here while looking like it had.
- */
-function openSection(name: string): void {
-  const found = document.querySelector(`details.sec[data-k="sec-${name}"]`);
-  if (!(found instanceof HTMLDetailsElement)) throw new Error(`no ${name} section was drawn`);
-  found.open = true;
-  found.dispatchEvent(new Event('toggle'));
-  flushSync();
 }
 
 /**

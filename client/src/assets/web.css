@@ -2034,14 +2034,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sb .kv .k { flex: 1 1 auto; }
 .sb .kv .v { flex: 0 1 auto; }
 
-/* The slack section: a workspace, and the subscriptions under it as a list
-   inside the workspace's own item rather than two spaces in front of a
-   target. */
-.sb .ws, .sb .subs { list-style: none; }
-.sb .ws > li + li { padding-top: 8px; }
-.sb .subs { padding-left: 14px; }
-.sb .subs > li { padding-top: 4px; }
-
 /* A card: one monitor, or one sub-agent, with its own head and body. */
 .sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
 .sb .sa + .sa { margin-top: 8px; }

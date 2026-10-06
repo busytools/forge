@@ -787,5 +787,14 @@
       "description": "tail the forge log",
       "command": "tail -f forge.log"
     }
+  ],
+  "connectors": [
+    { "kind": "gotify", "id": "g-1", "key": "client-alerts", "value": ">=5" },
+    {
+      "kind": "slack",
+      "id": "s-1",
+      "key": "field-notes",
+      "value": "mentions anywhere · mentions only"
+    }
   ]
 }
