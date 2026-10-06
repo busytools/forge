@@ -87,6 +87,11 @@ EXCLUDE_DIRS_ANY_DEPTH = {
 # scanned while the failure message claimed to exclude it.
 EXCLUDE_PATH_PREFIXES = (
     "crates/forge-test-harness/baselines",
+    # The feed's own per-model docs, kept verbatim as fixtures: upstream's
+    # bytes, which this repo cannot fix and whose punctuation the parser
+    # tests are about. Editing one would make it not the document it stands
+    # for.
+    "crates/forge-dictate/tests/fixtures/docs",
     "crates/forge-web/assets/htmx.min.js",
     "crates/forge-web/assets/htmx-sse.min.js",
     "crates/forge-web/assets/idiomorph-ext.min.js",
@@ -202,7 +207,7 @@ def main(argv):
     )
     print("  - Ellipsis U+2026 is ALLOWED (truncation glyph).", file=sys.stderr)
     print(
-        "  - Excluded: the captured test baselines, and the three vendored scripts.",
+        "  - Excluded: the captured test baselines, the feed's own doc fixtures, and the three vendored scripts.",
         file=sys.stderr,
     )
     print(

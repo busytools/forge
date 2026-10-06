@@ -581,7 +581,7 @@ impl DictateState {
     /// Move every row to one state: preflight's Loading and Ready points,
     /// and the same Ready after a runtime swap, where every role's model
     /// is loaded by the engine that just came up.
-    pub(crate) fn mark_all(&self, state: DictateModelState) {
+    pub(crate) fn mark_all(&self, state: &DictateModelState) {
         for model in &mut self.snapshot.lock().models {
             model.state = state.clone();
         }
@@ -650,7 +650,7 @@ pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc
         }
     }
 
-    state.mark_all(DictateModelState::Loading);
+    state.mark_all(&DictateModelState::Loading);
 
     // `Engine::new` returns in microseconds having handed the load to a
     // worker; `wait_ready` is the part that takes the second.
@@ -665,7 +665,7 @@ pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc
     .await;
 
     match loaded {
-        Ok(Ok(())) => state.mark_all(DictateModelState::Ready),
+        Ok(Ok(())) => state.mark_all(&DictateModelState::Ready),
         Ok(Err(error)) => state.fail(failure_for(&load_cfg, &error), failing_file(&error)),
         Err(source) => state.fail(DictateFailure::Other { message: source.to_string() }, None),
     }

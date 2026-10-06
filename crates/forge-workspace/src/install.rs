@@ -166,10 +166,10 @@ impl Workspace {
         self.note_download(file, 0, total);
     }
 
-    fn record_installed(&self, model: InstalledModel) {
+    fn record_installed(&self, model: &InstalledModel) {
         let db = self.db.lock();
         if let Some(db) = db.as_ref()
-            && let Err(error) = crate::store::dictate_models::record_installed(db, &model)
+            && let Err(error) = crate::store::dictate_models::record_installed(db, model)
         {
             tracing::warn!(
                 event_name = "dictate_install_record_failed",
@@ -240,7 +240,7 @@ impl Workspace {
             let last = Cell::new(u64::MAX);
             forge_dictate::prepare(&cfg, |progress| {
                 if let Progress::Downloading { downloaded, total, .. } = progress {
-                    let percent = if total == 0 { 0 } else { downloaded * 100 / total };
+                    let percent = downloaded.saturating_mul(100).checked_div(total).unwrap_or(0);
                     if percent != last.get() {
                         last.set(percent);
                         this.note_download(&file, downloaded, total);
@@ -253,7 +253,7 @@ impl Workspace {
 
         match prepared {
             Ok(Ok(())) => {
-                self.record_installed(InstalledModel {
+                self.record_installed(&InstalledModel {
                     variant,
                     file: spec.file,
                     url: spec.url,
@@ -470,7 +470,7 @@ impl Workspace {
             if self.installed_models().iter().any(|installed| &installed.variant == variant) {
                 continue;
             }
-            self.record_installed(InstalledModel {
+            self.record_installed(&InstalledModel {
                 variant: variant.clone(),
                 file: model.spec.file.clone(),
                 url: model.spec.url.clone(),
@@ -663,7 +663,7 @@ impl Workspace {
         drop(previous);
 
         self.dictate.set_active(&next);
-        self.dictate.mark_all(crate::dictate::DictateModelState::Ready);
+        self.dictate.mark_all(&crate::dictate::DictateModelState::Ready);
         Ok(at)
     }
 
@@ -796,7 +796,7 @@ mod tests_install {
 
     /// Put one variant in the installed set, as an install of it would.
     fn record_installed_model(ws: &Workspace, variant: &str) {
-        ws.record_installed(InstalledModel {
+        ws.record_installed(&InstalledModel {
             variant: variant.to_owned(),
             file: format!("{variant}-Q4_K_M.gguf"),
             url: format!("https://weights.invalid/{variant}-Q4_K_M.gguf"),
@@ -818,10 +818,7 @@ mod tests_install {
     }
 
     /// One role's resolved model.
-    fn role_model<'r>(
-        resolved: &'r [(DictateRole, ActiveModel)],
-        role: DictateRole,
-    ) -> &'r ActiveModel {
+    fn role_model(resolved: &[(DictateRole, ActiveModel)], role: DictateRole) -> &ActiveModel {
         &resolved.iter().find(|(resolved, _)| *resolved == role).expect("the role resolves").1
     }
 
@@ -1018,7 +1015,7 @@ mod tests_install {
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![
-                (format!("/docs/candidate.md"), 200, doc_body(base, "candidate", file)),
+                ("/docs/candidate.md".to_owned(), 200, doc_body(base, "candidate", file)),
                 (format!("/weights/{file}"), 200, b"111111".to_vec()),
             ]
         });
@@ -1060,7 +1057,7 @@ mod tests_install {
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![
-                (format!("/docs/candidate.md"), 200, doc_body(base, "candidate", file)),
+                ("/docs/candidate.md".to_owned(), 200, doc_body(base, "candidate", file)),
                 (format!("/weights/{file}"), 200, b"11111".to_vec()),
             ]
         });
@@ -1166,7 +1163,7 @@ mod tests_install {
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![
-                (format!("/docs/candidate.md"), 200, doc_body(base, "candidate", file)),
+                ("/docs/candidate.md".to_owned(), 200, doc_body(base, "candidate", file)),
                 (format!("/weights/{file}"), 200, b"111111".to_vec()),
             ]
         });

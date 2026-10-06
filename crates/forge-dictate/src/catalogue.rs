@@ -282,12 +282,15 @@ pub fn doc_links(raw: &str) -> Vec<(String, String)> {
 
     let mut links = Vec::new();
     for target in region.lines().flat_map(link_targets) {
-        if !target.ends_with(".gguf") {
-            continue;
-        }
         let Some((_, file)) = target.rsplit_once('/') else {
             continue;
         };
+        let is_gguf = std::path::Path::new(file)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"));
+        if !is_gguf {
+            continue;
+        }
         links.push((file.to_owned(), target));
     }
     links
@@ -716,7 +719,9 @@ mod tests_catalogue {
         );
         assert_eq!(links.len(), 6, "one link per quant row");
         assert!(
-            links.iter().all(|(file, _)| file.ends_with(".gguf")),
+            links.iter().all(|(file, _)| std::path::Path::new(file)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))),
             "a row without a .gguf file parsed as a download"
         );
     }
