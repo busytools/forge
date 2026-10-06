@@ -18,6 +18,7 @@ import {
   railFooter,
   railGroups,
   railMark,
+  rankOf,
   type RailGroup,
   type RailProject,
   schedulesSection,
@@ -395,6 +396,11 @@ describe('the rail', () => {
     expect(railMark({ kind: 'lifecycle', lifecycle: 'Sleeping' })).toBe('off');
     expect(railMark({ kind: 'never-started' })).toBe('off');
     expect(railMark({ kind: 'unseen' })).toBe('unseen');
+    // A failed turn is the same failure shape, and it ranks with the
+    // states that need the reader rather than with the completions.
+    expect(railMark({ kind: 'failed-turn' })).toBe('failed');
+    expect(rankOf({ kind: 'failed-turn' }, null)).toBe(0);
+    expect(rankOf({ kind: 'failed-turn' }, 'question')).toBe(0);
   });
 
   it('counts the fleet by its seats, not by the rows a group drew', () => {

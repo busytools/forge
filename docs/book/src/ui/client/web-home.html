@@ -572,6 +572,19 @@
           </div>
           <div class="note">OAuth token expired; run /login to retry</div>
         </li>
+        <!-- The other failure: the seat is alive and nothing is running,
+             but its newest turn died unwatched. Same shape as the row
+             above, different lifetime - this one goes the moment the seat
+             is opened. -->
+        <li class="node">
+          <div class="row failed">
+            <span class="dot bad"></span>
+            <span class="name">turn failed</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a turn ended in failure and you have not opened the seat</span></span>
+            <span class="when">9m</span>
+          </div>
+        </li>
         <li class="node">
           <div class="row asleep">
             <span class="dot off"></span>

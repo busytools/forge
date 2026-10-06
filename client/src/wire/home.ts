@@ -94,6 +94,13 @@ export interface AgentRow {
   last_activity: WireTime | null;
   reason: string | null;
   /**
+   * When the seat's newest turn ended in failure, filtered per view: `null`
+   * once this view has shown the seat since the failure, or while it is
+   * showing it now. A row that carries it is drawing a failure the reader
+   * has not been shown.
+   */
+  failed_turn: WireTime | null;
+  /**
    * The seat's OWN working tree, which is not the project's.
    *
    * A worker's is its worktree and the lead's is the project's path, so a
@@ -243,6 +250,9 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      // A server below this client's floor states no failure at all, and
+      // an absent field must read as `null` rather than as a failure.
+      failed_turn: agent.failed_turn ?? null,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else
       // in it to narrow and a shape test over the object would discriminate
