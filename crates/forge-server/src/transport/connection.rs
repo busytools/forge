@@ -347,11 +347,28 @@ async fn handle_client(
                     // A seat subscription is also this connection SHOWING the
                     // seat, which is what keeps a turn finishing on it from
                     // arming a mark nobody needs: the reader is looking at it.
+                    let attaching = matches!(&what, Subject::Session(_));
                     if let Subject::Session(slot) = &what {
                         Live::lock(&state.live).attach(slot);
                     }
                     watched.push(what.clone());
-                    send(socket, ServerMessage::Snapshot { subject: what, data }).await
+                    send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
+                    // Showing a seat spends the marks the home carries for it
+                    // - the diamond and the failure mark - so a connection
+                    // that already holds the home gets a fresh one as part of
+                    // the attach, rather than keeping a spent mark until the
+                    // next unrelated redraw, which can be half a minute away.
+                    if attaching
+                        && watched.iter().any(|held| matches!(held, Subject::Home))
+                        && let Ok(home) = encode_subject(state, &Subject::Home).await
+                    {
+                        send(
+                            socket,
+                            ServerMessage::Snapshot { subject: Subject::Home, data: home },
+                        )
+                        .await?;
+                    }
+                    Ok(())
                 }
                 // A seat nobody has started is an ANSWER rather than a
                 // silence: the client learns why, and never draws an empty
