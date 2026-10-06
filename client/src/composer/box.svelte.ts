@@ -93,6 +93,13 @@ export class Box {
    */
   sawTake = false;
   /**
+   * Which box a take's words belong to, captured when the take STARTS: the
+   * dock when it held the slot with a words row, the composer's draft
+   * otherwise. A prompt arriving or leaving mid-take cannot move words that
+   * were spoken for the box the reader was in.
+   */
+  tookFrom: 'dock' | 'composer' | null = null;
+  /**
    * The dictation axes this seat was last set to, or `null` while it has not
    * been edited - which is what makes the config's own value the default.
    *

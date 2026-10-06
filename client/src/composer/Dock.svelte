@@ -120,6 +120,8 @@
     preview: string | null;
     /** The option this row answers with. */
     optionId: string;
+    /** The row that is a door to the words, not an answer of its own. */
+    custom: boolean;
   }
 
   const rows = $derived<Row[]>(rowsOf(ask));
@@ -171,13 +173,27 @@
       return [];
     }
     if (prompt.kind === 'question') {
-      return prompt.request.options.map((option) => ({
-        key: option.optionId,
-        label: option.label,
-        detail: option.description,
-        preview: option.preview,
-        optionId: option.optionId,
-      }));
+      return [
+        ...prompt.request.options.map((option) => ({
+          key: option.optionId,
+          label: option.label,
+          detail: option.description,
+          preview: option.preview,
+          optionId: option.optionId,
+          custom: false,
+        })),
+        // **The custom answer as an option of its own**, where the reader
+        // looks for every other choice: picking it opens the words row rather
+        // than answering, and what is written there goes as the answer alone.
+        {
+          key: 'custom',
+          label: 'Tell the agent something else',
+          detail: null,
+          preview: null,
+          optionId: 'custom',
+          custom: true,
+        },
+      ];
     }
     return [];
   }
@@ -308,6 +324,13 @@
     const row = rows[at];
     if (row === undefined) return;
     marked = at;
+    if (row.custom) {
+      // The custom row is a door, not an answer: it opens the words row and
+      // takes the caret, and the answer goes when there is something to send.
+      visited = true;
+      field?.focus();
+      return;
+    }
     if (multi) {
       toggled = toggled.includes(row.optionId)
         ? toggled.filter((id) => id !== row.optionId)
@@ -352,6 +375,12 @@
     if (answered) return;
     const row = rows[marked];
     if (row === undefined) return;
+    if (row.custom && !fromField) {
+      // Enter on the custom row opens the words, the way choosing it does.
+      visited = true;
+      field?.focus();
+      return;
+    }
 
     if (toolId === null) return;
     if (ask.kind !== 'question') return;
@@ -754,18 +783,20 @@
         >
           <!-- The row's own number, which is the key that answers it. -->
           <span class="n" aria-hidden="true">{at + 1}</span>
-          {#if multi}
-            <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
-              {#if row.optionId !== null && toggled.includes(row.optionId)}
-                <Icon name="check" />
-              {/if}
-            </span>
-          {:else}
-            <!-- A single-answer question marks its rows in the same slot the
-                 set draws its boxes in - a circle that fills on the row being
-                 taken - so its options are not bare against every other kind
-                 of row on the page. -->
-            <span class="radio" class:on={at === marked}></span>
+          {#if !row.custom}
+            {#if multi}
+              <span class="box2" class:on={row.optionId !== null && toggled.includes(row.optionId)}>
+                {#if row.optionId !== null && toggled.includes(row.optionId)}
+                  <Icon name="check" />
+                {/if}
+              </span>
+            {:else}
+              <!-- A single-answer question marks its rows in the same slot the
+                   set draws its boxes in - a circle that fills on the row being
+                   taken - so its options are not bare against every other kind
+                   of row on the page. -->
+              <span class="radio" class:on={at === marked}></span>
+            {/if}
           {/if}
           <span class="tx">
             <span class="lbl">{row.label}</span>
@@ -831,6 +862,16 @@
           }}
         >
           <Icon name="mic" />
+        </button>
+      {/if}
+      {#if take === null && notes.trim() !== ''}
+        <button
+          class="sendb"
+          type="button"
+          aria-label="send what you wrote as the answer"
+          onclick={() => submit(true)}
+        >
+          <Icon name="send" />
         </button>
       {/if}
     </div>

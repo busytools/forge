@@ -266,6 +266,9 @@
   .dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
     border: 1px solid var(--line); color: var(--dim); display: grid; place-items: center; }
   .dock .custom.live .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
+  .dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+    border: 1px solid rgba(244,118,0,.45); background: none; color: var(--accent);
+    display: grid; place-items: center; cursor: pointer; }
   .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
@@ -771,9 +774,12 @@ thing.</p>
             <span class="tx"><span class="lbl">Production</span></span></div>
           <div class="opt"><span class="n">3</span><span class="box2"></span>
             <span class="tx"><span class="lbl">Development</span></span></div>
+          <div class="opt"><span class="n">4</span>
+            <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
         </div>
         <div class="custom"><span class="notes">Also bump the queue worker concurrency<span class="caret"></span></span>
-          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span>
+          <span class="sendb"><svg class="ic"><use href="#i-send"/></svg></span></div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
           <span><span class="k">space</span> toggle</span>
           <span><span class="k">1</span>-<span class="k">9</span> pick</span>
@@ -781,7 +787,9 @@ thing.</p>
           <span><span class="k">esc</span> reject</span></div>
       </div>
       <p class="note" style="margin:8px 0 0">Rows carry their own number, which is the key that
-      answers them; the submit key says how many will go, so a set is never sent unseen.</p>
+      answers them; the submit key says how many will go, so a set is never sent unseen. The
+      custom answer is a row of its own, opening the words rather than answering, and the words
+      alone can go by the send at the row's end.</p>
     </div>
     <div class="col">
       <div class="lab">question &middot; a take in the words row</div>

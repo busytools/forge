@@ -623,6 +623,14 @@ describe('the box', () => {
     const harness = open();
     type('ship it once CI is green');
 
+    // **The take starts in the composer's own box** - that is the moment its
+    // destination is captured - and the prompt arrives mid-flight, which does
+    // not take words that were spoken for the draft the reader was in.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
     const watching = record({
       pending_asks: [permissionAsk()],
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
@@ -2714,6 +2722,144 @@ describe('the dock', () => {
     ]);
   });
 
+  it('gives the words their own send, so an answer needs no option selected', () => {
+    // The words-only answer used to be reachable only from the field's own
+    // Enter, and every visible commit was selection-shaped - which read as a
+    // selection being mandatory before the words could go.
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    expect(
+      document.querySelector('.dock .sendb'),
+      'nothing written yet, so there is nothing for the button to send',
+    ).toBeNull();
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'custom only';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    const send = document.querySelector('.dock .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the send button did not appear');
+    send.click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: [],
+            annotation: { preview: null, notes: 'custom only' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('carries words written before a row is clicked, beside that row', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'and afterwards';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    options()[0]?.click();
+    flushSync();
+
+    expect(commands(harness), 'the row and the words ride together').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-staging'],
+            annotation: { preview: null, notes: 'and afterwards' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('sends toggled rows and the words together', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    options()[0]?.click();
+    flushSync();
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'and afterwards';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    notes.focus();
+    flushSync();
+    press('Enter');
+
+    expect(commands(harness), 'the set and the words ride together').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: ['q-staging'],
+            annotation: { preview: null, notes: 'and afterwards' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('draws the custom answer as a row of its own, which opens the words rather than answering', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+
+    expect(
+      [...document.querySelectorAll('.dock .opt .lbl')].map((held) => held.textContent),
+      'the custom answer sits last, where every other choice is',
+    ).toEqual(['Staging', 'Production', 'Tell the agent something else']);
+
+    options()[2]?.click();
+    flushSync();
+    expect(commands(harness), 'the door itself answers nothing').toEqual([]);
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+
+    notes.value = 'custom only';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.dock .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('no send button');
+    send.click();
+    flushSync();
+
+    expect(commands(harness), 'the words alone are the answer').toEqual([
+      {
+        respond_question: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          tool_id: 'tu-q',
+          outcome: {
+            outcome: 'answered',
+            selected_option_ids: [],
+            annotation: { preview: null, notes: 'custom only' },
+          },
+        },
+      },
+    ]);
+  });
+
   it("hands a permission's words to its deny, which carries them", () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
@@ -2815,6 +2961,38 @@ describe('the dock', () => {
       document.querySelector('[data-editor="composer"]'),
       'and the composer is not mounted at all while a prompt is up',
     ).toBeNull();
+  });
+
+  /**
+   * **The dictation the dock's row never touched still belongs to the dock.**
+   * A take started by a keyboard shortcut, with a question holding the slot,
+   * used to land its words in the composer's draft - a box that is not even
+   * drawn while the prompt is up - so the answer could never carry them.
+   */
+  it("lands a take's words in the dock when the take began under the question", () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'custom words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words landed in the box the prompt is drawing',
+    ).toBe('custom words');
   });
 
   /**
@@ -3829,8 +4007,8 @@ describe('the dock', () => {
 
     expect(
       [...document.querySelectorAll('.dock .opt .n')].map((held) => held.textContent),
-      'the rows carry their own numbers, the first row one',
-    ).toEqual(['1', '2']);
+      'the rows carry their own numbers, the first row one, the custom answer last',
+    ).toEqual(['1', '2', '3']);
 
     press('2');
 
