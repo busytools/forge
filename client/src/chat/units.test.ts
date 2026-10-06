@@ -433,10 +433,14 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
   });
 
-  it('leaves a plain frame alone, mark or no mark', () => {
+  it('takes the mark as the harness talking, and an unmarked frame as the reader', () => {
     const plain = heard([text('the reader typed this')]);
+    const stamped = heard([text('a line nobody typed, and no family claims it')], {
+      isSynthetic: true,
+    });
 
     expect(kinds(fold([plain])), 'an ordinary frame still draws as the reader').toEqual(['user']);
+    expect(kinds(fold([stamped])), "a stamped frame drew as the reader's own").toEqual(['notice']);
   });
 
   it('draws nothing for the local-command family, by decision', () => {
@@ -473,11 +477,16 @@ describe('one turn folded into the units a view draws', () => {
         ],
       },
     ]);
-    const note = heard([
-      text(
-        '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it - the mark is why a
+    // reader of the fold has to claim it HERE, before the mark's own branch.
+    const note = heard(
+      [
+        text(
+          '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([read, picture, note]);
     const [group] = units;
@@ -492,13 +501,17 @@ describe('one turn folded into the units a view draws', () => {
     );
     expect(kinds(units), 'nothing of the reader draws here').toEqual(['leaves']);
 
-    // A note with no picture behind it still draws, as a line of its own.
+    // A note with no picture behind it still draws, as a line of its own -
+    // stamped like the rest, so the claim order is what the mark branch sees.
     const orphan = fold([
-      heard([
-        text(
-          '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
-        ),
-      ]),
+      heard(
+        [
+          text(
+            '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+          ),
+        ],
+        { isSynthetic: true },
+      ),
     ]);
     expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
   });
@@ -559,11 +572,16 @@ describe('one turn folded into the units a view draws', () => {
       uuid: 'cb-1',
       compact_metadata: { trigger: 'auto', pre_tokens: 68_031, post_tokens: 9_149 },
     };
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. And so on.',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it: the continuation is
+    // claimed by its own recognizer, so the mark must not reach it first.
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. And so on.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([boundary, summary]);
     expect(kinds(units), 'one row, not a turn beside it').toEqual(['compaction']);
@@ -577,11 +595,14 @@ describe('one turn folded into the units a view draws', () => {
   it('draws a continuation prompt with no boundary as the compaction it is', () => {
     // The cut happened whether or not its frame reached this fold; the row
     // carries what it has, and the summary is what it has.
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. More.',
-      ),
-    ]);
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. More.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([summary]);
     expect(kinds(units)).toEqual(['compaction']);
