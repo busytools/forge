@@ -69,6 +69,22 @@
     void readContexts();
   });
 
+  /**
+   * What the collapsed row says this client holds.
+   *
+   * A count is a claim about a read, so before one has answered - or when the
+   * last one failed and nothing was ever read - the row says the count is not
+   * known rather than standing on a zero nothing measured. A failed refresh
+   * keeps the last count, which something did measure.
+   */
+  const count = $derived(
+    contexts.length > 0 || read === 'ready'
+      ? `${contexts.length} context${contexts.length === 1 ? '' : 's'}`
+      : read === 'loading'
+        ? '…'
+        : 'count unknown',
+  );
+
   // A pointer landing outside the segment closes the list, the same one look
   // every other popover on the page takes.
   $effect(() => {
@@ -110,7 +126,7 @@
   <button type="button" class="bz-tog" aria-expanded={open} onclick={toggle} onkeydown={esc}>
     <Icon name="web" />
     browser
-    <span class="n">{contexts.length} context{contexts.length === 1 ? '' : 's'}</span>
+    <span class="n">{count}</span>
   </button>
 
   {#if open}

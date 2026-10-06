@@ -68,7 +68,12 @@ const click = (el: Element | null | undefined): void => {
 describe('the browser segment', () => {
   it('rests as a count and opens onto the role and the contexts', async () => {
     const shown = show();
-    expect(shown.target.textContent, 'the resting row names the count').toContain('0 contexts');
+    await vi.waitFor(() => {
+      expect(
+        shown.target.querySelector('.bz-tog .n')?.textContent,
+        'the resting row names the count once a read has answered',
+      ).toBe('0 contexts');
+    });
     expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
       'drives the browser',
     );
@@ -85,6 +90,27 @@ describe('the browser segment', () => {
       ).toContain('no contexts yet');
     });
     shown.stop();
+  });
+
+  it('waits on the count and the list until a read has answered', () => {
+    // A read that has not answered: neither surface may claim a state.
+    vi.mocked(listContexts).mockImplementation(() => new Promise<never>(() => undefined));
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+
+    expect(
+      shown.target.querySelector('.bz-tog .n')?.textContent,
+      'the count is not known before a read answers',
+    ).toBe('…');
+    expect(shown.target.textContent, 'and the list says it is reading').toContain(
+      'reading the contexts…',
+    );
+    expect(
+      shown.target.textContent,
+      'an empty row would be a claim about a read that never answered',
+    ).not.toContain('no contexts yet');
+    shown.stop();
+    vi.mocked(listContexts).mockImplementation(() => Promise.resolve([]));
   });
 
   it('says the read failed rather than claiming there are no contexts', async () => {

@@ -1672,6 +1672,39 @@ async fn a_refused_slack_answer_names_its_own_operation() {
     );
 }
 
+/// A hand-off answer the core no longer holds is refused by its own
+/// operation's name, on the Slack draft's exact rule: the dock it came from is
+/// gone by the time a view reads the refusal, so a generic `dispatch` would
+/// reach no row - and it is the tag, not the sentence, that a client routes by.
+#[tokio::test]
+async fn a_refused_hand_off_answer_names_its_own_operation() {
+    let mut socket = connected().await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondBrowserHandOff {
+                key: lead_seat(),
+                id: uuid::Uuid::new_v4(),
+                done: true,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("silence here is the click that did nothing");
+    };
+    assert_eq!(
+        what, "respond_browser_hand_off",
+        "the refusal names the operation a view draws it for: {why}",
+    );
+    assert!(
+        why.contains("no longer waiting") && why.contains("asking session"),
+        "and carries the hand-off's own sentence, endings included: {why}",
+    );
+}
+
 /// A command aimed at a seat forge holds no session for is answered with an
 /// error naming it - never a panic, and never a silent success.
 #[tokio::test]

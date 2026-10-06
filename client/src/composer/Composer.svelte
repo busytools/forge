@@ -226,7 +226,9 @@
    * A question's answer clears the ask with an update of its own. A draft's or
    * a hand-off's leaves the core's registry, and the stand-down that says so is
    * a round trip away - so the mark stands the dock down from the click until
-   * the update lands, and a refusal brings it back with the reason.
+   * the update lands, and a refusal brings it back with the reason. That last
+   * clause is the draft's own path: a hand-off's refusal is drawn as the ended
+   * line where its dock stood, so it never raises the dock back.
    */
   const dockAsk = $derived(
     ask !== null &&

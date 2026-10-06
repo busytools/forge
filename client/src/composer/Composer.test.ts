@@ -4184,6 +4184,32 @@ describe('the dock', () => {
     expect(drawn(), 'and the row says which ending took it').toContain('settled in another view');
   });
 
+  it("does not narrate the reader's own answer to a hand-off", () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+
+    // The stand-down for THIS answer lands: the record drops the ask, and the
+    // ending must not be read as another view's - that sentence would be
+    // false text about the reader's own act.
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          ending: { type: 'done' },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
+  });
+
   /** Open is the client's own act, and **its claim follows its answer**:
    * outside the shell nothing raises, so the dock says so rather than
    * claiming "the browser is up" over a click that did nothing. */

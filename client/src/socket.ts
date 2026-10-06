@@ -752,8 +752,9 @@ export function connect(url: string): Connection {
       // The claim re-declares first: the relay holds a channel only for a
       // connection that declared, and a connection displaced by an earlier
       // take is no longer registered - so the bare claim would come back
-      // `false` with nothing re-registered. The declare is idempotent and
-      // puts this connection back in the line the claim moves.
+      // `false` with nothing re-registered. The declare puts this connection
+      // back in the line the claim moves; the watch entry and hold it adds
+      // are balanced when the page leaves.
       declare();
       sendNow({ kind: 'browser_take_role' });
     },

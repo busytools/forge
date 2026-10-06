@@ -1177,11 +1177,6 @@ fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
     }
 }
 
-/// Fail every ask on this connection that is waiting for an image, naming why.
-///
-/// A frame whose bytes cannot be taken is the end of those asks: the part it
-/// was for is never filled, and the alternative to failing them is a session's
-/// tool call waiting on a promise nothing can keep.
 /// Fail every call this connection is carrying, whatever it was waiting for.
 ///
 /// **The sentence is the point.** Without this, what fails an in-flight ask is
@@ -1195,6 +1190,11 @@ fn fail_every_in_flight(hosting: &mut Option<Hosting>, why: &str) {
     }
 }
 
+/// Fail every ask on this connection that is waiting for an image, naming why.
+///
+/// A frame whose bytes cannot be taken is the end of those asks: the part it
+/// was for is never filled, and the alternative to failing them is a session's
+/// tool call waiting on a promise nothing can keep.
 fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
     let Some(hosting) = hosting.as_mut() else {
         return;
