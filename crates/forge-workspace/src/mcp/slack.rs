@@ -300,6 +300,44 @@ impl Tool for List {
     }
 }
 
+/// One subscription as a tool-result row: its id (the only handle
+/// `slack__unsubscribe` accepts), the workspace it watches, and its target
+/// in a shape a reader can switch on.
+fn sub_to_row(sub: &SlackSubscription) -> serde_json::Value {
+    serde_json::json!({
+        "id": sub.id.to_string(),
+        "workspace": sub.workspace,
+        "target": target_to_json(&sub.target),
+    })
+}
+
+/// The subscription target's tool-output spelling. The durable enum's own
+/// serde form is externally tagged and unreadable (`"DirectMessages"`, or
+/// `{"Conversation": {..}}`), so results carry this instead; `name` is
+/// absent until the sweep's directory walk has seen the conversation.
+fn target_to_json(target: &SlackSubscriptionTarget) -> serde_json::Value {
+    match target {
+        SlackSubscriptionTarget::DirectMessages => serde_json::json!({ "kind": "dm" }),
+        SlackSubscriptionTarget::Mentions => serde_json::json!({ "kind": "mentions" }),
+        SlackSubscriptionTarget::Conversation { id, name, mode } => {
+            let mut map = serde_json::Map::new();
+            map.insert("kind".to_owned(), serde_json::json!("conversation"));
+            map.insert("id".to_owned(), serde_json::json!(id));
+            if let Some(name) = name {
+                map.insert("name".to_owned(), serde_json::json!(name));
+            }
+            map.insert(
+                "mode".to_owned(),
+                serde_json::json!(match mode {
+                    SlackWatchMode::All => "all",
+                    SlackWatchMode::MentionsOnly => "mentions",
+                }),
+            );
+            serde_json::Value::Object(map)
+        }
+    }
+}
+
 /// The mode a caller writes in a `slack__subscribe` argument.
 #[derive(serde::Deserialize, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -372,9 +410,11 @@ impl Tool for Subscribe {
          are, but not in private channels you are not in - those you could not read anyway, and \
          search lag means a mention is not instantaneous. A conversation in `mentions` mode \
          delivers only messages that mention the user; `all` delivers every message. Pass \
-         `workspace` to choose one, or omit it when only one is configured. Returns the new \
-         subscription ids, which are the only handle slack__unsubscribe accepts. Any session in \
-         the project may call this."
+         `workspace` to choose one, or omit it when only one is configured. Returns one row per \
+         created subscription as {id, workspace, target}, where target is {kind: \"conversation\", \
+         id, name, mode} | {kind: \"dm\"} | {kind: \"mentions\"}; the id is the only handle \
+         slack__unsubscribe accepts. An empty array means nothing new was created. Any session \
+         in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -449,20 +489,19 @@ impl Tool for Subscribe {
                     .to_owned(),
             );
         }
-        let mut ids: Vec<Uuid> = Vec::new();
+        let mut rows: Vec<serde_json::Value> = Vec::new();
         for request in requests {
             match self.facade.subscribe(&self.slot, args.workspace.as_deref(), request) {
-                Ok(mut created) => ids.append(&mut created),
+                Ok(created) => rows.extend(created.iter().map(sub_to_row)),
                 Err(err) => {
                     return tool_error(format_subscribe_error(&err, args.workspace.as_deref()));
                 }
             }
         }
-        if ids.is_empty() {
-            return ToolOutput::text("subscribed to Slack; nothing new to watch".to_owned());
+        match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+            Ok(json) => ToolOutput::text(json),
+            Err(err) => tool_error(format!("response serialization failed: {err}")),
         }
-        let listed: Vec<String> = ids.iter().map(Uuid::to_string).collect();
-        ToolOutput::text(format!("subscribed to Slack: {}", listed.join(", ")))
     }
 }
 
@@ -485,7 +524,7 @@ impl Tool for Unsubscribe {
     fn description(&self) -> &'static str {
         "Remove one of YOUR OWN Slack subscriptions by id (from slack__subscribe / \
          slack__list), scoped to what you subscribed - a caller manages only what it created. \
-         Any session in the project may call this."
+         Returns the removed subscription row. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -507,10 +546,15 @@ impl Tool for Unsubscribe {
         let Ok(id) = Uuid::parse_str(&args.id) else {
             return tool_error(format!("not a valid subscription id: {}", args.id));
         };
-        if self.facade.unsubscribe(&self.slot, id) {
-            ToolOutput::text(format!("unsubscribed {id}"))
-        } else {
-            tool_error(format!("no subscription with id {id} in your project"))
+        match self.facade.unsubscribe(&self.slot, id) {
+            Some(removed) => {
+                let envelope = crate::mcp::deleted::removed_record(&sub_to_row(&removed));
+                match serde_json::to_string_pretty(&envelope) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            None => tool_error(format!("no subscription with id {id} in your project")),
         }
     }
 }
@@ -596,9 +640,9 @@ impl Tool for Post {
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
          until the user decides in the dock prompt, and a rejected or unanswered draft posts \
          nothing. Text past 4000 characters is split into numbered parts automatically, each a \
-         separate message. Returns the `ts` of every message it posted, in the order they went \
-         out; slack__edit, slack__react and a reply each take one. Any session in the project \
-         may call this."
+         separate message. Returns {ts, conversation_name, parts}: the `ts` of every message \
+         it posted, in the order they went out; slack__edit, slack__react and a reply each take \
+         one. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -639,7 +683,14 @@ impl Tool for Post {
             text: args.text,
         };
         match self.facade.post(&self.slot, request).await {
-            Ok(outcome) => ToolOutput::text(format!("posted to Slack: {}", outcome.ts.join(", "))),
+            Ok(outcome) => match serde_json::to_string_pretty(&serde_json::json!({
+                "ts": outcome.ts,
+                "conversation_name": outcome.conversation_name,
+                "parts": outcome.parts,
+            })) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
             Err(err) => tool_error(format_post_error(&err)),
         }
     }
@@ -1334,33 +1385,75 @@ mod tests {
         );
     }
 
-    /// The ids are the only handle `slack__unsubscribe` accepts, and the
-    /// tool's description promises them: a count loses every one.
+    /// One structured row per created subscription, carrying the target
+    /// it watches: the ids are the only handle `slack__unsubscribe`
+    /// accepts, and the target is what says a row is a channel, the DM
+    /// class or a workspace-wide mention.
     #[tokio::test]
-    async fn slack_subscribe_reports_the_ids_it_created() {
+    async fn slack_subscribe_returns_one_row_per_created_subscription() {
         let mock = Arc::new(MockSlackFacade::new());
-        let id = Uuid::from_u128(0xabc);
-        *mock.subscribe_result.lock() = Some(Ok(vec![id]));
+        let dm_id = Uuid::from_u128(0xabc);
+        let channel_id = Uuid::from_u128(0xdef);
+        *mock.subscribe_result.lock() = Some(Ok(vec![
+            owned_sub(dm_id, SlackSubscriptionTarget::DirectMessages),
+            owned_sub(
+                channel_id,
+                SlackSubscriptionTarget::Conversation {
+                    id: "C1".to_owned(),
+                    name: Some("general".to_owned()),
+                    mode: SlackWatchMode::MentionsOnly,
+                },
+            ),
+        ]));
         let tool = Subscribe { facade: mock, slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "workspace": "acme", "direct_messages": true })))
             .await;
 
-        assert!(
-            out.blocks[0].text.contains(&id.to_string()),
-            "the created id is what a caller unsubscribes with: {}",
-            out.blocks[0].text,
-        );
+        assert!(!out.is_error, "a valid subscribe succeeds: {}", out.blocks[0].text);
+        let rows: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is one row per record");
+        assert_eq!(rows[0]["id"], dm_id.to_string(), "the id is the unsubscribe handle");
+        assert_eq!(rows[0]["workspace"], "acme", "and the row names the workspace it watches");
+        assert_eq!(rows[0]["target"], serde_json::json!({ "kind": "dm" }));
+        assert_eq!(rows[1]["id"], channel_id.to_string());
+        assert_eq!(rows[1]["target"]["kind"], "conversation");
+        assert_eq!(rows[1]["target"]["id"], "C1");
+        assert_eq!(rows[1]["target"]["name"], "general");
+        assert_eq!(rows[1]["target"]["mode"], "mentions");
     }
 
-    /// Editing, deleting or reacting all take the ts, and Slack has already
-    /// sent it: a count is not a handle.
+    /// "Nothing new to watch" is an empty array, not a sentence: a reader
+    /// parses one shape, and prose turns a no-op answer into an unreadable
+    /// one.
     #[tokio::test]
-    async fn slack_post_reports_the_ts_of_what_it_posted() {
+    async fn slack_subscribe_with_nothing_new_still_answers_a_list() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.post_result.lock() =
-            Some(Ok(SlackPostOutcome { ts: vec!["1790186552.442169".to_owned()] }));
+        *mock.subscribe_result.lock() = Some(Ok(Vec::new()));
+        let tool = Subscribe { facade: mock, slot: caller_slot() };
+
+        let out =
+            tool.call(input(serde_json::json!({ "workspace": "acme", "mentions": true }))).await;
+
+        assert!(!out.is_error, "nothing new to watch is not an error: {}", out.blocks[0].text);
+        let rows: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the answer is a row list");
+        assert_eq!(rows, serde_json::json!([]), "an empty list, not prose");
+    }
+
+    /// Editing, deleting or reacting all take the ts, and Slack has
+    /// already sent it: a count is not a handle. The conversation's name
+    /// and the part count come along so a reader can name the channel
+    /// without a second lookup and see that the text was split.
+    #[tokio::test]
+    async fn slack_post_reports_the_ts_the_channel_and_the_part_count() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.post_result.lock() = Some(Ok(SlackPostOutcome {
+            ts: vec!["1790186552.442169".to_owned(), "1790186552.442170".to_owned()],
+            conversation_name: "granite-staging".to_owned(),
+            parts: 2,
+        }));
         let tool = Post { facade: mock, slot: caller_slot() };
 
         let out = tool
@@ -1368,11 +1461,12 @@ mod tests {
                                             "text": "hello" })))
             .await;
 
-        assert!(
-            out.blocks[0].text.contains("1790186552.442169"),
-            "the posted ts is the handle the next call needs: {}",
-            out.blocks[0].text,
-        );
+        assert!(!out.is_error, "the post succeeds: {}", out.blocks[0].text);
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the posted record");
+        assert_eq!(json["ts"][0], "1790186552.442169", "the ts is the handle the next call needs");
+        assert_eq!(json["conversation_name"], "granite-staging");
+        assert_eq!(json["parts"], 2, "so a reader sees the text went out in two messages");
     }
 
     #[test]
@@ -1507,9 +1601,9 @@ mod tests {
 
     #[tokio::test]
     async fn slack_subscribe_passes_the_targets_through_to_the_facade() {
-        let id = Uuid::from_u128(0x42);
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.subscribe_result.lock() = Some(Ok(vec![id]));
+        *mock.subscribe_result.lock() =
+            Some(Ok(vec![owned_sub(Uuid::from_u128(0x42), SlackSubscriptionTarget::Mentions)]));
         let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
@@ -1572,12 +1666,40 @@ mod tests {
     #[tokio::test]
     async fn slack_unsubscribe_refuses_an_id_the_caller_does_not_own() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.unsubscribe_result.lock() = Some(false);
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "id": Uuid::from_u128(0x9).to_string() }))).await;
         assert!(out.is_error, "an unremovable id signals an error to the LLM");
+    }
+
+    /// An unsubscribe echoes the row it removed, so a reader can name the
+    /// target that stopped; `unsubscribed <uuid>` named nothing a human
+    /// can place.
+    #[tokio::test]
+    async fn slack_unsubscribe_echoes_the_removed_row() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let id = Uuid::from_u128(0x9);
+        *mock.unsubscribe_result.lock() = Some(owned_sub(
+            id,
+            SlackSubscriptionTarget::Conversation {
+                id: "C1".to_owned(),
+                name: Some("granite-staging".to_owned()),
+                mode: SlackWatchMode::All,
+            },
+        ));
+        let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
+        assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+        assert_eq!(json["status"], "deleted");
+        assert_eq!(json["removed"]["id"], id.to_string());
+        assert_eq!(json["removed"]["workspace"], "acme");
+        assert_eq!(json["removed"]["target"]["kind"], "conversation");
+        assert_eq!(json["removed"]["target"]["name"], "granite-staging");
+        assert_eq!(json["removed"]["target"]["mode"], "all");
     }
 
     #[tokio::test]

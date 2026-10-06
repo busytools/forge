@@ -716,11 +716,11 @@ impl Workspace {
         conversation: &str,
         mode: SlackWatchMode,
         durable: bool,
-    ) -> Uuid {
+    ) -> SlackSubscription {
         // The announcement is made after the guards drop: it reads both
         // connectors' sets, and a second lock on the one held here is a
         // deadlock rather than a warning.
-        let (id, moved) = {
+        let (sub, moved) = {
             let db = self.db.lock();
             let mut subs = self.slack_subs.lock();
             if let Some(existing) = subs.iter_mut().find(|sub| {
@@ -741,7 +741,6 @@ impl Workspace {
                     moved = *stored != mode;
                     *stored = mode;
                 }
-                let id = existing.id;
                 if durable
                     && let Some(db) = db.as_ref()
                     && let Err(error) = crate::store::slack::insert(db, existing)
@@ -752,7 +751,7 @@ impl Workspace {
                         "persisting a Slack subscription failed",
                     );
                 }
-                (id, moved)
+                (existing.clone(), moved)
             } else {
                 let sub = SlackSubscription {
                     id: Uuid::new_v4(),
@@ -766,7 +765,6 @@ impl Workspace {
                     },
                     created_at: std::time::SystemTime::now(),
                 };
-                let id = sub.id;
                 if durable
                     && let Some(db) = db.as_ref()
                     && let Err(error) = crate::store::slack::insert(db, &sub)
@@ -777,14 +775,14 @@ impl Workspace {
                         "persisting a Slack subscription failed",
                     );
                 }
-                subs.push(sub);
-                (id, true)
+                subs.push(sub.clone());
+                (sub, true)
             }
         };
         if moved {
             self.announce_connector_subscriptions_changed(project);
         }
-        id
+        sub
     }
 
     /// Every Slack subscription owned in `project`, whichever session
@@ -799,21 +797,22 @@ impl Workspace {
     /// Remove the subscription `id` in `project` only when its owner
     /// matches `owner` (`None` = a lead subscription, `Some(label)` =
     /// that worker's), from both the active set and the redb store.
-    /// Returns whether an entry was removed. Backs the owner-scoped
-    /// `slack__unsubscribe` so a caller removes only what it subscribed.
+    /// Returns the row as it stood (`None` when nothing matched). Backs
+    /// the owner-scoped `slack__unsubscribe` so a caller removes only
+    /// what it subscribed.
     pub(crate) fn remove_slack_subscription_owned_by(
         &self,
         project: &str,
         id: Uuid,
         owner: Option<&str>,
-    ) -> bool {
+    ) -> Option<SlackSubscription> {
         let removed_sub = {
             let subs = self.slack_subs.lock();
             subs.iter()
                 .find(|s| s.id == id && s.project == project && s.team_role.as_deref() == owner)
                 .cloned()
         };
-        let Some(removed_sub) = removed_sub else { return false };
+        let removed_sub = removed_sub?;
         {
             let mut subs = self.slack_subs.lock();
             subs.retain(|s| s.id != id);
@@ -830,7 +829,7 @@ impl Workspace {
         self.prune_slack_threads(&removed_sub.workspace);
         self.clear_slack_cursors_after_removal(&removed_sub);
         self.announce_connector_subscriptions_changed(project);
-        true
+        Some(removed_sub)
     }
 
     /// Clear the sweep cursors the removed subscription was the last
@@ -1548,7 +1547,7 @@ mod tests {
         assert_eq!(ws.slack_subsystem.lock().len(), 1, "one pump for the one configured workspace");
 
         let id = ws.slack_subscriptions_for_project("acme")[0].id;
-        ws.remove_slack_subscription_owned_by("acme", id, None);
+        ws.remove_slack_subscription_owned_by("acme", id, None).expect("the lead's own row");
         ws.stop_slack_subsystem_if_idle();
         assert!(ws.slack_subsystem.lock().is_empty(), "the pump stops with its last subscription");
     }
@@ -2117,7 +2116,7 @@ mod tests {
             .find(|sub| sub.team_role.as_deref() == Some("b"))
             .expect("b's subscription")
             .id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", b_id, Some("b")));
+        assert!(ws.remove_slack_subscription_owned_by("forge", b_id, Some("b")).is_some());
 
         let threads = host.followed_threads("acme", "C1");
         assert_eq!(threads.len(), 1, "the thread keeps being swept");
@@ -2133,7 +2132,7 @@ mod tests {
             .find(|sub| sub.team_role.as_deref() == Some("a"))
             .expect("a's subscription")
             .id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", a_id, Some("a")));
+        assert!(ws.remove_slack_subscription_owned_by("forge", a_id, Some("a")).is_some());
         assert!(
             host.followed_threads("acme", "C1").is_empty(),
             "a thread whose last owner goes stops being tracked",
@@ -2220,7 +2219,7 @@ mod tests {
             .find(|sub| sub.team_role.as_deref() == Some("tester"))
             .expect("the tester's subscription")
             .id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", id, Some("tester")));
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, Some("tester")).is_some());
 
         assert_eq!(
             ws.slack_thread_watermark("acme", "C1", &parent).expect("read"),
@@ -2252,7 +2251,7 @@ mod tests {
             })
             .expect("the C1 subscription")
             .id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", c1_id, Some("tester")));
+        assert!(ws.remove_slack_subscription_owned_by("forge", c1_id, Some("tester")).is_some());
 
         assert_eq!(
             host.followed_threads("acme", "C2").len(),
@@ -2390,7 +2389,7 @@ mod tests {
         ws.add_slack_subscription(lead.clone(), true);
 
         assert!(
-            !ws.remove_slack_subscription_owned_by("forge", lead.id, Some("tester")),
+            ws.remove_slack_subscription_owned_by("forge", lead.id, Some("tester")).is_none(),
             "a worker must not remove the lead's subscription",
         );
         assert_eq!(
@@ -2398,7 +2397,7 @@ mod tests {
             1,
             "a refused removal removes nothing",
         );
-        assert!(ws.remove_slack_subscription_owned_by("forge", lead.id, None));
+        assert!(ws.remove_slack_subscription_owned_by("forge", lead.id, None).is_some());
         assert!(ws.slack_subscriptions_for_project("forge").is_empty());
     }
 
@@ -2447,7 +2446,7 @@ mod tests {
         ws.set_slack_watermark("acme", "C1", "100.0");
 
         let id = ws.slack_subscriptions_for_project("forge")[0].id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None).is_some());
 
         let db = ws.db.lock();
         assert_eq!(
@@ -2476,7 +2475,7 @@ mod tests {
             .find(|sub| sub.team_role.is_none())
             .expect("the lead's subscription")
             .id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", lead_id, None));
+        assert!(ws.remove_slack_subscription_owned_by("forge", lead_id, None).is_some());
 
         let db = ws.db.lock();
         assert_eq!(
@@ -2500,7 +2499,7 @@ mod tests {
         ws.set_slack_watermark("acme", MENTION_CURSOR, "100.0");
 
         let id = ws.slack_subscriptions_for_project("forge")[0].id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None).is_some());
 
         let db = ws.db.lock();
         assert_eq!(
@@ -2553,15 +2552,16 @@ mod tests {
         assert!(gotify.is_empty(), "beside the sibling connector's own set");
 
         // A watch of a conversation lands as a new record.
-        let id =
+        let watched =
             ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+        let id = watched.id;
         let (_, _, slack) = next_connectors_changed(&mut rx);
         assert!(slack.iter().any(|sub| sub.id == id), "a new watch is announced: {slack:?}");
 
         // The same watch again moves nothing, so it announces nothing.
         let same =
             ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
-        assert_eq!(same, id, "precondition: the watch found the record it had");
+        assert_eq!(same.id, id, "precondition: the watch found the record it had");
         let announced = rx.try_recv();
         assert!(
             announced.is_err(),
@@ -2593,7 +2593,7 @@ mod tests {
         );
 
         assert!(
-            ws.remove_slack_subscription_owned_by("forge", id, None),
+            ws.remove_slack_subscription_owned_by("forge", id, None).is_some(),
             "precondition: the lead removes its own subscription",
         );
         let (_, _, slack) = next_connectors_changed(&mut rx);
@@ -2603,7 +2603,7 @@ mod tests {
         );
 
         assert!(
-            !ws.remove_slack_subscription_owned_by("forge", Uuid::new_v4(), None),
+            ws.remove_slack_subscription_owned_by("forge", Uuid::new_v4(), None).is_none(),
             "precondition: no subscription carries the id",
         );
         let announced = rx.try_recv();
@@ -2627,7 +2627,7 @@ mod tests {
         let lead = SessionSlot::lead("TestOrg", "forge");
 
         let id =
-            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true);
+            ws.watch_slack_conversation("acme", "forge", None, "C1", SlackWatchMode::All, true).id;
         let (_, _, slack) = next_connectors_changed(&mut rx);
         assert!(
             slack.iter().any(|sub| sub.id == id),

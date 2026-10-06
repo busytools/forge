@@ -74,11 +74,15 @@ pub(crate) enum SlackPostError {
 }
 
 /// What a post did: the `ts` of each message it sent, in the order they
-/// went out. A draft past the truncation point is split and posted in
-/// sequence, so a long one is several messages a reply can attach to.
+/// went out, the conversation it landed in (the name, or the id when the
+/// lookup failed), and how many parts the text was split into. A draft past
+/// the truncation point is split and posted in sequence, so a long one is
+/// several messages a reply can attach to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlackPostOutcome {
     pub ts: Vec<String>,
+    pub conversation_name: String,
+    pub parts: usize,
 }
 
 /// One message to edit or delete. Both actions are gated like a post.
@@ -330,17 +334,19 @@ pub(crate) trait SlackFacade: Send + Sync {
     ) -> Result<Vec<SlackBookmark>, SlackReadError>;
 
     /// Record what the caller wants to watch in `workspace`, one record
-    /// per target. Returns the new record ids.
+    /// per target. Returns the records as they now stand, so a caller can
+    /// name what it created.
     fn subscribe(
         &self,
         caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
-    ) -> Result<Vec<Uuid>, SlackSubscribeError>;
+    ) -> Result<Vec<SlackSubscription>, SlackSubscribeError>;
 
-    /// Remove one of the caller's OWN subscriptions by id. `false` both
-    /// when no such id exists and when it belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool;
+    /// Remove one of the caller's OWN subscriptions by id, returning the
+    /// row as it stood. `None` both when no such id exists and when it
+    /// belongs to another owner.
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -500,6 +506,7 @@ impl SlackFacade for ProdSlackFacade {
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
             GateDecision::Expired => return Err(SlackPostError::Expired),
         }
+        let conversation_name = draft.conversation_label.clone();
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
@@ -521,7 +528,7 @@ impl SlackFacade for ProdSlackFacade {
                 }
             }
         }
-        Ok(SlackPostOutcome { ts })
+        Ok(SlackPostOutcome { ts, conversation_name, parts: parts.len() })
     }
 
     async fn edit(
@@ -766,7 +773,7 @@ impl SlackFacade for ProdSlackFacade {
         caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
-    ) -> Result<Vec<Uuid>, SlackSubscribeError> {
+    ) -> Result<Vec<SlackSubscription>, SlackSubscribeError> {
         let ws = self.workspace.upgrade().ok_or(SlackSubscribeError::UnknownCallerProject)?;
         let label =
             resolve_label(&ws.slack, workspace).ok_or(SlackSubscribeError::UnknownWorkspace)?;
@@ -788,13 +795,13 @@ impl SlackFacade for ProdSlackFacade {
                 .collect(),
             SlackSubscribeRequest::Mentions => vec![SlackSubscriptionTarget::Mentions],
         };
-        let mut ids = Vec::with_capacity(targets.len());
+        let mut created = Vec::with_capacity(targets.len());
         let mut mentions_requested = false;
         for target in targets {
             // A conversation goes through the owner's own record, which hands
-            // back the id it already has rather than adding a second row for
-            // one channel, and updates the mode when the caller asks for a
-            // different one. Mentions and the DM class are deliberately not
+            // back the record it already has rather than adding a second row
+            // for one channel, and updates the mode when the caller asks for
+            // a different one. Mentions and the DM class are deliberately not
             // deduped - two sessions may each want their own feed.
             if let SlackSubscriptionTarget::Conversation { id, mode, .. } = &target {
                 // A subscription starts from now rather than from the
@@ -805,7 +812,7 @@ impl SlackFacade for ProdSlackFacade {
                 if !ws.slack_has_cursor(&label, id) {
                     ws.set_slack_watermark(&label, id, &slack_ts_now());
                 }
-                ids.push(ws.watch_slack_conversation(
+                created.push(ws.watch_slack_conversation(
                     &label,
                     &project,
                     team_role.as_deref(),
@@ -826,7 +833,6 @@ impl SlackFacade for ProdSlackFacade {
                 target,
                 created_at: SystemTime::now(),
             };
-            ids.push(sub.id);
             // A subscription starts from now, not from the channel's
             // history - but only when the conversation has no cursor yet.
             // The cursor belongs to the conversation and is shared by
@@ -837,19 +843,20 @@ impl SlackFacade for ProdSlackFacade {
             {
                 ws.set_slack_watermark(&label, id, &slack_ts_now());
             }
-            ws.add_slack_subscription(sub, durable);
+            ws.add_slack_subscription(sub.clone(), durable);
+            created.push(sub);
         }
         if mentions_requested && !ws.slack_has_cursor(&label, MENTION_CURSOR) {
             ws.set_slack_watermark(&label, MENTION_CURSOR, &slack_ts_now());
         }
         // A workspace that just gained its first subscription needs a pump.
         ws.start_slack_subsystem();
-        Ok(ids)
+        Ok(created)
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
-        let Some(ws) = self.workspace.upgrade() else { return false };
-        let Some(cx) = caller_context(&ws, caller) else { return false };
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription> {
+        let ws = self.workspace.upgrade()?;
+        let cx = caller_context(&ws, caller)?;
         let removed =
             ws.remove_slack_subscription_owned_by(&cx.project_name, id, cx.worker_label.as_deref());
         ws.stop_slack_subsystem_if_idle();
@@ -886,9 +893,10 @@ pub(crate) struct MockSlackFacade {
     pub react_calls: parking_lot::Mutex<Vec<SlackReactRequest>>,
     pub react_result: parking_lot::Mutex<Option<Result<(), SlackReactError>>>,
     pub subscribe_calls: parking_lot::Mutex<Vec<(Option<String>, SlackSubscribeRequest)>>,
-    pub subscribe_result: parking_lot::Mutex<Option<Result<Vec<Uuid>, SlackSubscribeError>>>,
+    pub subscribe_result:
+        parking_lot::Mutex<Option<Result<Vec<SlackSubscription>, SlackSubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<Uuid>>,
-    pub unsubscribe_result: parking_lot::Mutex<Option<bool>>,
+    pub unsubscribe_result: parking_lot::Mutex<Option<SlackSubscription>>,
 }
 
 #[cfg(test)]
@@ -975,10 +983,11 @@ impl SlackFacade for MockSlackFacade {
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError> {
         self.post_calls.lock().push(request);
-        self.post_result
-            .lock()
-            .clone()
-            .unwrap_or(Ok(SlackPostOutcome { ts: vec!["1.0".to_owned()] }))
+        self.post_result.lock().clone().unwrap_or(Ok(SlackPostOutcome {
+            ts: vec!["1.0".to_owned()],
+            conversation_name: "general".to_owned(),
+            parts: 1,
+        }))
     }
 
     async fn edit(
@@ -1013,14 +1022,14 @@ impl SlackFacade for MockSlackFacade {
         _caller: &SessionSlot,
         workspace: Option<&str>,
         request: SlackSubscribeRequest,
-    ) -> Result<Vec<Uuid>, SlackSubscribeError> {
+    ) -> Result<Vec<SlackSubscription>, SlackSubscribeError> {
         self.subscribe_calls.lock().push((workspace.map(str::to_owned), request));
         self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn unsubscribe(&self, _caller: &SessionSlot, id: Uuid) -> bool {
+    fn unsubscribe(&self, _caller: &SessionSlot, id: Uuid) -> Option<SlackSubscription> {
         self.unsubscribe_calls.lock().push(id);
-        self.unsubscribe_result.lock().unwrap_or(false)
+        self.unsubscribe_result.lock().clone()
     }
 }
 
@@ -1729,9 +1738,13 @@ mod tests {
         );
     }
 
+    /// The outcome carries what the caller cannot work out for itself: the
+    /// ts Slack minted, the channel's own name (the input names an id), and
+    /// how many messages the text was split into.
     #[tokio::test]
     async fn an_approved_draft_posts_exactly_once() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
@@ -1739,8 +1752,31 @@ mod tests {
         let id = wait_for_draft(&ws).await;
         ws.resolve_slack_draft(id, &caller(), answered(true));
 
-        task.await.expect("no panic").expect("an approved draft posts");
+        let outcome = task.await.expect("no panic").expect("an approved draft posts");
         assert_eq!(api.posts().len(), 1, "exactly one message goes out");
+        assert_eq!(outcome.ts, vec!["1.0".to_owned()], "the ts the wire minted");
+        assert_eq!(outcome.conversation_name, "ops", "the channel's name, not the id it was sent");
+        assert_eq!(outcome.parts, 1, "a short draft is one part");
+    }
+
+    /// A draft past the split point goes out in several messages, and the
+    /// outcome's own count is the only thing that says so: a reader told
+    /// "one post" would take a truncated send for the whole text.
+    #[tokio::test]
+    async fn a_split_draft_reports_its_part_count() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let long = "x".repeat(forge_connectors::slack::POST_LIMIT + 100);
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", &long)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        let outcome = task.await.expect("no panic").expect("an approved draft posts");
+        assert_eq!(outcome.parts, 2, "the split count travels with the ts");
+        assert_eq!(outcome.ts.len(), 2, "and one ts per message really went out");
+        assert_eq!(api.posts().len(), 2, "both parts reached Slack");
     }
 
     #[tokio::test]
@@ -1978,8 +2014,9 @@ mod tests {
         let second = facade
             .subscribe(&caller(), Some("acme"), watching(SlackWatchMode::MentionsOnly))
             .expect("second");
+        assert_eq!(second.len(), 1, "the repeat adds no second record");
         assert_eq!(
-            second, first,
+            second[0].id, first[0].id,
             "the repeat hands back the id it already has, so the caller can drop it without a lookup",
         );
         let stored = ws.slack_subscriptions_for_project("forge");
@@ -2045,7 +2082,7 @@ mod tests {
             .expect("the first subscribe");
         ws.set_slack_watermark("acme", "C1", "100.0");
         let id = ws.slack_subscriptions_for_project("forge")[0].id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", id, None));
+        assert!(ws.remove_slack_subscription_owned_by("forge", id, None).is_some());
 
         facade
             .subscribe(
