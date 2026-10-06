@@ -265,8 +265,17 @@ picture. The payload cap is 16 MiB, and the socket's own frame limit is that
 cap plus one byte, set at the upgrade - so an image a shade too big is
 refused by the decoder, which fails the ask it belongs to, rather than
 tearing the connection down at the socket layer where the asker would only
-be told its host went away. A frame with no answer waiting for it, or with
-every image part already filled, is dropped with a debug record.
+be told its host went away.
+
+**What a frame that cannot be delivered does depends on whether anything is
+waiting for it**, and the two cases are worth telling apart when reading a
+debug record. A frame this server refuses - an unknown kind, a payload past
+the cap - fails every ask on that connection that is waiting for an image,
+because the part it was for can never be filled. A frame that matches NO ask
+in flight is a record and nothing else: one for an image part that is
+already filled, or one naming an ask that was never sent on this connection.
+Neither is answered - a binary frame has no reply channel - so the record is
+what makes it legible.
 
 **`dictate_stream {key, options}`** - begin a take the CLIENT captures.
 The connection that sends it feeds the audio as the binary frames above,

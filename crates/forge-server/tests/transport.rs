@@ -3611,9 +3611,70 @@ async fn an_image_frame_before_its_answer_fails_the_ask() {
 
 /// An image frame the server cannot take cannot fill the part waiting for it,
 /// so the ask fails with the refusal rather than waiting for a frame that was
-/// never going to arrive.
+/// never going to arrive - and **every** ask waiting on an image fails, not
+/// just the one being read: a refused frame names no id, so none of them can
+/// be singled out, and the alternative to failing them all is a session's
+/// tool call waiting on a frame nothing will send.
 #[tokio::test]
-async fn a_refused_image_frame_fails_the_ask_waiting_for_it() {
+async fn a_refused_image_frame_fails_every_ask_waiting_for_one() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let first = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (first_id, _, _, _) = browser_ask(&mut socket).await;
+    let second = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (second_id, _, _, _) = browser_ask(&mut socket).await;
+    for id in [first_id, second_id] {
+        send(
+            &mut socket,
+            ClientMessage::BrowserAnswer {
+                id,
+                parts: vec![forge_primitives::browser::BrowserPart::Image {
+                    mime_type: "image/png".to_owned(),
+                    bytes: Vec::new(),
+                }],
+                error: None,
+            },
+        )
+        .await;
+    }
+
+    // A frame cut inside its own header: an id cannot be read from it, so
+    // neither ask can be named as the one it was for.
+    socket
+        .send(Message::Binary(
+            vec![forge_server::transport::frame::Kind::BrowserImage.tag()].into(),
+        ))
+        .await
+        .expect("the short frame sends");
+
+    for (asked, what) in [(first, "the first screenshot"), (second, "the second screenshot")] {
+        let refused = settled(asked, what).await;
+        assert!(
+            matches!(&refused, Err(why) if why.contains("cannot take")),
+            "{what} fails with the frame's own refusal: {refused:?}",
+        );
+    }
+}
+
+/// **The socket carries exactly one byte past the image cap, so an image a
+/// shade too big is refused by the decoder rather than at the socket layer.**
+/// The frame is the socket's own limit - the tag, the id and a payload of
+/// `MAX_IMAGE_BYTES + 1` - and what it must produce is the decoder's refusal
+/// (failing the ask that was waiting for it), with the connection still
+/// there afterwards: a limit that refused it at the socket layer instead
+/// would tear the connection down and tell the asker only that its host went
+/// away.
+#[tokio::test]
+async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives() {
+    use forge_server::transport::frame::{IMAGE_HEADER_BYTES, Kind, MAX_IMAGE_BYTES};
+
     let (url, _fleet, state) = a_server_with_state().await;
     let mut socket = connect(&url).await;
     send(
@@ -3638,19 +3699,29 @@ async fn a_refused_image_frame_fails_the_ask_waiting_for_it() {
     )
     .await;
 
-    // A frame cut inside its own header: an id cannot be read from it.
-    socket
-        .send(Message::Binary(
-            vec![forge_server::transport::frame::Kind::BrowserImage.tag()].into(),
-        ))
-        .await
-        .expect("the short frame sends");
+    let mut frame = vec![Kind::BrowserImage.tag()];
+    frame.extend_from_slice(&id.to_be_bytes());
+    frame.extend(std::iter::repeat_n(0_u8, MAX_IMAGE_BYTES + 1));
+    assert_eq!(
+        frame.len(),
+        MAX_IMAGE_BYTES + IMAGE_HEADER_BYTES + 1,
+        "precondition: the frame is the socket's own limit",
+    );
+    socket.send(Message::Binary(frame.into())).await.expect("the socket carries its own limit");
 
     let refused = settled(asked, "the screenshot").await;
     assert!(
-        matches!(&refused, Err(why) if why.contains("cannot take")),
-        "the ask fails with the frame's own refusal: {refused:?}",
+        matches!(&refused, Err(why) if why.contains("past the image frame cap")),
+        "the decoder refuses it, naming the cap: {refused:?}",
     );
+
+    // The connection is still there: another ask is answered on it, which a
+    // socket-layer refusal would have taken with it.
+    let next = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
+    assert_eq!(settled(next, "the close").await, Ok(parts), "the connection survived the refusal");
 }
 
 /// Two asks in flight at once, answered in the other order: each is settled

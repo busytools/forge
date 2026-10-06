@@ -719,6 +719,24 @@ mod tests {
         );
     }
 
+    /// The two groups a spawn CANNOT list are refused by name, saying they
+    /// are always on: a caller listing one is asking for a narrower surface
+    /// than the one it already has, and `unknown family` would send it
+    /// looking for a spelling.
+    #[test]
+    fn the_always_on_groups_are_refused_by_name() {
+        for (name, why) in [("agents", "worker"), ("browser", "session")] {
+            let refused = canonical_mcp_families(&[name.to_owned()])
+                .expect_err("an always-on group cannot be listed");
+            assert!(refused.contains(name), "the refusal names it: {refused}");
+            assert!(
+                refused.contains("always on") && refused.contains(why),
+                "and says it is always on for every {why}: {refused}",
+            );
+            assert!(!refused.contains("unknown"), "it is not a spelling problem: {refused}");
+        }
+    }
+
     /// A stored row holding only unselectable names is corrupt, not a
     /// selection of nothing: it fails open to every family the way an
     /// unreadable row does, never to agents-only beside six withheld

@@ -266,6 +266,13 @@ pub struct Workspace {
     /// unobservable.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_listing: Mutex<RecordedListing>,
+    /// The `forge` MCP server the last spawn built, for the same reason the
+    /// listing above is kept: a stand-in replaces `Agent::spawn`, so the
+    /// server it would have been handed is otherwise dropped unobserved -
+    /// and a test that has to drive a tool through the spawn's OWN
+    /// composition (which facade it was built with) needs it.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_spawn_server: Mutex<Option<forge_sdk::mcp::server::McpServer>>,
     /// The account state map, owned by the gateway and reached through
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
@@ -1478,6 +1485,8 @@ impl Workspace {
             test_spawn_handle: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_listing: Mutex::new(RecordedListing::None),
+            #[cfg(any(test, feature = "testing"))]
+            test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
             gateway_ready: std::sync::atomic::AtomicBool::new(false),
@@ -2070,6 +2079,10 @@ impl Workspace {
                 Some(listing) => RecordedListing::Listed(listing.clone()),
                 None => RecordedListing::NoListing,
             };
+            // Kept beside the listing: the stand-in below replaces the call
+            // the server would have been handed to, so this is the only way a
+            // test sees the one the spawn composed.
+            *self.test_spawn_server.lock() = Some(forge_server.clone());
         }
         let spawn_agent = || {
             forge_agent::Agent::spawn(
