@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
 import { writable } from 'svelte/store';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { Connection } from '../socket';
 import type { Store, StoreValue } from '../stores';
 import type { HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
+import { closeSeat, forgetClosed } from './close';
 import SpawnHarness from './SpawnHarness.svelte';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -71,7 +72,19 @@ function home(lead: boolean): HomeWire {
   return { ...homeWire, agents: lead ? homeWire.agents : [] };
 }
 
+/** The fixture's home with its lead row in the lifecycle named. */
+function homeAs(lifecycle: HomeWire['agents'][number]['lifecycle']): HomeWire {
+  const template = homeWire.agents[0];
+  if (template === undefined) throw new Error('the fixture holds no agent');
+  return { ...homeWire, agents: [{ ...template, lifecycle }] };
+}
+
 let app: Record<string, unknown> | null = null;
+
+beforeEach(() => {
+  // The close marks are module state; an empty roster forgets all of them.
+  forgetClosed({ ...homeWire, agents: [] });
+});
 
 afterEach(() => {
   if (app !== null) void unmount(app);
@@ -79,14 +92,18 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function open(withLead: boolean, slot: SessionSlot = LEAD) {
+function openWith(wire: HomeWire, slot: SessionSlot = LEAD) {
   const { connection, sent } = recording();
   app = mount(SpawnHarness, {
     target: document.body,
-    props: { slot, connection, home: home(withLead) },
+    props: { slot, connection, home: wire },
   });
   flushSync();
   return { sent, page: () => (app as unknown as { page: { home: HomeWire } }).page };
+}
+
+function open(withLead: boolean, slot: SessionSlot = LEAD) {
+  return openWith(home(withLead), slot);
 }
 
 describe("starting a project's lead from its own page", () => {
@@ -143,5 +160,43 @@ describe("starting a project's lead from its own page", () => {
     expect(sent, 'one ask for the whole approach, not one per frame').toHaveLength(1);
     const drawn = document.body.textContent ?? '';
     expect(drawn, 'and the seat stops drawing as one nothing runs').not.toContain('not running');
+  });
+
+  /**
+   * A named lead the roster has landed asleep is the same wake (#1704's rule:
+   * opening the page starts it), and the page's own words promise the spawn -
+   * so the ask goes rather than the words standing over nothing.
+   */
+  it('asks the core to start a lead the roster names asleep', () => {
+    const { sent } = openWith(homeAs('Sleeping'));
+
+    expect(sent, 'a sleeping lead was opened and nothing asked').toEqual([
+      {
+        command: {
+          spawn_project: { project_name: 'proj', launch_settings: {} },
+        },
+      },
+    ]);
+  });
+
+  /**
+   * The promise has a state it must not make: a seat this client just closed
+   * carries the mark because the click was made here, and a roster landing it
+   * asleep is that close arriving - not a wake for this page to start again.
+   */
+  it('asks for nothing at a seat this client just closed', () => {
+    const wire = homeAs('Sleeping');
+    const moved = closeSeat(
+      { dispatch: () => null } as unknown as Connection,
+      wire,
+      LEAD,
+      { ...LEAD, label: 'w1' },
+      0,
+    );
+    expect(moved, 'the close never went').toBe(true);
+
+    const { sent } = openWith(wire);
+
+    expect(sent, 'a close read as a wake and started the seat again').toEqual([]);
   });
 });

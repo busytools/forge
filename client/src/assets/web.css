@@ -286,8 +286,6 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   .dot.live, .ring { animation: none; border-color: var(--accent); }
   .dot.needs { animation: none; }
   .dot.off.settling { animation: none; }
-  /* The waking line keeps its words: the sweep is the only thing that goes. */
-  .shimmer { animation: none; background: none; color: var(--muted); }
   .row.running .dot { animation: none; border-color: var(--accent); }
   .row.spawning .dot { animation: none; border-color: var(--muted); }
   .row.needs .dot, .row.auth .dot { animation: none; }
@@ -2110,6 +2108,10 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: arrive 150ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
+  /* The waking line keeps its words: the sweep is the only thing that goes.
+     Declared HERE, after the base: a media query adds no specificity, so an
+     arm above the rule it stills loses to it by source order. */
+  .shimmer { animation: none; background: none; color: var(--muted); }
 }
 
 /* A search hit is a location and the line it matched, on two lines. The design

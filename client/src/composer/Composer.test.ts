@@ -694,6 +694,7 @@ describe('the box', () => {
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
       [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...', null],
+      [{ seat: seatRead({ lifecycle: 'Sleeping' }) }, 'Waking up agent...', null],
       [
         {
           record: record({
@@ -759,12 +760,21 @@ describe('the box', () => {
   it('draws the waking line as a sweep, with no second animation beside it', () => {
     open({ seat: seatRead({ lifecycle: 'Spawning' }) });
 
-    expect(drawn()).toContain('Waking up agent...');
+    expect(drawn(), 'the box lost the waking line').toContain('Waking up agent...');
     expect(document.querySelector('.b1 .shimmer'), 'the waking line does not sweep').not.toBeNull();
     expect(
       document.querySelector('.b1 .ring'),
       'the waking line draws a ring beside its own motion',
     ).toBeNull();
+
+    // The lead's own wake arm carries the same pair: an edit that left the
+    // sweep on the spawn arm alone would keep everything above green.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    open({ seat: seatRead({ lifecycle: null, waking: true, reason: null }) });
+    expect(document.querySelector('.b1 .shimmer'), "the lead's wake lost its sweep").not.toBeNull();
+    expect(document.querySelector('.b1 .ring'), 'a ring joined the lead wake').toBeNull();
   });
 
   it('takes the mark off a send the core has started, and keeps the words', () => {

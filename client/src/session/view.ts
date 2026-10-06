@@ -182,6 +182,12 @@ export interface ConversationProps {
   /** The directory the seat's calls are named against. */
   /** Whether a seat is behind this page at all. */
   waking: boolean;
+  /**
+   * Whether the core is bringing the seat up. Its own state beside `waking`:
+   * both draw the waking line, and the column reads the conversation only
+   * once neither is true (#1712's follow-up).
+   */
+  spawning: boolean;
   /** Why it is not running, when the roster says. */
   reason: string | null;
   slot: SessionSlot;

@@ -105,10 +105,11 @@
           <div class="why" class:bad={project.why.bad}>{project.why.line}</div>
         {/if}
         {#each project.workers as worker (worker.slot.label)}
-          {@const workerDot = closingSeat(worker.slot) ? 'off settling' : railMark(worker.state)}
           {@const failed = failedLine(worker)}
           <div class="wk" class:on={project.shown === worker.slot.label}>
-            <span class="dot {workerDot}"></span>
+            <!-- No closing arm here: a closed worker folds into the sleeper
+                 fold on the grouping, so this each never draws one. -->
+            <span class="dot {railMark(worker.state)}"></span>
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>

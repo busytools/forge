@@ -280,6 +280,20 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
   });
 
+  it('keeps the waking line up while the spawn is in flight', () => {
+    // The wake reads as one state on both sides of the roster noticing:
+    // before the row lands (waking) and while the core brings it up
+    // (spawning), so the column never flashes a not-running line in between.
+    const server = stub();
+    draw({ spawning: true }, server);
+
+    expect(drawn(), 'the spawn in flight lost its waking line').toContain('Waking up agent...');
+    expect(
+      document.querySelector('.hold .shimmer'),
+      'the spawn line does not sweep',
+    ).not.toBeNull();
+  });
+
   it('draws a seat that has no session behind it as its own state', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);

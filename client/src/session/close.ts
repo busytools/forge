@@ -56,10 +56,11 @@ export function closingSeat(slot: SessionSlot): boolean {
  * Forget the closed seats the roster has caught up with, so the set stays
  * small and a project started again later is not suppressed by an old mark.
  *
- * **Caught up means arrived, not only gone**: a closed lead's row never
- * leaves the roster - it lands there asleep - so the mark has to drop when
- * the seat reads asleep too, and a row that says "going to sleep" goes as
- * the row itself goes quiet.
+ * **Caught up means arrived, not only gone**: a closed worker's label stays
+ * in the roster - it lands there asleep rather than vanishing - so the mark
+ * has to drop when the seat reads asleep too, and a row that says "going to
+ * sleep" goes as the row itself goes quiet. (A closed LEAD is the other
+ * shape: `home.agents` stops naming it, so its mark goes by the first arm.)
  */
 export function forgetClosed(home: HomeWire): void {
   for (const key of closedHere) {

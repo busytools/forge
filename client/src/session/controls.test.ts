@@ -288,6 +288,13 @@ describe("a rail row's close chip", () => {
     expect(location.pathname, 'the reader was left on the seat that closed').toBe(
       '/session/TestOrg/proj/lead',
     );
+    // The row folds away ON the click, with no home read behind it: the mark
+    // is reactive, which is what carries the whole close for a row the reader
+    // was not standing on (#1712).
+    expect(
+      document.body.textContent,
+      'the closed row did not fold away without a home read',
+    ).toContain('1 asleep');
   });
 
   it("closes a project's row through close_session, on the lead's own slot", () => {

@@ -223,6 +223,14 @@ describe('the rail', () => {
     const asleep = railGroups(home, LEAD, 0, () => true).find((group) => group.heading === 'asleep')
       ?.projects[0];
     expect(asleep?.name, "a closed lead's project stayed out of asleep").toBe('proj');
+
+    // A closing seat writes on no line: a worker closed while its ask was up
+    // does not keep the project's line alive under the asleep block.
+    const held: AgentRow = { ...worker, pending: 'question' };
+    const closed = block(
+      railGroups(withHome({ agents: [leadRow, held] }), LEAD, 0, (slot) => slot.label === 'w1'),
+    );
+    expect(closed?.why, 'a closed seat still wrote on the project line').toBeNull();
   });
 
   /**

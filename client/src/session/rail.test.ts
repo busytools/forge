@@ -202,12 +202,56 @@ describe('a closed seat', () => {
       );
 
       // The roster catching up is the seat ARRIVING asleep, still named
-      // (a lead's row never leaves the roster), which is when the pulse goes.
+      // (a worker's label persists that way), which is when the pulse goes.
       forgetClosed({ ...wire, agents: [lead, { ...worker, lifecycle: 'Sleeping' }] });
       expect(opened(), 'the pulse outlived the roster catching up').not.toContain('settling');
+
+      // The lead's own path: without the mark reaching its row, the project
+      // sits under an "asleep" heading drawn as still live. Anchored on the
+      // lead's own row, because the fold's worker dot would answer for it.
+      expect(
+        closeSeat(closes(), wire, lead.slot, worker.slot, 0),
+        'the lead close never went',
+      ).toBe(true);
+      const withLead = opened();
+      const leadRow = withLead.slice(withLead.indexOf('class="pr'), withLead.indexOf('class="wk'));
+      expect(leadRow, 'the closed lead kept a live dot').toContain(
+        '<span class="dot off settling"></span>',
+      );
+      expect(withLead, "the closed lead's project stayed out of asleep").toContain('asleep');
     } finally {
       forgetClosed({ ...homeWire, agents: [] });
     }
+  });
+});
+
+describe('the sheet carries the settling pulse and the waking sweep', () => {
+  /**
+   * Both marks are drawn AND animated by the sheet, so a rename or an
+   * "unused-looking" cleanup would take them away with every other test
+   * green. And each reduced-motion arm must sit AFTER its own base: a media
+   * query adds no specificity, so an arm above the rule it stills loses to
+   * it by source order - which is how the sweep kept running once.
+   */
+  it('declares each mark, and stills each after its own base', () => {
+    expect(rule('.dot.off.settling'), 'the settling pulse went').toContain('animation: pulse');
+    expect(rule('.shimmer'), 'the waking sweep went').toContain('animation: shimmer 1.4s');
+
+    const settlingBase = sheet.indexOf('.dot.off.settling {');
+    const settlingArm = sheet.indexOf('.dot.off.settling { animation: none');
+    expect(settlingArm, 'the settling pulse has no reduced-motion arm').toBeGreaterThan(-1);
+    expect(
+      settlingArm,
+      'the settling arm sits above its base and loses to it by source order',
+    ).toBeGreaterThan(settlingBase);
+
+    const sweepBase = sheet.indexOf('.shimmer {');
+    const sweepArm = sheet.indexOf('.shimmer { animation: none');
+    expect(sweepArm, 'the waking sweep has no reduced-motion arm').toBeGreaterThan(-1);
+    expect(
+      sweepArm,
+      'the sweep arm sits above its base and loses to it by source order',
+    ).toBeGreaterThan(sweepBase);
   });
 });
 

@@ -245,9 +245,10 @@ describe('closing a seat', () => {
     forgetClosed(home(LEAD));
     expect(closingSeat(W1), 'the mark outlived the roster catching up').toBe(false);
 
-    // The production shape for a lead: its row never leaves the roster - it
-    // lands there asleep - so the mark drops on the seat ARRIVING, not only
-    // on it going.
+    // The production shape for a worker: its label stays in the roster and
+    // lands there asleep rather than vanishing, so the mark drops on the
+    // seat ARRIVING, not only on it going. (A closed lead's mark goes by the
+    // absent arm - the roster stops naming it.)
     const landed = connection();
     expect(closeSeat(landed.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
     forgetClosed({
@@ -256,6 +257,12 @@ describe('closing a seat', () => {
     });
     expect(closingSeat(LEAD), 'the mark outlived the lead landing asleep').toBe(false);
     expect(closingSeat(W1), 'and a worker that landed asleep kept its mark').toBe(false);
+
+    // Logged out is the other way a seat arrives asleep.
+    const out = connection();
+    expect(closeSeat(out.open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    forgetClosed({ ...home(LEAD), agents: [agent(LEAD), agentIn(W1, 'LoggedOut')] });
+    expect(closingSeat(W1), 'a logged-out seat kept its mark').toBe(false);
 
     // A lead's close cascades: every live row the project takes says it too.
     const cascaded = connection();
