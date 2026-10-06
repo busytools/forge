@@ -493,7 +493,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('leaves a call that is still out closed, with the ring for a status', () => {
-    const body = draw(said([use('c1', 'Bash', { command: 'just check' })]));
+    // A call still out belongs to a turn the seat reports as running: a
+    // SETTLED turn's unanswered call is the restart's unterminated one, and
+    // that draws failed (#1836).
+    const body = seatRunning(said([use('c1', 'Bash', { command: 'just check' })]));
 
     // The GROUP opens - the mockup draws a run open - and the call inside it
     // waits to be asked, which is the difference from the terminal: it expands

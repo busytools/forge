@@ -600,7 +600,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = fold(turn.messages, slot, beingWritten(turn));
+    const units = fold(turn.messages, slot, beingWritten(turn), !beingWritten(turn));
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };

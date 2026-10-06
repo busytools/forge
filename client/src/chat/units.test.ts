@@ -1874,6 +1874,47 @@ describe('one turn folded into the units a view draws', () => {
     expect(calls[1]?.status, 'and the one it started afterwards is still out').toBe('pending');
   });
 
+  /**
+   * #1836: a restart kills the CLI mid-call, the resumed history keeps the
+   * call's `tool_use` with no result and no failing frame, and a fold that
+   * reads only boundaries leaves the row spinning forever. The terminal
+   * settles exactly these failed on its resume
+   * (`finalize_turn_runtime_artifacts(Failed)`), and the caller's `ended`
+   * says the same: this turn's history is closed, so its unanswered call is
+   * never coming back.
+   */
+  it('settles the call a closed turn never answered, and holds a backgrounded one', () => {
+    const load = said([use('tu_never', 'Skill', { skill: 'slow-skill' })]);
+
+    const [live] = fold([load]);
+    expect(
+      callsOf(live).map((call) => call.leaf.status),
+      'a turn still being written waits for the answer',
+    ).toEqual(['pending']);
+
+    const [settled] = fold([load], null, false, true);
+    expect(
+      callsOf(settled).map((call) => call.leaf.status),
+      'the turn ended without an answer: the call draws failed, not spinning',
+    ).toEqual(['failed']);
+
+    // A call whose own input outlives its turn is not taken by the boundary:
+    // the terminal exempts backgrounded calls from the same sweep.
+    const outliving = said([
+      {
+        type: 'tool_use',
+        id: 'tu_bg',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const [bg] = fold([outliving], null, false, true);
+    expect(
+      callsOf(bg).map((call) => call.leaf.status),
+      'a backgrounded call waits for its task, not the turn',
+    ).toEqual(['pending']);
+  });
+
   it('sweeps the calls of every failure in the turn, not only the first', () => {
     // Two failing turns in one fold - which the live path reaches when no page
     // lands between them - settle BOTH turns' calls. First-wins sweeps the

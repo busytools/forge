@@ -572,10 +572,16 @@ export function leafOf(
   abandoned = false,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
+  // A call whose own input says it runs in the background outlives its turn,
+  // so a boundary settle never takes it: its ending comes from the task's own
+  // frames, or not at all yet - the terminal exempts the same calls from its
+  // own sweeps.
+  const outliving =
+    (input as Record<string, unknown> | null | undefined)?.['run_in_background'] === true;
   const settled =
     task !== undefined && (task.backgrounded || task.status !== 'in_progress')
       ? task.status
-      : settledBy(result, abandoned);
+      : settledBy(result, abandoned && !outliving);
   const forge = forgeCardOf(name, input, result);
   return {
     id,
