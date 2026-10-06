@@ -348,13 +348,20 @@
   // and only the seat's own record arms it: another seat's take, still in the
   // record in hand between two seats, is not this box having watched anything.
   $effect(() => {
-    if (!owns || composer.take === null) return;
-    if (!box.sawTake) {
-      // **Where the take began is where its words go.** Captured once, on the
-      // take's own first frame: a prompt arriving mid-take does not take words
-      // spoken into the reader's draft, and one already holding the slot owns
-      // them even when the caret was never in its row (a keyboard dictation).
-      box.sawTake = true;
+    if (!owns) return;
+    if (composer.take === null) {
+      // The take is over; the next one captures its own destination.
+      box.takeOpen = false;
+      return;
+    }
+    box.sawTake = true;
+    if (!box.takeOpen) {
+      // **Where the take began is where its words go, captured per TAKE.** A
+      // prompt arriving mid-take does not take words spoken into the reader's
+      // draft, and one already holding the slot owns them even when the caret
+      // was never in its row (a keyboard dictation). One seat can take several
+      // in a row, so the flag closes with each take rather than once per box.
+      box.takeOpen = true;
       box.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     }
   });

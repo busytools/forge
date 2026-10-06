@@ -92,6 +92,8 @@ export class Box {
    * that dictation landing unwatched, and never sent, is not handed back.
    */
   sawTake = false;
+  /** Whether the seat's current take has captured its destination yet. */
+  takeOpen = false;
   /**
    * Which box a take's words belong to, captured when the take STARTS: the
    * dock when it held the slot with a words row, the composer's draft
