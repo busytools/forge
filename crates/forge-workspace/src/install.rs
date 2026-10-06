@@ -1,6 +1,7 @@
-//! Installing a model from the feed: its doc's own download link, a
-//! size-checked fetch into the models directory, and the record of what
-//! arrived.
+//! Installing a model from the feed, and resolving which model each role
+//! runs: the doc's own download link, a size-checked fetch into the models
+//! directory, the record of what arrived, and the config-key / runtime-pick
+//! / compiled-pin order an active model comes from.
 //!
 //! **A download is checked by the entry's own byte length, and by whether
 //! the engine can load it - never by a digest, because upstream publishes
@@ -10,11 +11,14 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, doc_links, fetch_doc};
-use forge_dictate::{ModelFacts, Progress};
+use forge_dictate::catalogue::{
+    CatalogueEntry, CatalogueSource, Download, doc_links, fetch_doc,
+};
+use forge_dictate::{ModelFacts, ModelSpec, Progress};
 use serde::{Deserialize, Serialize};
 
 use crate::catalogue::PREFERRED_DOWNLOADS;
+use crate::dictate::{DictateRole, DictateSettings};
 use crate::{DispatchError, SessionUpdate, Workspace};
 
 /// Where an install is, as the page draws it.
@@ -38,8 +42,54 @@ pub struct InstalledModel {
     /// The doc's own URL, kept so a reader can see where the bytes came from.
     pub url: String,
     pub size: u64,
+    /// The facts the entry declares, kept so a resolution off this record
+    /// can build the same spec the install did without the feed.
+    pub facts: ModelFacts,
     /// RFC 3339.
     pub at: String,
+}
+
+/// Where a role's model came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum ActiveFrom {
+    /// `forge.toml` names this role's model, so the runtime cannot change
+    /// it; `key` is the `[dictate]` key that does.
+    Config { key: String, variant: String },
+    /// The last pick made on this machine.
+    Installed { variant: String },
+    /// The compiled default for this binary.
+    Pin,
+}
+
+/// The model one role runs, and where that choice came from.
+///
+/// Workspace side only: the wire carries `from`/`at` on the page's IN USE
+/// rows, which already carry every other field a spec has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveModel {
+    pub role: DictateRole,
+    pub spec: ModelSpec,
+    pub from: ActiveFrom,
+    /// RFC 3339, when a runtime pick chose it.
+    pub at: Option<String>,
+}
+
+/// The runtime pick as one role records it: the variant, resolved through
+/// the installed set, and when the pick was made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActiveChoice {
+    pub variant: String,
+    /// RFC 3339.
+    pub at: String,
+}
+
+/// The `[dictate]` key that pins one role.
+fn key_for_role(role: DictateRole) -> &'static str {
+    match role {
+        DictateRole::Transcribing => "transcribe_model",
+        DictateRole::Normalization => "cleanup_model",
+    }
 }
 
 impl Workspace {
@@ -144,37 +194,11 @@ impl Workspace {
                 format!("{variant} ships no quantisation this machine would run"),
             );
         };
-
-        let doc = {
-            let source = source.clone();
-            let variant = variant.clone();
-            tokio::task::spawn_blocking(move || fetch_doc(&source, &variant)).await
-        };
-        let doc = match doc {
-            Ok(Ok(doc)) => doc,
-            Ok(Err(error)) => return self.fail_install(download.filename, error.to_string()),
-            Err(join) => return self.fail_install(download.filename, join.to_string()),
-        };
-        let Some((_, url)) =
-            doc_links(&doc).into_iter().find(|(file, _)| file == &download.filename)
-        else {
-            return self.fail_install(
-                download.filename.clone(),
-                format!("the doc carries no download for {}", download.filename),
-            );
+        let spec = match spec_for_entry(source, &entry, &download).await {
+            Ok(spec) => spec,
+            Err(reason) => return self.fail_install(download.filename, reason),
         };
 
-        let spec = forge_dictate::spec_for_download(
-            &download.filename,
-            &url,
-            download.size_bytes,
-            ModelFacts {
-                quant: Some(download.quant),
-                params: Some(entry.params),
-                license: entry.license.as_ref().map(|license| license.display.clone()),
-                runtime: Some("transcribe.cpp".to_owned()),
-            },
-        );
         // The base is the `[dictate]` settings, with the candidate in the
         // ASR slot and no normalizer: `prepare` fetches what the config
         // names, and this config names one file.
@@ -186,7 +210,7 @@ impl Workspace {
         };
         let mut cfg = self.config.dictate.to_config();
         cfg.models_dir = Some(dir);
-        cfg.asr_model = spec;
+        cfg.asr_model = spec.clone();
         cfg.normalizer = None;
 
         self.set_install_file(&download.filename, download.size_bytes);
@@ -214,9 +238,10 @@ impl Workspace {
             Ok(Ok(())) => {
                 self.record_installed(InstalledModel {
                     variant,
-                    file: download.filename,
-                    url,
-                    size: download.size_bytes,
+                    file: spec.file,
+                    url: spec.url,
+                    size: spec.size,
+                    facts: spec.facts,
                     at: rfc3339_now(),
                 });
                 *self.dictate_install.lock() = InstallState::Idle;
@@ -227,11 +252,201 @@ impl Workspace {
     }
 }
 
+/// The spec one feed entry's doc describes for the quant a row draws: the
+/// doc's own URL for the file, the entry's own byte length, and the facts
+/// both carry.
+async fn spec_for_entry(
+    source: CatalogueSource,
+    entry: &CatalogueEntry,
+    download: &Download,
+) -> Result<ModelSpec, String> {
+    let variant = entry.variant.clone();
+    let doc = tokio::task::spawn_blocking(move || fetch_doc(&source, &variant))
+        .await
+        .map_err(|join| join.to_string())?
+        .map_err(|error| error.to_string())?;
+    let Some((_, url)) = doc_links(&doc).into_iter().find(|(file, _)| file == &download.filename)
+    else {
+        return Err(format!("the doc carries no download for {}", download.filename));
+    };
+    Ok(forge_dictate::spec_for_download(
+        &download.filename,
+        &url,
+        download.size_bytes,
+        ModelFacts {
+            quant: Some(download.quant.clone()),
+            params: Some(entry.params),
+            license: entry.license.as_ref().map(|license| license.display.clone()),
+            runtime: Some("transcribe.cpp".to_owned()),
+        },
+    ))
+}
+
 /// The download the row draws: the preferred quant chain, most wanted first.
-fn preferred_download(entry: &CatalogueEntry) -> Option<&forge_dictate::catalogue::Download> {
+fn preferred_download(entry: &CatalogueEntry) -> Option<&Download> {
     PREFERRED_DOWNLOADS
         .iter()
         .find_map(|quant| entry.downloads.iter().find(|download| &download.quant == quant))
+}
+
+impl Workspace {
+    /// The models the roles run, as the preflight resolved them: the
+    /// compiled pins until that resolution lands, then whatever the config
+    /// key, the runtime pick or the pin answered, per role.
+    pub fn active_models(&self) -> Vec<(DictateRole, ActiveModel)> {
+        self.dictate.active.lock().clone()
+    }
+
+    /// Resolve every role's model, fresh: the config key when set, else
+    /// the runtime pick, else the compiled pin.
+    ///
+    /// The key's variant resolves through the installed record first, a
+    /// local read; a variant that is not on disk reaches the feed's doc
+    /// table, which is the download source and the only network call here.
+    /// A key that resolves through neither is an error naming the key,
+    /// which the preflight renders as the reason forge stops.
+    pub(crate) async fn resolve_active(
+        &self,
+        settings: &DictateSettings,
+    ) -> Result<Vec<(DictateRole, ActiveModel)>, String> {
+        let mut resolved = Vec::new();
+        for (role, pin) in settings.model_specs() {
+            let key = key_for_role(role);
+            let configured = match role {
+                DictateRole::Transcribing => settings.transcribe_model.as_deref(),
+                DictateRole::Normalization => settings.cleanup_model.as_deref(),
+            };
+            // A config key wins over everything, and it never clears the
+            // record: removing the key returns the role to the last
+            // runtime pick.
+            if let Some(variant) = configured {
+                let spec = self.resolve_variant(key, variant).await?;
+                resolved.push((
+                    role,
+                    ActiveModel {
+                        role,
+                        spec,
+                        from: ActiveFrom::Config {
+                            key: key.to_owned(),
+                            variant: variant.to_owned(),
+                        },
+                        at: None,
+                    },
+                ));
+                continue;
+            }
+            if let Some(choice) = self.active_choice(role) {
+                let installed = self
+                    .installed_models()
+                    .into_iter()
+                    .find(|model| model.variant == choice.variant);
+                let Some(installed) = installed else {
+                    return Err(format!(
+                        "the runtime pick for {} names {}, which no installed model carries",
+                        crate::store::dictate_models::role_key(role),
+                        choice.variant
+                    ));
+                };
+                resolved.push((
+                    role,
+                    ActiveModel {
+                        role,
+                        spec: ModelSpec {
+                            file: installed.file,
+                            url: installed.url,
+                            size: installed.size,
+                            sha256: None,
+                            facts: installed.facts,
+                        },
+                        from: ActiveFrom::Installed { variant: choice.variant },
+                        at: Some(choice.at),
+                    },
+                ));
+                continue;
+            }
+            resolved.push((role, ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None }));
+        }
+        Ok(resolved)
+    }
+
+    /// The runtime pick recorded for one role, when the store answers one.
+    fn active_choice(&self, role: DictateRole) -> Option<ActiveChoice> {
+        let db = self.db.lock();
+        db.as_ref().and_then(|db| crate::store::dictate_models::active(db, role).ok().flatten())
+    }
+
+    /// The model a config key names: the installed record, else the feed's
+    /// doc table, else nothing.
+    async fn resolve_variant(&self, key: &str, variant: &str) -> Result<ModelSpec, String> {
+        if let Some(installed) =
+            self.installed_models().into_iter().find(|model| model.variant == variant)
+        {
+            return Ok(ModelSpec {
+                file: installed.file,
+                url: installed.url,
+                size: installed.size,
+                sha256: None,
+                facts: installed.facts,
+            });
+        }
+        let Some(entry) = self.catalogue_entry_for(variant).await else {
+            return Err(format!(
+                "[dictate] {key} names {variant}, which is neither an installed model nor a \
+                 catalogue entry"
+            ));
+        };
+        let Some(download) = preferred_download(&entry).cloned() else {
+            return Err(format!(
+                "[dictate] {key} names {variant}, which ships no quantisation this machine would \
+                 run"
+            ));
+        };
+        spec_for_entry(self.catalogue_source(), &entry, &download)
+            .await
+            .map_err(|reason| format!("[dictate] {key} names {variant}: {reason}"))
+    }
+
+    /// The feed's entry for one variant: the loaded feed, or one catalogue
+    /// fetch when the loaded feed does not carry it.
+    ///
+    /// The fetch is what keeps a config key working on a fresh machine,
+    /// whose local store and cache both predate the variant.
+    async fn catalogue_entry_for(&self, variant: &str) -> Option<CatalogueEntry> {
+        let loaded = {
+            let state = self.dictate_catalogue.lock();
+            state.catalogue.as_ref().and_then(|catalogue| {
+                catalogue.entries.iter().find(|entry| entry.variant == variant).cloned()
+            })
+        };
+        if loaded.is_some() {
+            return loaded;
+        }
+        let fetched = self.fetch_catalogue_once().await.ok()?;
+        fetched.entries.into_iter().find(|entry| entry.variant == variant)
+    }
+
+    /// Record a config-resolved model the preflight has just fetched, so
+    /// the page's installed set and the next boot's resolution both see it.
+    ///
+    /// Only the config leg reaches here: a runtime pick was installed
+    /// before it could be picked, and the compiled pins are not recorded,
+    /// because nothing here names their variant without the feed.
+    pub(crate) fn record_resolved_installs(&self, resolved: &[(DictateRole, ActiveModel)]) {
+        for (_, model) in resolved {
+            let ActiveFrom::Config { variant, .. } = &model.from else { continue };
+            if self.installed_models().iter().any(|installed| &installed.variant == variant) {
+                continue;
+            }
+            self.record_installed(InstalledModel {
+                variant: variant.clone(),
+                file: model.spec.file.clone(),
+                url: model.spec.url.clone(),
+                size: model.spec.size,
+                facts: model.spec.facts.clone(),
+                at: rfc3339_now(),
+            });
+        }
+    }
 }
 
 /// A `SystemTime` as RFC 3339, the stamp a result is comparable by.
@@ -246,7 +461,7 @@ mod tests_install {
     use super::*;
     use crate::catalogue::DictateModelsSnapshot;
     use crate::catalogue::tests_catalogue_view::{
-        enabled_stub, entry_under, serve_with, source,
+        enabled_stub, entry_under, serve, serve_with, source,
     };
     use crate::{Command, DispatchError, SessionUpdate, Workspace};
     use forge_dictate::catalogue::Catalogue;
@@ -287,12 +502,231 @@ mod tests_install {
     }
 
     fn fixture() -> Fixture {
-        let (ws, updates, models) = enabled_stub();
+        fixture_with(None, None)
+    }
+
+    /// [`fixture`] with the `[dictate]` model keys a resolution test needs.
+    fn fixture_with(transcribe_model: Option<&str>, cleanup_model: Option<&str>) -> Fixture {
+        let config_dir = tempfile::tempdir().expect("a config dir");
+        let models = tempfile::tempdir().expect("a models dir");
         let store = tempfile::tempdir().expect("a store dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.dictate.enabled = true;
+        config.dictate.models_dir = Some(models.path().to_string_lossy().into_owned());
+        config.dictate.transcribe_model = transcribe_model.map(str::to_owned);
+        config.dictate.cleanup_model = cleanup_model.map(str::to_owned);
+        let (ws, updates) =
+            Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
+                .expect("the stub builds");
         ws.install_db_for_test(
             crate::store::Db::open(&store.path().join("db.redb")).expect("the store opens"),
         );
         Fixture { ws, updates, _models: models, _store: store }
+    }
+
+    /// The `[dictate]` settings a resolution test resolves against.
+    fn settings_of(ws: &Workspace) -> DictateSettings {
+        ws.config.dictate.clone()
+    }
+
+    /// Put one variant in the installed set, as an install of it would.
+    fn record_installed_model(ws: &Workspace, variant: &str) {
+        ws.record_installed(InstalledModel {
+            variant: variant.to_owned(),
+            file: format!("{variant}-Q4_K_M.gguf"),
+            url: format!("https://weights.invalid/{variant}-Q4_K_M.gguf"),
+            size: 6,
+            facts: ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
+            at: "2026-10-06T00:00:00Z".to_owned(),
+        });
+    }
+
+    /// Record one role's runtime pick, as an activation of it would.
+    fn record_active(ws: &Workspace, role: DictateRole, variant: &str) {
+        let db = ws.db.lock();
+        crate::store::dictate_models::record_active(
+            db.as_ref().expect("the fixture installs a store"),
+            role,
+            &ActiveChoice { variant: variant.to_owned(), at: "2026-10-06T01:00:00Z".to_owned() },
+        )
+        .expect("the pick records");
+    }
+
+    /// One role's resolved model.
+    fn role_model<'r>(
+        resolved: &'r [(DictateRole, ActiveModel)],
+        role: DictateRole,
+    ) -> &'r ActiveModel {
+        &resolved.iter().find(|(resolved, _)| *resolved == role).expect("the role resolves").1
+    }
+
+    /// The config key wins over the runtime pick and the compiled pin:
+    /// `forge.toml` names the model, and the runtime cannot move it.
+    #[tokio::test]
+    async fn a_config_key_beats_the_record_and_the_pin() {
+        let fixture = fixture_with(Some("keyed"), None);
+        record_installed_model(&fixture.ws, "keyed");
+        record_installed_model(&fixture.ws, "picked");
+        record_active(&fixture.ws, DictateRole::Transcribing, "picked");
+        let settings = settings_of(&fixture.ws);
+
+        let resolved = fixture.ws.resolve_active(&settings).await.expect("the key resolves");
+
+        let transcribing = role_model(&resolved, DictateRole::Transcribing);
+        assert_eq!(transcribing.spec.file, "keyed-Q4_K_M.gguf", "the key's variant, not the pick");
+        assert_eq!(
+            transcribing.from,
+            ActiveFrom::Config {
+                key: "transcribe_model".to_owned(),
+                variant: "keyed".to_owned(),
+            },
+            "and the page can name the key that holds the role"
+        );
+    }
+
+    /// Without a key the runtime pick wins over the compiled pin, and it
+    /// answers with the facts the install recorded.
+    #[tokio::test]
+    async fn without_a_key_the_record_beats_the_pin() {
+        let fixture = fixture_with(None, None);
+        record_installed_model(&fixture.ws, "picked");
+        record_active(&fixture.ws, DictateRole::Transcribing, "picked");
+        let settings = settings_of(&fixture.ws);
+
+        let resolved = fixture.ws.resolve_active(&settings).await.expect("the pick resolves");
+
+        let transcribing = role_model(&resolved, DictateRole::Transcribing);
+        assert_eq!(transcribing.spec.file, "picked-Q4_K_M.gguf");
+        assert_eq!(transcribing.spec.facts.quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(
+            transcribing.from,
+            ActiveFrom::Installed { variant: "picked".to_owned() }
+        );
+        assert_eq!(transcribing.at.as_deref(), Some("2026-10-06T01:00:00Z"));
+    }
+
+    /// With neither, the compiled pin stands, for both roles.
+    #[tokio::test]
+    async fn without_a_key_or_a_record_the_pin_stands() {
+        let fixture = fixture_with(None, None);
+        let settings = settings_of(&fixture.ws);
+
+        let resolved = fixture.ws.resolve_active(&settings).await.expect("the pins resolve");
+
+        let transcribing = role_model(&resolved, DictateRole::Transcribing);
+        assert_eq!(transcribing.spec.file, "cohere-transcribe-03-2026-Q4_K_M.gguf");
+        assert_eq!(transcribing.from, ActiveFrom::Pin);
+        assert_eq!(transcribing.at, None);
+        assert_eq!(role_model(&resolved, DictateRole::Normalization).spec.file, "s1-mini-f16.gguf");
+    }
+
+    /// Setting a key never clears the pick: removing the key returns the
+    /// role to the last runtime choice, not to the compiled pin.
+    #[tokio::test]
+    async fn setting_a_key_leaves_the_record_alone_so_unpinning_returns_to_it() {
+        let fixture = fixture_with(Some("keyed"), None);
+        record_installed_model(&fixture.ws, "keyed");
+        record_installed_model(&fixture.ws, "picked");
+        record_active(&fixture.ws, DictateRole::Transcribing, "picked");
+        let settings = settings_of(&fixture.ws);
+
+        let pinned = fixture.ws.resolve_active(&settings).await.expect("the key resolves");
+        assert_eq!(role_model(&pinned, DictateRole::Transcribing).spec.file, "keyed-Q4_K_M.gguf");
+
+        let unpinned = DictateSettings { transcribe_model: None, ..settings };
+        let resolved = fixture.ws.resolve_active(&unpinned).await.expect("the pick resolves");
+
+        let transcribing = role_model(&resolved, DictateRole::Transcribing);
+        assert_eq!(
+            transcribing.spec.file, "picked-Q4_K_M.gguf",
+            "unpinning returns the role to the last runtime pick, not the pin"
+        );
+        assert_eq!(
+            transcribing.from,
+            ActiveFrom::Installed { variant: "picked".to_owned() }
+        );
+    }
+
+    /// A key naming a variant the installed set and the feed both lack is
+    /// the one resolution failure: the error names the key and the
+    /// variant, and the preflight renders it as the reason forge stops.
+    #[tokio::test]
+    async fn a_key_naming_a_variant_that_resolves_to_nothing_fails_boot_by_name() {
+        let fixture = fixture_with(Some("ghost"), None);
+        let base = serve(vec![("/catalog", 200, b"[]".to_vec())]);
+        *fixture.ws.test_catalogue_source.lock() = Some(source(&base));
+        let settings = settings_of(&fixture.ws);
+
+        let err = fixture
+            .ws
+            .resolve_active(&settings)
+            .await
+            .expect_err("nothing names the variant");
+
+        assert!(
+            err.contains("[dictate] transcribe_model"),
+            "the error names the key that cannot be answered, got: {err}"
+        );
+        assert!(err.contains("ghost"), "and the variant it names, got: {err}");
+    }
+
+    /// A config-resolved variant the preflight has fetched is recorded as
+    /// installed - the record the page's installed set and the next boot's
+    /// resolution read - and recording it again changes nothing.
+    #[tokio::test]
+    async fn a_key_resolved_variant_is_recorded_as_installed_once() {
+        let fixture = fixture_with(None, None);
+        let resolved = vec![(
+            DictateRole::Transcribing,
+            ActiveModel {
+                role: DictateRole::Transcribing,
+                spec: forge_dictate::spec_for_download(
+                    "granite-Q4_K_M.gguf",
+                    "https://weights.invalid/granite-Q4_K_M.gguf",
+                    6,
+                    ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
+                ),
+                from: ActiveFrom::Config {
+                    key: "transcribe_model".to_owned(),
+                    variant: "granite".to_owned(),
+                },
+                at: None,
+            },
+        )];
+
+        fixture.ws.record_resolved_installs(&resolved);
+        fixture.ws.record_resolved_installs(&resolved);
+
+        let installed = fixture.ws.installed_models();
+        assert_eq!(installed.len(), 1, "one record per variant, however many boots fetch it");
+        assert_eq!(installed[0].variant, "granite");
+        assert_eq!(installed[0].file, "granite-Q4_K_M.gguf");
+        assert_eq!(installed[0].url, "https://weights.invalid/granite-Q4_K_M.gguf");
+        assert_eq!(installed[0].facts.quant.as_deref(), Some("Q4_K_M"));
+    }
+
+    /// A runtime pick was installed before it could be picked, so
+    /// recording never touches it: its record is what the pick resolves
+    /// through in the first place.
+    #[tokio::test]
+    async fn a_runtime_pick_is_not_recorded_again() {
+        let fixture = fixture_with(None, None);
+        record_installed_model(&fixture.ws, "picked");
+        let resolved = vec![(
+            DictateRole::Transcribing,
+            ActiveModel {
+                role: DictateRole::Transcribing,
+                spec: forge_dictate::ModelSpec::cohere_transcribe_q4_k_m(),
+                from: ActiveFrom::Installed { variant: "picked".to_owned() },
+                at: Some("2026-10-06T01:00:00Z".to_owned()),
+            },
+        )];
+
+        fixture.ws.record_resolved_installs(&resolved);
+
+        let installed = fixture.ws.installed_models();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].file, "picked-Q4_K_M.gguf", "the record the pick came from");
     }
 
     /// The next re-read the install pushes, on the catalogue check's own

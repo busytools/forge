@@ -75,15 +75,20 @@ pub struct InUseModel {
     pub role: DictateRole,
     pub file: String,
     pub size: u64,
-    /// The digest the pin declares, or `None` for an installed model whose
+    /// The digest the spec declares, or `None` for an installed model whose
     /// upstream publishes none: nothing may print a digest for one.
     pub sha256: Option<String>,
     /// The preflight snapshot's own state: pending through ready.
     pub state: DictateModelState,
-    /// The facts the pin declares.
+    /// The facts the spec declares.
     pub facts: ModelFacts,
     /// The feed's entry for this file, when it carries one.
     pub catalogue: Option<CatalogueJoin>,
+    /// Where this role's model came from: the config key, the last runtime
+    /// pick, or the compiled pin.
+    pub from: crate::install::ActiveFrom,
+    /// RFC 3339, when a runtime pick chose it.
+    pub at: Option<String>,
 }
 
 /// What the feed says about a file the pin names.
@@ -237,21 +242,22 @@ fn entry_for<'e>(entries: &'e [CatalogueEntry], spec: &ModelSpec) -> Option<&'e 
     entries.iter().find(|entry| entry.download_for(&spec.file).is_some())
 }
 
-/// The IN USE rows: the pin's declaration, the preflight state, and the
-/// feed's entry when there is one.
+/// The IN USE rows: the model's declaration, the preflight state, the
+/// feed's entry when there is one, and where the choice came from.
 pub(crate) fn in_use(
     entries: &[CatalogueEntry],
-    specs: &[(DictateRole, ModelSpec)],
+    active: &[(DictateRole, crate::install::ActiveModel)],
     states: &DictateSnapshot,
 ) -> Vec<InUseModel> {
-    specs
+    active
         .iter()
-        .map(|(role, spec)| {
+        .map(|(role, model)| {
+            let spec = &model.spec;
             let state = states
                 .models
                 .iter()
-                .find(|model| model.file == spec.file)
-                .map_or(DictateModelState::Pending, |model| model.state.clone());
+                .find(|row| row.file == spec.file)
+                .map_or(DictateModelState::Pending, |row| row.state.clone());
             InUseModel {
                 role: *role,
                 file: spec.file.clone(),
@@ -260,6 +266,8 @@ pub(crate) fn in_use(
                 state,
                 facts: spec.facts.clone(),
                 catalogue: join_for(entries, spec),
+                from: model.from.clone(),
+                at: model.at.clone(),
             }
         })
         .collect()
@@ -375,7 +383,9 @@ impl crate::Workspace {
     /// Everything the models page draws.
     pub fn dictate_models(&self) -> DictateModelsSnapshot {
         let settings = &self.config.dictate;
-        let specs = settings.model_specs();
+        let active = self.active_models();
+        let specs: Vec<(DictateRole, ModelSpec)> =
+            active.iter().map(|(role, model)| (*role, model.spec.clone())).collect();
         let preflight = self.dictate.snapshot.lock().clone();
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
@@ -384,7 +394,7 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            in_use: if settings.enabled { in_use(entries, &specs, &preflight) } else { Vec::new() },
+            in_use: if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() },
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
@@ -473,56 +483,69 @@ impl crate::Workspace {
             }
             state.check = CatalogueCheck::Checking;
         }
-        let source = self.catalogue_source();
         let this = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let fetched = tokio::task::spawn_blocking(move || {
-                forge_dictate::catalogue::fetch_catalogue(&source)
-            })
-            .await;
-            let outcome = fetched.unwrap_or_else(|join| {
-                Err(forge_dictate::Error::Catalogue { message: join.to_string() })
-            });
-
-            match outcome {
-                Ok(catalogue) => {
-                    if let Some(dir) = this.catalogue_dir()
-                        && let Err(error) =
-                            forge_dictate::catalogue::write_catalogue_cache(&dir, &catalogue)
-                    {
-                        tracing::warn!(
-                            event_name = "dictate_catalogue_cache_write_failed",
-                            %error,
-                            "the fetched catalogue was not cached; the next boot fetches it again"
-                        );
-                    }
-                    let mut state = this.dictate_catalogue.lock();
-                    state.check = CatalogueCheck::Fresh {
-                        at: catalogue.fetched_at.clone(),
-                        release: catalogue.release.clone(),
-                        skipped: catalogue.skipped,
-                    };
-                    state.catalogue = Some(catalogue);
-                }
-                // The rows the last fetch left stand, and nothing in use
-                // changed: a failed check costs the freshness line, not
-                // the feed.
-                Err(error) => {
-                    tracing::warn!(
-                        event_name = "dictate_catalogue_check_failed",
-                        %error,
-                        "the catalogue check failed; the last-known feed stands"
-                    );
-                    this.dictate_catalogue.lock().check =
-                        CatalogueCheck::Unreachable { error: error.to_string() };
-                }
-            }
-
+            let _ = this.fetch_catalogue_once().await;
             let models = this.dictate_models();
             let _ =
                 this.update_sender().send(crate::SessionUpdate::DictateModelsChanged { models });
         });
         true
+    }
+
+    /// Fetch the feed once and land it: the freshness line, the rows and
+    /// the cache. Answers the catalogue, or the error the fetch failed
+    /// with; the last-known feed stands either way.
+    ///
+    /// Shared by the background check and the active-model resolution,
+    /// which needs the feed's entry for a config key's variant.
+    pub(crate) async fn fetch_catalogue_once(
+        &self,
+    ) -> Result<forge_dictate::catalogue::Catalogue, forge_dictate::Error> {
+        let source = self.catalogue_source();
+        let fetched = tokio::task::spawn_blocking(move || {
+            forge_dictate::catalogue::fetch_catalogue(&source)
+        })
+        .await;
+        let outcome = fetched.unwrap_or_else(|join| {
+            Err(forge_dictate::Error::Catalogue { message: join.to_string() })
+        });
+
+        match outcome {
+            Ok(catalogue) => {
+                if let Some(dir) = self.catalogue_dir()
+                    && let Err(error) =
+                        forge_dictate::catalogue::write_catalogue_cache(&dir, &catalogue)
+                {
+                    tracing::warn!(
+                        event_name = "dictate_catalogue_cache_write_failed",
+                        %error,
+                        "the fetched catalogue was not cached; the next boot fetches it again"
+                    );
+                }
+                let mut state = self.dictate_catalogue.lock();
+                state.check = CatalogueCheck::Fresh {
+                    at: catalogue.fetched_at.clone(),
+                    release: catalogue.release.clone(),
+                    skipped: catalogue.skipped,
+                };
+                state.catalogue = Some(catalogue.clone());
+                Ok(catalogue)
+            }
+            // The rows the last fetch left stand, and nothing in use
+            // changed: a failed check costs the freshness line, not
+            // the feed.
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_catalogue_check_failed",
+                    %error,
+                    "the catalogue check failed; the last-known feed stands"
+                );
+                self.dictate_catalogue.lock().check =
+                    CatalogueCheck::Unreachable { error: error.to_string() };
+                Err(error)
+            }
+        }
     }
 
     /// Where the feed is fetched from. Test builds can point this at a
@@ -618,6 +641,20 @@ pub(crate) mod tests_catalogue_view {
         spec.file = "in-use-Q4_K_M.gguf".to_owned();
         spec.size = 100;
         spec
+    }
+
+    /// One role's compiled pin, as the active list spells it: what a role
+    /// with no config key and no runtime pick runs.
+    fn active_pin(
+        role: DictateRole,
+        spec: forge_dictate::ModelSpec,
+    ) -> (DictateRole, crate::install::ActiveModel) {
+        (role, crate::install::ActiveModel {
+            role,
+            spec,
+            from: crate::install::ActiveFrom::Pin,
+            at: None,
+        })
     }
 
     /// Every fact the candidate list draws comes off the row itself.
@@ -847,7 +884,11 @@ pub(crate) mod tests_catalogue_view {
             failure: None,
         };
 
-        let rows = in_use(&entries, &[(DictateRole::Transcribing, in_use_spec())], &states);
+        let rows = in_use(
+            &entries,
+            &[active_pin(DictateRole::Transcribing, in_use_spec())],
+            &states,
+        );
 
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -870,7 +911,7 @@ pub(crate) mod tests_catalogue_view {
     fn a_model_in_no_catalogue_entry_still_crosses_whole() {
         let rows = in_use(
             &[],
-            &[(DictateRole::Normalization, forge_dictate::ModelSpec::s1_mini_f16())],
+            &[active_pin(DictateRole::Normalization, forge_dictate::ModelSpec::s1_mini_f16())],
             &DictateSnapshot::default(),
         );
 

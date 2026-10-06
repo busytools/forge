@@ -2478,21 +2478,48 @@ impl Workspace {
     /// Fetch, verify and load the dictation models. One task per forge
     /// run, started beside the account loaders; a no-op when dictation
     /// is switched off.
+    ///
+    /// The active models are resolved first - the config key, the runtime
+    /// pick, or the compiled pin, per role - and the resolution's failure
+    /// is the same stop a failed fetch is, naming the config key that
+    /// could not be answered.
     pub fn start_dictate_preflight(self: &Arc<Self>) {
         let settings = self.config.dictate.clone();
         if !settings.enabled {
             return;
         }
         let state = Arc::clone(&self.dictate);
+        let this = Arc::clone(self);
         let updates = self.update_sender();
         let span = tracing::info_span!("dictate_preflight");
         tokio::spawn(
             async move {
-                crate::dictate::run_dictate_preflight(settings, state.clone()).await;
+                let resolved = match this.resolve_active(&settings).await {
+                    Ok(resolved) => resolved,
+                    Err(message) => {
+                        state.fail(crate::dictate::DictateFailure::Other { message }, None);
+                        let models = this.dictate_models();
+                        let _ = updates
+                            .send(SessionUpdate::DictateModelsChanged { models });
+                        return;
+                    }
+                };
+                state.set_active(&resolved);
+                // The page's rows move with the resolution: a role the
+                // config or a runtime pick names is not the pin it read a
+                // moment ago.
+                let models = this.dictate_models();
+                let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
+
+                let cfg = crate::dictate::preflight_config(&settings, &resolved);
+                crate::dictate::run_dictate_preflight(cfg, Arc::clone(&state)).await;
                 // `run_dictate_preflight` parks the engine in the state
                 // only on success, and every failure path ends the run,
                 // so a held engine is the whole availability signal.
                 if state.engine.lock().is_some() {
+                    // A variant the config resolved from the feed is on
+                    // disk now: record it so the page and the bench see it.
+                    this.record_resolved_installs(&resolved);
                     let _ = updates.send(SessionUpdate::DictateAvailability);
                 }
             }

@@ -9,7 +9,7 @@ use crate::normalize::NormalizeOptions;
 ///
 /// The size and digest are what let [`crate::prepare`] reject a
 /// truncated or corrupt file before a runtime ever opens it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
     /// File name under the models directory.
     pub file: String,
