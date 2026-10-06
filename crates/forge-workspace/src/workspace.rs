@@ -2504,8 +2504,7 @@ impl Workspace {
                     Err(message) => {
                         state.fail(crate::dictate::DictateFailure::Other { message }, None);
                         let models = this.dictate_models();
-                        let _ = updates
-                            .send(SessionUpdate::DictateModelsChanged { models });
+                        let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
                         return;
                     }
                 };

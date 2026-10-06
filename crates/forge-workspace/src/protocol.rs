@@ -858,11 +858,9 @@ impl std::fmt::Debug for Command {
             Self::DictateInstall { variant } => {
                 f.debug_struct("DictateInstall").field("variant", variant).finish()
             }
-            Self::DictateActivate { role, file } => f
-                .debug_struct("DictateActivate")
-                .field("role", role)
-                .field("file", file)
-                .finish(),
+            Self::DictateActivate { role, file } => {
+                f.debug_struct("DictateActivate").field("role", role).field("file", file).finish()
+            }
             Self::DictateDeactivate { role } => {
                 f.debug_struct("DictateDeactivate").field("role", role).finish()
             }

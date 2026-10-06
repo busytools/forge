@@ -11,9 +11,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use forge_dictate::catalogue::{
-    CatalogueEntry, CatalogueSource, Download, doc_links, fetch_doc,
-};
+use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, doc_links, fetch_doc};
 use forge_dictate::{ModelFacts, ModelSpec, Progress};
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +27,15 @@ pub enum InstallState {
     Idle,
     /// `file` is named as soon as the doc says which file this is, so the
     /// page can say what is being fetched rather than a blank bar.
-    Downloading { file: String, got: u64, total: u64 },
-    Failed { file: String, reason: String },
+    Downloading {
+        file: String,
+        got: u64,
+        total: u64,
+    },
+    Failed {
+        file: String,
+        reason: String,
+    },
 }
 
 /// Where an activation is, as the page draws it.
@@ -217,10 +222,8 @@ impl Workspace {
         // ASR slot and no normalizer: `prepare` fetches what the config
         // names, and this config names one file.
         let Some(dir) = self.config.dictate.models_dir() else {
-            return self.fail_install(
-                download.filename,
-                "no models directory is configured".to_owned(),
-            );
+            return self
+                .fail_install(download.filename, "no models directory is configured".to_owned());
         };
         let mut cfg = self.config.dictate.to_config();
         cfg.models_dir = Some(dir);
@@ -639,12 +642,15 @@ impl Workspace {
             .into_iter()
             .map(|(r, model)| {
                 if r == role {
-                    (role, ActiveModel {
+                    (
                         role,
-                        spec: spec.clone(),
-                        from: from.clone(),
-                        at: Some(at.clone()),
-                    })
+                        ActiveModel {
+                            role,
+                            spec: spec.clone(),
+                            from: from.clone(),
+                            at: Some(at.clone()),
+                        },
+                    )
                 } else {
                     (r, model)
                 }
@@ -835,10 +841,7 @@ mod tests_install {
         assert_eq!(transcribing.spec.file, "keyed-Q4_K_M.gguf", "the key's variant, not the pick");
         assert_eq!(
             transcribing.from,
-            ActiveFrom::Config {
-                key: "transcribe_model".to_owned(),
-                variant: "keyed".to_owned(),
-            },
+            ActiveFrom::Config { key: "transcribe_model".to_owned(), variant: "keyed".to_owned() },
             "and the page can name the key that holds the role"
         );
     }
@@ -857,10 +860,7 @@ mod tests_install {
         let transcribing = role_model(&resolved, DictateRole::Transcribing);
         assert_eq!(transcribing.spec.file, "picked-Q4_K_M.gguf");
         assert_eq!(transcribing.spec.facts.quant.as_deref(), Some("Q4_K_M"));
-        assert_eq!(
-            transcribing.from,
-            ActiveFrom::Installed { variant: "picked".to_owned() }
-        );
+        assert_eq!(transcribing.from, ActiveFrom::Installed { variant: "picked".to_owned() });
         assert_eq!(transcribing.at.as_deref(), Some("2026-10-06T01:00:00Z"));
     }
 
@@ -900,10 +900,7 @@ mod tests_install {
             transcribing.spec.file, "picked-Q4_K_M.gguf",
             "unpinning returns the role to the last runtime pick, not the pin"
         );
-        assert_eq!(
-            transcribing.from,
-            ActiveFrom::Installed { variant: "picked".to_owned() }
-        );
+        assert_eq!(transcribing.from, ActiveFrom::Installed { variant: "picked".to_owned() });
     }
 
     /// A key naming a variant the installed set and the feed both lack is
@@ -916,11 +913,8 @@ mod tests_install {
         *fixture.ws.test_catalogue_source.lock() = Some(source(&base));
         let settings = settings_of(&fixture.ws);
 
-        let err = fixture
-            .ws
-            .resolve_active(&settings)
-            .await
-            .expect_err("nothing names the variant");
+        let err =
+            fixture.ws.resolve_active(&settings).await.expect_err("nothing names the variant");
 
         assert!(
             err.contains("[dictate] transcribe_model"),
@@ -1012,8 +1006,15 @@ mod tests_install {
     #[tokio::test]
     async fn an_install_lands_the_file_and_records_it() {
         let Fixture { ws, mut updates, .. } = fixture();
-        ws.dictate_catalogue.lock().catalogue =
-            Some(catalogue_of(vec![entry_under("candidate", r#"["en"]"#, 300.0, 4.0, 6, "mit", "MIT")]));
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry_under(
+            "candidate",
+            r#"["en"]"#,
+            300.0,
+            4.0,
+            6,
+            "mit",
+            "MIT",
+        )]));
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![
@@ -1047,8 +1048,15 @@ mod tests_install {
     #[tokio::test]
     async fn an_install_whose_bytes_disagree_with_the_entry_lands_failed_and_records_nothing() {
         let Fixture { ws, mut updates, .. } = fixture();
-        ws.dictate_catalogue.lock().catalogue =
-            Some(catalogue_of(vec![entry_under("candidate", r#"["en"]"#, 300.0, 4.0, 6, "mit", "MIT")]));
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry_under(
+            "candidate",
+            r#"["en"]"#,
+            300.0,
+            4.0,
+            6,
+            "mit",
+            "MIT",
+        )]));
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![
@@ -1080,8 +1088,15 @@ mod tests_install {
     #[tokio::test]
     async fn an_install_whose_doc_names_no_download_lands_failed() {
         let Fixture { ws, mut updates, .. } = fixture();
-        ws.dictate_catalogue.lock().catalogue =
-            Some(catalogue_of(vec![entry_under("candidate", r#"["en"]"#, 300.0, 4.0, 6, "mit", "MIT")]));
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry_under(
+            "candidate",
+            r#"["en"]"#,
+            300.0,
+            4.0,
+            6,
+            "mit",
+            "MIT",
+        )]));
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|_| {
             vec![(String::from("/docs/candidate.md"), 200, b"# candidate\n\nprose only\n".to_vec())]
@@ -1139,8 +1154,15 @@ mod tests_install {
     #[tokio::test]
     async fn reinstalling_the_same_file_replaces_its_record() {
         let Fixture { ws, mut updates, .. } = fixture();
-        ws.dictate_catalogue.lock().catalogue =
-            Some(catalogue_of(vec![entry_under("candidate", r#"["en"]"#, 300.0, 4.0, 6, "mit", "MIT")]));
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry_under(
+            "candidate",
+            r#"["en"]"#,
+            300.0,
+            4.0,
+            6,
+            "mit",
+            "MIT",
+        )]));
         let file = "candidate-Q4_K_M.gguf";
         let base = serve_with(|base| {
             vec![

@@ -393,12 +393,15 @@ impl DictateSettings {
         self.model_specs()
             .into_iter()
             .map(|(role, spec)| {
-                (role, crate::install::ActiveModel {
+                (
                     role,
-                    spec,
-                    from: crate::install::ActiveFrom::Pin,
-                    at: None,
-                })
+                    crate::install::ActiveModel {
+                        role,
+                        spec,
+                        from: crate::install::ActiveFrom::Pin,
+                        at: None,
+                    },
+                )
             })
             .collect()
     }

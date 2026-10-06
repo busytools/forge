@@ -396,7 +396,11 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            in_use: if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() },
+            in_use: if settings.enabled {
+                in_use(entries, &active, &preflight)
+            } else {
+                Vec::new()
+            },
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
@@ -506,10 +510,9 @@ impl crate::Workspace {
         &self,
     ) -> Result<forge_dictate::catalogue::Catalogue, forge_dictate::Error> {
         let source = self.catalogue_source();
-        let fetched = tokio::task::spawn_blocking(move || {
-            forge_dictate::catalogue::fetch_catalogue(&source)
-        })
-        .await;
+        let fetched =
+            tokio::task::spawn_blocking(move || forge_dictate::catalogue::fetch_catalogue(&source))
+                .await;
         let outcome = fetched.unwrap_or_else(|join| {
             Err(forge_dictate::Error::Catalogue { message: join.to_string() })
         });
@@ -652,12 +655,15 @@ pub(crate) mod tests_catalogue_view {
         role: DictateRole,
         spec: forge_dictate::ModelSpec,
     ) -> (DictateRole, crate::install::ActiveModel) {
-        (role, crate::install::ActiveModel {
+        (
             role,
-            spec,
-            from: crate::install::ActiveFrom::Pin,
-            at: None,
-        })
+            crate::install::ActiveModel {
+                role,
+                spec,
+                from: crate::install::ActiveFrom::Pin,
+                at: None,
+            },
+        )
     }
 
     /// Every fact the candidate list draws comes off the row itself.
@@ -887,11 +893,8 @@ pub(crate) mod tests_catalogue_view {
             failure: None,
         };
 
-        let rows = in_use(
-            &entries,
-            &[active_pin(DictateRole::Transcribing, in_use_spec())],
-            &states,
-        );
+        let rows =
+            in_use(&entries, &[active_pin(DictateRole::Transcribing, in_use_spec())], &states);
 
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -1014,7 +1017,10 @@ pub(crate) mod tests_catalogue_view {
     /// connection. Anything unrouted answers 404.
     pub(crate) fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
         serve_with(|_| {
-            routes.into_iter().map(|(route, status, body)| (route.to_owned(), status, body)).collect()
+            routes
+                .into_iter()
+                .map(|(route, status, body)| (route.to_owned(), status, body))
+                .collect()
         })
     }
 
