@@ -400,7 +400,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     "index": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 9007199254740991_u64,
+                        "maximum": 9_007_199_254_740_991_u64,
                         "description": "1-based index of the request, as printed by browser_network_requests."
                     },
                     "part": {
