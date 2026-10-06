@@ -1,14 +1,15 @@
 //! What a view has learned from the stream, which its first render and every
 //! later one both read.
 //!
-//! Three of the facts here are announced on the wire once and retained by
-//! nobody: whether a completion has been shown, what a take is doing, and
-//! which seats a view is showing. A view that attaches to an already-running
-//! session cannot reconstruct them, so they are folded here rather than in
-//! the view.
+//! Four of the facts here are announced on the wire once and retained by
+//! nobody: whether a completion has been shown, what a take is doing, which
+//! seats a view is showing, and whether a seat's failed turn has been shown
+//! since it failed. A view that attaches to an already-running session
+//! cannot reconstruct them, so they are folded here rather than in the view.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
+use std::time::SystemTime;
 
 use forge_primitives::Message;
 use forge_primitives::SessionSlot;
@@ -28,6 +29,10 @@ pub struct Live {
     /// The seats a page is open on, by how many connections are showing
     /// them: a turn finishing on one of those is a turn the reader watched.
     attached: HashMap<SessionSlot, usize>,
+    /// When this view last showed each seat. A failure newer than the
+    /// stamp is one the reader has not seen, which is what the rail's
+    /// failure mark reads (#1612).
+    seen_failed: HashMap<SessionSlot, SystemTime>,
     composer: Composer,
 }
 
@@ -38,6 +43,27 @@ pub struct Live {
 pub struct LiveState {
     pub unseen: Unseen,
     pub composer: Composer,
+    /// The seats this view is showing, and when it last showed each seat:
+    /// together these answer whether a failure on it is the reader's to
+    /// see, which the home read filters rows with.
+    attached: HashMap<SessionSlot, usize>,
+    seen_failed: HashMap<SessionSlot, SystemTime>,
+}
+
+impl LiveState {
+    /// The failure instant the rail should draw for `slot`, or `None`
+    /// when this view has no failure to mark: the seat is being shown
+    /// (the reader is watching it fail), or it has been shown since the
+    /// failure landed.
+    pub fn failed_mark(&self, slot: &SessionSlot, at: SystemTime) -> Option<SystemTime> {
+        if self.attached.contains_key(slot) {
+            return None;
+        }
+        match self.seen_failed.get(slot) {
+            Some(shown) if shown >= &at => None,
+            _ => Some(at),
+        }
+    }
 }
 
 impl Live {
@@ -51,12 +77,18 @@ impl Live {
     }
 
     pub fn snapshot(&self) -> LiveState {
-        LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
+        LiveState {
+            unseen: self.unseen.clone(),
+            composer: self.composer.clone(),
+            attached: self.attached.clone(),
+            seen_failed: self.seen_failed.clone(),
+        }
     }
 
     /// This view has shown `slot`, so nothing about it is unseen.
     pub fn seen(&mut self, slot: &SessionSlot) {
         self.unseen.clear(slot);
+        self.seen_failed.insert(slot.clone(), SystemTime::now());
     }
 
     /// A page is open on `slot`, which is this view showing it, so a mark
@@ -65,6 +97,7 @@ impl Live {
     pub fn attach(&mut self, slot: &SessionSlot) {
         *self.attached.entry(slot.clone()).or_default() += 1;
         self.unseen.clear(slot);
+        self.seen_failed.insert(slot.clone(), SystemTime::now());
     }
 
     /// One page on `slot` has gone. The seat is let go with the last of them.
@@ -75,6 +108,9 @@ impl Live {
         *count -= 1;
         if *count == 0 {
             self.attached.remove(slot);
+            // The seat is no longer shown, and it was shown up to now: a
+            // failure that landed while the page was open is not news.
+            self.seen_failed.insert(slot.clone(), SystemTime::now());
         }
     }
 
@@ -254,6 +290,62 @@ mod tests {
 
     fn appended(key: &SessionSlot, msg: Message) -> SessionUpdate {
         SessionUpdate::ChatAppended { key: key.clone(), msg, origin: None }
+    }
+
+    /// The failure mark is the view's own: a failure on a seat this page
+    /// has not shown marks; showing the seat clears it; a failure after
+    /// that marks again; and one that lands while the page is showing the
+    /// seat marks nothing, because the reader is watching it happen.
+    #[test]
+    fn a_failure_marks_until_the_view_shows_the_seat() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        let first = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            Some(first),
+            "a failure nobody has shown marks for this view",
+        );
+
+        live.attach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            None,
+            "showing the seat clears the mark",
+        );
+        live.detach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            None,
+            "and it stays clear once the page leaves - the reader saw it",
+        );
+
+        // The two stamps are taken from the clock, so each instant below is
+        // given a gap to sit strictly after the one before it: on a coarse
+        // clock, `now()` twice in a row reads equal.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = std::time::SystemTime::now();
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, second),
+            Some(second),
+            "a failure after the showing is news again",
+        );
+
+        live.attach(&slot);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let third = std::time::SystemTime::now();
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, third),
+            None,
+            "a failure landing while the page is open marks nothing",
+        );
+        live.detach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, third),
+            None,
+            "and leaving does not resurrect it",
+        );
     }
 
     fn session_state(state: &str) -> Message {
