@@ -462,6 +462,11 @@
      prose tone rather than the row's own muting, so a mark reads as a mark. */
   details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
   details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+  /* A thought's expansion is reasoning, not the turn's own words: it reads as a
+     quiet block off the column - a hairline and the muted tone - instead of
+     more prose. Both folds draw through this one row. */
+  details.leaf.think > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+  details.leaf.think > .body .prose { color: var(--muted); }
   details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
@@ -1368,7 +1373,7 @@ Set `service_key` per environment in the bot's own config.</pre>
              drawn from the live frames, so it goes at the next page read,
              which strips thinking blocks. -->
         <div class="leaves">
-          <details class="leaf">
+          <details class="leaf think">
             <summary><svg class="ic gl"><use href="#i-message-circle-more"/></svg>
               <span class="tn">one group Both of them landed while I was in the tree, so the reader gets one <strong>group</strong> instead of the wall. The alternative is a run of <code>read</code>/<code>search</code> rows with no shape to it.</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>

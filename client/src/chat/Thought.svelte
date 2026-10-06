@@ -19,7 +19,7 @@
   let { text }: { text: string } = $props();
 </script>
 
-<details class="leaf">
+<details class="leaf think">
   <summary>
     <Icon name="message-circle-more" class="gl" />
     <!--
