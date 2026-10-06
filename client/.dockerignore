@@ -1,0 +1,9 @@
+# The build context is `client/` and the image wants `dist/` and
+# `docker/`; everything else here is a local artifact that would otherwise
+# ride into the context (the shell's target directory alone is gigabytes).
+node_modules
+src-tauri/target
+src-tauri/gen/android/app/build
+src-tauri/gen/android/build
+.stryker-tmp
+reports

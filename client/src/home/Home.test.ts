@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { homeWire } from '../dev/fixture.data';
-import { PROTOCOL_VERSION } from '../protocol';
+import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import { updateState } from '../update/state';
 import type { Gate, HomeWire } from '../wire/home';
 import Home from './Home.svelte';
@@ -193,5 +193,29 @@ describe("the client's own update", () => {
     expect(body, 'the reason the install failed was dropped').toContain(
       'title="the signature did not match"',
     );
+  });
+
+  /**
+   * A browser tab installs nothing, so this line is the two facts a reader
+   * asked for - which build is running, and what is published - and it is
+   * text where the shell's same-shaped line is a control.
+   */
+  it('names the web build and the release published beside it', () => {
+    updateState.set({ stage: 'web', latest: '9.9.9' });
+
+    const body = draw();
+    expect(body).toContain(`client v${CLIENT_VERSION}`);
+    expect(body).toContain('latest v9.9.9');
+    expect(body, 'a browser build drew a control it cannot use').not.toMatch(
+      /<button[^>]*>client /,
+    );
+  });
+
+  it('names the web build alone when nothing newer is published', () => {
+    updateState.set({ stage: 'web', latest: null });
+
+    const body = draw();
+    expect(body).toContain(`client v${CLIENT_VERSION}`);
+    expect(body).not.toContain('latest v');
   });
 });

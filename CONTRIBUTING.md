@@ -27,9 +27,13 @@ per feature set (with and without `--all-features`),
 `cargo doc --workspace --no-deps --all-features`, all with
 `RUSTFLAGS=-D warnings` on the clippy, test, doctest and doc steps. That
 flag covers the build each step drives, and rustdoc compiles a doctest on
-its own, so it does not deny warnings inside one. Get it green before you
-open a pull request. It is CI's set minus two jobs:
-CI also runs `cargo check --release` and `just check-feature-configs`.
+its own, so it does not deny warnings inside one. This is CI's set minus
+the jobs a checkout cannot carry - CI runs `cargo check --release`, the
+feature-configs builds and the image workflow, which builds and exercises
+the web image on the commits that touch it - and the piecewise client gates
+are `just client-tauri-check`, `just client-android-check` and `just
+web-image-check`. Get it green before you
+open a pull request.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.
 

@@ -1,0 +1,58 @@
+name: Image
+
+# The web client's image: built and exercised on a change that touches it,
+# published to ghcr on a release tag. A tag push does not run ci.yml (that
+# workflow is keyed to main), so this one carries the release trigger.
+on:
+  pull_request:
+    paths:
+      - 'client/docker/**'
+      - '.github/workflows/image.yml'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: build, exercise and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      # The context is `client/` so `dist/` is what lands in the image; the
+      # Dockerfile names itself.
+      - run: docker build -f docker/Dockerfile -t forge-web .
+      # The image as it ships: the app answers, its routes answer, and the
+      # assets say no-cache with an ETag - a swapped build must not hide
+      # behind a cache.
+      - run: ./docker/test_serving.sh forge-web
+      # The poller, outside the image: the swap, the same-version skip and
+      # the sha256 refusal, against a local manifest.
+      - run: ./docker/test_poller.sh
+      - name: publish to ghcr
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          image="ghcr.io/busytools/forge-web"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # The tag is the release's own name, `v<version>`, which is what
+          # the deploy contract names - stripping the `v` would publish a
+          # tag nothing pulls.
+          docker tag forge-web "$image:$GITHUB_REF_NAME"
+          docker tag forge-web "$image:latest"
+          docker push "$image:$GITHUB_REF_NAME"
+          docker push "$image:latest"
+          echo "[OK] published $image:$GITHUB_REF_NAME and $image:latest"

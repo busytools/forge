@@ -112,6 +112,9 @@ just test             # forge-sdk only
 just conformance      # replay every committed wire baseline
 just doctest          # compile the workspace's doctests
 just doc              # rustdoc with warnings denied
+just client-tauri-check    # the client shell, in the shipping configuration
+just client-android-check  # the Kotlin half and its unit tests
+just web-image-check       # the web image's poller and serving tests
 ```
 
 `just check-release` compiles the workspace in release mode. It is
