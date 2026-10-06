@@ -288,14 +288,18 @@
       <section class="block">
         <h2 class="hd4">Find a model <span class="why">search the catalogue the runtime publishes</span></h2>
 
-        <input class="find" type="search" aria-label="Search the model catalogue" placeholder="search 73 variants - parakeet, granite, whisper, moonshine...">
+        <input class="find" type="search" aria-label="Search the model catalogue" placeholder="search 74 variants - parakeet, granite, whisper, moonshine...">
         <p class="note">type a name, or pick a family below &middot; the feed's whole catalogue is already here, so this reads nothing off the network</p>
+        <!-- An excerpt: the live page draws all of them and they wrap. Each
+             count is what the click will show, so moonshine's 17 includes the
+             three moonshine-streaming rows its name also matches. -->
         <div class="chips">
           <button class="chip" type="button">parakeet<b>16</b></button>
-          <button class="chip" type="button">moonshine<b>14</b></button>
+          <button class="chip" type="button">moonshine<b>17</b></button>
           <button class="chip" type="button">whisper<b>13</b></button>
-          <button class="chip" type="button">canary<b>4</b></button>
+          <button class="chip" type="button">canary<b>5</b></button>
           <button class="chip" type="button">gigaam<b>4</b></button>
+          <span class="chip" aria-hidden="true">&hellip;</span>
         </div>
         <p class="note">fastest on the feed:
           <button class="link" type="button">medasr 881.5&times;</button> &middot;
@@ -401,7 +405,7 @@
   <div class="tile">
     <div class="tcap">a search that matches a family, and one that matches nothing</div>
     <div class="models">
-      <p class="note" style="margin-top:0">2 of 73 entries &middot; each opens its catalogue entry</p>
+      <p class="note" style="margin-top:0">2 of 74 entries &middot; each opens its catalogue entry</p>
       <ul class="list" aria-label="Catalogue results">
         <li>
           <a class="cand" href="#">

@@ -56,10 +56,10 @@ that is not built, and the line says so rather than leaving a reader to look
 for a control that is not there.
 
 **The search is the client's, and it filters as the box is typed.** The
-whole feed arrives with the read, so there is no button to press and nothing
-is asked of the server. The rows are the feed's own figures; the note says
-they are measured on an m4 max, not on this machine. **Each row is a link to
-its catalogue entry** - the feed's own document, in the same tree the server
+whole feed arrives with the read, so there is no submit step and nothing is
+asked of the server. The rows are the feed's own figures; the note says they
+are measured on an m4 max, not on this machine. **Each row is a link to its
+catalogue entry** - the feed's own document, in the same tree the server
 fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
@@ -68,10 +68,16 @@ uncovered by the pointer.
 Before a name is typed it draws the feed's own families as chips - each one
 naming a class the feed holds, with its entry count, most-populated first -
 and its three fastest measured rows under them. Both set the query, so a
-pick is the same mechanism as typing rather than a second one, and every
-family name is one `search` matches its own rows by. The feed names no
-dates, so "latest" is not a thing this page can say; its own measurement is
-the only ranking it carries.
+pick is the same mechanism as typing rather than a second one. **A count is
+`search`'s own answer for that name**, so the number on a chip is always the
+number the click draws; and the feed carries no date for a variant, and
+nothing this read keeps carries one either, so "latest" is not a thing this
+page can say - its own measurement is the only ranking it has.
+
+**A catalogue that has not landed is its own state.** With dictation on and
+no rows - a first enable offline, or the boot fetch still out - the section
+draws a line saying so rather than a box whose every query would answer "no
+entry matches" and chips pointing at nothing.
 
 ## The states the page can be in
 
