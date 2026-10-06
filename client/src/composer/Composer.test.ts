@@ -3120,6 +3120,59 @@ describe('the dock', () => {
   });
 
   /**
+   * **A take can end while the reader is on another seat.** The clear has to
+   * run for that take too: a flag left open swallows the next take's capture,
+   * and that take lands by the one before it.
+   */
+  it('captures the next take after one ended while another seat was shown', () => {
+    const harness = open();
+
+    // Take one begins with no prompt, so its words belong to the draft.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    // The reader moves to another seat, and the take ends while they are away.
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // They come back with a question up and take two ALREADY live under it, in
+    // one frame - nothing this seat's box sees between the two takes.
+    harness.page.slot = SLOT;
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the take after the unwatched one landed where it began',
+    ).toBe('second words');
+  });
+
+  /**
    * **A prompt that resolves before the words land is not the destination.**
    * The capture says where the take began; the landing also checks what is
    * still on screen - a dock that has gone leaves its words to the draft.

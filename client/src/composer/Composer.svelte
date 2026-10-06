@@ -344,24 +344,36 @@
     if (field !== null) field.focus();
   });
 
+  /** The box the live take's capture ran on, so the clear reaches it from any seat. */
+  let tookBox: Box | null = null;
+
   // Holding the seat's take is having seen it, and the flag never clears -
   // and only the seat's own record arms it: another seat's take, still in the
   // record in hand between two seats, is not this box having watched anything.
   $effect(() => {
-    if (!owns) return;
     if (composer.take === null) {
-      // The take is over; the next one captures its own destination.
-      box.takeOpen = false;
+      // The take is over; its OWN box is cleared, even when another seat is
+      // shown - the box in hand belongs to whoever is on screen, and a flag
+      // left open on the take's own would swallow the next take's capture.
+      const captured = tookBox;
+      if (captured !== null) {
+        captured.takeOpen = false;
+        tookBox = null;
+      }
       return;
     }
+    if (!owns) return;
     box.sawTake = true;
     if (!box.takeOpen) {
       // **Where the take began is where its words go, captured per TAKE.** A
       // prompt arriving mid-take does not take words spoken into the reader's
       // draft, and one already holding the slot owns them even when the caret
       // was never in its row (a keyboard dictation). One seat can take several
-      // in a row, so the flag closes with each take rather than once per box.
+      // in a row, so the flag closes with each take rather than once per box -
+      // and the box it closed on is remembered, because the take can outlive
+      // the visit to its seat.
       box.takeOpen = true;
+      tookBox = box;
       box.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     }
   });
