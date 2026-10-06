@@ -89,8 +89,8 @@
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
   let placedFor: string | null = null;
-  /** When the reader's own input was last seen; 0 until a hand touches the column. */
-  let readerAt = 0;
+  /** When the reader's own input was last seen; null until a hand touches the column. */
+  let readerAt: number | null = null;
   /**
    * The row the reader's own eye is on, held while they are away from the foot.
    *
@@ -255,7 +255,8 @@
 
   /** Whether the events arriving are the reader's own, made moments ago. */
   function readerMoved(): boolean {
-    return performance.now() - readerAt < READER_WINDOW_MS;
+    const seen = readerAt;
+    return seen !== null && performance.now() - seen < READER_WINDOW_MS;
   }
 
   /**
