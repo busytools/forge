@@ -52,6 +52,7 @@ use crate::mcp::workers::facade::WorkerFacade;
 pub mod agents;
 pub(crate) mod caller_context;
 pub mod cron;
+pub(crate) mod deleted;
 pub mod gotify;
 pub mod peers;
 pub mod review;
