@@ -54,7 +54,7 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
         work: Arc::new(WorkCache::new()),
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
+        client: forge_primitives::ClientConfig::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -2016,7 +2016,7 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
         work: Arc::new(WorkCache::new()),
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
-        config: forge_primitives::WebConfig::default(),
+        client: forge_primitives::ClientConfig::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

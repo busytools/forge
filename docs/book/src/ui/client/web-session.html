@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; session</title>
 <!-- For the design artifact only: production vendors the woff2 into
-     forge-web/assets and picks it by name from [web] font. -->
+     forge-web/assets and picks it by name from [client] font. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* One theme, the home's tokens, from [web] theme in forge.toml.
+  /* One theme, the home's tokens, from [client] theme in forge.toml.
      Shared with the home, so these lift into the one stylesheet as-is:
      the --tokens, .dot (all nine state marks), .ring (the work mark),
      .kv, .bar (a usage bar).
@@ -235,8 +235,23 @@
   .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
-    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer; }
-  .pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+    background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer;
+    opacity: 0; pointer-events: none; }
+  /* The chip arrives with the pointer, like the chevron: a column of rail rows
+     carries no close marks it does not need. **Instant, not a fade**: crossing
+     rows leaves two fading chips on screen at once, which reads as a fragment
+     appearing and vanishing. **And it takes no pointer at rest** - opacity does
+     not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
+     would otherwise land on a chip nobody can see; the row's hover restores it
+     (the chip cannot restore it itself, `none` means it never hovers), as does
+     focus, and a touch-primary screen keeps it shown. `.banner .close` is
+     deliberately not one of these: it is the way out of a covering rail. */
+  .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
+    pointer-events: auto; }
+  .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
+  @media (hover: none) {
+    .pr .x, .wk .x { opacity: 1; pointer-events: auto; }
+  }
   /* The seat the page is showing, marked on its own row and nowhere else: the
      name takes the accent and the mark is recoloured rather than reshaped. Only
      the two marks drawn in a border take it, and the running ring's ARC is left
@@ -1233,9 +1248,9 @@
           <summary class="wk"><span class="dot off"></span>
             <span class="nm">2 asleep</span><span class="arw">&#9656;</span></summary>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">chat-kinds</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">chat-kinds</span></div>
           <div class="wk"><span class="dot off"></span>
-            <span class="nm">rail-footer</span><button class="x" type="button" title="close">&#10005;</button></div>
+            <span class="nm">rail-footer</span></div>
         </details>
       </div>
       <div class="pj">

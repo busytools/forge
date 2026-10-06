@@ -13,7 +13,7 @@ fragments and are meant to be opened on their own:
 - `web-home.html` - the web view's home page, with every state it can
   render behind the "show every state" toggle.
 - `web-logo-options.html` - the sixteen mark directions the home's
-  `[web] mark` was first drawn from. The paths in
+  `[client] mark` was first drawn from. The paths in
   `crates/forge-web/src/brand.rs` are copied from it verbatim; it is the
   sheet they were checked against.
 - `web-logo-options-2.html` - the sourced directions: marks read off what

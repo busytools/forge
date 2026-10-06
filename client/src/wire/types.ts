@@ -33,7 +33,7 @@ export interface ClientSettings {
   dictate: DictateAxes;
 }
 
-/** Every key unset, which is what a `forge.toml` with no `[web]` block sends. */
+/** Every key unset, which is what a `forge.toml` with no `[client]` block sends. */
 export const DEFAULT_SETTINGS: ClientSettings = {
   mark: null,
   theme: null,
@@ -53,7 +53,7 @@ export function settingsFrom(value: unknown): ClientSettings {
   };
 }
 
-/** The marks `[web] mark` accepts, from `forge_primitives::web::MARK_NAMES`. */
+/** The marks `[client] mark` accepts, from `forge_primitives::client::MARK_NAMES`. */
 export const MARK_NAMES = [
   'panes',
   'klin',
@@ -75,20 +75,20 @@ export type MarkName = (typeof MARK_NAMES)[number];
 /** The mark drawn when no name is set. */
 export const DEFAULT_MARK: MarkName = 'panes';
 
-/** The palettes `[web] theme` accepts, from `forge_primitives::web::THEME_NAMES`. */
+/** The palettes `[client] theme` accepts, from `forge_primitives::client::THEME_NAMES`. */
 export const THEME_NAMES = ['dark'] as const;
 
 export type ThemeName = (typeof THEME_NAMES)[number];
 
 export const DEFAULT_THEME: ThemeName = 'dark';
 
-/** The typeface sets `[web] font` accepts, from `forge_primitives::web::FONT_NAMES`. */
+/** The typeface sets `[client] font` accepts, from `forge_primitives::client::FONT_NAMES`. */
 export const FONT_NAMES = ['system'] as const;
 
 export type FontName = (typeof FONT_NAMES)[number];
 
-/** The port the server binds when `[web] port` is absent. */
-export const DEFAULT_WEB_PORT = 8790;
+/** The port the server binds when `[server] port` is absent. */
+export const DEFAULT_SERVER_PORT = 8790;
 
 /**
  * One of `known`, or `fallback` when the value is one this client is older

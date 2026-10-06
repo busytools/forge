@@ -1,5 +1,5 @@
-//! The palettes and typefaces forge ships, by the names `[web] theme` and
-//! `[web] font` take.
+//! The palettes and typefaces forge ships, by the names `[client] theme` and
+//! `[client] font` take.
 //!
 //! Every surface reads these tokens and nothing else, so a theme is one
 //! place to change and no component branches for it. The stacks are here for
@@ -136,7 +136,7 @@ fn tokens(_theme: Option<&str>) -> &'static [(&'static str, &'static str)] {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::web::{FONT_NAMES, THEME_NAMES};
+    use forge_primitives::client::{FONT_NAMES, THEME_NAMES};
 
     use super::{DEFAULT_THEME, accent, font_variables, root_variables};
 

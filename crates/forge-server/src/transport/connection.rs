@@ -77,7 +77,7 @@ async fn greet(mut socket: WebSocket, state: Arc<TransportState>) {
         version: PROTOCOL_VERSION,
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
-        settings: ClientSettings::new(&state.config, state.surface.dictate_axes()),
+        settings: ClientSettings::new(&state.client, state.surface.dictate_axes()),
     };
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
@@ -1143,7 +1143,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         // A client observing, with two updates queued and nobody reading them.
@@ -1176,7 +1176,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
 
         let mut updates = Some((state.surface.subscribe_client(true), true));
@@ -1474,7 +1474,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1609,7 +1609,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1666,7 +1666,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -1737,7 +1737,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            config: forge_primitives::WebConfig::default(),
+            client: forge_primitives::ClientConfig::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");

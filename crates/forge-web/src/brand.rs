@@ -1,4 +1,4 @@
-//! The marks forge ships, by the name `[web] mark` takes.
+//! The marks forge ships, by the name `[client] mark` takes.
 //!
 //! Every mark is one `<svg viewBox="0 0 24 24">` drawn in `currentColor`,
 //! so switching between the accent and a single colour is a `color` change
@@ -66,7 +66,7 @@ pub fn mark_svg(name: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::web::MARK_NAMES;
+    use forge_primitives::client::MARK_NAMES;
 
     use super::{DEFAULT_MARK, mark_path};
 

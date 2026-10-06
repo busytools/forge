@@ -67,3 +67,7 @@ rail row or a home row carries its link across the row's own height rather
 than the height of its text, so the whole row is the target. No affordance
 lives on hover alone: hover recolours a control rather than uncovering
 one, and the chevron the home row fades in is decoration, not a way in.
+The rail's close chip uncovers on hover, and it is the exception that keeps
+the rule: a touch screen keeps it shown, a keyboard focus reveals it, and
+its rest state takes no pointer - so it is reachable either way, and a tap
+on the row lands on the row.

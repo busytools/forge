@@ -1,7 +1,7 @@
 /* The web view's one stylesheet, which both pages link: the home from
    docs/book/src/ui/client/web-home.html and the session page from
    docs/book/src/ui/client/web-session.html. The palette is not here: the
-   server injects it as the page's own :root from [web] theme, so a theme is
+   server injects it as the page's own :root from [client] theme, so a theme is
    one place to change, and a second copy of a row, a mark or a palette is
    the defect rule 21 names. */
 
@@ -94,7 +94,7 @@ html::-webkit-scrollbar-thumb:active,
 }
 
 :root {
-  /* --ui and --mono are injected from [web] font, not declared here: at
+  /* --ui and --mono are injected from [client] font, not declared here: at
      equal specificity a stack in this block lands after the injected one
      and wins, so the injected stack would silently do nothing. */
   --r: 10px;
@@ -610,8 +610,23 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
   background: none; border: 0; display: flex; align-items: center;
-  border-radius: 5px; padding: 2px 5px; cursor: pointer; }
-.pj:hover .pr .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); }
+  border-radius: 5px; padding: 2px 5px; cursor: pointer;
+  opacity: 0; pointer-events: none; }
+/* The chip arrives with the pointer, like the chevron: a column of rail rows
+   carries no close marks it does not need. **Instant, not a fade**: crossing
+   rows leaves two fading chips on screen at once, which reads as a fragment
+   appearing and vanishing. **And it takes no pointer at rest** - opacity does
+   not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
+   would otherwise land on a chip nobody can see; the row's hover restores it
+   (the chip cannot restore it itself, `none` means it never hovers), as does
+   focus, and a touch-primary screen keeps it shown. `.banner .close` is
+   deliberately not one of these: it is the way out of a covering rail. */
+.pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
+  pointer-events: auto; }
+.pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .pr .x, .wk .x { opacity: 1; pointer-events: auto; }
+}
 /* The seat the page is showing, marked on its own row and nowhere else: the
    name takes the accent and the mark is recoloured rather than reshaped. Only
    the two marks drawn in a border take it, and the running ring's ARC is left
