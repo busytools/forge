@@ -81,22 +81,22 @@ impl Workspace {
 
     /// Remove the cron `id` in `project_name` only when the slot that
     /// owns it matches `label` (`None` = a lead cron, `Some(label)` =
-    /// that worker's), persist, and report whether an entry was removed.
-    /// Backs `cron__delete` so a caller deletes only its own crons.
+    /// that worker's), persist, and return the entry removed (`None` when
+    /// nothing matched). Backs `cron__delete` so a caller deletes only its
+    /// own crons.
     pub(crate) fn remove_cron_owned_by(
         &self,
         project_name: &str,
         id: &forge_primitives::CronId,
         label: Option<&str>,
-    ) -> bool {
+    ) -> Option<forge_primitives::CronEntry> {
         let removed = self.with_crons_mut(|crons| {
-            let before = crons.len();
-            crons.retain(|c| {
-                !(c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label)
+            let pos = crons.iter().position(|c| {
+                c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label
             });
-            crons.len() != before
+            pos.map(|pos| crons.remove(pos))
         });
-        if removed {
+        if removed.is_some() {
             self.announce_cron_schedules_changed(project_name);
         }
         removed
@@ -537,7 +537,7 @@ mod tests {
         );
 
         assert!(
-            ws.remove_cron_owned_by("proj", &CronId::from("c1"), None),
+            ws.remove_cron_owned_by("proj", &CronId::from("c1"), None).is_some(),
             "precondition: the lead deletes its own cron",
         );
         let (_, crons) = next_crons_changed(&mut rx);
@@ -563,12 +563,12 @@ mod tests {
             "precondition: no entry carries the id",
         );
         assert!(
-            !ws.remove_cron_owned_by("proj", &CronId::from("ghost"), None),
+            ws.remove_cron_owned_by("proj", &CronId::from("ghost"), None).is_none(),
             "precondition: no entry carries the id for that owner either",
         );
         ws.seed_test_cron(schedule("c1", "proj", "stand-up", Some("reviewer")));
         assert!(
-            !ws.remove_cron_owned_by("proj", &CronId::from("c1"), None),
+            ws.remove_cron_owned_by("proj", &CronId::from("c1"), None).is_none(),
             "precondition: the entry belongs to the worker, so the lead's delete is refused",
         );
         ws.delete_crons_for_worker(&key, "nobody");

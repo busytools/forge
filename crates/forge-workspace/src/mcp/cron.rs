@@ -265,7 +265,7 @@ impl Tool for Delete {
 
     fn description(&self) -> &'static str {
         "Delete a durable cron you registered, in your project, by id (from cron__list / \
-         cron__create). Any session in the project may call this."
+         cron__create). Returns the removed entry. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -285,7 +285,13 @@ impl Tool for Delete {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.delete_cron(&self.slot, &CronId::from(args.id.as_str())) {
-            Ok(()) => ToolOutput::text(format!("deleted cron {}", args.id)),
+            Ok(entry) => {
+                let envelope = crate::mcp::deleted::removed_record(&cron_to_json(&entry));
+                match serde_json::to_string_pretty(&envelope) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
             Err(CronDeleteError::UnknownCallerProject) => {
                 tool_error("couldn't resolve your project".to_owned())
             }
@@ -451,12 +457,34 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_by_id() {
         let mock = Arc::new(MockCronFacade::new());
-        *mock.delete_result.lock() = Some(Ok(()));
+        *mock.delete_result.lock() = Some(Ok(sample_entry("c1")));
         let tool = Delete { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": "c1" }))).await;
         assert!(!out.is_error);
         assert_eq!(mock.delete_calls.lock()[0].1, CronId::from("c1"));
+    }
+
+    /// A delete echoes the entry it removed, so the caller can name the
+    /// schedule that went; `deleted cron <id>` named neither the schedule
+    /// nor its prompt.
+    #[tokio::test]
+    async fn delete_echoes_the_removed_entry() {
+        let mock = Arc::new(MockCronFacade::new());
+        let mut entry = sample_entry("c1");
+        entry.description = Some("Morning summary".to_owned());
+        *mock.delete_result.lock() = Some(Ok(entry));
+        let tool = Delete { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({ "id": "c1" }))).await;
+        assert!(!out.is_error, "delete succeeds: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+        assert_eq!(json["status"], "deleted");
+        assert_eq!(json["removed"]["id"], "c1", "the entry names the cron that went: {json}");
+        assert_eq!(json["removed"]["schedule"]["recurring"], "0 9 * * *");
+        assert_eq!(json["removed"]["prompt"], "p");
+        assert_eq!(json["removed"]["description"], "Morning summary");
     }
 
     /// A refusal has to say which case it is: an id that exists in the

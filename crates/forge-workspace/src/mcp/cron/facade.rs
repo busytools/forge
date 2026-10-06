@@ -62,11 +62,12 @@ pub(crate) trait CronFacade: Send + Sync {
     /// The crons the caller registered, within its project.
     fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry>;
 
-    /// Delete the caller's own cron by id, within its project. A refusal
-    /// says which case it is: [`CronDeleteError::NoSuchCron`] when the
-    /// project has no such id, [`CronDeleteError::NotOwnedByCaller`] when
-    /// it has one under another session.
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError>;
+    /// Delete the caller's own cron by id, within its project, and return
+    /// the entry as it stood. A refusal says which case it is:
+    /// [`CronDeleteError::NoSuchCron`] when the project has no such id,
+    /// [`CronDeleteError::NotOwnedByCaller`] when it has one under
+    /// another session.
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<CronEntry, CronDeleteError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -125,11 +126,13 @@ impl CronFacade for ProdCronFacade {
             .collect()
     }
 
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<CronEntry, CronDeleteError> {
         let ws = self.workspace.upgrade().ok_or(CronDeleteError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronDeleteError::UnknownCallerProject)?;
-        if ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref()) {
-            return Ok(());
+        if let Some(entry) =
+            ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref())
+        {
+            return Ok(entry);
         }
         // The owner-scoped removal matched nothing, which is either an id
         // the project never had or one another session owns; the caller is
@@ -156,7 +159,7 @@ pub(crate) struct MockCronFacade {
     pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
     pub delete_calls: parking_lot::Mutex<Vec<(SessionSlot, CronId)>>,
-    pub delete_result: parking_lot::Mutex<Option<Result<(), CronDeleteError>>>,
+    pub delete_result: parking_lot::Mutex<Option<Result<CronEntry, CronDeleteError>>>,
 }
 
 #[cfg(test)]
@@ -204,9 +207,21 @@ impl CronFacade for MockCronFacade {
         self.crons.lock().clone()
     }
 
-    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<(), CronDeleteError> {
+    fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<CronEntry, CronDeleteError> {
         self.delete_calls.lock().push((caller.clone(), id.clone()));
-        self.delete_result.lock().clone().unwrap_or(Ok(()))
+        self.delete_result.lock().clone().unwrap_or_else(|| {
+            Ok(CronEntry {
+                id: id.clone(),
+                project_name: "mock".to_owned(),
+                kind: CronKind::Recurring("0 9 * * *".to_owned()),
+                prompt: "p".to_owned(),
+                description: None,
+                created_at: SystemTime::UNIX_EPOCH,
+                last_fire: None,
+                next_fire: SystemTime::UNIX_EPOCH,
+                team_role: None,
+            })
+        })
     }
 }
 
@@ -296,6 +311,29 @@ mod prod_facade_tests {
             "a lead cannot delete a worker's cron",
         );
         facade.delete_cron(&worker, &worker_cron.id).expect("a worker deletes its own cron");
+    }
+
+    /// The delete hands back the entry it removed, so the tool can echo
+    /// the schedule and prompt that went rather than a bare id.
+    #[test]
+    fn delete_returns_the_entry_it_removed() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let (kind, prompt) = daily("morning summary");
+        let cron = facade
+            .create_cron(&lead, kind, prompt, Some("Morning summary".to_owned()))
+            .expect("create");
+
+        let removed = facade.delete_cron(&lead, &cron.id).expect("the lead deletes its own cron");
+
+        assert_eq!(removed.id, cron.id, "the echoed entry is the cron that went");
+        assert_eq!(removed.prompt, "morning summary");
+        assert_eq!(removed.description.as_deref(), Some("Morning summary"));
+        assert!(
+            matches!(&removed.kind, CronKind::Recurring(expr) if expr == "0 9 * * *"),
+            "carrying the schedule it was registered under: {:?}",
+            removed.kind,
+        );
+        assert!(facade.list_crons(&lead).is_empty(), "and it is gone from the store");
     }
 
     /// The other half of the refusal: an id the project never had is a
