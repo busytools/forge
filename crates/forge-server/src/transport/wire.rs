@@ -1723,6 +1723,7 @@ mod tests {
                     task_type: "local_bash".to_owned(),
                     description: "gh run watch".to_owned(),
                     command: Some("gh run watch 123 --exit-status".to_owned()),
+                    tool_use_id: Some("tu-fixture".to_owned()),
                 }],
                 cards: vec![forge_primitives::runtime::SubagentCard {
                     name: "map the calls".to_owned(),
@@ -1936,6 +1937,7 @@ mod tests {
                     task_type: "local_bash".to_owned(),
                     description: "gh run watch".to_owned(),
                     command: Some("gh run watch 123 --exit-status".to_owned()),
+                    tool_use_id: Some("tu-1".to_owned()),
                 }],
                 ..ViewFacts::default()
             },
