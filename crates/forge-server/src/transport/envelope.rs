@@ -28,6 +28,14 @@ pub enum Subject {
     /// and hears nothing after it, and a client asks again by subscribing
     /// again.
     Usage,
+    /// The models page's read: the pinned models, the catalogue check,
+    /// the feed's rows and the updates it proposes.
+    ///
+    /// Carried as a subject of its own rather than inside `Home` because
+    /// the rows are the whole catalogue and only the models page draws
+    /// them. Unlike `Usage` it does hear updates: a check landing, boot's
+    /// or a page's own, arrives as `SessionUpdate::DictateModelsChanged`.
+    DictateModels,
 }
 
 impl Subject {
@@ -60,6 +68,9 @@ impl Subject {
             // transcript's tokens moving is not an update any variant
             // announces.
             Self::Usage => false,
+            // The check's own landing, and nothing else: the feed and the
+            // models it is read against are the machine's, not a seat's.
+            Self::DictateModels => matches!(update, SessionUpdate::DictateModelsChanged { .. }),
         }
     }
 }

@@ -621,6 +621,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::CronPromptAppended { .. }
         | SessionUpdate::HistoryReplayed { .. }
         | SessionUpdate::DictateAvailability
+        // The model catalogue is the models PAGE's read, off its own
+        // subject; the terminal draws no models page.
+        | SessionUpdate::DictateModelsChanged { .. }
         | SessionUpdate::WorkChanged { .. }
         // The project's task set, schedules and connector subscriptions,
         // which the Inspector's sections read through their own refresh

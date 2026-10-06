@@ -113,6 +113,35 @@ async fn the_protocol_client_walks_the_whole_protocol() {
     );
 }
 
+/// The models page's read: a subscription answered with the page's whole
+/// view - the pinned models, the catalogue check and the feed's rows.
+#[tokio::test]
+async fn the_models_subject_answers_the_pages_read() {
+    let (url, _fleet) = a_server().await;
+    let transcript = walk("subscribe dictate_models\n", &url).await;
+
+    let snapshot = of_kind(&transcript, "snapshot")
+        .into_iter()
+        .find(|message| message["subject"] == Value::String("dictate_models".to_owned()))
+        .expect("the models subscription is answered with its snapshot");
+    let data = &snapshot["data"];
+
+    assert_eq!(data["enabled"], Value::Bool(true), "the fixture fleet runs dictation");
+    assert_eq!(
+        data["in_use"].as_array().map(Vec::len),
+        Some(2),
+        "both pinned models cross with the read: {data}",
+    );
+    assert_eq!(
+        data["check"]["state"], "never",
+        "no check has run on this machine, and the client needs that as a value: {data}",
+    );
+    assert!(
+        data["rows"].as_array().is_some_and(Vec::is_empty),
+        "no fetched feed is no rows rather than a broken field: {data}",
+    );
+}
+
 /// The five fields Task 8b added, asserted as VALUES rather than as keys.
 ///
 /// **The wire fixtures pin shape and normalise anything that moves** - paths,

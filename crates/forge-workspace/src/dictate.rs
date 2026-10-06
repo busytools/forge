@@ -362,14 +362,24 @@ impl DictateSettings {
         }
     }
 
+    /// The model each role runs, in role order: the pins plus the roles
+    /// they run as. The one place the pair is spelled, so preflight's
+    /// rows and the models page's IN USE rows cannot disagree about which
+    /// models forge runs.
+    pub(crate) fn model_specs(&self) -> Vec<(DictateRole, forge_dictate::ModelSpec)> {
+        let cfg = self.to_config();
+        std::iter::once((DictateRole::Transcribing, cfg.asr_model))
+            .chain(cfg.normalizer.map(|spec| (DictateRole::Normalization, spec)))
+            .collect()
+    }
+
     /// The rows preflight draws before any work has started.
     fn initial_models(&self) -> Vec<DictateModel> {
-        let cfg = self.to_config();
-        std::iter::once((DictateRole::Transcribing, &cfg.asr_model))
-            .chain(cfg.normalizer.as_ref().map(|spec| (DictateRole::Normalization, spec)))
+        self.model_specs()
+            .into_iter()
             .map(|(role, spec)| DictateModel {
                 role,
-                file: spec.file.clone(),
+                file: spec.file,
                 state: DictateModelState::Pending,
             })
             .collect()

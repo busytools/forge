@@ -64,14 +64,23 @@ impl CatalogueEntry {
         self.downloads.iter().find(|download| download.filename == filename)
     }
 
+    /// The m4-max Metal row carrying the best wall-clock realtime factor,
+    /// so the machine, backend and quant cross beside the number.
+    pub fn m4_metal_speed_row(&self) -> Option<&SpeedRow> {
+        self.speed_benchmarks
+            .iter()
+            .filter(|row| {
+                row.machine == "m4-max" && row.backend == "metal" && row.xrt_wall.is_some()
+            })
+            .max_by(|a, b| {
+                a.xrt_wall.unwrap_or_default().total_cmp(&b.xrt_wall.unwrap_or_default())
+            })
+    }
+
     /// The best m4-max Metal wall-clock realtime factor across the
     /// quantised speed rows. `None` when the feed carries no such row.
     pub fn m4_metal_xrt_wall(&self) -> Option<f64> {
-        self.speed_benchmarks
-            .iter()
-            .filter(|row| row.machine == "m4-max" && row.backend == "metal")
-            .filter_map(|row| row.xrt_wall)
-            .reduce(f64::max)
+        self.m4_metal_speed_row().and_then(|row| row.xrt_wall)
     }
 
     /// Word error rate on FLEURS English at the reference quant.
@@ -575,6 +584,18 @@ mod tests_catalogue {
         );
         assert_eq!(granite.fleurs_en_wer(), Some(4.61));
         assert_eq!(granite.headline_wer(), Some(1.33));
+    }
+
+    /// The row the page's speed line draws is the row the number came
+    /// from: machine, backend and quant cross with it.
+    #[test]
+    fn the_speed_fact_is_the_row_the_best_number_came_from() {
+        let cohere = parse_entry(&fixture("cohere-transcribe-03-2026.json")).expect("parse");
+        let row = cohere.m4_metal_speed_row().expect("a metal speed row");
+        assert_eq!(row.machine, "m4-max");
+        assert_eq!(row.backend, "metal");
+        assert_eq!(row.quant, "Q8_0");
+        assert_eq!(row.xrt_wall, Some(72.88));
     }
 
     /// Upstream grows the schema; an entry carrying only the required
