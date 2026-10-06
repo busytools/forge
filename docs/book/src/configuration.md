@@ -473,7 +473,7 @@ name unset, which is the built-in.
 |---|---|---|---|
 | `mark` | string | unset, drawing panes | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn. |
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
-| `font` | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, served from the process and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
+| `font` | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
 
 A row's motion is not configurable. Each view animates its own: the
 TUI's spinner styles name glyph cycles, which is a terminal idiom a
