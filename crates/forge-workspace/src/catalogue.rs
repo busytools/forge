@@ -266,7 +266,9 @@ pub(crate) fn in_use(
 /// wall-clock realtime factor higher, both from the feed's own rows. Among
 /// the entries that clear both, the fastest wins - the rank the page's
 /// line shows first - with the sharper of two equally fast entries taking
-/// it. A variant already in use is never its own candidate.
+/// it. A variant already in use is never its own candidate, and neither is
+/// a non-commercial one: a proposal is what an adoption would pin into a
+/// public repo, and that has to be a licence anyone may run.
 pub(crate) fn updates_for(
     entries: &[CatalogueEntry],
     specs: &[(DictateRole, ModelSpec)],
@@ -275,6 +277,13 @@ pub(crate) fn updates_for(
         .iter()
         .filter_map(|(role, spec)| {
             let joined = entry_for(entries, spec)?;
+            // The pin's own byte length witnesses that the entry is
+            // about the file in use: a rebuild under the same name
+            // carries other bytes, and its measured rows are not this
+            // file's.
+            if joined.download_for(&spec.file)?.size_bytes != spec.size {
+                return None;
+            }
             let current_speed = joined.m4_metal_xrt_wall()?;
             let current_wer = joined.fleurs_en_wer()?;
 
@@ -284,6 +293,9 @@ pub(crate) fn updates_for(
                     continue;
                 }
                 if !entry.languages.iter().any(|language| language == "en") {
+                    continue;
+                }
+                if entry.license.as_ref().is_some_and(|license| non_commercial(&license.spdx)) {
                     continue;
                 }
                 let (Some(speed), Some(wer)) = (entry.m4_metal_xrt_wall(), entry.fleurs_en_wer())
@@ -314,6 +326,12 @@ pub(crate) fn updates_for(
             })
         })
         .collect()
+}
+
+/// Whether an SPDX id names a non-commercial variant: the `-nc` element
+/// the Creative Commons licences carry.
+fn non_commercial(spdx: &str) -> bool {
+    spdx.split('-').any(|part| part.eq_ignore_ascii_case("nc"))
 }
 
 /// Whether a feed is old enough to fetch again: no feed at all, one
@@ -378,27 +396,45 @@ impl crate::Workspace {
         if !self.config.dictate.enabled {
             return;
         }
-        match self.catalogue_dir().map(|dir| forge_dictate::catalogue::read_catalogue_cache(&dir)) {
-            Some(Ok(Some(catalogue))) => {
-                let due = refresh_is_due(Some(&catalogue), SystemTime::now());
-                // The check state comes off the cache too: the last check
-                // a page can read is the one that fetched it, even across
-                // a restart that has not fetched yet.
-                {
-                    let mut state = self.dictate_catalogue.lock();
-                    state.check = CatalogueCheck::Fresh {
-                        at: catalogue.fetched_at.clone(),
-                        release: catalogue.release.clone(),
-                        skipped: catalogue.skipped,
-                    };
-                    state.catalogue = Some(catalogue);
+        match self.catalogue_dir() {
+            None => {
+                self.spawn_catalogue_refresh();
+            }
+            Some(dir) => match forge_dictate::catalogue::read_catalogue_cache(&dir) {
+                Ok(Some(catalogue)) => {
+                    let due = refresh_is_due(Some(&catalogue), SystemTime::now());
+                    // The check state comes off the cache too: the last
+                    // check a page can read is the one that fetched it,
+                    // even across a restart that has not fetched yet.
+                    {
+                        let mut state = self.dictate_catalogue.lock();
+                        state.check = CatalogueCheck::Fresh {
+                            at: catalogue.fetched_at.clone(),
+                            release: catalogue.release.clone(),
+                            skipped: catalogue.skipped,
+                        };
+                        state.catalogue = Some(catalogue);
+                    }
+                    if due {
+                        self.spawn_catalogue_refresh();
+                    }
                 }
-                if due {
+                Ok(None) => {
                     self.spawn_catalogue_refresh();
                 }
-            }
-            // No cache, or one this build cannot read: fetch.
-            Some(Ok(None) | Err(_)) | None => self.spawn_catalogue_refresh(),
+                // A cache this build cannot read is a cache it does not
+                // have; the record says why, so a corrupt file is not
+                // indistinguishable from none and does not repeat
+                // silently every boot.
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "dictate_catalogue_cache_unreadable",
+                        %error,
+                        "the cached catalogue could not be read; fetching a fresh one"
+                    );
+                    self.spawn_catalogue_refresh();
+                }
+            },
         }
     }
 
@@ -410,20 +446,26 @@ impl crate::Workspace {
         if !self.config.dictate.enabled {
             return Err(crate::DispatchError::DictateOff);
         }
-        if matches!(self.dictate_catalogue.lock().check, CatalogueCheck::Checking) {
+        if !self.spawn_catalogue_refresh() {
             return Err(crate::DispatchError::CatalogueChecking);
         }
-        self.spawn_catalogue_refresh();
         Ok(())
     }
 
     /// Fetch the feed off the runtime, land it, and push the re-read
-    /// view. The state reads [`CatalogueCheck::Checking`] from the spawn
-    /// until the fetch answers, so a second check is refused while one is
-    /// in flight.
-    fn spawn_catalogue_refresh(self: &std::sync::Arc<Self>) {
+    /// view. Answers `false` when a check is already in flight, deciding
+    /// that under the same lock take that moves the state to
+    /// [`CatalogueCheck::Checking`]: two near-simultaneous dispatches
+    /// cannot both fetch.
+    fn spawn_catalogue_refresh(self: &std::sync::Arc<Self>) -> bool {
+        {
+            let mut state = self.dictate_catalogue.lock();
+            if matches!(state.check, CatalogueCheck::Checking) {
+                return false;
+            }
+            state.check = CatalogueCheck::Checking;
+        }
         let source = self.catalogue_source();
-        self.dictate_catalogue.lock().check = CatalogueCheck::Checking;
         let this = std::sync::Arc::clone(self);
         tokio::spawn(async move {
             let fetched = tokio::task::spawn_blocking(move || {
@@ -458,6 +500,11 @@ impl crate::Workspace {
                 // changed: a failed check costs the freshness line, not
                 // the feed.
                 Err(error) => {
+                    tracing::warn!(
+                        event_name = "dictate_catalogue_check_failed",
+                        %error,
+                        "the catalogue check failed; the last-known feed stands"
+                    );
                     this.dictate_catalogue.lock().check =
                         CatalogueCheck::Unreachable { error: error.to_string() };
                 }
@@ -467,6 +514,7 @@ impl crate::Workspace {
             let _ =
                 this.update_sender().send(crate::SessionUpdate::DictateModelsChanged { models });
         });
+        true
     }
 
     /// Where the feed is fetched from. Test builds can point this at a
@@ -515,17 +563,30 @@ mod tests_catalogue_view {
         speed: f64,
         wer: f64,
     ) -> forge_dictate::catalogue::CatalogueEntry {
+        entry_under(variant, languages, speed, wer, 100, "mit", "MIT")
+    }
+
+    /// [`entry`] with the download length and licence a test needs.
+    fn entry_under(
+        variant: &str,
+        languages: &str,
+        speed: f64,
+        wer: f64,
+        size_bytes: u64,
+        spdx: &str,
+        display: &str,
+    ) -> forge_dictate::catalogue::CatalogueEntry {
         parse_entry(&format!(
             r#"{{
               "schema": "transcribe-catalog-v1",
               "variant": "{variant}",
               "display_name": "{variant}",
               "params": 1000000,
-              "license": {{"spdx": "mit", "display": "MIT"}},
+              "license": {{"spdx": "{spdx}", "display": "{display}"}},
               "languages": {languages},
               "downloads": [
                 {{"quant": "F16", "filename": "{variant}-F16.gguf", "size_bytes": 200}},
-                {{"quant": "Q4_K_M", "filename": "{variant}-Q4_K_M.gguf", "size_bytes": 100}}
+                {{"quant": "Q4_K_M", "filename": "{variant}-Q4_K_M.gguf", "size_bytes": {size_bytes}}}
               ],
               "speed_benchmarks": [
                 {{"machine": "m4-max", "backend": "metal", "quant": "Q8_0", "xrt_wall": {speed}}}
@@ -538,11 +599,13 @@ mod tests_catalogue_view {
         .expect("the synthetic entry parses")
     }
 
-    /// The spec that joins `entry("in-use", ..)`: the join is the file
-    /// name, which is the one thing the pin and the feed share.
+    /// The spec that joins `entry("in-use", ..)`: the file name is the
+    /// join and the length is its witness, so both are the synthetic
+    /// entry's own.
     fn in_use_spec() -> forge_dictate::ModelSpec {
         let mut spec = forge_dictate::ModelSpec::cohere_transcribe_q4_k_m();
         spec.file = "in-use-Q4_K_M.gguf".to_owned();
+        spec.size = 100;
         spec
     }
 
@@ -596,10 +659,16 @@ mod tests_catalogue_view {
     /// entry that beats the model in use on both compared axes.
     #[test]
     fn the_update_is_the_fastest_candidate_that_beats_the_model_in_use() {
+        // The winner is deliberately not the first beater in the list, so
+        // a walk that keeps the first candidate it meets fails here; and
+        // the list carries one entry per way to be admitted wrongly -
+        // faster but blunter, and faster with an equal error rate.
         let entries = vec![
             entry("in-use", r#"["en"]"#, 72.9, 5.08),
-            entry("granite-like", r#"["en"]"#, 388.8, 4.61),
             entry("parakeet-like", r#"["en"]"#, 218.8, 3.99),
+            entry("granite-like", r#"["en"]"#, 388.8, 4.61),
+            entry("fast-but-blunt", r#"["en"]"#, 900.0, 5.50),
+            entry("faster-but-equal-wer", r#"["en"]"#, 500.0, 5.08),
             entry("slower-but-sharper", r#"["en"]"#, 50.0, 1.20),
             entry("russian", r#"["ru"]"#, 900.0, 0.90),
         ];
@@ -615,6 +684,24 @@ mod tests_catalogue_view {
         assert_eq!(update.file, "in-use-Q4_K_M.gguf");
         assert_eq!(update.current.speed_x, 72.9, "the in-use side of the comparison");
         assert_eq!(update.current.fleurs_en_wer, 5.08);
+    }
+
+    /// Two candidates equally fast: the sharper takes the line.
+    #[test]
+    fn of_two_equally_fast_candidates_the_sharper_wins() {
+        let entries = vec![
+            entry("in-use", r#"["en"]"#, 72.9, 5.08),
+            entry("twin-blunter", r#"["en"]"#, 300.0, 4.00),
+            entry("twin-sharper", r#"["en"]"#, 300.0, 3.50),
+        ];
+
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].candidate.variant, "twin-sharper",
+            "equal speed is broken by the lower word error rate, not by list order"
+        );
     }
 
     /// FLEURS English is the comparison axis: a row without it cannot be
@@ -637,6 +724,87 @@ mod tests_catalogue_view {
         );
     }
 
+    /// A proposal is what an adoption would pin, so it must be
+    /// adoptable: a non-commercial candidate is never proposed, even
+    /// when it is the fastest entry on the feed.
+    #[test]
+    fn a_non_commercial_candidate_is_never_proposed() {
+        let entries = vec![
+            entry("in-use", r#"["en"]"#, 72.9, 5.08),
+            entry_under(
+                "faster-but-nc",
+                r#"["en"]"#,
+                401.64,
+                4.30,
+                100,
+                "cc-by-nc-sa-4.0",
+                "CC-BY-NC-SA-4.0",
+            ),
+            entry_under("permissive", r#"["en"]"#, 388.76, 4.61, 100, "apache-2.0", "Apache-2.0"),
+        ];
+
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].candidate.variant, "permissive",
+            "the fastest PERMISSIVE entry, not the fastest entry: what gets proposed is a pin \
+             into a public repo"
+        );
+        assert_eq!(
+            updates[0].candidate.license.as_deref(),
+            Some("Apache-2.0"),
+            "and the proposal carries the licence it would be adopted under"
+        );
+    }
+
+    /// When nothing permissive beats the model in use, the page proposes
+    /// nothing - it does not fall back to the non-commercial entry it
+    /// skipped.
+    #[test]
+    fn a_feed_with_only_a_non_commercial_better_entry_proposes_nothing() {
+        let entries = vec![
+            entry("in-use", r#"["en"]"#, 72.9, 5.08),
+            entry_under(
+                "faster-but-nc",
+                r#"["en"]"#,
+                401.64,
+                4.30,
+                100,
+                "cc-by-nc-sa-4.0",
+                "CC-BY-NC-SA-4.0",
+            ),
+        ];
+
+        assert!(
+            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
+            "nothing permissive beats it, so there is nothing to propose"
+        );
+    }
+
+    /// The pin's own byte length is the witness an entry is about the
+    /// file in use: a feed carrying the same name at another length has
+    /// been rebuilt, and its measured rows are not this file's.
+    #[test]
+    fn an_update_is_not_proposed_from_a_rebuilt_file() {
+        let entries = vec![
+            // Our file's name at another length: upstream rebuilt the
+            // quant, and these rows are the new build's.
+            entry_under("in-use", r#"["en"]"#, 300.0, 4.00, 101, "mit", "MIT"),
+            // A candidate that WOULD beat those rows - which is exactly
+            // what must not happen, because they are not our file's.
+            entry("candidate", r#"["en"]"#, 500.0, 2.00),
+        ];
+
+        assert!(
+            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
+            "a same-name different-length download is a rebuild, and no comparison is built on it"
+        );
+        let join = join_for(&entries, &in_use_spec())
+            .expect("the join still crosses, so a reader can see the length moved");
+        assert_eq!(join.size_bytes, 101, "the feed's own length, against the pin's 1_558_162_944");
+    }
+
     /// The model in use is not news about itself, whatever a duplicate
     /// entry in the feed claims.
     #[test]
@@ -656,7 +824,9 @@ mod tests_catalogue_view {
     /// preflight snapshot, the feed's facts off the join.
     #[test]
     fn in_use_facts_come_from_the_pin_the_state_and_the_join() {
-        let entries = vec![entry("in-use", r#"["en", "fr"]"#, 72.9, 5.08)];
+        // The feed's own length differs from the pin's on purpose: which
+        // side each number came from is the assertion.
+        let entries = vec![entry_under("in-use", r#"["en", "fr"]"#, 72.9, 5.08, 200, "mit", "MIT")];
         let states = DictateSnapshot {
             models: vec![DictateModel {
                 role: DictateRole::Transcribing,
@@ -676,10 +846,10 @@ mod tests_catalogue_view {
             "the page's loaded chip is the preflight snapshot's own state"
         );
         assert_eq!(row.facts.quant.as_deref(), Some("Q4_K_M"), "declared facts come off the pin");
-        assert_eq!(row.size, 1_558_162_944, "the pin's own byte length");
+        assert_eq!(row.size, 100, "the pin's own byte length");
         let join = row.catalogue.as_ref().expect("the file joins its catalogue entry");
         assert_eq!(join.variant, "in-use");
-        assert_eq!(join.size_bytes, 100, "the feed's own size for the file, as a witness");
+        assert_eq!(join.size_bytes, 200, "the feed's own size for the file, as a witness");
         assert_eq!(join.languages, ["en", "fr"]);
         assert_eq!(join.speed.as_ref().map(|speed| speed.xrt_wall), Some(72.9));
     }
@@ -859,6 +1029,46 @@ mod tests_catalogue_view {
         assert!(matches!(view.check, CatalogueCheck::Never));
         assert!(view.rows.is_empty(), "no fetched feed is no rows");
         assert!(view.updates.is_empty(), "and no update to propose");
+    }
+
+    /// With `[dictate]` off the page reads no models in use and no
+    /// proposals, while the feed's rows still cross: the catalogue is
+    /// not per-configuration, and inventing a configuration from it
+    /// would draw a section nobody switched on.
+    #[test]
+    fn a_disabled_dictation_reads_no_models_and_no_proposals() {
+        let (ws, _updates) = Workspace::testing_stub();
+        ws.dictate_catalogue.lock().catalogue = Some(Catalogue {
+            fetched_at: "2026-10-06T00:00:00Z".to_owned(),
+            release: None,
+            entries: vec![
+                entry("in-use", r#"["en"]"#, 72.9, 5.08),
+                entry("better", r#"["en"]"#, 500.0, 4.00),
+            ],
+            skipped: 0,
+        });
+
+        let view = ws.dictate_models();
+
+        assert!(!view.enabled);
+        assert!(view.in_use.is_empty(), "no pins are in use when dictation is off");
+        assert!(view.updates.is_empty(), "and nothing is proposed against them");
+        assert_eq!(view.rows.len(), 2, "the feed's rows still cross");
+    }
+
+    /// With no test override the cache lives beside forge's other
+    /// machine-local state: a boot- or pid-scoped path would strand every
+    /// fetched feed on the next start.
+    #[test]
+    fn the_production_cache_dir_is_the_app_support_one() {
+        let (ws, _updates, _models) = enabled_stub();
+
+        assert_eq!(
+            ws.catalogue_dir(),
+            forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-catalogue")),
+            "the cache directory is derived from the app-support dir, not from anything the boot \
+             happens to know"
+        );
     }
 
     /// A boot with a fresh cache reads the feed and does not fetch; a
