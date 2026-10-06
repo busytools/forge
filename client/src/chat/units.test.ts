@@ -232,6 +232,47 @@ describe('one turn folded into the units a view draws', () => {
     ).toContain('several Slack workspaces are configured');
   });
 
+  it('titles a successful forge call by the card own subject, not the family own noun', () => {
+    // The SUCCESS arm of the title chain: a card that parses wins over the
+    // failure fallback and over the tool name, so a reorder that dropped the
+    // card's own title would silently title every successful update `tasks`.
+    const record = JSON.stringify({
+      id: 't-1',
+      project: 'forge',
+      subject: 'Sweep the stale worktrees',
+      status: 'in_progress',
+      owner: 'lead',
+      estimate: null,
+      detail: null,
+      artifact: null,
+      active_form: null,
+      created_at: '2026-10-06T00:12:00Z',
+      updated_at: '2026-10-06T09:30:00Z',
+    });
+
+    // A forge tool's result arrives as BLOCKS, not as a bare string - the
+    // shape the wire carries for the MCP tools and not the one the built-ins
+    // use, which is why `parsedText` reads blocks.
+    const units = fold([
+      said([use('toolu_ok', 'mcp__forge__tasks__update', { id: 't-1', status: 'in_progress' })]),
+      heard(
+        [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_ok',
+            content: [{ type: 'text', text: record }],
+            is_error: false,
+          },
+        ],
+        { uuid: 'u-ok' },
+      ),
+    ]);
+
+    expect(callsOf(units[0])[0]?.leaf.title, 'the record own subject').toBe(
+      'Sweep the stale worktrees',
+    );
+  });
+
   it('folds a mutation into the run as its own family', () => {
     const units = fold([call('read', 0), call('edit', 1), call('read', 2)]);
 
