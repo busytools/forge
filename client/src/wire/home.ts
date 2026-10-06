@@ -7,7 +7,13 @@
  * the fixture pins what it carries, and the source pins the rest.
  */
 
-import type { SessionSlot } from './types';
+import {
+  modelStateFrom,
+  narrow,
+  type DictateFailure,
+  type DictateModelState,
+  type SessionSlot,
+} from './types';
 
 /** `SessionLifecycleState`, as the core's own enum serialises. */
 export type Lifecycle =
@@ -164,22 +170,6 @@ export interface AccountsWire {
   orgs: unknown[];
 }
 
-/** Why preflight stopped, carrying its own reason. */
-export type DictateFailure =
-  | { hash_mismatch: { path: string; expected: string; actual: string; size: number } }
-  | { cancelled: { kept: number; total: number } }
-  | { other: { message: string } };
-
-/** How far one model has got. */
-export type DictateModelState =
-  | 'pending'
-  | 'verifying'
-  | 'fetched'
-  | 'loading'
-  | 'ready'
-  | { downloading: { downloaded: number; total: number; resumed_from: number | null } }
-  | { failed: DictateFailure };
-
 export interface DictateModel {
   role: string;
   file: string;
@@ -230,27 +220,6 @@ const PENDING: PendingKind[] = ['question', 'permission'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
 const TASK_STATUSES: TaskStatus[] = ['pending', 'in_progress', 'blocked', 'completed'];
-/** The states that cross as a bare string; the other two are objects. */
-const MODEL_STATES: Extract<DictateModelState, string>[] = [
-  'pending',
-  'verifying',
-  'fetched',
-  'loading',
-  'ready',
-];
-
-/**
- * One of `known`, or `fallback` when the value is one this client is older
- * than.
- *
- * The two casts are the boundary's whole job: `known` is read as the strings
- * it holds and the answer is one of them by construction, which is what lets
- * every union downstream stay closed. `Array.includes` cannot narrow, so
- * without them the callers would each need a cast of their own.
- */
-function narrow<T extends string>(value: string, known: T[], fallback: T): T {
-  return (known as string[]).includes(value) ? (value as T) : fallback;
-}
 
 /**
  * The snapshot as the types above describe it, with a value outside the
@@ -304,10 +273,7 @@ export function homeFrom(data: HomeWire): HomeWire {
         ...data.dictate.snapshot,
         models: data.dictate.snapshot.models.map((model) => ({
           ...model,
-          state:
-            typeof model.state !== 'string'
-              ? model.state
-              : narrow(model.state, MODEL_STATES, 'pending'),
+          state: modelStateFrom(model.state),
         })),
       },
     },

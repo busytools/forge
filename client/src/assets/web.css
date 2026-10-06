@@ -176,6 +176,15 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .svc.bad { border-color: rgba(224,104,62,.4); }
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
+/* The one card that is a way in. The chevron is drawn at rest rather than
+   uncovered by the pointer - an affordance only hover reveals is what rule 22
+   forbids - and the hover recolours it, the way a row's own chrome does.
+   `opacity: 1` because the shared `.arw` is a DISCLOSURE's mark and rests
+   hidden: this one is a door, and a door nobody can see is not one. */
+.band a.svc { display: block; text-decoration: none; color: inherit; }
+.band a.svc .arw { margin-left: auto; opacity: 1; color: var(--dim); }
+.band a.svc:hover { border-color: var(--ctl); }
+.band a.svc:hover .arw { color: var(--accent); }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
    TUI runs once, before a browser can attach, so on the web it could only
@@ -199,6 +208,15 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dot.off.settling { animation: pulse 1.05s ease-in-out infinite; }
 .dot.failed { background: var(--bad);
   clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+/* The verdict pair: how a service or a model is, rather than what state a
+   session is in. The triangle is the shape `.dot.needs` draws, without the
+   pulse - the vocabulary is four shapes - and the rules live here rather than
+   on a page because the band and the models page draw the same two, each
+   resetting the size it wants. */
+.dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border: 0; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+.dot.warn { width: 9px; height: 9px; flex: 0 0 9px; border: 0;
+  background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
 
 /* The work spinner is the RING: the mark for work in flight, wherever it
    is drawn. */
@@ -212,6 +230,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .band .dot {
   width: 7px; height: 7px; flex: 0 0 7px; border: 0; border-radius: 50%;
   background: none; box-shadow: none; opacity: 1; animation: none;
+  /* `clip-path` too, and it is the one the reset cannot infer: the shared
+     block gained a verdict triangle (`.dot.warn`), and without this line the
+     band's warn cards draw it where every band mark is a flat disc. */
+  clip-path: none;
 }
 .band .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
 .band .dot.off { background: var(--dim); }
@@ -974,6 +996,13 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 
 /* The sub-agent segment of the strip: the count at the strip's right, and the
    way into each instance. `sg-` namespaced like the row's own fields. */
+/* The strip's segments share one right-hand fill: two rows each carrying
+   their own auto margin would split the free space between them. It WRAPS
+   rather than shrinking to fit: the rows are nowrap, so a fill compressed
+   below their width pushes the last one past the strip's edge instead of
+   moving it, and a narrow strip stacks the rows on their own lines. */
+.sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; row-gap: 2px; }
 .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
@@ -986,7 +1015,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    belongs to a row and carries that row's leave. A padded panel leaves strips
    with no listener, and a pointer leaving through one never arms the close. */
 .sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
+  min-width: 330px; max-width: calc(100vw - 26px); max-height: 60vh;
+  overflow-y: auto; background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
 .sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
@@ -1000,12 +1030,16 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+/* A settled row is kept, not alive: its name drops to the muted tone while
+   the check in the mark slot says why it is still here. */
+.sg-list .sg-it.settled .nm { color: var(--muted); }
 @media (pointer: coarse) { .sg-list .sg-it { min-height: 44px; } }
 
 /* The one flash the reveal leaves on the row it lands on: a tint that arrives
-   and leaves. */
-details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
-@keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
+   and leaves. Long and gentle - the reader is moving their eyes across the
+   column, and the row has to still be lit when they arrive. */
+details.leaf.sg-hit { animation: sg-flash 6s ease-out 1; }
+@keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -1668,13 +1702,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .dev .chev { margin-left: auto; color: var(--dim); }
 .pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
   overflow: hidden; }
-.pop .row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+.pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
   border: 0; border-bottom: 1px solid var(--line); background: none; cursor: pointer;
   text-align: left; }
-.pop .row:last-child { border-bottom: 0; }
-.pop .row:hover { background: var(--s2); }
-.pop .row .nm { font-size: var(--fs-base); color: var(--text); }
-.pop .row .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+.pop .drow:last-child { border-bottom: 0; }
+.pop .drow:hover { background: var(--s2); }
+.pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+.pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .pop .ft { padding: 13px 15px 14px; }
 .pop .rst { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
@@ -2015,12 +2049,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sb .kv .k { flex: 1 1 auto; }
 .sb .kv .v { flex: 0 1 auto; }
 
-/* The processes section: a process's children are a list inside its own item,
-   so the indent is the browser's and a deeper tree is a deeper list rather
-   than twice as many characters in front of a command. */
-.sb .tree, .sb .tree ul { list-style: none; }
-.sb .tree ul { padding-left: 14px; }
-
 /* The slack section: a workspace, and the subscriptions under it as a list
    inside the workspace's own item rather than two spaces in front of a
    target. */
@@ -2101,6 +2129,122 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 /* The path above a diff is one unbroken token and often longer than a phone. It
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
+
+/* ---------- the models page ----------
+   Everything under `.models`, for the reason the `.pop` block gives: `.model`,
+   `.status`, `.col` and `.note` are short names another surface already uses,
+   and a bare rule here would reach it by coming later. The pieces it shares -
+   the header, the band card's gradient, the chip, the empty box and the four
+   state shapes - are the shipped ones; these are the page's own layout. */
+
+.models .title { display: flex; flex-direction: column; }
+.models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  color: var(--text); }
+.models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 11px; }
+.models .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The one line a page with no read yet draws, and the one a refused
+   subscription draws: the session page's own pending treatment. */
+.models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+.models .block { margin-bottom: 30px; }
+/* The section heading and its mono tail, at the home's own weights: the tail
+   is what a reader skims for, so it says the rule rather than repeating the
+   heading. */
+.models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
+  text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
+.models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--dim); font-weight: 400; }
+
+/* the model rows: the band card's own ground, grown to a full-width row */
+.models .model { display: flex; align-items: center; gap: 14px;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 13px 15px; margin-bottom: 10px; }
+.models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--dim); flex: 0 0 118px; }
+/* The row's middle column. Not `.body`: that name is the chat turn's own
+   drawing, and the sheet's sweeps read a rule by its class name wherever it
+   sits. */
+.models .facts { min-width: 0; flex: 1; }
+.models .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin-top: 3px; }
+.models .meta b { color: var(--muted); font-weight: 500; }
+.models .side { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* the chip: the dictation panel's own chip, at this page's scale */
+.models .chip { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+/* `go` and its hover left with the Search button: the box filters as it is
+   typed, so no chip on this page starts anything. */
+
+/* the check line and an update line: one shape, toned by what it says */
+.models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+  padding: 12px 15px; margin-bottom: 10px; }
+.models .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .status .spacer { margin-left: auto; }
+.models .status.warn { border-color: rgba(201,161,59,.35); }
+.models .status.warn .t { color: var(--warn); }
+.models .status.failed { border-color: rgba(224,104,62,.4); }
+.models .status.failed .t { color: var(--bad); }
+.models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); padding-left: 19px; }
+.models .status .detail b { color: var(--muted); font-weight: 500; }
+
+/* the search the page does on this side: the feed is already here, and the
+   box filters as it is typed - a button over data this side already holds
+   would be a second step for nothing */
+.models .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--text); background: var(--s1);
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+.models .find::placeholder { color: var(--dim); }
+.models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin-top: 10px; }
+
+/* a candidate row: the home's row shape, shrunk to a list item, and a LINK -
+   it opens the entry's own document, so it carries the chrome a way in has:
+   a hover ground and a marker drawn at rest rather than on the pointer. */
+.models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+  overflow: hidden; background: rgba(13,17,26,.4); }
+/* The hairline is the LI's, which is the home's own pattern: the row inside
+   it is an anchor, and an anchor is always its li's only child - a
+   `:last-child` on the row would match every one of them and the separator
+   would be dead in the whole list. */
+.models .list li { border-bottom: 1px solid var(--line); }
+.models .list li:last-child { border-bottom: 0; }
+.models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+  color: inherit; text-decoration: none; }
+.models .cand:hover { background: var(--s2); }
+.models .cand .nm { flex: 1 1 auto; min-width: 0; }
+.models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models .cand .col b { color: var(--muted); font-weight: 500; }
+.models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
+.models .cand:hover .go { color: var(--accent); }
+
+@media (pointer: coarse) {
+  /* A button and an input already take the 44 from the shared rule; these are
+     the two targets it cannot reach: the way back, and a candidate row. */
+  .models .back, .models .cand { min-height: 44px; }
+  .models .back { display: inline-flex; align-items: center; }
+}
+
+@media (max-width: 760px) {
+  .models .model { flex-wrap: wrap; gap: 8px; }
+  .models .role, .models .side { flex-basis: 100%; }
+  .models .cand { flex-wrap: wrap; }
+  .models .cand .col { flex-basis: 100%; }
+}
 
 /* ---------- the chevron arrives with the pointer ----------
    Hidden at rest, so a column of rows carries no marks it does not need;

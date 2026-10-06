@@ -147,42 +147,6 @@ describe('the inspector as it draws', () => {
     expect(body).toContain('gh run watch 18234567');
   });
 
-  /**
-   * The processes section is the one that came from a character grid: the
-   * terminal indented each row with two spaces per level, and a list inside a
-   * list is the shape it was drawing.
-   */
-  it('nests a process under its parent rather than indenting it with spaces', () => {
-    draw({
-      record: {
-        ...record,
-        processes: {
-          scanned_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-          processes: [
-            { pid: 10, parent_pid: 1, name: 'claude', command: 'claude', memory_bytes: 0 },
-            {
-              pid: 20,
-              parent_pid: 10,
-              name: 'cargo',
-              command: '/opt/homebrew/bin/cargo nextest run',
-              memory_bytes: 412 * 1024 * 1024,
-            },
-          ],
-        },
-      },
-    });
-    openSection('processes');
-    const body = drawn();
-    expect(sections(body)).toContain('processes');
-    expect(body).toContain('cargo nextest run');
-    expect(body).toContain('412 MB');
-    // The child sits in the parent's own item, which is what makes it a level
-    // of hierarchy rather than a row drawn after it.
-    expect(body, 'the child was drawn beside its parent rather than under it').toMatch(
-      /<li>[\s\S]*claude[\s\S]*<ul class="tree">[\s\S]*cargo nextest run/,
-    );
-  });
-
   it('draws an empty MCP read as the failure it is, with the reason', () => {
     draw({ record: withMcp({ servers: [], error: 'the CLI refused' }) });
     openSection('mcp servers');

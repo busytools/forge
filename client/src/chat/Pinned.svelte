@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProcessesSegment from './ProcessesSegment.svelte';
   import Strip from './Strip.svelte';
   import SubagentSegment from './SubagentSegment.svelte';
   import type { TurnInfo } from './units';
@@ -21,6 +22,11 @@
 
 {#if info !== null}
   <div class="strip">
-    <div class="ti"><Strip {info} /><SubagentSegment /></div>
+    <!-- The segments share one right-hand fill: two rows each carrying their
+         own auto margin would split the free space between them. -->
+    <div class="ti">
+      <Strip {info} />
+      <span class="sg-fill"><SubagentSegment /><ProcessesSegment /></span>
+    </div>
   </div>
 {/if}

@@ -23,6 +23,11 @@ describe('the URLs the server serves', () => {
     expect(parseRoute('/connect')).toEqual({ name: 'connect' });
   });
 
+  it('resolves the models page and round-trips it', () => {
+    expect(parseRoute('/models')).toEqual({ name: 'models' });
+    expect(parseRoute(hrefFor({ name: 'models' }))).toEqual({ name: 'models' });
+  });
+
   it('refuses a path the server does not serve', () => {
     expect(parseRoute('/sessions')).toEqual({ name: 'notFound' });
     expect(parseRoute('/session/Busytools/forge/lead/extra')).toEqual({ name: 'notFound' });
@@ -71,6 +76,9 @@ describe("the tab's title", () => {
   it('names the seat being shown, the project first and a worker by its label', () => {
     expect(titleFor({ name: 'home' }), 'the home is the forge itself').toBe('forge');
     expect(titleFor({ name: 'connect' })).toBe('forge');
+    expect(titleFor({ name: 'models' }), 'the models page names what it is').toBe(
+      'forge \u{b7} models',
+    );
     expect(
       titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),
       "a lead's seat is its project",

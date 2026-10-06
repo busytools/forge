@@ -211,6 +211,56 @@ describe('a closed seat', () => {
   });
 });
 
+describe("a worker's failure", () => {
+  /**
+   * **The diagnostic draws under the worker's own row**, the way the terminal
+   * draws it: a worker's spawn error aggregated onto the project's line put it
+   * under the lead's row, which read as the lead having failed while the
+   * worker's own row said nothing.
+   */
+  it("draws the reason under the worker's row, not the project's", () => {
+    const template = homeWire.agents[0];
+    if (template === undefined) throw new Error('the fixture holds no agent');
+    const reason = 'transport closed before initialize';
+    const drawn = render(Rail, {
+      props: {
+        home: {
+          ...homeWire,
+          agents: [
+            { ...template, lifecycle: 'Running', pending: null },
+            {
+              ...template,
+              slot: { ...template.slot, label: 'client-dev' },
+              label: 'client-dev',
+              lifecycle: 'Failed',
+              pending: null,
+              reason,
+            },
+          ],
+        },
+        current: LEAD,
+        now: 0,
+        connection: untouched(),
+        onclose: () => undefined,
+      },
+    }).body;
+
+    // Anchored on the failed worker's OWN row rather than the document's
+    // first worker row: a fixture carrying another project ahead of this one
+    // would satisfy a looser anchor without the row under test being read.
+    const workerAt = drawn.indexOf('href="/session/TestOrg/proj/client-dev"');
+    expect(workerAt, 'the failed worker has no row').toBeGreaterThan(-1);
+    expect(
+      drawn.slice(0, workerAt),
+      "a worker's failure drew under the project's line",
+    ).not.toContain(reason);
+    expect(drawn.slice(workerAt), "the worker's own row lost its dim reason line").toContain(
+      `<div class="why">${reason}</div>`,
+    );
+    expect(drawn.split(reason).length - 1, 'the diagnostic drew more than once').toBe(1);
+  });
+});
+
 describe('a row that is not a way in', () => {
   /**
    * The chrome is the other half of the claim: a row that says "information"

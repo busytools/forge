@@ -803,6 +803,9 @@
   .strip .ti > span { white-space: nowrap; }
   .strip .ti .sep { opacity: .5; }
   .strip .ti .st.err { color: var(--bad); }
+  /* The strip's rows share one right-hand fill, the sheet's own rule. */
+  .sg-fill { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    row-gap: 2px; }
   /* The agents row: the count at the strip's right, and the way into each
      instance (the sheet's own `.sg-seg` rules, drawn here as the specimen). */
   .sg-seg { position: relative; display: inline-flex; margin-left: auto; }
@@ -1235,6 +1238,17 @@
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">spawn failed</div>
+      </div>
+      <div class="pj">
+        <div class="pr"><span class="dot live"></span><span class="nm">granite-core</span>
+          <span class="org">Granite</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+        <!-- A failure is not shared: a worker's diagnostic draws under the
+             worker's own row, dim as the terminal's sub-row draws it - on the
+             project's line it would read as the lead having failed. -->
+        <div class="wk"><span class="dot failed" style="width:8px;height:8px;flex:0 0 8px"></span>
+          <span class="nm">canary</span><button class="x" type="button" title="close">&#10005;</button></div>
+        <div class="why">connection to claude subprocess failed</div>
       </div>
 
       <div class="state">working</div>
@@ -2255,10 +2269,24 @@ branch main, nothing to commit</div>
                chat row. The inspector has no subagents section. Drawn CLOSED
                here: the open list is runtime state, and the specimen draws
                the resting row. -->
+          <span class="sg-fill">
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-subagents"/></svg>
               <span class="ring"></span>2 running &#183; 1 finished</button>
+          </span>
+          <!-- The processes row, beside it: the seat's backgrounded calls.
+               Running is the whole live side - the count and the combined
+               memory of every call's process family, phrased like the
+               agents' own count. A hover opens the list; a click on a row
+               reveals that call's chat row. The inspector has no processes
+               section any more: this row is its home. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-processes"/></svg>
+              <span class="ring"></span>
+              2 running &#183; 1.8 GB</button>
+          </span>
           </span>
         </div>
       </div>
@@ -2506,18 +2534,6 @@ branch main, nothing to commit</div>
         <div class="sb" data-mock-ignore>
           <div class="kv"><span class="k">forge &#183; session</span><span class="v">24 tools</span></div>
           <div class="kv"><span class="k">context7 &#183; sdk</span><span class="v">2 tools</span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-processes"/></svg> processes
-          <span class="c2">3</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="kv"><span class="k">cargo nextest run</span><span class="v">412 MB &#183; 8842</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;cargo</span><span class="v">settled</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;rustc</span><span class="v">running</span></div>
-          <div class="kv"><span class="k">&nbsp;&nbsp;cc</span><span class="v">running</span></div>
         </div>
       </details>
 

@@ -89,3 +89,53 @@ export type FontName = (typeof FONT_NAMES)[number];
 
 /** The port the server binds when `[server] port` is absent. */
 export const DEFAULT_SERVER_PORT = 8790;
+
+/**
+ * One of `known`, or `fallback` when the value is one this client is older
+ * than.
+ *
+ * The two casts are the boundary's whole job: `known` is read as the strings
+ * it holds and the answer is one of them by construction, which is what lets
+ * every union downstream stay closed. `Array.includes` cannot narrow, so
+ * without them the callers would each need a cast of their own.
+ */
+export function narrow<T extends string>(value: string, known: T[], fallback: T): T {
+  return (known as string[]).includes(value) ? (value as T) : fallback;
+}
+
+/** Why dictation's preflight stopped, carrying its own reason. */
+export type DictateFailure =
+  | { hash_mismatch: { path: string; expected: string; actual: string; size: number } }
+  | { cancelled: { kept: number; total: number } }
+  | { other: { message: string } };
+
+/** How far one dictation model has got. */
+export type DictateModelState =
+  | 'pending'
+  | 'verifying'
+  | 'fetched'
+  | 'loading'
+  | 'ready'
+  | { downloading: { downloaded: number; total: number; resumed_from: number | null } }
+  | { failed: DictateFailure };
+
+/** The states that cross as a bare string; the other two are objects. */
+const MODEL_STATES: Extract<DictateModelState, string>[] = [
+  'pending',
+  'verifying',
+  'fetched',
+  'loading',
+  'ready',
+];
+
+/**
+ * A model's state, narrowed once for both reads that carry it: the home's
+ * dictate card and the models page's pinned rows.
+ *
+ * A state outside the five is one this client is older than, and `pending` is
+ * the least-alarming answer - a row that says so claims no load the machine
+ * may not be doing.
+ */
+export function modelStateFrom(state: DictateModelState): DictateModelState {
+  return typeof state !== 'string' ? state : narrow(state, MODEL_STATES, 'pending');
+}

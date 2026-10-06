@@ -121,6 +121,24 @@ export interface ProcessSnapshot {
   scanned_at: WireTime;
 }
 
+/**
+ * One entry of the CLI's background-task registry, as `forge-primitives`
+ * carries it: the row a backgrounded tool call left behind.
+ *
+ * `task_type` routes the row - `local_bash` is the processes feed, an agent
+ * kind belongs to the dispatch rows. `description` is the line the row leads
+ * with, as the CLI wrote it, and `command` is what an OS scan adopts a
+ * process by: the join between this row and the walk is that command.
+ */
+export interface BackgroundTask {
+  task_id: string;
+  task_type: string;
+  description: string;
+  command: string | null;
+  /** The tool call that began the task, from the CLI's `task_started` link. */
+  tool_use_id: string | null;
+}
+
 /** `MonitorStatus`, snake_case on the wire. */
 export type MonitorStatus = 'running' | 'stopped' | 'completed' | 'timed_out';
 
@@ -180,8 +198,8 @@ export interface SessionRecord {
   mcp: McpServers | null;
   processes: ProcessSnapshot | null;
   monitors: MonitorRecord[];
-  /** The CLI's background-task registry, which no section of this shell draws. */
-  background_tasks: unknown[];
+  /** The CLI's background-task registry: what this seat has running out of band. */
+  background_tasks: BackgroundTask[];
   /**
    * The composer's three lists: the CLI's commands for `/`, the agent types
    * for `&`, and the working tree's files for `@`. Carried rather than
@@ -387,7 +405,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     mcp: mcpFrom(held['mcp']),
     processes: processesFrom(held['processes']),
     monitors: list(held['monitors']).map(monitorFrom),
-    background_tasks: list(held['background_tasks']),
+    background_tasks: list(held['background_tasks']).flatMap(backgroundTaskFrom),
     slash_commands: list(held['slash_commands']),
     subagents: list(held['subagents']),
     subagent_instances: list(held['subagent_instances']).map(subagentCardFrom),
@@ -464,6 +482,29 @@ export function processesFrom(value: unknown): ProcessSnapshot | null {
     }),
     scanned_at: time(held['scanned_at']) ?? { secs_since_epoch: 0, nanos_since_epoch: 0 },
   };
+}
+
+/**
+ * One registry row, or nothing when it is not a row.
+ *
+ * A row needs its id, its kind and its words: an entry missing any is not
+ * something a view can draw, and it is dropped rather than drawn blank.
+ */
+export function backgroundTaskFrom(value: unknown): BackgroundTask[] {
+  const held = record(value);
+  const task_id = text(held['task_id']);
+  const task_type = text(held['task_type']);
+  const description = text(held['description']);
+  if (task_id === null || task_type === null || description === null) return [];
+  return [
+    {
+      task_id,
+      task_type,
+      description,
+      command: text(held['command']),
+      tool_use_id: text(held['tool_use_id']),
+    },
+  ];
 }
 
 function composerFrom(value: unknown): ComposerState {

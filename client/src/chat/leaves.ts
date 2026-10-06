@@ -56,7 +56,7 @@ export interface MutationMarks {
  * the call's own clock and says whether it outlives its turn, `task_updated`
  * carries the ending, and `task_notification` carries what the harness said.
  */
-export interface BackgroundTask {
+export interface TaskFact {
   status: CallStatus;
   /**
    * Whether the wire said this task outlives its turn.
@@ -561,7 +561,7 @@ export function leafOf(
   input: unknown,
   result: Block | undefined,
   record: unknown = undefined,
-  task: BackgroundTask | undefined = undefined,
+  task: TaskFact | undefined = undefined,
   abandoned = false,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
