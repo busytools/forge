@@ -161,6 +161,12 @@ export interface ConversationProps {
   /** The directory the seat's calls are named against. */
   /** Whether a seat is behind this page at all. */
   waking: boolean;
+  /**
+   * Whether the core is bringing the seat up. Its own state beside `waking`:
+   * both draw the waking line, and the column reads the conversation only
+   * once neither is true (#1712's follow-up).
+   */
+  spawning: boolean;
   /** Why it is not running, when the roster says. */
   reason: string | null;
   slot: SessionSlot;
@@ -456,8 +462,20 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
  * why the rows come from `projectRows` rather than from the home's own
  * org-grouped view. The states themselves are the home's: a rail that derived
  * one for itself would disagree with the page a click away.
+ *
+ * **`closing` is the one state the caller brings in**, because it is the
+ * client's own and not the home's: a seat this client has closed reads as
+ * asleep the moment it is closed, so the reader's click moves it out of their
+ * working section at once rather than leaving it sitting there for the
+ * seconds the core takes to shut it down (#1712). The default answers false,
+ * which is every caller but the rail.
  */
-export function railGroups(home: HomeWire, current: SessionSlot, now: number): RailGroup[] {
+export function railGroups(
+  home: HomeWire,
+  current: SessionSlot,
+  now: number,
+  closing: (slot: SessionSlot) => boolean = () => false,
+): RailGroup[] {
   const groups: RailGroup[] = [
     { heading: 'needs you', klass: 'state needs', hidden: null, holds: false, projects: [] },
     { heading: 'working', klass: 'state', hidden: null, holds: false, projects: [] },
@@ -471,10 +489,12 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
   for (const entry of home.projects) {
     const { lead, workers } = projectRows(home, entry);
     const all = [lead, ...workers];
-    const rank = all.reduce((best, row) => Math.min(best, rankOf(row.state, row.pending)), 2);
+    const rankOfRow = (row: Row): number =>
+      closing(row.slot) ? 2 : rankOf(row.state, row.pending);
+    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
     const group = groups[rank];
     if (group === undefined) continue;
-    const sleeping = workers.filter((row) => rankOf(row.state, row.pending) === 2);
+    const sleeping = workers.filter((row) => rankOfRow(row) === 2);
     const shown =
       entry.project.org === current.org && entry.project.name === current.project
         ? current.label
@@ -487,9 +507,16 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
-      workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
+      workers: workers.filter((row) => rankOfRow(row) !== 2),
       sleeping,
-      why: whyOf(lead, workers),
+      // A closing seat writes on no line: the lead's whole line goes with it,
+      // and a closing worker is out of both searches.
+      why: closing(lead.slot)
+        ? null
+        : whyOf(
+            lead,
+            workers.filter((row) => !closing(row.slot)),
+          ),
     });
     // The rows the heading hides when it folds: the project's own row and
     // every worker under it, drawn or folded.

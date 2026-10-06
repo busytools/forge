@@ -168,6 +168,9 @@
   .dot.needs { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
     animation: pulse 1500ms ease-in-out infinite; }
   .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+  /* A seat this client has just closed reads asleep at once, and the dot pulses
+     while the core finishes shutting it down; the pulse goes with the mark. */
+  .dot.off.settling { animation: pulse 1.05s ease-in-out infinite; }
   .dot.failed { background: var(--bad);
     clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
   /* The work spinner is the RING, the only one this view draws. */
@@ -1355,8 +1358,15 @@
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
           <span class="nm">em-dash-sweep</span><button class="x" type="button" title="close">&#10005;</button></div>
-        <div class="wk"><span class="dot unseen" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">steward</span><button class="x" type="button" title="close">&#10005;</button></div>
+        <!-- Just closed here: the seat reads asleep AT ONCE - out of the
+             reader's working section on the click - and its dot pulses until
+             the core finishes, then rests. -->
+        <details class="sfold" open>
+          <summary class="wk"><span class="dot off"></span>
+            <span class="nm">1 asleep</span><span class="arw">&#9656;</span></summary>
+          <div class="wk"><span class="dot off settling"></span>
+            <span class="nm">steward</span></div>
+        </details>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot unseen"></span><span class="nm">busymail</span>

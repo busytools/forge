@@ -124,7 +124,15 @@
 
     const stopHome = watchHome(open).subscribe(($home) => {
       home = $home;
-      if ($home.wire !== null) settled = true;
+      if ($home.wire !== null) {
+        settled = true;
+        // The roster catching up is a home read like any other: a closed
+        // seat that has landed (asleep, or gone) drops its mark the moment
+        // the wire says so, which is what takes the row's "going to sleep"
+        // away. Waiting on a removal frame instead left the words up until
+        // a reload for every close that lands by sleeping (#1712).
+        forgetClosed($home.wire);
+      }
     });
     const stopStatus = open.onStatus((next) => {
       connectionStatus = next;

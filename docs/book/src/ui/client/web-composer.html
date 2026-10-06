@@ -149,6 +149,13 @@
   .blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
     font-size: var(--fs-base); color: var(--text); }
   .blocked .b2 { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  /* The waking line's sweep, the sheet's own rule: a highlight through the
+     words, one loop, still under reduced motion. */
+  @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+  .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--hot) 50%,
+    var(--muted) 65%, var(--muted) 100%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+    color: transparent; animation: shimmer 1.4s cubic-bezier(.37, 0, .63, 1) infinite; }
   .ring { width: 13px; height: 13px; display: inline-block; border-radius: 50%;
     border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
     animation: spin 900ms linear infinite; flex: none; }
@@ -684,9 +691,9 @@ way the TUI does it &#8212; the slot always says why it is not accepting keys.</
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">connecting</div>
+      <div class="lab">waking up</div>
       <div class="box"><div class="blocked">
-        <span class="b1"><span class="ring"></span>Connecting to Claude Code...</span></div></div>
+        <span class="b1"><span class="shimmer">Waking up agent...</span></span></div></div>
     </div>
     <div class="col">
       <div class="lab">a slash command in flight</div>

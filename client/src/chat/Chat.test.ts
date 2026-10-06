@@ -269,9 +269,46 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the reader own words drew above it').toContain('go');
   });
 
-  it('draws the seat that has no session behind it as its own state', () => {
+  it('wakes a lead rather than drawing it as one nothing runs', () => {
+    // A lead's page dispatches the spawn on open, so this state is a wait
+    // with a keeper: the waking line sweeps rather than refusing.
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);
+
+    expect(drawn()).toContain('Waking up agent...');
+    expect(document.querySelector('.hold .shimmer'), 'the wake does not sweep').not.toBeNull();
+    expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
+  });
+
+  it('keeps the waking line up while the spawn is in flight', () => {
+    // The wake reads as one state on both sides of the roster noticing:
+    // before the row lands (waking) and while the core brings it up
+    // (spawning), so the column never flashes a not-running line in between.
+    const server = stub();
+    draw({ spawning: true }, server);
+
+    expect(drawn(), 'the spawn in flight lost its waking line').toContain('Waking up agent...');
+    expect(
+      document.querySelector('.hold .shimmer'),
+      'the spawn line does not sweep',
+    ).not.toBeNull();
+  });
+
+  it('keeps the waking line up for a worker seat the core is spawning', () => {
+    // The roster can name a WORKER Spawning (its lead's spawn), and the
+    // not-running refusal there would read as a dead seat at the moment it is
+    // coming up - the inner arm has to answer for any spawning seat, not
+    // only a lead.
+    const server = stub();
+    draw({ spawning: true, slot: { ...LEAD, label: 'w1' } }, server);
+
+    expect(drawn(), 'a spawning worker read as a dead seat').toContain('Waking up agent...');
+    expect(drawn(), 'a spawning worker drew the refusal').not.toContain('not running');
+  });
+
+  it('draws a seat that has no session behind it as its own state', () => {
+    const server = stub();
+    draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);
 
     expect(drawn()).toContain('not running');
     expect(drawn()).toContain('no model declared');

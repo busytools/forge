@@ -5,7 +5,7 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
-  import { closeSeat } from './close';
+  import { closeSeat, closingSeat } from './close';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import {
@@ -41,7 +41,7 @@
     onclose: () => void;
   } = $props();
 
-  const groups = $derived(railGroups(home, current, now));
+  const groups = $derived(railGroups(home, current, now, closingSeat));
   /**
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.
@@ -83,9 +83,16 @@
     <!-- One project's block, drawn the same in a folded group and an open
          one: the asleep heading is the only thing a folded group changes. -->
     {#snippet projectBlock(project: RailProject)}
+      {@const leadDot = closingSeat(project.row.slot)
+        ? 'off settling'
+        : railMark(project.row.state)}
+      <!-- A row this client has just closed reads asleep AT ONCE, and its dot
+           pulses while the core finishes: the seat leaves the reader's
+           working section on the click rather than sitting there for the
+           seconds the shutdown takes (#1712). -->
       <div class="pj">
         <div class="pr" class:on={project.shown === 'lead'}>
-          <span class="dot {railMark(project.row.state)}"></span>
+          <span class="dot {leadDot}"></span>
           <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
           <span class="org">{project.org}</span>
           {#if project.asleep}
@@ -100,6 +107,8 @@
         {#each project.workers as worker (worker.slot.label)}
           {@const failed = failedLine(worker)}
           <div class="wk" class:on={project.shown === worker.slot.label}>
+            <!-- No closing arm here: a closed worker folds into the sleeper
+                 fold on the grouping, so this each never draws one. -->
             <span class="dot {railMark(worker.state)}"></span>
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
@@ -116,7 +125,7 @@
              them: they are rows a reader is not working in, and the count is
              what keeps the fold from reading as a project with no workers. -->
         {#if project.sleeping.length > 0}
-          <SleeperFold sleeping={project.sleeping} shown={project.shown} />
+          <SleeperFold sleeping={project.sleeping} shown={project.shown} closing={closingSeat} />
         {/if}
       </div>
     {/snippet}

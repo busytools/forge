@@ -376,7 +376,7 @@ describe("a project's sleeping seats", () => {
     };
     const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
     return render(SleeperFold, {
-      props: { sleeping: project?.sleeping ?? [], shown },
+      props: { sleeping: project?.sleeping ?? [], shown, closing: () => false },
     }).body;
   };
 

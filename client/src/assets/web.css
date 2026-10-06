@@ -203,6 +203,9 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dot.needs { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%);
   animation: pulse 1500ms ease-in-out infinite; }
 .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+/* A seat this client has just closed reads asleep at once, and the dot pulses
+   while the core finishes shutting it down; the pulse goes with the mark. */
+.dot.off.settling { animation: pulse 1.05s ease-in-out infinite; }
 .dot.failed { background: var(--bad);
   clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
 /* The verdict pair: how a service or a model is, rather than what state a
@@ -282,6 +285,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 @media (prefers-reduced-motion: reduce) {
   .dot.live, .ring { animation: none; border-color: var(--accent); }
   .dot.needs { animation: none; }
+  .dot.off.settling { animation: none; }
   .row.running .dot { animation: none; border-color: var(--accent); }
   .row.spawning .dot { animation: none; border-color: var(--muted); }
   .row.needs .dot, .row.auth .dot { animation: none; }
@@ -670,6 +674,15 @@ details.sfold div.wk:hover { background: none; }
 .hold .sub { color: var(--dim); }
 /* A seat nothing is running on is not work in flight: it says so quietly. */
 .hold.off { color: var(--muted); }
+
+/* The waking line: a highlight sweeping through the words, the loading-text
+   shape a person reads as work in progress (the loading guidance's own shape -
+   a gradient sweep rather than an opacity pulse, one loop under 1.5s). */
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--hot) 50%,
+  var(--muted) 65%, var(--muted) 100%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+  color: transparent; animation: shimmer 1.4s cubic-bezier(.37, 0, .63, 1) infinite; }
 
 /* ---------- inspector: one collapsed section per subject ---------- */
 
@@ -2087,6 +2100,10 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: arrive 150ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
+  /* The waking line keeps its words: the sweep is the only thing that goes.
+     Declared HERE, after the base: a media query adds no specificity, so an
+     arm above the rule it stills loses to it by source order. */
+  .shimmer { animation: none; background: none; color: var(--muted); }
 }
 
 /* A search hit is a location and the line it matched, on two lines. The design

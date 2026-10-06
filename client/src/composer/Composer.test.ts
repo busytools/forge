@@ -693,7 +693,8 @@ describe('the box', () => {
 
   it('replaces the box entirely for each reason it cannot take keys, and says why', () => {
     const cases: [Partial<ComposerProps>, string, string | null][] = [
-      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Connecting to Claude Code...', null],
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...', null],
+      [{ seat: seatRead({ lifecycle: 'Sleeping' }) }, 'Waking up agent...', null],
       [
         {
           record: record({
@@ -709,9 +710,25 @@ describe('the box', () => {
         'the CLI exited with status 1',
       ],
       [
-        // The shape the session page actually hands over for a seat nothing has
-        // started: no roster row, so no lifecycle and `waking` true together.
+        // The shape the session page hands over for a LEAD nothing has
+        // started: no roster row, so no lifecycle and `waking` true together -
+        // and the page's own open dispatches the spawn, so the line is the
+        // wake rather than a refusal.
         {
+          seat: seatRead({
+            lifecycle: null,
+            waking: true,
+            reason: 'no session has been started here',
+          }),
+        },
+        'Waking up agent...',
+        null,
+      ],
+      [
+        // A worker's seat with nothing behind it has no spawn coming - only
+        // its lead can start it - so its line keeps saying so.
+        {
+          slot: { org: 'Busytools', project: 'forge', label: 'w1' },
           seat: seatRead({
             lifecycle: null,
             waking: true,
@@ -732,6 +749,32 @@ describe('the box', () => {
       app = null;
       document.body.innerHTML = '';
     }
+  });
+
+  /**
+   * The waking line carries its own motion: a sweep through the words rather
+   * than the ring, because a ring beside a moving line is two animations
+   * saying one thing. The loads guidance's shape - a gradient sweep reads as
+   * loading more clearly than a pulse, and one loop is the whole of it.
+   */
+  it('draws the waking line as a sweep, with no second animation beside it', () => {
+    open({ seat: seatRead({ lifecycle: 'Spawning' }) });
+
+    expect(drawn(), 'the box lost the waking line').toContain('Waking up agent...');
+    expect(document.querySelector('.b1 .shimmer'), 'the waking line does not sweep').not.toBeNull();
+    expect(
+      document.querySelector('.b1 .ring'),
+      'the waking line draws a ring beside its own motion',
+    ).toBeNull();
+
+    // The lead's own wake arm carries the same pair: an edit that left the
+    // sweep on the spawn arm alone would keep everything above green.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    open({ seat: seatRead({ lifecycle: null, waking: true, reason: null }) });
+    expect(document.querySelector('.b1 .shimmer'), "the lead's wake lost its sweep").not.toBeNull();
+    expect(document.querySelector('.b1 .ring'), 'a ring joined the lead wake').toBeNull();
   });
 
   it('takes the mark off a send the core has started, and keeps the words', () => {
