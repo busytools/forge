@@ -73,6 +73,17 @@ impl ViewSurface {
         }
     }
 
+    /// The models page's whole read: the pinned models, the catalogue
+    /// check, what the feed proposes, and every row it carries.
+    ///
+    /// Read when the page subscribes and again from each
+    /// [`forge_workspace::SessionUpdate::DictateModelsChanged`]; the
+    /// check it reports on is started by the core at boot and by
+    /// `Command::DictateCatalogueCheck`.
+    pub fn dictate_models(&self) -> forge_workspace::catalogue::DictateModelsSnapshot {
+        self.workspace.dictate_models()
+    }
+
     /// The `[dictate] bind` key, as `forge.toml` declares it. The terminal
     /// reads the same value for its own key handler; a client draws the
     /// keyboard the record carries rather than hardcoding one.

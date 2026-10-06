@@ -53,8 +53,15 @@
 
   // Through an effect rather than `bind:this`, because the handle is a callback
   // the surface keeps rather than a variable this component owns.
+  //
+  // **And it reports the teardown.** A surface that swaps this field out - the
+  // dock draws a take's card in the words row - would otherwise keep a handle
+  // to a detached node, and its own effects would never see the field go.
   $effect(() => {
     field?.(node);
+    return () => {
+      field?.(null);
+    };
   });
 </script>
 

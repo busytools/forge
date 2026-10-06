@@ -1322,7 +1322,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
-.box { border: 1.5px solid var(--ctl); border-radius: 16px;
+.box { position: relative; container-type: inline-size;
+  border: 1.5px solid var(--ctl); border-radius: 16px;
   background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
   padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
@@ -1342,7 +1343,6 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The separation the box's gap gave every row above the draft: C moved the
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
-.dict + .line, .dict + .ac,
 .comp .notice + .line, .comp .notice + .ac,
 .ac + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
@@ -1389,47 +1389,96 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 kbd { font-family: inherit; font-size: inherit; color: inherit;
   border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
 
-/* The dictation row: it lives inside the box, grows it by one line, and
-   collapses when the take resolves. */
-/* One box, one left margin: every row inside starts where the field starts,
-   which is what the footer already took. These carried the terminal's 25px
-   gutter - measured at 25.00px right of the field, at both widths. */
-.dict { display: flex; align-items: center; gap: 11px;
-  font-family: var(--mono); font-size: var(--fs-data); }
-/* The row's own readings never wrap: the meter and the wire line are the parts
-   that give way, a clock broken across two lines reads as two figures rather
-   than a time, and the count is the reading the row can do without. */
-.dict .t, .dict .db, .dict .lbl, .dict .wire, .dict .esc { white-space: nowrap; }
-.dict .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+/* The take's card: one pill inside the box, at its top left, with the draft
+   below it. It is a row rather than a floating reading, so the height it takes
+   is the height it uses. */
+.tc { align-self: flex-start; display: flex; max-width: 100%;
+  align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
+  border-radius: 999px;
+  font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: linear-gradient(180deg, #1b1622, #12161f);
+  box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+.tc.tr { border-color: color-mix(in srgb, var(--blue) 45%, transparent); }
+.tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
-.dict .dot.tr { background: var(--blue); animation: none; }
-.dict .t { color: var(--accent); }
-.dict .t.tr { color: var(--dim); }
-.dict .db { color: var(--hot); }
-.dict .db.tr { color: var(--dim); }
-.dict .lbl { color: var(--dim); }
-/* The one reading with room to yield: at phone widths the row cannot hold it
-   whole, and a count clipped reads as a count where a pushed-out hint does
-   not. */
-.dict .wire { color: var(--dim); min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; }
-.dict .esc { margin-left: auto; color: var(--dim); background: none; border: 0;
-  font-family: inherit; font-size: inherit; padding: 0; cursor: pointer; }
-/* The meter is a history of levels, not bars pulsing in place: each cell is
-   one past sample, and the track is pinned right so the newest reading is
-   always at the right edge and the history flows off the left one. A cell
-   shares out the width the track has over its own 4px apiece, so the graph
-   reaches both ends of its box; the shrink of zero keeps a track narrower
-   than the window clipping its oldest readings instead of squeezing them. */
-.wave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
-.wtr { display: flex; align-items: flex-end; justify-content: flex-end;
-  gap: 2px; height: 100%; }
-.wtr i { flex: 1 0 4px; border-radius: 1px; background: var(--s3); }
-.wtr i.mid { background: #ab6100; }
-.wtr i.hot { background: var(--hot); }
-.wave.tr .wtr i { background: #26354a; }
-.wave.tr .wtr i.mid { background: #2f486d; }
-.wave.tr .wtr i.hot { background: #365582; }
+.tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--s3); border-top-color: var(--blue);
+  animation: spin 1s linear infinite; }
+.tc .clock { color: var(--text); font-variant-numeric: tabular-nums; }
+.tc .ready { color: var(--muted); }
+/* The three counts carry a fixed slot each, right-aligned in it: a take's
+   digits grow - five digits at a few minutes, ~90k frames and ~55 MB at the
+   cap - and a card that widened with them would walk its own left edge, the
+   dot and the clock, across the box as the take runs. Eight characters holds
+   the widest reading each slot can be handed. */
+.tc .fr, .tc .kb, .tc .pace { color: var(--dim); min-width: 8ch; text-align: right;
+  font-variant-numeric: tabular-nums; }
+.tc .pace { color: var(--ok); }
+.tc .count { color: var(--blue); }
+.tc .x { color: var(--dim); background: none; border: 0; cursor: pointer;
+  font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
+.tc .x:hover { color: var(--text); }
+/* The phase, for a screen reader only: the card's counts are visual readings
+   and would be unreadable announced fifty times a second. */
+.tc .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* The graph: the same readings the console's meter draws, at the card's own
+   pitch - one bar per past reading, newest last, and the window held at a
+   fixed length so the pitch stays still while the heights move. */
+.tc .bars { display: flex; align-items: flex-end; gap: 1px; width: 116px;
+  height: 16px; flex: none; }
+/* The readings arrive every 50 ms and each bar takes its neighbour's height as
+   the history slides, so the height is interpolated: without it the graph snaps
+   twenty times a second while everything beside it moves at fifty. */
+.tc .bars i { flex: 1 0 1px; border-radius: 1px;
+  background: linear-gradient(180deg, var(--hot), var(--accent));
+  transition: height 90ms linear; }
+.tc .bars i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+.tc .bars i.hot { background: var(--hot); }
+/* The section bar takes the graph's slot while the take transcribes: a tick
+   per section up to eight, and a fill past that - a tick per section stops
+   meaning anything once a take holds sixty. */
+.tc .ticks { display: flex; gap: 3px; flex: none; }
+.tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
+.tc .ticks i.on { background: var(--blue); }
+.tc .bar { width: 116px; height: 6px; border-radius: 999px; background: var(--s3);
+  overflow: hidden; flex: none; }
+.tc .bar > i { display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #2f486d, var(--blue)); }
+/* Before the section count is in: motion that claims nothing about how far. */
+.tc .bar.sweep > i { width: 40%;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent);
+  animation: sweep 1.5s linear infinite; }
+@keyframes sweep { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+/* The card narrows with the box: one reading leaves at a time from the left -
+   clock, graph, ready tally, frames, bytes, pace - and the dot, the way out
+   and the state's colour are what remain. Items are removed, never reordered.
+   Each step is one below the measured fit point in the real engine, against
+   the container's own measure (the box's content width), with the widest digits
+   a take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
+   every reading, 457 without the clock, 331 without the graph, 267 without the
+   tally, 196 without the frames, 124 without the bytes, and alone with the
+   state and the way out at 52.5px recording (dot + way out) or 56.5px
+   transcribing (spinner + way out). The transcribing card is narrower at every
+   step (366/317/184/128/57), so one ladder holds for both. Below the last
+   floor the pill shrinks into its own chrome and clips its readings; that is a
+   box under ~51px, narrower than the pill's 22px of padding and border, which
+   nothing draws at. */
+@container (max-width: 505px) { .tc .clock { display: none; } }
+@container (max-width: 456px) { .tc .bars, .tc .ticks, .tc .bar { display: none; } }
+@container (max-width: 330px) { .tc .ready, .tc .count { display: none; } }
+@container (max-width: 266px) { .tc .fr { display: none; } }
+@container (max-width: 195px) { .tc .kb { display: none; } }
+@container (max-width: 124px) { .tc .pace { display: none; } }
+/* The way out keeps a finger's target wherever the card ends up, and the target
+   is drawn rather than laid out: a 44px box centred on the glyph, so the pill's
+   width does not change with the pointer and the ladder's steps hold for both. */
+@media (pointer: coarse) {
+  .tc .x { position: relative; }
+  .tc .x::after { content: ''; position: absolute; left: 50%; top: 50%;
+    width: 44px; height: 44px; transform: translate(-50%, -50%); }
+}
 
 /* A notice shares the row with the take and wins it. Each rule here is scoped
    to `.comp` and states the row's own chrome, so the chrome depends on no
@@ -1570,17 +1619,40 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    surface, with the accent left to the row being marked and the question's
    own mark. The warm border and the orange-tinted gradient read as a state
    rather than as a surface. */
-.dock { border: 1px solid var(--line); border-radius: 14px;
+/* A container as well as a card: the take's own ladder measures its container,
+   and in here that is this dock - without it a card drawing in the words row
+   keeps every reading and runs the row out past the dock's edge. */
+.dock { container-type: inline-size;
+  border: 1px solid var(--line); border-radius: 14px;
   background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
   box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
   display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.dock .head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
-.dock .head .qm { color: var(--accent); font-weight: 700; flex: none; }
-.dock .head .t { font-weight: 650; color: var(--text); white-space: nowrap; }
-.dock .head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+/* The head, which says what kind of prompt this is: the question's own words,
+   a permission's subject as it arrives, or a draft's destination. */
+.dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
+.dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+/* The trailing element of the head - the tool's name, the verb a post is -
+   sits at the far edge, which is how the mock draws the head. */
+.dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
+  margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock .d-head .q.mono { font-weight: 400; }
+.dock .d-q { font-size: 16px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--text); overflow-wrap: anywhere; }
+/* The batch, as one mark per question with this one and the ones behind it lit. */
+.dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
+.dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
+.dock .segs i.on { background: var(--accent); }
+/* What kind of decision this is, and where a post would go. */
+.dock .tag { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
+  padding: 3px 10px; }
+.dock .tag.warn { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+.dock .dest { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
 .dock .opts { display: flex; flex-direction: column; gap: 1px; }
@@ -1594,10 +1666,17 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    thing being chosen. */
 .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
   border-radius: 9px; font-size: var(--fs-base); }
-.opt .ic { color: var(--dim); }
-.opt .ic.ok { color: var(--ok); }
-.opt .ic.no { color: var(--bad); }
-.opt .ic.ed { color: var(--blue); }
+/* The row's own number, which is the key that answers it. */
+.opt .n { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  flex: none; width: 10px; margin-top: 1px; }
+.opt.sel .n { color: var(--hot); }
+/* The key the marked row answers to, drawn on the row it would act on. */
+.opt .kk { margin-left: auto; flex: none; opacity: .85; }
+.opt .answering { margin-left: auto; flex: none; }
+/* The mark a reader's answer carries while it is on its way, wherever it is
+   drawn: on the row that was answered, or in the keys line for a prompt with no
+   rows. */
+.dock .answering { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
 .opt .tx { flex: 1; min-width: 0; }
 .opt .lbl { color: var(--dim); background: none; border: 0; padding: 0;
   font-family: inherit; font-size: inherit; text-align: left; cursor: pointer; }
@@ -1629,8 +1708,49 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .radio.on { border-color: var(--ok); }
 .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok); }
-/* The escape row's slot, held empty so its words line up with every option's. */
-.opt .slot { width: 15px; flex: 0 0 15px; }
+/* A permission's actions, and a held post's verbs: buttons, with the trusting
+   one primary and the refusal as reachable as the approval. */
+.dock .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.dock .btn { border: 1px solid var(--line); border-radius: 9px; background: none;
+  color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
+  padding: 7px 13px; cursor: pointer; }
+.dock .btn:hover { color: var(--text); border-color: var(--ctl); }
+.dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
+/* The one row that takes words, which is also where a take's words land: the
+   field, and the mic that is this surface's own door to a take. */
+/* The row wraps rather than pushing the mic out of the dock: the card in here
+   is the composer's own, shed by the ladder above only so far, and at a narrow
+   dock the mic is what would otherwise hang past the edge. */
+.dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border-top: 1px solid var(--line); padding-top: 10px; }
+.dock .custom .notes { flex: 1; min-width: 0; }
+.dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+  border: 1px solid var(--line); background: none; color: var(--dim);
+  display: grid; place-items: center; cursor: pointer; }
+.dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+.dock .custom.live .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--hot); }
+/* A refusal is a row of its own, in the tone of a thing gone wrong. */
+.dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
+/* A take running behind a held post, whose branch draws no words row. */
+.dock .blip { display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
+.dock .blip .dot.tr { background: var(--blue); animation: none; }
+/* The actions and the mic keep a finger's target under a coarse pointer: the
+   sheet's own button rule gives the height, and the mic is narrower than the
+   floor, so its width is stated here. */
+@media (pointer: coarse) {
+  .dock .btn { min-height: 44px; }
+  .dock .custom .micb { min-height: 44px; min-width: 44px; }
+}
+/* The phase or the batch, for a screen reader only: the marks say nothing. */
+.dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The marked option's own prose: markdown on the wire, rendered as markdown
@@ -1645,27 +1765,21 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .notes { width: 100%; margin: 0; border: 0; background: none; padding: 0;
   font-family: inherit; font-size: inherit; color: var(--text); resize: none; outline: none; }
 .dock .notes::placeholder { color: var(--dim); }
-/* A take that is still running behind the dock: the whole indicator on this
-   surface, so a prompt cannot swallow a recording that is still going. */
-.dock .blip { display: flex; align-items: center; gap: 8px; padding-left: 31px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
-  background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
-.dock .blip .dot.tr { background: var(--blue); animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .dict .dot, .blocked .ring, .dock .blip .dot { animation: none; }
+  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring, .dock .blip .dot {
+    animation: none;
+  }
+  .tc .bars i { transition: none; }
+  /* The sweep's whole meaning is "no measure": frozen where the animation
+     stopped, a partial fill would read as progress, so it becomes a full dim
+     bar - the one shape that claims nothing. */
+  .tc .bar.sweep > i { width: 100%; opacity: .35; }
 }
 
-/* The narrow widths, which the mockup draws the composer at too. The rect
-   is fixed furniture and the meter is the one part of it that flexes, so on
-   a phone the fixed parts leave the meter a slot a pixel wide and the row's
-   whole point renders as a single cell. It takes a line of its own there. */
-@media (max-width: 760px) {
-  .dict { flex-wrap: wrap; row-gap: 2px; }
-  .dict .wave { flex: 1 0 100%; }
-  .dict .esc { margin-left: auto; }
-}
+/* The narrow widths, which the mockup draws the composer at too. The take's
+   card carries its own ladder (the container queries above), so nothing here
+   has to fold it. */
 
 /* ---------- the session header's facts, and the sections a view
    reads from the session itself: mcp servers, processes, monitors

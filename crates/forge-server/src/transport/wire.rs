@@ -915,6 +915,10 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
         // snapshot: it belongs to no seat, and a home snapshot that scanned
         // the pool would pay for the walk on every subscribe.
         Subject::Usage => Ok(serde_json::to_value(surface.usage().await?)?),
+        // The models page's read, off the workspace's own state: no walk,
+        // no lock held across a scan - the fetch that changes it runs
+        // elsewhere and lands as its own update.
+        Subject::DictateModels => Ok(serde_json::to_value(surface.dictate_models())?),
     }
 }
 

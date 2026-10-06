@@ -14,9 +14,11 @@ import {
   FRAME_SAMPLES,
   FrameChunker,
   FrameRing,
+  LEVEL_CELLS,
   RING_FRAMES,
   SAMPLE_RATE,
   encodeFrame,
+  frameDbfs,
 } from './capture.svelte';
 
 describe('the frame the wire carries', () => {
@@ -53,6 +55,24 @@ describe('the frame the wire carries', () => {
       const signed = value > 32767 ? value - 65536 : value;
       expect(Math.abs(signed / 32768 - sample)).toBeLessThan(1 / 32768);
     }
+  });
+});
+
+describe('the level a frame reads', () => {
+  it("is the core's own: i16 over 2^15, peak to dBFS, silence at negative infinity", () => {
+    // The core's own readings, from its own tests: half scale is about
+    // -6 dBFS (`forge-dictate/src/capture.rs`), and full scale is 0.
+    expect(frameDbfs(encodeFrame([0.5]))).toBeCloseTo(-6.02, 1);
+    expect(frameDbfs(encodeFrame([1, -1]))).toBeCloseTo(0, 5);
+    expect(frameDbfs(encodeFrame([0, 0])), 'an untouched frame reads as no signal').toBe(
+      Number.NEGATIVE_INFINITY,
+    );
+  });
+
+  it('keeps only the newest readings, which is the window a view draws', () => {
+    const ring = new FrameRing(() => true);
+    for (let at = 0; at < LEVEL_CELLS + 10; at += 1) ring.push(encodeFrame([0.5]));
+    expect(ring.dbfs, 'the history is bounded at the window').toHaveLength(LEVEL_CELLS);
   });
 });
 
@@ -113,7 +133,6 @@ describe('the ring a take holds while the socket is down', () => {
     const ring = new FrameRing(wire.send);
     ring.push(encodeFrame([0]));
     expect(wire.sent).toHaveLength(1);
-    expect(ring.heldFrames).toBe(0);
   });
 
   it('holds while the socket is away, and flushes in the order spoken', () => {
@@ -121,11 +140,10 @@ describe('the ring a take holds while the socket is down', () => {
     const ring = new FrameRing(wire.send);
     ring.push(encodeFrame([0.1]));
     ring.push(encodeFrame([0.2]));
-    expect(ring.heldFrames, 'both frames are held, not dropped').toBe(2);
+    expect(wire.sent, 'both frames are held, not dropped, while the socket is away').toEqual([]);
 
     wire.open = true;
     expect(ring.flush()).toBe(true);
-    expect(ring.heldFrames).toBe(0);
     expect(wire.sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
   });
 
@@ -133,11 +151,10 @@ describe('the ring a take holds while the socket is down', () => {
     const wire = socket();
     const ring = new FrameRing(wire.send, 2);
     for (const sample of [0.1, 0.2, 0.3]) ring.push(encodeFrame([sample]));
-    expect(ring.heldFrames, 'the bound holds').toBe(2);
 
     wire.open = true;
     ring.flush();
-    expect(wire.sent, 'the newest speech is what survives').toEqual([
+    expect(wire.sent, 'the bound holds, and the newest speech is what survives').toEqual([
       encodeFrame([0.2]),
       encodeFrame([0.3]),
     ]);
@@ -157,12 +174,13 @@ describe('the ring a take holds while the socket is down', () => {
 
     budget = 1;
     expect(ring.flush(), 'the first frame goes, then the socket closes again').toBe(false);
-    expect(ring.heldFrames, 'the frame that did not go is still here').toBe(1);
 
     budget = 2;
-    expect(ring.flush()).toBe(true);
-    expect(ring.heldFrames).toBe(0);
-    expect(sent).toEqual([encodeFrame([0.1]), encodeFrame([0.2])]);
+    expect(ring.flush(), 'and the next flush starts where that one stopped').toBe(true);
+    expect(sent, 'the frame that did not go is still here, and it goes once').toEqual([
+      encodeFrame([0.1]),
+      encodeFrame([0.2]),
+    ]);
   });
 
   /**

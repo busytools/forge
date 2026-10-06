@@ -40,6 +40,9 @@ serde_json = { workspace = true }
 # The prompt normaliser's option types cross the wire inside the
 # workspace's command and update enums, so they derive the codec here.
 serde = { workspace = true }
+# The fetched-at stamp on a fetched catalogue, in the RFC 3339 the rest
+# of the wire's timestamps use.
+time = { workspace = true }
 # Microphone capture. The stream is !Send, which is why it lives on a
 # thread of its own rather than inside `Capture`.
 cpal = { workspace = true }

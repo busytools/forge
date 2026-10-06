@@ -114,4 +114,8 @@ pub enum Error {
     /// A file on disk is the right length but the wrong bytes.
     #[error("{} hashes to {actual}, expected {expected}", path.display())]
     HashMismatch { path: PathBuf, expected: String, actual: String },
+
+    /// A catalogue document is not an entry this build reads.
+    #[error("catalogue: {message}")]
+    Catalogue { message: String },
 }

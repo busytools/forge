@@ -352,6 +352,11 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
+            dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
+            #[cfg(any(test, feature = "testing"))]
+            test_catalogue_source: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_catalogue_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),

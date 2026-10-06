@@ -32,36 +32,37 @@ impl Workspace {
         self.announce_tasks_changed(&project_name);
     }
 
-    /// Apply `f` to the task `id` in `project_name`, persist, and report
-    /// whether it was found. Open to every session in the project.
+    /// Apply `f` to the task `id` in `project_name`, persist, and return
+    /// the record as the write left it (`None` when no such task is
+    /// there). Open to every session in the project.
     pub(crate) fn update_task(
         &self,
         project_name: &str,
         id: &TaskId,
         f: impl FnOnce(&mut Task),
-    ) -> bool {
-        let changed = self.with_tasks_mut(|tasks| {
+    ) -> Option<Task> {
+        let updated = self.with_tasks_mut(|tasks| {
             match tasks.iter_mut().find(|t| t.id == *id && t.project_name == project_name) {
                 Some(task) => {
                     f(task);
                     task.updated_at = std::time::SystemTime::now();
-                    true
+                    Some(task.clone())
                 }
-                None => false,
+                None => None,
             }
         });
-        if changed {
+        if updated.is_some() {
             self.announce_tasks_changed(project_name);
         }
-        changed
+        updated
     }
 
     /// Remove the task `id` in `project_name` together with every
-    /// descendant, persist, and report whether anything was removed.
-    /// Backs `tasks__delete`. The cascade happens here rather than at the
-    /// call site so a parent can never be deleted out from under children
-    /// that would then have nobody to close them.
-    pub(crate) fn remove_task_tree(&self, project_name: &str, id: &TaskId) -> bool {
+    /// descendant, persist, and return the records removed (empty when
+    /// nothing was). Backs `tasks__delete`. The cascade happens here
+    /// rather than at the call site so a parent can never be deleted out
+    /// from under children that would then have nobody to close them.
+    pub(crate) fn remove_task_tree(&self, project_name: &str, id: &TaskId) -> Vec<Task> {
         let removed = self.with_tasks_mut(|tasks| {
             let mut doomed = vec![id.clone()];
             let mut cursor = 0;
@@ -77,11 +78,17 @@ impl Workspace {
                     }
                 }
             }
-            let before = tasks.len();
-            tasks.retain(|t| !(t.project_name == project_name && doomed.contains(&t.id)));
-            tasks.len() != before
+            let mut removed = Vec::new();
+            tasks.retain(|t| {
+                let taking = t.project_name == project_name && doomed.contains(&t.id);
+                if taking {
+                    removed.push(t.clone());
+                }
+                !taking
+            });
+            removed
         });
-        if removed {
+        if !removed.is_empty() {
             self.announce_tasks_changed(project_name);
         }
         removed
@@ -177,7 +184,7 @@ mod tests {
         let changed = ws.update_task("forge", &TaskId::from("t-1"), |t| {
             t.status = TaskStatus::Completed;
         });
-        assert!(changed, "any session in the project may move a task");
+        assert!(changed.is_some(), "any session in the project may move a task");
         assert_eq!(ws.tasks_for_project("forge")[0].status, TaskStatus::Completed);
     }
 
@@ -227,7 +234,11 @@ mod tests {
         ws.push_task(sample_task("sibling", "forge"));
         ws.push_task(sample_task("epic", "elsewhere"));
         ws.push_task(sample_task_with_parent("sibling", Some("epic"), "elsewhere"));
-        assert!(ws.remove_task_tree("forge", &TaskId::from("epic")), "the tree is removed");
+        assert_eq!(
+            ws.remove_task_tree("forge", &TaskId::from("epic")).len(),
+            3,
+            "the tree is removed: the epic and its two descendants",
+        );
         let left = ws.tasks_for_project("forge");
         assert_eq!(
             left.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
@@ -267,15 +278,18 @@ mod tests {
         assert_eq!(key, lead, "a create routes on the project's lead seat");
         assert_eq!(subjects(&tasks), ["subject t-1"], "and carries the set the core now holds");
 
-        assert!(ws.update_task("proj", &TaskId::from("t-1"), |task| {
-            task.status = TaskStatus::Completed;
-        }));
+        assert!(
+            ws.update_task("proj", &TaskId::from("t-1"), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .is_some()
+        );
         let (key, tasks) = next_tasks_changed(&mut rx);
         assert_eq!(key, lead, "an update routes the same way");
         assert_eq!(tasks.len(), 1, "and announces the whole set");
         assert_eq!(tasks[0].status, TaskStatus::Completed, "the write's own change included");
 
-        assert!(ws.remove_task_tree("proj", &TaskId::from("t-1")));
+        assert!(!ws.remove_task_tree("proj", &TaskId::from("t-1")).is_empty());
         let (_, tasks) = next_tasks_changed(&mut rx);
         assert!(tasks.is_empty(), "a delete announces the set it left behind");
     }
@@ -293,13 +307,14 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-tasks-noop");
 
         assert!(
-            !ws.update_task("proj", &TaskId::from("ghost"), |task| {
+            ws.update_task("proj", &TaskId::from("ghost"), |task| {
                 task.status = TaskStatus::Completed;
-            }),
+            })
+            .is_none(),
             "precondition: no task carries the id, so the update is refused",
         );
         assert!(
-            !ws.remove_task_tree("proj", &TaskId::from("ghost")),
+            ws.remove_task_tree("proj", &TaskId::from("ghost")).is_empty(),
             "precondition: nothing holds the id, so the delete is refused",
         );
 

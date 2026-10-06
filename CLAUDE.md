@@ -167,7 +167,7 @@ Work top-down; first match wins.
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
-`cli_version`, `conversation`, `slash_commands`,
+`dictate_models`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `has_dispatches`, `subagent_cards`,
 `file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
 `processes`, `work`, `background_tasks`, `monitors`, `pending_asks`,
@@ -175,13 +175,13 @@ through named verbs by subject - `roster`, `session`, `agents`,
 and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All twenty-nine exist in `forge-server`, and the TUI reads
+core. All thirty exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; a second view reads its project roster and agent rows, the
 account pool, the worker registry, connector subscriptions and dictation
-state through those, the claude version through the tenth, its
+state through those, the claude version through `cli_version`, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
 `file_index` and `respect_gitignore`, and the conversation,
 header, inspector and the asks it answers through

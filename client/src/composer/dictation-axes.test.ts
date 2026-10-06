@@ -7,7 +7,7 @@
  * terminal's own (`crates/forge-tui/src/app/dictate_picker.rs`); the form is
  * the mockup's, which is chips rather than the terminal's rows.
  *
- * **Named with the suffix because the row's own suite is `Dictation.test.ts`**,
+ * **Named with the suffix because the card's own suite is `TakeCard.test.ts`**,
  * and on a case-insensitive filesystem `dictation.test.ts` is that file - a
  * second suite written under the lowercase name silently replaces it.
  */

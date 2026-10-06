@@ -357,6 +357,11 @@ pub enum Command {
         key: SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
     },
+    /// Check the model catalogue now. App-level command (`key()` returns
+    /// `None`); routed inline. Fire-and-forget: the outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`], so a client watches its
+    /// own subscription rather than a reply.
+    DictateCatalogueCheck,
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -680,6 +685,7 @@ impl Command {
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
+            | Self::DictateCatalogueCheck
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -820,6 +826,7 @@ impl std::fmt::Debug for Command {
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
+            Self::DictateCatalogueCheck => f.write_str("DictateCatalogueCheck"),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
@@ -1679,6 +1686,15 @@ pub enum SessionUpdate {
         initiator: Option<u64>,
     },
     FatalError(AppError),
+    /// The catalogue check landed: the models page's whole view, re-read.
+    /// Carries no slot - the feed belongs to the machine, not a seat - and
+    /// a session page ignores it. Sentinel rows the page draws (the
+    /// check's freshness, every candidate row, the per-model updates) are
+    /// all here, so a subscriber that was already attached never has to
+    /// ask again for what this frame just changed.
+    DictateModelsChanged {
+        models: crate::catalogue::DictateModelsSnapshot,
+    },
 }
 
 impl SessionUpdate {
@@ -1759,7 +1775,8 @@ impl SessionUpdate {
             | Self::PluginsRollbackFailed { .. }
             | Self::WorkerStatusChanged { .. }
             | Self::DictateAvailability { .. }
-            | Self::FatalError(..) => None,
+            | Self::FatalError(..)
+            | Self::DictateModelsChanged { .. } => None,
         }
     }
 }
@@ -2050,6 +2067,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("outcome", outcome)
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
+            Self::DictateModelsChanged { models } => f
+                .debug_struct("DictateModelsChanged")
+                .field("in_use", &models.in_use.len())
+                .field("rows", &models.rows.len())
+                .finish(),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged => f.write_str("AccountsChanged"),
@@ -2084,6 +2106,14 @@ pub enum DispatchError {
         "that Slack draft is no longer waiting: it has been answered, it expired, or its asking session went away"
     )]
     NoDraftWaiting { key: SessionSlot, id: Uuid },
+    /// A catalogue check was asked for with `[dictate]` switched off:
+    /// there are no pinned models for a check to be about.
+    #[error("dictation is off, so there is no catalogue to check")]
+    DictateOff,
+    /// A check is already in flight; the one that lands is the answer,
+    /// and a second fetch would answer the same thing twice.
+    #[error("a catalogue check is already running")]
+    CatalogueChecking,
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ import {
   seatRead,
   slackDraftAsk,
   SLOT,
+  take,
   wire,
 } from './composer/testing';
 import Turn from './chat/Turn.svelte';
@@ -145,6 +146,31 @@ describe('axe over the rendered pages', () => {
     expect(await idsOf(draw(record({ pending_asks: [slackDraftAsk()] }))), 'a held post').toEqual(
       [],
     );
+    expect(
+      await idsOf(
+        draw(
+          record({
+            composer: { take: take(), notice: null, compacting: false, sign_in: null },
+          }),
+        ),
+      ),
+      'a take recording',
+    ).toEqual([]);
+    expect(
+      await idsOf(
+        draw(
+          record({
+            composer: {
+              take: take({ phase: 'transcribing', progress: [2, 6] }),
+              notice: null,
+              compacting: false,
+              sign_in: null,
+            },
+          }),
+        ),
+      ),
+      'a take transcribing',
+    ).toEqual([]);
   });
 
   it('draws a turn of the conversation with no violations', async () => {

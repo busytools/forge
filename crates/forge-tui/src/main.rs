@@ -104,6 +104,12 @@ fn run() -> anyhow::Result<()> {
         // enabled` is set: a 3 GB download is opt-in.
         workspace.start_dictate_preflight();
 
+        // Load the model catalogue's cache and refresh a stale feed in
+        // the background. No-op unless `[dictate] enabled` is set, and
+        // never on the boot path: the fetch is what the models page's
+        // freshness line reports on.
+        workspace.start_dictate_catalogue();
+
         // Spawn the worker-kick drainer task (#259). Routes every
         // `maybe_kick_worker_on_connected` enqueue through a single
         // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker

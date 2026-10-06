@@ -19,6 +19,23 @@ pub struct ModelSpec {
     pub size: u64,
     /// Lowercase hex SHA-256 of the complete file.
     pub sha256: String,
+    /// Described facts about the checkpoint, for readers that draw a
+    /// model rather than run it. The normalizer is in no catalogue, so
+    /// for it this is the only place these facts exist.
+    pub facts: ModelFacts,
+}
+
+/// Facts the pin declares about its checkpoint.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelFacts {
+    /// Quantisation, as the file names it.
+    pub quant: Option<String>,
+    /// Unique parameter count of the checkpoint.
+    pub params: Option<u64>,
+    /// Licence, as the model's own source spells it.
+    pub license: Option<String>,
+    /// The runtime that loads the file.
+    pub runtime: Option<String>,
 }
 
 impl ModelSpec {
@@ -29,6 +46,12 @@ impl ModelSpec {
             url: "https://huggingface.co/handy-computer/cohere-transcribe-03-2026-gguf/resolve/main/cohere-transcribe-03-2026-Q4_K_M.gguf".into(),
             size: 1_558_162_944,
             sha256: "0ea56826d8bd5d74b7143a4a04e022dc1bb75452cfae49d98b6acb0c1d16a1fb".into(),
+            facts: ModelFacts {
+                quant: Some("Q4_K_M".into()),
+                params: Some(2_049_026_832),
+                license: Some("Apache-2.0".into()),
+                runtime: Some("transcribe.cpp".into()),
+            },
         }
     }
 
@@ -40,6 +63,12 @@ impl ModelSpec {
                 .into(),
             size: 1_509_347_232,
             sha256: "0370da4f1bae19e3150bcafa33c5d396c15f97bf25519540a3e013db5cc00af4".into(),
+            facts: ModelFacts {
+                quant: Some("F16".into()),
+                params: Some(596_000_000),
+                license: Some("Apache-2.0 + naming clause".into()),
+                runtime: Some("llama.cpp".into()),
+            },
         }
     }
 }
@@ -240,6 +269,33 @@ mod tests_config {
             "silence_floor defaults to -50 dBFS, got {}",
             cfg.silence_floor
         );
+    }
+
+    /// The models page draws facts no feed carries for every pin - the
+    /// normalizer is in no catalogue - so the pin is where they are
+    /// declared.
+    #[test]
+    fn the_pins_declare_the_facts_the_models_page_draws() {
+        let asr = ModelSpec::cohere_transcribe_q4_k_m();
+        assert_eq!(asr.facts.quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(
+            asr.facts.params,
+            Some(2_049_026_832),
+            "the parameter count the catalogue publishes for cohere-transcribe"
+        );
+        assert_eq!(asr.facts.license.as_deref(), Some("Apache-2.0"));
+        assert_eq!(asr.facts.runtime.as_deref(), Some("transcribe.cpp"));
+
+        let normalizer = ModelSpec::s1_mini_f16();
+        assert_eq!(normalizer.facts.quant.as_deref(), Some("F16"));
+        assert_eq!(
+            normalizer.facts.params,
+            Some(596_000_000),
+            "the model card's unique-parameter count; the GGUF's own 752M label counts the tied \
+             embedding twice"
+        );
+        assert_eq!(normalizer.facts.license.as_deref(), Some("Apache-2.0 + naming clause"));
+        assert_eq!(normalizer.facts.runtime.as_deref(), Some("llama.cpp"));
     }
 
     #[test]

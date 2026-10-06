@@ -12,6 +12,7 @@
 
 import type { SessionSlot } from '../wire/types';
 import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
+import { FALLBACK_FLOOR_DB } from './meter';
 
 /** What a take is doing, as `Phase` serialises. */
 export type TakePhase = 'recording' | 'transcribing';
@@ -26,6 +27,8 @@ export interface Take {
   progress: { done: number; total: number | null };
   /** How long the take has run, which `Instant` cannot carry across. */
   elapsedMs: number;
+  /** The floor of this take's meter, which its readings are measured against. */
+  floorDb: number;
 }
 
 /** What a finished take left behind. */
@@ -165,6 +168,7 @@ function takeFrom(value: unknown): Take | null {
     peakDb: number(held['peak_db']) ?? 0,
     progress: { done: number(progress[0]) ?? 0, total: number(progress[1]) },
     elapsedMs: number(held['elapsed_ms']) ?? 0,
+    floorDb: number(held['floor_db']) ?? FALLBACK_FLOOR_DB,
   };
 }
 
@@ -281,6 +285,11 @@ function slackFrom(value: unknown): Ask {
  */
 function subjectOf(raw: unknown): string {
   const input = record(raw);
+  // **The server's own order**, so the client shows the subject the terminal
+  // shows: Claude's one-line description first - it reads better than a command
+  // that opens with a long `cd` - then the command, path or url it is about.
+  const description = line(input['description']);
+  if (description !== null) return description;
   for (const key of ['command', 'file_path', 'url']) {
     const value = text(input[key]);
     if (value !== null) return value;

@@ -605,6 +605,12 @@ dictation models, then hands over to wherever you were headed: the
 project picker for `forge`, straight into that project's chat for
 `forge <PROJECT>`. It is shown once per run.
 
+When `[dictate]` is on, boot also reads the cached model catalogue and
+refreshes it in the background - fetching the feed the dictation-models
+page reads - when the cache is older than a day or absent. That refresh
+never holds the boot path: it lands as an update on the page's own
+subscription, and a `forge.toml` with dictation off fetches nothing.
+
 Nothing spawns until every account has settled, because the walk that
 picks a session's account reads each one's state.
 
@@ -640,12 +646,14 @@ threads, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
 
-Dictation keeps two things outside the database, both machine-local
+Dictation keeps three things outside the database, all machine-local
 and never synced: each take's audio and transcripts, as plain files
 under `<app-support>/dictate-diagnostics/` - voice recordings outside
-the database - and the record of verified model digests under
+the database - the record of verified model digests under
 `<app-support>/dictate-digests/`, which is what lets a boot over
-unchanged models skip re-hashing them.
+unchanged models skip re-hashing them, and the last fetched model
+catalogue under `<app-support>/dictate-catalogue/`, which is what lets
+the models page read the feed when the network is gone.
 
 `<app-support>` is `~/Library/Application Support/forge-tui` on macOS
 and `$XDG_DATA_HOME/forge-tui` on Linux.

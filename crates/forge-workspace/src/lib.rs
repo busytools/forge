@@ -67,6 +67,7 @@
 mod account_cache;
 mod account_loader;
 pub mod browser;
+pub mod catalogue;
 mod config;
 pub mod conversation_turns;
 pub mod conversation_window;

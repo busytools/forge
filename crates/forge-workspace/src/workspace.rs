@@ -298,6 +298,20 @@ pub struct Workspace {
     /// tools in `mcp::browser` ask through it, and the transport registers
     /// the connection that answers into it.
     pub(crate) browser: Arc<crate::browser::BrowserRelay>,
+    /// The model catalogue: the last fetched feed and what the last check
+    /// did. Loaded from its cache at boot, refreshed by
+    /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
+    /// read by the models page through `dictate_models`.
+    pub(crate) dictate_catalogue: Mutex<crate::catalogue::CatalogueState>,
+    /// A test's own catalogue source, so a check can run against a
+    /// loopback server instead of GitHub. Not present in production
+    /// builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_catalogue_source: Mutex<Option<forge_dictate::catalogue::CatalogueSource>>,
+    /// A test's own catalogue directory, so a check never writes to the
+    /// real app-support dir. Not present in production builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_catalogue_dir: Mutex<Option<std::path::PathBuf>>,
     /// Fan-in [`SessionUpdate`] sender: every producer inside the
     /// workspace holds a clone, and it fans each update out to whatever
     /// subscribed at [`Self::subscribe`].
@@ -1497,6 +1511,11 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
+            dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
+            #[cfg(any(test, feature = "testing"))]
+            test_catalogue_source: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_catalogue_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
@@ -4440,6 +4459,9 @@ impl Workspace {
                     let span = tracing::info_span!("open_url", url = %url);
                     let _enter = span.enter();
                     spawn::handle_open_url(self, url);
+                }
+                Command::DictateCatalogueCheck => {
+                    return self.check_dictate_catalogue();
                 }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);

@@ -208,7 +208,8 @@ impl Tool for Update {
          is left alone. `status` is the usual one (pending / in_progress / blocked / completed), \
          and `owner` takes a session label (\"lead\" for the lead) or the label of a worker. Any \
          session in the project may move any of its tasks, so a lead can complete a worker's \
-         task and a worker can block its own parent. An unknown id is an error, not a no-op."
+         task and a worker can block its own parent. An unknown id is an error, not a no-op. \
+         Returns the task as the write left it."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -249,8 +250,11 @@ impl Tool for Update {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.update_task(&self.slot, &TaskId::from(args.id.as_str()), args.patch) {
-            Ok(true) => ToolOutput::text(format!("updated task {}", args.id)),
-            Ok(false) => tool_error(format!("no task with id {} in your project", args.id)),
+            Ok(Some(task)) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Ok(None) => tool_error(format!("no task with id {} in your project", args.id)),
             Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
@@ -336,8 +340,9 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. An unknown id is an error, not a no-op. Any session \
-         in the project may call this."
+         that is over; nothing is archived. An unknown id is an error, not a no-op. Returns the \
+         removed task and how many descendants went with it. Any session in the project may \
+         call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -357,8 +362,16 @@ impl Tool for Delete {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str())) {
-            Ok(true) => ToolOutput::text(format!("deleted task {}", args.id)),
-            Ok(false) => tool_error(format!("no task with id {} in your project", args.id)),
+            Ok(Some(removed)) => {
+                let mut envelope =
+                    crate::mcp::deleted::removed_record(&task_to_json(&removed.task));
+                envelope["descendants_removed"] = serde_json::json!(removed.descendants_removed);
+                match serde_json::to_string_pretty(&envelope) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Ok(None) => tool_error(format!("no task with id {} in your project", args.id)),
             Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
@@ -367,7 +380,8 @@ impl Tool for Delete {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::tasks::facade::MockTasksFacade;
+    use crate::mcp::tasks::facade::{MockTasksFacade, RemovedTaskTree};
+    use crate::mcp::test_support::text_of;
 
     fn lead_slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "myproj")
@@ -436,10 +450,75 @@ mod tests {
         assert!(out.is_error, "an unknown id is an error, not a no-op");
     }
 
+    /// The update result is the record it wrote, so the caller can name
+    /// the task it moved and read the state it now holds - `updated task
+    /// <id>` named neither.
+    #[tokio::test]
+    async fn update_echoes_the_updated_record() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let mut task = sample_task();
+        task.status = TaskStatus::InProgress;
+        task.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
+        *facade.update_result.lock() = Some(task);
+        let out = Update { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
+            .await;
+        assert!(!out.is_error, "update succeeds: {out:?}");
+        let json: serde_json::Value = serde_json::from_str(text_of(&out))
+            .expect("the result is the task record, not prose");
+        assert_eq!(json["id"], "t-1", "the record names the task it moved: {json}");
+        assert_eq!(json["subject"], "Merge peers and workers");
+        assert_eq!(json["status"], "in_progress", "and the state it now holds");
+        assert_eq!(json["owner"], "lead");
+    }
+
+    /// A delete echoes what went, in the adopted envelope: the record as
+    /// it stood, plus the cascade's own count - the row has to say how
+    /// much of the tree went with it. The record is compared to
+    /// `task_to_json` whole, so an echo trimmed to a couple of fields
+    /// cannot read as the record.
+    #[tokio::test]
+    async fn delete_echoes_the_removed_record_and_the_cascade_count() {
+        let facade = Arc::new(MockTasksFacade::default());
+        *facade.delete_result.lock() =
+            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 2 });
+        let out = Delete { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1" })))
+            .await;
+        assert!(!out.is_error, "delete succeeds: {out:?}");
+        assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
+        assert_eq!(json["status"], "deleted");
+        assert_eq!(
+            json["removed"],
+            task_to_json(&sample_task()),
+            "the echo is the whole record, not a hand-picked subset: {json}",
+        );
+        assert_eq!(json["descendants_removed"], 2);
+    }
+
+    /// The count is always there: a leaf delete says zero rather than
+    /// leaving the field out, so a reader never has to tell an omitted
+    /// count from a cascade that took nothing.
+    #[tokio::test]
+    async fn a_delete_with_no_children_still_states_the_count() {
+        let facade = Arc::new(MockTasksFacade::default());
+        *facade.delete_result.lock() =
+            Some(RemovedTaskTree { task: sample_task(), descendants_removed: 0 });
+        let out = Delete { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1" })))
+            .await;
+        assert!(!out.is_error, "delete succeeds: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
+        assert_eq!(json["descendants_removed"], 0, "a leaf states its count: {json}");
+    }
+
     #[tokio::test]
     async fn update_states_only_the_fields_it_was_given() {
         let facade = Arc::new(MockTasksFacade::default());
-        *facade.update_result.lock() = Some(true);
+        *facade.update_result.lock() = Some(sample_task());
         let out = Update { facade: facade.clone(), slot: lead_slot() }
             .call(input(serde_json::json!({ "id": "t-1", "status": "blocked", "artifact": "x" })))
             .await;

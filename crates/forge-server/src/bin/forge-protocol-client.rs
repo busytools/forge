@@ -151,7 +151,7 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
     }
 }
 
-/// `home`, `usage`, or `session <org>/<project>/<label>`.
+/// `home`, `usage`, `dictate_models`, or `session <org>/<project>/<label>`.
 fn subject(rest: &str) -> anyhow::Result<Subject> {
     if rest == "home" {
         return Ok(Subject::Home);
@@ -159,9 +159,13 @@ fn subject(rest: &str) -> anyhow::Result<Subject> {
     if rest == "usage" {
         return Ok(Subject::Usage);
     }
+    if rest == "dictate_models" {
+        return Ok(Subject::DictateModels);
+    }
     let Some(seat) = rest.strip_prefix("session ") else {
         anyhow::bail!(
-            "a subject is `home`, `usage` or `session <org>/<project>/<label>`, not `{rest}`"
+            "a subject is `home`, `usage`, `dictate_models` or `session \
+             <org>/<project>/<label>`, not `{rest}`"
         );
     };
     let mut parts = seat.split('/');

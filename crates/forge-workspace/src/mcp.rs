@@ -54,6 +54,7 @@ pub mod agents;
 pub mod browser;
 pub(crate) mod caller_context;
 pub mod cron;
+pub(crate) mod deleted;
 pub mod gotify;
 pub mod peers;
 pub mod review;
