@@ -359,7 +359,7 @@ section.org .note {
 .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block;
   position: relative; top: -1px; }
 /* One chevron, turned by the open state, on every disclosure on the page. */
-.arw { transition: transform .12s ease; }
+.arw { transition: transform .12s ease, opacity .12s ease; opacity: 0; }
 details[open] > summary .arw { transform: rotate(90deg); }
 .dim { color: var(--dim); }
 
@@ -909,7 +909,6 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    and leaves. */
 details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
 @keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
-details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -1969,3 +1968,17 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 /* The path above a diff is one unbroken token and often longer than a phone. It
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
+
+/* ---------- the chevron arrives with the pointer ----------
+   Hidden at rest, so a column of rows carries no marks it does not need;
+   under the pointer it shows in the muted tone - the hover colour these rows
+   always had - and an open row keeps it: the accent, which the surface rules
+   above already set. A touch screen has no pointer to arrive with, so there
+   it rests faintly visible instead: the chevron is the one thing that says a
+   row opens. These rules sit last so the hover tone lands over the
+   per-surface resting colours. */
+details > summary:hover .arw { opacity: 1; color: var(--muted); }
+details[open] > summary .arw { opacity: 1; }
+@media (hover: none) {
+  .arw { opacity: 1; color: var(--dim); }
+}

@@ -77,7 +77,7 @@
   .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block;
     position: relative; top: -1px; }
   /* One chevron, turned by the open state, on every disclosure on the page. */
-  .arw { transition: transform .12s ease; }
+  .arw { transition: transform .12s ease, opacity .12s ease; opacity: 0; }
   details[open] > summary .arw { transform: rotate(90deg); }
   .dim { color: var(--dim); }
 
@@ -462,7 +462,6 @@
      prose tone rather than the row's own muting, so a mark reads as a mark. */
   details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
   details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
-  details.leaf:hover > summary .arw { color: var(--muted); }
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
@@ -1046,6 +1045,20 @@
     .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
     .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
     .sess > .more > summary { min-width: 44px; }
+  }
+
+  /* ---------- the chevron arrives with the pointer ----------
+     Hidden at rest, so a column of rows carries no marks it does not need;
+     under the pointer it shows in the muted tone - the hover colour these
+     rows always had - and an open row keeps it: the accent, which the
+     surface rules above already set. A touch screen has no pointer to arrive
+     with, so there it rests faintly visible instead: the chevron is the one
+     thing that says a row opens. These rules sit last so the hover tone lands
+     over the per-surface resting colours. */
+  details > summary:hover .arw { opacity: 1; color: var(--muted); }
+  details[open] > summary .arw { opacity: 1; }
+  @media (hover: none) {
+    .arw { opacity: 1; color: var(--dim); }
   }
 </style>
 </head>
