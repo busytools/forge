@@ -199,6 +199,36 @@ describe('the rail', () => {
   });
 
   /**
+   * **A seat this client has just closed reads asleep AT ONCE** (#1712): the
+   * reader's click is what moves it out of their working section, not the
+   * seconds the core takes to shut it down. The mark is the client's own, so
+   * the caller brings the predicate in.
+   */
+  it('counts a closing seat as asleep the moment it is closed', () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const worker: AgentRow = { ...leadRow, slot: { ...leadRow.slot, label: 'w1' }, label: 'w1' };
+    const home = withHome({ agents: [leadRow, worker] });
+
+    const block = (groups: RailGroup[]): RailProject | undefined =>
+      groups.flatMap((group) => group.projects).find((entry) => entry.name === 'proj');
+    const working = block(railGroups(home, LEAD, 0, (slot) => slot.label === 'w1'));
+    expect(
+      working?.workers.map((row) => row.slot.label),
+      'the closed worker stayed in the working rows',
+    ).toEqual([]);
+    expect(
+      working?.sleeping.map((row) => row.slot.label),
+      'the closed worker did not fold away',
+    ).toEqual(['w1']);
+
+    // A lead's close cascades, so both of its rows carry the mark; the
+    // project's rank is its strongest row either way.
+    const asleep = railGroups(home, LEAD, 0, () => true).find((group) => group.heading === 'asleep')
+      ?.projects[0];
+    expect(asleep?.name, "a closed lead's project stayed out of asleep").toBe('proj');
+  });
+
+  /**
    * A group that holds the seat the page is showing has to say so: arriving on
    * an asleep seat - a deep link, a click from the roster - draws the marked
    * row inside a closed fold otherwise, and the reader sees the count and no

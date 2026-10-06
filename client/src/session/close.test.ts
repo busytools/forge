@@ -9,6 +9,7 @@ import {
   closeCommand,
   closeLanding,
   closeSeat,
+  closingSeat,
   forgetClosed,
   removedLanding,
   removedSeat,
@@ -226,6 +227,40 @@ describe('closing a seat', () => {
     expect(location.pathname, 'a close that never went moved the reader').toBe(
       '/session/TestOrg/proj/w1',
     );
+  });
+
+  /**
+   * The reader's own sight of the close (#1712): the row says where the seat
+   * is going while the mark is in force, and the mark goes the moment the
+   * roster stops naming the seat.
+   */
+  it('marks the closed seat until the roster catches up, then lets it go', () => {
+    const { open } = connection();
+    expect(closingSeat(W1), 'a seat nobody closed read as closing').toBe(false);
+
+    expect(closeSeat(open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    expect(closingSeat(W1), 'the closed row lost its mark').toBe(true);
+    expect(closingSeat(LEAD), 'the close marked a seat it never touched').toBe(false);
+
+    forgetClosed(home(LEAD));
+    expect(closingSeat(W1), 'the mark outlived the roster catching up').toBe(false);
+
+    // The production shape for a lead: its row never leaves the roster - it
+    // lands there asleep - so the mark drops on the seat ARRIVING, not only
+    // on it going.
+    const landed = connection();
+    expect(closeSeat(landed.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
+    forgetClosed({
+      ...home(LEAD),
+      agents: [agentIn(LEAD, 'Sleeping'), agentIn(W1, 'Sleeping')],
+    });
+    expect(closingSeat(LEAD), 'the mark outlived the lead landing asleep').toBe(false);
+    expect(closingSeat(W1), 'and a worker that landed asleep kept its mark').toBe(false);
+
+    // A lead's close cascades: every live row the project takes says it too.
+    const cascaded = connection();
+    expect(closeSeat(cascaded.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
+    expect(closingSeat(W1), 'the cascade left a worker row reading live').toBe(true);
   });
 });
 

@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
+import type { AgentRow } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
+import { closeSeat, forgetClosed } from './close';
 import Rail from './Rail.svelte';
 
 /**
@@ -155,6 +157,57 @@ describe('a project row', () => {
     expect(drawn, 'a sleeping project lost its link').toContain(
       'href="/session/TestOrg/proj/lead"',
     );
+  });
+});
+
+describe('a closed seat', () => {
+  /** A connection whose close goes; every other reach is the untouched one. */
+  function closes(): Connection {
+    return { ...untouched(), dispatch: () => null };
+  }
+
+  /**
+   * The gap #1712 named: the roster is a read that lands seconds after the
+   * click. The row now reads asleep AT ONCE - folded out of the working
+   * section on the click - and its dot settles until the roster catches up.
+   */
+  it('lands a closed row asleep at once, settling until the roster catches up', () => {
+    const template = homeWire.agents[0];
+    if (template === undefined) throw new Error('the fixture holds no agent');
+    const lead: AgentRow = { ...template, lifecycle: 'Running' };
+    const worker: AgentRow = { ...template, slot: { ...template.slot, label: 'w1' }, label: 'w1' };
+    const wire = { ...homeWire, agents: [lead, worker] };
+    const opened = (): string =>
+      render(Rail, {
+        props: {
+          home: wire,
+          current: LEAD,
+          now: 0,
+          connection: closes(),
+          onclose: () => undefined,
+        },
+      }).body;
+
+    try {
+      expect(opened(), 'a row nobody closed was settling').not.toContain('settling');
+
+      expect(closeSeat(closes(), wire, worker.slot, LEAD, 0), 'the close never went').toBe(true);
+      const drawn = opened();
+      expect(drawn, "the closed worker's row did not fold asleep").toContain('1 asleep');
+      expect(drawn, 'the settling dot is not on the closed row').toContain(
+        '<span class="dot off settling"></span>',
+      );
+      expect(drawn, 'the settling row did not fold with the closed worker').toContain(
+        '<span class="nm">w1</span>',
+      );
+
+      // The roster catching up is the seat ARRIVING asleep, still named
+      // (a lead's row never leaves the roster), which is when the pulse goes.
+      forgetClosed({ ...wire, agents: [lead, { ...worker, lifecycle: 'Sleeping' }] });
+      expect(opened(), 'the pulse outlived the roster catching up').not.toContain('settling');
+    } finally {
+      forgetClosed({ ...homeWire, agents: [] });
+    }
   });
 });
 

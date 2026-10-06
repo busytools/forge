@@ -187,9 +187,14 @@ describe('a fold that holds the seat being shown', () => {
    * reader's own toggle closes it.
    */
   it("opens when the shown seat moves into a project's sleeping seats", () => {
-    const props = boxed<{ sleeping: ReturnType<typeof sleepingRows>; shown: string | null }>({
+    const props = boxed<{
+      sleeping: ReturnType<typeof sleepingRows>;
+      shown: string | null;
+      closing: () => boolean;
+    }>({
       sleeping: sleepingRows(),
       shown: null,
+      closing: () => false,
     });
     app = mount(SleeperFold, { target: document.body, props });
     expect(foldOpen(), 'the fold opened over a seat it does not hold').toBe(false);
@@ -267,16 +272,19 @@ describe("a rail row's close chip", () => {
       },
     });
 
-    chip('.wk').click();
+    // Read before the click: the close lands this row asleep at once, so its
+    // chip folds away with the row (#1712).
+    const workerChip = chip('.wk');
+    expect(
+      workerChip.getAttribute('aria-label'),
+      "the worker's chip names its project rather than the worker",
+    ).toBe('close w1');
+    workerChip.click();
     flushSync();
 
     expect(commands, 'a worker row must close through close_worker').toEqual([
       { close_worker: { project_key: '<fixture>-proj', label: 'w1' } },
     ]);
-    expect(
-      chip('.wk').getAttribute('aria-label'),
-      "the worker's chip names its project rather than the worker",
-    ).toBe('close w1');
     expect(location.pathname, 'the reader was left on the seat that closed').toBe(
       '/session/TestOrg/proj/lead',
     );
