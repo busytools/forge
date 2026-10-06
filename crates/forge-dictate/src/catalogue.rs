@@ -328,14 +328,7 @@ pub struct Catalogue {
 /// document failed is refused rather than answered empty - a page drawn
 /// over an empty catalogue reads the same as a page over a healthy one.
 pub fn fetch_catalogue(source: &CatalogueSource) -> Result<Catalogue, Error> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
-        // api.github.com refuses any request without one, so a client
-        // without this reads every check as unreachable.
-        .user_agent(concat!("forge-dictate/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| Error::Http { url: source.listing.clone(), source: error })?;
+    let client = feed_client(&source.listing)?;
     let listing = get_bounded_text(&client, &source.listing, MAX_RESPONSE_BYTES)?;
     let names = listed_files(&listing);
     if names.is_empty() {
@@ -426,6 +419,27 @@ fn fetch_chunk(
         }
     }
     (entries, skipped)
+}
+
+/// Fetch one variant's per-model doc, where its own download links live.
+///
+/// Blocking, like the feed's fetch, and worth calling only when a model is
+/// being installed or a config key names a variant that is not on disk.
+pub fn fetch_doc(source: &CatalogueSource, variant: &str) -> Result<String, Error> {
+    let client = feed_client(&source.doc_base)?;
+    let url = format!("{}{variant}.md", source.doc_base);
+    get_bounded_text(&client, &url, MAX_RESPONSE_BYTES)
+}
+
+/// The client every feed request goes through: the timeouts, and the
+/// User-Agent api.github.com refuses a request without.
+fn feed_client(for_url: &str) -> Result<reqwest::blocking::Client, Error> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("forge-dictate/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| Error::Http { url: for_url.to_owned(), source: error })
 }
 
 /// GET one response, bounded: a status that is not success is its own
@@ -742,6 +756,35 @@ mod tests_catalogue_fetch {
     fn fixture(name: &str) -> String {
         let path = format!("{}/fixtures/catalogue/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).expect("the fixture must be readable")
+    }
+
+    /// **The doc is fetched from the feed's own docs tree**, one URL the
+    /// source owns. A variant with no doc there answers with the HTTP
+    /// failure, naming the URL, rather than an empty doc - an install
+    /// reports why it could not find the file.
+    #[test]
+    fn fetches_a_variants_doc_and_refuses_a_missing_one() {
+        let (base, _seen) = serve(vec![(
+            "/docs/models/granite-speech-5.0-470m-turboctc.md",
+            200,
+            include_bytes!("../tests/fixtures/docs/granite-speech-5.0-470m-turboctc.md").to_vec(),
+        )]);
+        let source = CatalogueSource {
+            listing: format!("{base}/catalog"),
+            entry_base: format!("{base}/catalog/"),
+            release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
+        };
+
+        let doc =
+            fetch_doc(&source, "granite-speech-5.0-470m-turboctc").expect("the doc is served");
+        assert_eq!(doc_links(&doc).len(), 6, "the fetched doc's table parses");
+
+        let missing = fetch_doc(&source, "not-a-variant").expect_err("no doc, no fetch");
+        assert!(
+            format!("{missing}").contains("not-a-variant.md"),
+            "the failure must name the doc it could not read, got: {missing}"
+        );
     }
 
     /// Loopback HTTP/1.1 server answering fixed paths, one request per

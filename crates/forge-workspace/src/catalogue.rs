@@ -22,7 +22,7 @@ pub(crate) const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// The quants a row's download size prefers, most preferred first: the Q4
 /// build is what a dictation machine runs, and the chain after it keeps a
 /// row that ships no Q4 sized rather than sizeless.
-const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
+pub(crate) const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
 
 /// Everything the models page draws, in one read.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -42,6 +42,10 @@ pub struct DictateModelsSnapshot {
     pub updates: Vec<ModelUpdate>,
     /// The whole feed, for the page's search list.
     pub rows: Vec<CatalogueRow>,
+    /// Where the last model install got to.
+    pub install: crate::install::InstallState,
+    /// Every model downloaded from the feed on this machine, oldest first.
+    pub installed: Vec<crate::install::InstalledModel>,
 }
 
 /// What the last catalogue check did.
@@ -384,6 +388,8 @@ impl crate::Workspace {
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
+            install: self.dictate_install(),
+            installed: self.installed_models(),
         }
     }
 
@@ -521,7 +527,7 @@ impl crate::Workspace {
 
     /// Where the feed is fetched from. Test builds can point this at a
     /// loopback server; production always takes the real one.
-    fn catalogue_source(&self) -> forge_dictate::catalogue::CatalogueSource {
+    pub(crate) fn catalogue_source(&self) -> forge_dictate::catalogue::CatalogueSource {
         #[cfg(any(test, feature = "testing"))]
         if let Some(source) = self.test_catalogue_source.lock().clone() {
             return source;
@@ -551,7 +557,7 @@ impl crate::Workspace {
 }
 
 #[cfg(test)]
-mod tests_catalogue_view {
+pub(crate) mod tests_catalogue_view {
     use super::*;
     use crate::dictate::{DictateModel, DictateModelState, DictateRole, DictateSnapshot};
     use forge_dictate::catalogue::parse_entry;
@@ -569,7 +575,10 @@ mod tests_catalogue_view {
     }
 
     /// [`entry`] with the download length and licence a test needs.
-    fn entry_under(
+    ///
+    /// `pub(crate)` so the install tests build their entries with the same
+    /// spelling rather than a second one.
+    pub(crate) fn entry_under(
         variant: &str,
         languages: &str,
         speed: f64,
@@ -940,7 +949,10 @@ mod tests_catalogue_view {
 
     /// A stub whose `[dictate]` section is on, with the models directory
     /// a tempdir so nothing touches the real cache.
-    fn enabled_stub()
+    ///
+    /// `pub(crate)` for the install tests, which drive the same stub and
+    /// the same loopback server rather than carrying a second copy.
+    pub(crate) fn enabled_stub()
     -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
     {
         let config_dir = tempfile::tempdir().expect("a config dir");
@@ -956,10 +968,22 @@ mod tests_catalogue_view {
 
     /// Loopback HTTP/1.1 server answering fixed paths, one request per
     /// connection. Anything unrouted answers 404.
-    fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+    pub(crate) fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+        serve_with(|_| {
+            routes.into_iter().map(|(route, status, body)| (route.to_owned(), status, body)).collect()
+        })
+    }
+
+    /// [`serve`] with the routes built from the bound address, for a body
+    /// that must carry the URL it is served from: an install's doc table
+    /// points its download links back at this same loopback.
+    pub(crate) fn serve_with(
+        routes_for: impl FnOnce(&str) -> Vec<(String, u16, Vec<u8>)>,
+    ) -> String {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let base = format!("http://{}", listener.local_addr().expect("the bound address"));
+        let routes = routes_for(&base);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -975,7 +999,7 @@ mod tests_catalogue_view {
                         break;
                     }
                 }
-                let (status, body) = match routes.iter().find(|(route, _, _)| *route == path) {
+                let (status, body) = match routes.iter().find(|(route, _, _)| route == &path) {
                     Some((_, status, body)) => (*status, body.clone()),
                     None => (404, Vec::new()),
                 };
@@ -991,16 +1015,17 @@ mod tests_catalogue_view {
         base
     }
 
-    fn source(base: &str) -> CatalogueSource {
+    pub(crate) fn source(base: &str) -> CatalogueSource {
         CatalogueSource {
             listing: format!("{base}/catalog"),
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/"),
         }
     }
 
     /// One parseable entry, shaped like the feed's own documents.
-    fn feed_entry() -> Vec<u8> {
+    pub(crate) fn feed_entry() -> Vec<u8> {
         br#"{"schema": "transcribe-catalog-v1", "variant": "one", "languages": ["en"],
              "downloads": [{"quant": "Q4_K_M", "filename": "one-Q4_K_M.gguf", "size_bytes": 100}],
              "speed_benchmarks": [{"machine": "m4-max", "backend": "metal", "quant": "Q8_0", "xrt_wall": 100.0}],
@@ -1008,7 +1033,7 @@ mod tests_catalogue_view {
             .to_vec()
     }
 
-    fn listing() -> Vec<u8> {
+    pub(crate) fn listing() -> Vec<u8> {
         br#"[{"name": "one.json", "type": "file"}]"#.to_vec()
     }
 

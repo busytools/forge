@@ -334,7 +334,7 @@ impl DictateSettings {
     }
 
     /// The engine configuration these settings describe.
-    fn to_config(&self) -> forge_dictate::Config {
+    pub(crate) fn to_config(&self) -> forge_dictate::Config {
         let mut builder = forge_dictate::ConfigBuilder::new()
             .max_capture(Duration::from_secs(self.max_capture_minutes.saturating_mul(60)));
         if let Some(dir) = self.models_dir.as_deref() {

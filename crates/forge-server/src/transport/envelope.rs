@@ -281,6 +281,8 @@ mod tests {
                 check: forge_workspace::catalogue::CatalogueCheck::Never,
                 updates: Vec::new(),
                 rows: Vec::new(),
+                install: forge_workspace::install::InstallState::Idle,
+                installed: Vec::new(),
             },
         };
 

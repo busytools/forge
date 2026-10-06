@@ -1566,6 +1566,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
         | Command::DictateCatalogueCheck
+        | Command::DictateInstall { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

@@ -366,6 +366,15 @@ pub enum Command {
     /// [`SessionUpdate::DictateModelsChanged`], so a client watches its
     /// own subscription rather than a reply.
     DictateCatalogueCheck,
+    /// Download a feed variant into the models directory. App-level
+    /// (`key()` returns `None`), and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`] the way a check's does.
+    ///
+    /// The variant is the feed's own verb for the model; its doc supplies
+    /// the download link, and nothing here constructs one.
+    DictateInstall {
+        variant: String,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -690,6 +699,7 @@ impl Command {
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
             | Self::DictateCatalogueCheck
+            | Self::DictateInstall { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -831,6 +841,9 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateCatalogueCheck => f.write_str("DictateCatalogueCheck"),
+            Self::DictateInstall { variant } => {
+                f.debug_struct("DictateInstall").field("variant", variant).finish()
+            }
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
@@ -2121,6 +2134,9 @@ pub enum DispatchError {
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
     DictateOff,
+    /// An install is already running: one at a time, like a check.
+    #[error("a model install is already running")]
+    Installing,
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]
