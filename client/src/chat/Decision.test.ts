@@ -250,10 +250,45 @@ describe('the block one decision draws', () => {
     ).toHaveLength(2);
   });
 
+  it('labels a disclosure by what it holds, singular and plural', () => {
+    const body = drawn({
+      answer: {
+        kind: 'choice',
+        choice: 'billing',
+        probabilities: [
+          { name: 'billing', value: 0.7 },
+          { name: 'infra', value: 0.3 },
+        ],
+        confidence: null,
+      },
+      criteria: {
+        billing: {
+          text: 'the ledger',
+          raw: { label: 'the ledger', files: ['a.rs', 'ledger.rs'] },
+        },
+        infra: { text: 'deploy keys', raw: { owns: 'deploy keys' } },
+      },
+    });
+
+    expect(body, 'two fields').toContain('structured value - 2 fields');
+    expect(body, 'one field, singular').toContain('structured value - 1 field');
+    expect(
+      drawn({ question: { text: 'structured instructions', raw: ['a.rs', 'b.rs'] } }),
+      'an array counts items',
+    ).toContain('structured instructions - 2 items');
+    expect(
+      drawn({ question: { text: 'structured instructions', raw: ['a.rs'] } }),
+      'one item, singular',
+    ).toContain('structured instructions - 1 item');
+  });
+
   it("composes the same disclosure the book's structured specimen draws", () => {
-    // The same tie the verdict test above keeps: the page's specimen can only
-    // draw words an input could produce, and the label over a disclosure is
-    // composed here.
+    // The same tie the verdict test above keeps, and tighter: the page's
+    // specimen must be what the block would print, the pretty JSON included.
+    const value = {
+      label: 'owns the ledger and the settlement path',
+      files: ['a.rs', 'ledger.rs'],
+    };
     const body = drawn({
       answer: {
         kind: 'choice',
@@ -265,10 +300,7 @@ describe('the block one decision draws', () => {
         confidence: null,
       },
       criteria: {
-        billing: {
-          text: 'owns the ledger and the settlement path',
-          raw: { label: 'owns the ledger and the settlement path', files: ['a.rs', 'ledger.rs'] },
-        },
+        billing: { text: 'owns the ledger and the settlement path', raw: value },
       },
     });
 
@@ -276,8 +308,8 @@ describe('the block one decision draws', () => {
       'structured value - 2 fields',
     );
     expect(PAGE, 'and the page draws it word for word').toContain('structured value - 2 fields');
-    expect(PAGE, "with the specimen's own words").toContain(
-      'owns the ledger and the settlement path',
+    expect(PAGE, 'and the specimen is exactly what the block prints').toContain(
+      JSON.stringify(value, null, 2),
     );
   });
 
