@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, doc_links, fetch_doc};
+use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download};
 use forge_dictate::{ModelFacts, ModelSpec, Progress};
 use serde::{Deserialize, Serialize};
 
@@ -285,22 +285,24 @@ async fn build_engine(cfg: forge_dictate::Config) -> Result<Arc<forge_dictate::E
     .map_err(|error| error.to_string())
 }
 
-/// The spec one feed entry's doc describes for the quant a row draws: the
-/// doc's own URL for the file, the entry's own byte length, and the facts
-/// both carry.
+/// The spec one feed entry's documents describe for the quant a row draws:
+/// the document's own URL for the file, the entry's own byte length, and
+/// the facts both carry.
 async fn spec_for_entry(
     source: CatalogueSource,
     entry: &CatalogueEntry,
     download: &Download,
 ) -> Result<ModelSpec, String> {
     let variant = entry.variant.clone();
-    let doc = tokio::task::spawn_blocking(move || fetch_doc(&source, &variant))
-        .await
-        .map_err(|join| join.to_string())?
-        .map_err(|error| error.to_string())?;
-    let Some((_, url)) = doc_links(&doc).into_iter().find(|(file, _)| file == &download.filename)
-    else {
-        return Err(format!("the doc carries no download for {}", download.filename));
+    let repo = entry.published_repo.clone();
+    let links = tokio::task::spawn_blocking(move || {
+        forge_dictate::catalogue::download_links(&source, &variant, repo.as_deref())
+    })
+    .await
+    .map_err(|join| join.to_string())?
+    .map_err(|error| error.to_string())?;
+    let Some((_, url)) = links.into_iter().find(|(file, _)| file == &download.filename) else {
+        return Err(format!("the feed's documents carry no download for {}", download.filename));
     };
     Ok(forge_dictate::spec_for_download(
         &download.filename,
@@ -1115,10 +1117,57 @@ mod tests_install {
         };
         assert_eq!(failed, file, "the file the entry names, so the page says which one stopped");
         assert!(
-            reason.contains("no download for"),
+            reason.contains("no download"),
             "the reason names the step that stopped, got: {reason}"
         );
         assert!(ws.installed_models().is_empty());
+    }
+
+    /// **The variant whose only document is the README.** Moonshine's
+    /// language fine-tunes - and breeze - have no page in the docs tree at
+    /// all, so the download link can only come from the published repo's
+    /// README: a 404 on the doc must fall through to it, not end the
+    /// install. (Measured against the real feed: 60 of 74 variants have a
+    /// per-variant doc, 14 have only the README, and every one is reachable
+    /// from one of the two.)
+    #[tokio::test]
+    async fn an_install_reads_the_link_from_the_readme_when_the_doc_is_missing() {
+        let Fixture { ws, mut updates, .. } = fixture();
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![
+            forge_dictate::catalogue::parse_entry(
+                r#"{"schema":"transcribe-catalog-v1","variant":"moonshine-base-ar",
+                    "published_repo":"handy-computer/moonshine-base-ar-gguf",
+                    "downloads":[{"quant":"Q8_0","filename":"moonshine-base-ar-Q8_0.gguf","size_bytes":6}]}"#,
+            )
+            .expect("the synthetic entry parses"),
+        ]));
+        let file = "moonshine-base-ar-Q8_0.gguf";
+        let base = serve_with(|base| {
+            vec![
+                // Nothing under /docs for this variant: unrouted paths 404,
+                // which is exactly what the real tree answers for it.
+                (
+                    String::from("/repos/handy-computer/moonshine-base-ar-gguf/raw/main/README.md"),
+                    200,
+                    format!(
+                        "# moonshine-base-ar\n\n| Quant | Download |\n| --- | --- |\n\
+                         | Q8_0 | [{file}]({base}/weights/{file}) |\n"
+                    )
+                    .into_bytes(),
+                ),
+                (format!("/weights/{file}"), 200, b"111111".to_vec()),
+            ]
+        });
+        *ws.test_catalogue_source.lock() = Some(source(&base));
+
+        ws.dispatch(Command::DictateInstall { variant: "moonshine-base-ar".to_owned() })
+            .expect("the install dispatches");
+
+        let landed = await_models(&mut updates).await;
+        assert!(matches!(landed.install, InstallState::Idle), "got {:?}", landed.install);
+        assert_eq!(landed.installed.len(), 1);
+        assert_eq!(landed.installed[0].file, file);
+        assert_eq!(landed.installed[0].url, format!("{base}/weights/{file}"));
     }
 
     /// Review Focus 5: with `[dictate]` off there is no models directory to

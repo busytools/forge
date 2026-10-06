@@ -44,6 +44,11 @@ pub struct CatalogueEntry {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub headline_benchmark: Option<HeadlineBenchmark>,
+    /// The feed's published Hugging Face repo for this variant
+    /// (`owner/name`), which is where its README's own download table lives
+    /// when the docs tree has no per-variant page.
+    #[serde(default)]
+    pub published_repo: Option<String>,
     #[serde(default)]
     pub downloads: Vec<Download>,
     #[serde(default)]
@@ -237,6 +242,10 @@ pub struct CatalogueSource {
     /// URL prefix a variant's per-model doc is appended to, which is where
     /// the download links for its files live.
     pub doc_base: String,
+    /// Where the feed's published model repos live, for the README that
+    /// carries a variant's own download table when the docs tree has no
+    /// per-variant page: `<repo_base><published_repo>/raw/main/README.md`.
+    pub repo_base: String,
 }
 
 impl Default for CatalogueSource {
@@ -252,6 +261,7 @@ impl Default for CatalogueSource {
             doc_base:
                 "https://raw.githubusercontent.com/handy-computer/transcribe.cpp/main/docs/models/"
                     .to_owned(),
+            repo_base: "https://huggingface.co/".to_owned(),
         }
     }
 }
@@ -279,7 +289,19 @@ pub fn doc_links(raw: &str) -> Vec<(String, String)> {
     else {
         return Vec::new();
     };
+    gguf_links(region)
+}
 
+/// Every `.gguf` link in a whole document, by file name.
+///
+/// The published repo's README is not a generated page and carries no
+/// marked region - its table IS the page - so this is the scan for it,
+/// with the same file-name rule [`doc_links`] uses.
+pub fn file_links(raw: &str) -> Vec<(String, String)> {
+    gguf_links(raw)
+}
+
+fn gguf_links(region: &str) -> Vec<(String, String)> {
     let mut links = Vec::new();
     for target in region.lines().flat_map(link_targets) {
         let Some((_, file)) = target.rsplit_once('/') else {
@@ -432,6 +454,58 @@ pub fn fetch_doc(source: &CatalogueSource, variant: &str) -> Result<String, Erro
     let client = feed_client(&source.doc_base)?;
     let url = format!("{}{variant}.md", source.doc_base);
     get_bounded_text(&client, &url, MAX_RESPONSE_BYTES)
+}
+
+/// The download links a variant's own documents carry, by file name.
+///
+/// **Two documents can carry them and either may answer.** A variant whose
+/// docs-tree page exists has its table there, read through the marked
+/// region; the language-specific fine-tunes - moonshine's Arabic and
+/// Japanese builds, breeze - have no page in the tree at all, and keep
+/// their table in the published repo's README instead. The doc is read
+/// first; a doc that is absent, or carries no table, falls through to the
+/// README. Both are parsed for their links, never constructed from the
+/// file name.
+///
+/// Blocking, like the feed's fetch, and worth calling only when a model is
+/// being installed or a config key names one that is not on disk.
+pub fn download_links(
+    source: &CatalogueSource,
+    variant: &str,
+    published_repo: Option<&str>,
+) -> Result<Vec<(String, String)>, Error> {
+    let mut tried = Vec::new();
+
+    let doc_url = format!("{}{variant}.md", source.doc_base);
+    match fetch_doc(source, variant) {
+        Ok(raw) => {
+            let links = doc_links(&raw);
+            if !links.is_empty() {
+                return Ok(links);
+            }
+            tried.push(format!("{doc_url} carries no download table"));
+        }
+        Err(error) => tried.push(error.to_string()),
+    }
+
+    if let Some(repo) = published_repo {
+        let readme_url = format!("{}{repo}/raw/main/README.md", source.repo_base);
+        let client = feed_client(&source.repo_base)?;
+        match get_bounded_text(&client, &readme_url, MAX_RESPONSE_BYTES) {
+            Ok(raw) => {
+                let links = file_links(&raw);
+                if !links.is_empty() {
+                    return Ok(links);
+                }
+                tried.push(format!("{readme_url} carries no .gguf link"));
+            }
+            Err(error) => tried.push(error.to_string()),
+        }
+    }
+
+    Err(Error::Catalogue {
+        message: format!("no download links for {variant}: {}", tried.join("; ")),
+    })
 }
 
 /// The client every feed request goes through: the timeouts, and the
@@ -779,6 +853,7 @@ mod tests_catalogue_fetch {
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
             doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
         };
 
         let doc =
@@ -789,6 +864,48 @@ mod tests_catalogue_fetch {
         assert!(
             format!("{missing}").contains("not-a-variant.md"),
             "the failure must name the doc it could not read, got: {missing}"
+        );
+    }
+
+    /// A variant with no page in the docs tree answers from its published
+    /// repo's README instead - the shape moonshine's language fine-tunes
+    /// have - and a variant whose documents both fail names both URLs.
+    #[test]
+    fn a_variant_with_no_doc_answers_from_its_published_readme() {
+        let readme = b"# moonshine-base-ar\n\n| Quant | Download |\n\
+            | --- | --- |\n\
+            | Q8_0 | [moonshine-base-ar-Q8_0.gguf](https://huggingface.co/handy-computer/moonshine-base-ar-gguf/resolve/main/moonshine-base-ar-Q8_0.gguf) |\n"
+            .to_vec();
+        let (base, _seen) = serve(vec![(
+            "/repos/handy-computer/moonshine-base-ar-gguf/raw/main/README.md",
+            200,
+            readme,
+        )]);
+        let source = CatalogueSource {
+            listing: format!("{base}/catalog"),
+            entry_base: format!("{base}/catalog/"),
+            release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
+        };
+
+        let links = download_links(
+            &source,
+            "moonshine-base-ar",
+            Some("handy-computer/moonshine-base-ar-gguf"),
+        )
+        .expect("the README answers with the file's own URL");
+        assert_eq!(links.len(), 1, "one row, one link");
+        assert_eq!(links[0].0, "moonshine-base-ar-Q8_0.gguf");
+        assert!(links[0].1.contains("/resolve/main/moonshine-base-ar-Q8_0.gguf"));
+
+        let nothing =
+            download_links(&source, "not-a-variant", Some("handy-computer/not-a-variant-gguf"))
+                .expect_err("neither document answers");
+        let message = nothing.to_string();
+        assert!(
+            message.contains("not-a-variant.md") && message.contains("not-a-variant-gguf"),
+            "the failure names both documents it tried, got: {message}"
         );
     }
 
@@ -849,6 +966,7 @@ mod tests_catalogue_fetch {
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
             doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
         }
     }
 

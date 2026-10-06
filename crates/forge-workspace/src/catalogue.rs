@@ -1071,6 +1071,7 @@ pub(crate) mod tests_catalogue_view {
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
             doc_base: format!("{base}/docs/"),
+            repo_base: format!("{base}/repos/"),
         }
     }
 
