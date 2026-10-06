@@ -2215,6 +2215,8 @@ mod tests {
                 key: key_a.clone(),
                 text: "run the morning summary".to_owned(),
                 uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Morning summary".to_owned()),
             },
         );
 

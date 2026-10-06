@@ -23,7 +23,7 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
     let (source, text, uuid) = match update {
         // The prefix is the fold's own key rather than anything the model
         // reads: `detect_inbound` picks the envelope out of the prose.
-        SessionUpdate::CronPromptAppended { key, text, uuid } if key == slot => {
+        SessionUpdate::CronPromptAppended { key, text, uuid, .. } if key == slot => {
             ("cron_prompt", format!("[Cron]\n\n{text}"), uuid)
         }
         SessionUpdate::GotifyNotificationAppended { key, notification, uuid } if key == slot => {
@@ -118,6 +118,8 @@ mod tests {
                     key: slot.clone(),
                     text: "run the morning summary".to_owned(),
                     uuid: "cap-cron".to_owned(),
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
                 },
                 "run the morning summary",
             ),

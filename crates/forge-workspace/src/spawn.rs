@@ -462,11 +462,11 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
 /// `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
-    project_name: &str,
-    team_role: Option<&str>,
-    prompt: String,
+    cron: &forge_primitives::CronEntry,
     missed: bool,
 ) -> CronFireOutcome {
+    let project_name = cron.project_name.as_str();
+    let team_role = cron.team_role.as_deref();
     let Some(view) = workspace.list_projects().into_iter().find(|v| v.name == project_name) else {
         return CronFireOutcome::TargetGone;
     };
@@ -476,9 +476,16 @@ pub(crate) fn deliver_cron_prompt(
         // order regardless of which event the TUI reducer drains first. The id
         // is minted here so the block's row and the dispatched prompt's
         // lifecycle frames are one thing by id.
-        let text = missed_cron_text(&prompt, missed);
+        let text = missed_cron_text(&cron.prompt, missed);
         let uuid = forge_sdk::request_id::next_prompt_id();
-        push_cron_prompt_into_chat(workspace, &target_key, &text, &uuid);
+        push_cron_prompt_into_chat(
+            workspace,
+            &target_key,
+            &text,
+            &uuid,
+            cron.id.as_str(),
+            cron.description.as_deref(),
+        );
         return match workspace.dispatch_workspace_prompt_under(
             &target_key,
             text,
@@ -550,7 +557,7 @@ pub(crate) fn deliver_cron_prompt(
     // whose reconnect re-spawns the persisted workers; each drains its own
     // bucket on connect.
     let slot = crate::SessionSlot::for_label(&view.org, &view.name, team_role);
-    workspace.park_cron(&slot, prompt, missed);
+    workspace.park_cron(&slot, cron, missed);
     match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
         launch_settings: SessionLaunchSettings::default(),
@@ -1040,11 +1047,15 @@ pub(crate) fn push_cron_prompt_into_chat(
     target_key: &SessionSlot,
     text: &str,
     uuid: &str,
+    cron_id: &str,
+    description: Option<&str>,
 ) {
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         key: target_key.clone(),
         text: text.to_owned(),
         uuid: uuid.to_owned(),
+        cron_id: cron_id.to_owned(),
+        description: description.map(str::to_owned),
     });
 }
 

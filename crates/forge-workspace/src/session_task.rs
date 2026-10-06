@@ -1216,7 +1216,14 @@ impl SessionTask {
         for cron in pending {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
             let uuid = forge_sdk::request_id::next_prompt_id();
-            crate::spawn::push_cron_prompt_into_chat(workspace, &self.key, &text, &uuid);
+            crate::spawn::push_cron_prompt_into_chat(
+                workspace,
+                &self.key,
+                &text,
+                &uuid,
+                &cron.cron_id,
+                cron.description.as_deref(),
+            );
             if let Err(err) =
                 workspace.dispatch_workspace_prompt_under(&self.key, text, PromptSource::Cron, uuid)
             {
@@ -4836,6 +4843,23 @@ provider = "anthropic"
         }
     }
 
+    /// A cron entry carrying what a park reads: the id, the prompt and a
+    /// description.
+    fn test_cron(id: &str, prompt: &str) -> forge_primitives::cron::CronEntry {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        CronEntry {
+            id: CronId::from(id),
+            project_name: "cron-drain".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: Some(format!("{id} summary")),
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+        }
+    }
+
     /// First-Connected drains the session slot's buffered cron prompts:
     /// each dispatches a plain `Command::Prompt` AND echoes a
     /// `CronPromptAppended` so an asleep-fired cron shows its block once the
@@ -4848,7 +4872,7 @@ provider = "anthropic"
         // The slot production derives for the seeded project, and the
         // bucket the drain reads.
         let session_key = SessionSlot::lead("TestOrg", "cron-drain");
-        workspace.park_cron(&session_key, "morning reminder".to_owned(), false);
+        workspace.park_cron(&session_key, &test_cron("c1", "morning reminder"), false);
 
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
@@ -4882,18 +4906,22 @@ provider = "anthropic"
             "the buffered cron prompt is dispatched on first-Connected",
         );
 
-        // AND an echo lands so the drained prompt shows a cron block.
-        let mut echoed = false;
+        // AND an echo lands so the drained prompt shows a cron block, naming
+        // the entry the parked fire came from - the bucket is the only place
+        // that identity survives an asleep fire.
+        let mut echoed = None;
         while let Ok(u) = update_rx.try_recv() {
-            if matches!(
-                u,
-                SessionUpdate::CronPromptAppended { key, text, .. }
-                    if key == session_key && text == "morning reminder"
-            ) {
-                echoed = true;
+            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } = u
+                && key == session_key
+                && text == "morning reminder"
+            {
+                echoed = Some((cron_id, description));
             }
         }
-        assert!(echoed, "an asleep-fired cron echoes a CronPromptAppended on drain");
+        let (cron_id, description) =
+            echoed.expect("an asleep-fired cron echoes a CronPromptAppended on drain");
+        assert_eq!(cron_id, "c1", "the drained echo names the entry that fired");
+        assert_eq!(description.as_deref(), Some("c1 summary"), "and its description");
 
         assert!(
             workspace.take_parked_for_slot(&session_key).cron.is_empty(),
@@ -4917,8 +4945,8 @@ provider = "anthropic"
         let worker_slot = crate::SessionSlot::worker("TestOrg", "wdp", "reviewer");
         let lead_slot = crate::SessionSlot::lead("TestOrg", "wdp");
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", worker_slot.clone()));
-        workspace.park_cron(&worker_slot, "worker work".to_owned(), true);
-        workspace.park_cron(&lead_slot, "lead work".to_owned(), false);
+        workspace.park_cron(&worker_slot, &test_cron("c-worker", "worker work"), true);
+        workspace.park_cron(&lead_slot, &test_cron("c-lead", "lead work"), false);
 
         let session_key = worker_slot.clone();
         let domain =
