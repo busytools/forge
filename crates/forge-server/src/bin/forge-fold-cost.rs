@@ -43,18 +43,16 @@
 //! per-byte cost cannot afford.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use forge_primitives::SessionSlot;
-use forge_server::live::Live;
 use forge_server::surface::ViewSurface;
 use forge_server::testing::Fleet;
 use forge_server::transport::TransportState;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
-use forge_server::work::WorkCache;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -535,14 +533,10 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         println!("{}", breakdown(&surface, &seat, &args.dir.join(&args.project))?);
     }
 
-    let state = Arc::new(TransportState {
-        surface,
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        client: forge_primitives::ClientConfig::default(),
-        browser: fleet.workspace().browser_relay(),
-    });
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::ClientConfig::default(),
+    ));
     // The seat's conversation, put where a `Connected` would have left it.
     //
     // **The transport does not read a transcript**, so a server left to

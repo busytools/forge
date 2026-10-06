@@ -76,8 +76,8 @@ const BEFORE_ANSWER: &str = "the browser host sent an image frame before the ans
 ///
 /// Named like [`BEFORE_ANSWER`]: the call was not wrong, the role moved out
 /// from under it, and the session should read which of the two happened.
-const HOST_GONE_BY_TAKE: &str = "another client took the browser role before the answer's \
-                                  image frames arrived, so the call cannot be completed";
+const HOST_GONE_BY_TAKE: &str = "another client took the browser role before the answer arrived, \
+                                  so the call cannot be completed";
 
 /// The browser role this connection holds, and what is in flight under it.
 struct Hosting {
@@ -328,7 +328,6 @@ async fn run_connection(
             // because `select!` wants one borrow of the hosting: an ask on
             // its way out to this host, or the relay saying the role moved.
             event = next_hosting_event(hosting) => {
-                let Some(event) = event else { break };
                 match event {
                     HostingEvent::Ask(request) => {
                         // What the core already said goes out first, the same
@@ -359,13 +358,13 @@ async fn run_connection(
                         .await?;
                     }
                     // **The role taken away.** A force-take tells this
-                    // connection before its next ask would have arrived, and
-                    // what it does then is the same thing its own drop does:
-                    // the hosting goes, its in-flight calls fail with the
-                    // relay's own HOST_GONE, and the client is told - its
-                    // strip must not go on saying it hosts.
+                    // connection before its next ask would have arrived. Every
+                    // call it was carrying fails with the take's own sentence
+                    // - not the relay's HOST_GONE, which would say the holder
+                    // went away when it was displaced - and the client is told,
+                    // because its strip must not go on saying it hosts.
                     HostingEvent::Notice(RoleNotice::Taken) => {
-                        fail_awaiting_images(hosting, HOST_GONE_BY_TAKE);
+                        fail_every_in_flight(hosting, HOST_GONE_BY_TAKE);
                         hosting.take();
                         batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserRole { hosting: false }).await?;
@@ -374,7 +373,10 @@ async fn run_connection(
                     // ask to make it obvious, so it is said the way the grant
                     // is: the strip must not go on saying another client
                     // drives a browser this connection is now being asked for.
+                    // The core's own news goes out first, the same rule every
+                    // other send keeps.
                     HostingEvent::Notice(RoleNotice::Granted) => {
+                        batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
                     }
                 }
@@ -467,14 +469,18 @@ enum HostingEvent {
 /// happened - where ending it would have taken its socket down mid-test and
 /// mid-life. A connection with no hosting parks here too, so its branch is
 /// inert rather than ending the loop.
-async fn next_hosting_event(hosting: &mut Option<Hosting>) -> Option<HostingEvent> {
+///
+/// It answers an `HostingEvent` and never a `None`: every way out of this
+/// future is either an event or a park, because a closed channel is not the
+/// connection's end (see above).
+async fn next_hosting_event(hosting: &mut Option<Hosting>) -> HostingEvent {
     match hosting.as_mut() {
         Some(hosting) => loop {
             if let Ok(notice) = hosting.notices.try_recv() {
-                return Some(HostingEvent::Notice(notice));
+                return HostingEvent::Notice(notice);
             }
             if let Ok(request) = hosting.asks.try_recv() {
-                return Some(HostingEvent::Ask(request));
+                return HostingEvent::Ask(request);
             }
             let asks_dead = hosting.asks.is_closed();
             let notices_dead = hosting.notices.is_closed();
@@ -488,7 +494,7 @@ async fn next_hosting_event(hosting: &mut Option<Hosting>) -> Option<HostingEven
                 }
             };
             if let Some(event) = next {
-                return Some(event);
+                return event;
             }
             // A channel closed under the select with nothing left in it:
             // loop, and either the other channel or the park decides.
@@ -1176,6 +1182,19 @@ fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
 /// A frame whose bytes cannot be taken is the end of those asks: the part it
 /// was for is never filled, and the alternative to failing them is a session's
 /// tool call waiting on a promise nothing can keep.
+/// Fail every call this connection is carrying, whatever it was waiting for.
+///
+/// **The sentence is the point.** Without this, what fails an in-flight ask is
+/// the reply sender being dropped with the hosting, and the relay reads that
+/// as the holder having gone away - which is a reason that names the wrong
+/// thing: a take displaced this connection and it is still here.
+fn fail_every_in_flight(hosting: &mut Option<Hosting>, why: &str) {
+    let Some(hosting) = hosting.as_mut() else { return };
+    for (_, in_flight) in hosting.in_flight.drain() {
+        in_flight.reply.send(Err(why.to_owned())).ok();
+    }
+}
+
 fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
     let Some(hosting) = hosting.as_mut() else {
         return;
@@ -1511,6 +1530,7 @@ fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>
 fn refusal_tag(refusal: &DispatchError) -> &'static str {
     match refusal {
         DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+        DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
         _ => "dispatch",
     }
 }

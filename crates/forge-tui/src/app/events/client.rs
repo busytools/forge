@@ -4357,6 +4357,52 @@ mod tests {
             ),
             "the hand-off still waiting is the one the core did not resolve",
         );
+        assert!(
+            app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("settled in another view"))
+                })
+            }),
+            "and the reader is told which ending took the resolved one",
+        );
+    }
+
+    /// The reader's own answer takes the dock before the stand-down lands, so
+    /// that update arrives with nothing queued: it says nothing, because the
+    /// reader's own click is not news.
+    #[test]
+    fn a_hand_off_this_view_answered_leaves_no_line() {
+        let mut app = App::test_default();
+        let key = test_key();
+        let handoff = a_browser_hand_off("answered here");
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffPending { key: key.clone(), handoff: handoff.clone() },
+        );
+        // The answer path pops the prompt before it dispatches, and the pop is
+        // what the stand-down meets here.
+        let popped = app.session_mut(&key).expect("the session").prompt_queue.pop_front().is_some();
+        assert!(popped, "the dock was queued for the reader to answer");
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::BrowserHandOffResolved {
+                key: key.clone(),
+                id: handoff.id,
+                ending: forge_primitives::browser::HandOffEnding::Done,
+            },
+        );
+
+        assert!(
+            !app.messages().expect("a session").iter().any(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block, crate::app::MessageBlock::Text(text)
+                        if text.text.contains("browser hand-off"))
+                })
+            }),
+            "the view that answered the hand-off does not narrate its own click",
+        );
     }
 
     /// Each hand-off ending reads as its own line, on the same rule the

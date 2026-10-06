@@ -225,10 +225,14 @@ a debug record.
 image part, in the order the parts are listed.** A frame that arrives before
 the answer that declares its image is a malformed pair rather than slowness,
 and the ask FAILS naming that - it is not left waiting for parts nothing has
-declared. A frame whose bytes cannot be taken (an unknown kind, a payload
-past the cap) fails every ask on that connection waiting for an image, with
-the refusal as the reason: the part it was for can never be filled, and a
-session reading a failure can act where a session waiting forever cannot.
+declared. A frame whose bytes cannot be taken fails every ask on that
+connection waiting for an image, with the refusal as the reason: the part it
+was for can never be filled, and a session reading a failure can act where a
+session waiting forever cannot. **Only the refusals an image frame can be do
+that** - a short header, an unknown kind, a truncated image header, an
+oversized image. The dictation stream's own refusals (an oversized or uneven
+audio payload) belong to the microphone and name nothing about a screenshot,
+so they leave the image waits standing.
 
 **A partial answer has no timeout of its own, and that is the contract.**
 Nothing here waits out a host that stops mid-answer; the ask ends when the

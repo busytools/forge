@@ -9,14 +9,12 @@ use std::sync::{Arc, Mutex};
 
 use forge_primitives::{AgentCommand, SessionId, SessionSlot};
 use forge_server::Command;
-use forge_server::live::Live;
 use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
 use forge_server::testing::{Fleet, ViewFacts};
 use forge_server::transport::TransportState;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
-use forge_server::work::WorkCache;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -49,16 +47,10 @@ async fn a_server() -> (String, Fleet) {
 /// on a seat nothing has seeded and get the empty one.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let state = Arc::new(TransportState {
-        surface: fleet.surface(),
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        client: forge_primitives::ClientConfig::default(),
-        // The workspace's own relay, not a fresh one: a state holding its own
-        // would register hosts into a role nothing routes to.
-        browser: fleet.workspace().browser_relay(),
-    });
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::ClientConfig::default(),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -1716,6 +1708,12 @@ async fn a_command_for_a_seat_that_is_not_there_answers_with_an_error() {
 /// A subscribe for a seat forge holds no session for is answered with an
 /// error, and the sentence names the seat in the slot's own words rather than
 /// the `SessionSlot { .. }` Debug dump a reader used to be handed.
+///
+/// **The declared role is granted even under the refusal.** The role is taken
+/// at register, before the seat can be encoded and refuse, so the refusal owes
+/// the grant too - without it the connection the relay is already routing
+/// asks to is one whose own client believes it never got the role, and its
+/// strip says another client drives the browser while the asks land here.
 #[tokio::test]
 async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
     let mut socket = connected().await;
@@ -1724,7 +1722,7 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
         ClientMessage::Subscribe {
             what: Subject::Session(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
             answering: true,
-            browser: false,
+            browser: true,
         },
     )
     .await;
@@ -1735,6 +1733,11 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
     assert_eq!(what, "subscribe", "the refusal comes from the subscribe arm: {why}");
     assert!(why.contains("Nowhere/nothing/lead"), "the seat is named in its own words: {why}");
     assert!(!why.contains("SessionSlot {"), "the sentence is not a Debug dump: {why}");
+
+    let ServerMessage::BrowserRole { hosting } = next_server(&mut socket).await else {
+        panic!("the refusal still owes the role its grant");
+    };
+    assert!(hosting, "which was taken at register, before the seat could refuse");
 }
 
 /// Paging a seat forge holds no session for is refused in the same words: the
@@ -2105,14 +2108,10 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
     std::fs::create_dir_all(&repo).expect("the project directory");
     a_repo(&repo);
 
-    let state = Arc::new(TransportState {
-        surface: fleet.surface(),
-        work: Arc::new(WorkCache::new()),
-        conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
-        live: Mutex::new(Live::new()),
-        client: forge_primitives::ClientConfig::default(),
-        browser: fleet.workspace().browser_relay(),
-    });
+    let state = Arc::new(TransportState::for_workspace(
+        &fleet.workspace(),
+        forge_primitives::ClientConfig::default(),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -3624,6 +3623,23 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     };
     assert!(!told, "and then the take told it the role is gone");
 
+    // **And it is still a client.** The take displaced it; it did not end.
+    // The displaced hold has both its channels closed, and a connection
+    // there parks rather than dying - proven by it answering a message of
+    // its own AFTER the notice, which a mutant that ended the displaced
+    // connection (or a reverting drain that broke on the closed asks
+    // channel) cannot get past.
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: false },
+    )
+    .await;
+    let (subject, _, _) = snapshot_answering(&mut first).await;
+    assert!(
+        matches!(subject, Subject::Home),
+        "the displaced connection still answers a subscribe: it is a viewer, not a corpse",
+    );
+
     // The asks follow the role: the claimant is what gets asked now.
     let asked = ask(&state, "browser_close", serde_json::json!({}));
     let (id, _, _, _) = browser_ask(&mut second).await;
@@ -3636,10 +3652,62 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     );
 }
 
-/// **An ask in flight when a take lands fails loudly, not into the void.**
-/// The displaced holder stops reading asks, so the call it was carrying comes
-/// back as the relay's own host-gone failure - never a hang, and never an
-/// answer from a role nobody holds.
+/// **The promoted waiter is told on its own socket.** The holder's connection
+/// goes and the role moves to whoever waited in line: without the frame the
+/// survivor's strip goes on saying another client drives the browser while
+/// its own connection is the one the asks now reach.
+#[tokio::test]
+async fn a_promoted_waiter_is_told_on_its_own_socket() {
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut first).await;
+
+    let mut second = connect(&url).await;
+    send(
+        &mut second,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut second).await;
+
+    // The holder's socket goes, which is the path a crashed client takes.
+    drop(first);
+
+    // The promotion is a frame, not a silence, and it arrives among whatever
+    // else the core says.
+    let promoted = loop {
+        match next_server_within(&mut second, 5000).await {
+            Some(ServerMessage::BrowserRole { hosting }) => break hosting,
+            Some(_) => {}
+            None => panic!("the promotion is said on the wire, not left silent"),
+        }
+    };
+    assert!(promoted, "the survivor is told the role is its own now");
+
+    // And the role is where the asks land, which is the whole of what holding
+    // means: read off the call's destination rather than off the frame alone.
+    let asked = ask(&state, "browser_close", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut second).await;
+    let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
+    send(&mut second, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
+    assert_eq!(
+        settled(asked, "the promoted close").await,
+        Ok(parts),
+        "the promoted connection answers the calls the role brought it",
+    );
+}
+
+/// **An ask in flight when a take lands fails loudly, and names the TAKE.**
+/// The displaced holder stops reading asks, so the call it was carrying is
+/// failed by the transport with the take's own sentence - not the relay's
+/// host-gone failure, which would say the holder went away when it was
+/// displaced and is still connected (the test below pins that other path for
+/// a holder that really goes).
 #[tokio::test]
 async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
     let (url, _fleet, state) = a_server_with_state().await;
@@ -3670,8 +3738,8 @@ async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
         panic!("the displaced holder's ask cannot settle: {answer:?}");
     };
     assert!(
-        why.contains("went away before answering"),
-        "the failure names the holder going, not the tool: {why}",
+        why.contains("took the browser role"),
+        "the failure names the take that displaced the holder, not a holder that went away: {why}",
     );
 }
 
@@ -3839,8 +3907,7 @@ async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
 
 /// **The relay the transport registers into is the one the WORKSPACE hands
 /// out.** The ask here is made through `workspace.browser_relay()`, while the
-/// connection took its role through the state the server fixture built - so
-/// this
+/// connection took its role through the state the fixture built - so this
 /// passes only if those are one relay. A state holding a relay of its own
 /// would register a host nothing routes to, and every browser tool would
 /// answer "no browser-capable client connected" with a client attached.
@@ -4017,6 +4084,58 @@ async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives()
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
     send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
     assert_eq!(settled(next, "the close").await, Ok(parts), "the connection survived the refusal");
+}
+
+/// **A dictation refusal keeps its hands off the image waits.** The two
+/// streams share a connection and their refusals are different news: an
+/// oversized audio payload says nothing about an ask waiting for a
+/// screenshot, so that ask is NOT failed by it - and it still settles when
+/// its own bytes arrive.
+#[tokio::test]
+async fn a_dictation_refusal_does_not_fail_an_image_waiting_ask() {
+    use forge_server::transport::frame::{Kind, MAX_PAYLOAD_BYTES};
+
+    let (url, _fleet, state) = a_server_with_state().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut socket).await;
+
+    let asked = ask(&state, "browser_take_screenshot", serde_json::json!({}));
+    let (id, _, _, _) = browser_ask(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMessage::BrowserAnswer {
+            id,
+            parts: vec![forge_primitives::browser::BrowserPart::Image {
+                mime_type: "image/png".to_owned(),
+                bytes: Vec::new(),
+            }],
+            error: None,
+        },
+    )
+    .await;
+
+    // The microphone's stream, one byte past its own cap: a refusal the
+    // decoder makes about AUDIO.
+    let mut refuse = vec![Kind::Dictation.tag()];
+    refuse.extend(std::iter::repeat_n(0_u8, MAX_PAYLOAD_BYTES + 1));
+    socket.send(Message::Binary(refuse.into())).await.expect("the dictation frame sends");
+
+    // The image ask is untouched: its own bytes arrive and settle it.
+    let mut bytes = vec![Kind::BrowserImage.tag()];
+    bytes.extend_from_slice(&id.to_be_bytes());
+    bytes.extend_from_slice(&[1, 2, 3]);
+    socket.send(Message::Binary(bytes.into())).await.expect("the image frame sends");
+
+    let settled_answer = settled(asked, "the screenshot").await;
+    assert!(
+        settled_answer.is_ok(),
+        "the audio refusal did not fail the image wait: {settled_answer:?}",
+    );
 }
 
 /// Two asks in flight at once, answered in the other order: each is settled
