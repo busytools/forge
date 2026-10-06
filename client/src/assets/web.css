@@ -1733,6 +1733,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+/* The take's card is built for the composer - top left, its draft below it -
+   and `align-self: flex-start` with the trailing margin is what that shape
+   reserves. In the dock's row there is no draft under it and the mic stands
+   beside it, so left alone the card pins to the row's top and the mic centres
+   against the card's margin box: four pixels below the card's own centre, and
+   the recording dot's. Centred here instead, with the margin the composer's
+   shape reserved dropped. */
+.dock .custom .tc { align-self: center; margin-bottom: 0; }
 .dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
