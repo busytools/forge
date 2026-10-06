@@ -199,6 +199,51 @@ describe('the rail', () => {
   });
 
   /**
+   * **A failure line is the failing seat's own.** A worker's spawn diagnostic
+   * searched onto the project's line put it under the lead's row, reading as
+   * the lead having failed while the worker's own row said nothing.
+   */
+  it("keeps a worker's failure off the project's line", () => {
+    const leadRow: AgentRow = { ...lead(), lifecycle: 'Running', pending: null, reason: null };
+    const failed: AgentRow = {
+      ...leadRow,
+      slot: { ...leadRow.slot, label: 'client-dev' },
+      label: 'client-dev',
+      lifecycle: 'Failed',
+      reason: 'transport closed before initialize',
+    };
+    const needs = railGroups(withHome({ agents: [leadRow, failed] }), LEAD, 0).find(
+      (group) => group.heading === 'needs you',
+    );
+
+    expect(needs?.projects[0]?.why, "a worker's failure rode the project's line").toBeNull();
+  });
+
+  /**
+   * The lead's own failure IS the project's: a dead lead is what the project's
+   * line is for, and a failure the core left no text for still says something.
+   */
+  it("draws the lead's own failure on the project's line", () => {
+    const failed: AgentRow = {
+      ...lead(),
+      lifecycle: 'Failed',
+      pending: null,
+      reason: 'the subprocess exited',
+    };
+    const why = (home: HomeWire): RailProject['why'] | undefined =>
+      railGroups(home, LEAD, 0).find((group) => group.heading === 'needs you')?.projects[0]?.why;
+
+    expect(why(withHome({ agents: [failed] })), "the lead's failure lost its text").toEqual({
+      line: 'the subprocess exited',
+      bad: true,
+    });
+    expect(
+      why(withHome({ agents: [{ ...failed, reason: null }] })),
+      'a failure with no recorded text claimed nothing',
+    ).toEqual({ line: 'not running', bad: true });
+  });
+
+  /**
    * A group that holds the seat the page is showing has to say so: arriving on
    * an asleep seat - a deep link, a click from the roster - draws the marked
    * row inside a closed fold otherwise, and the reader sees the count and no

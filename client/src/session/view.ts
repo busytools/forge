@@ -452,14 +452,26 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
 }
 
 /**
+ * The line a failed row draws under itself: the core's recorded reason, or the
+ * fallback for a failure it left no text for.
+ */
+export function failedLine(row: Row): string | null {
+  if (row.state.kind !== 'lifecycle') return null;
+  if (row.state.lifecycle !== 'Failed' && row.state.lifecycle !== 'AuthRequired') return null;
+  return row.reason ?? 'not running';
+}
+
+/**
  * The reason line: what a person has to do about this project, in the row's
  * own words rather than a second vocabulary for the same two asks.
  *
  * A project whose worker is held reads as held, whether or not its lead is the
- * one held, so the workers are searched beside the lead.
+ * one held, so the workers are searched beside the lead. A failure is not
+ * shared that way: it stays on the seat that failed, drawn on that seat's own
+ * row ({@link failedLine}), so the project's line is the lead's alone.
  */
-function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
-  for (const row of rows) {
+function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null {
+  for (const row of [lead, ...workers]) {
     if (row.pending !== null) {
       return {
         line:
@@ -468,12 +480,8 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
       };
     }
   }
-  for (const row of rows) {
-    if (row.state.kind !== 'lifecycle') continue;
-    if (row.state.lifecycle !== 'Failed' && row.state.lifecycle !== 'AuthRequired') continue;
-    return { line: row.reason ?? 'not running', bad: true };
-  }
-  return null;
+  const failed = failedLine(lead);
+  return failed === null ? null : { line: failed, bad: true };
 }
 
 /**
@@ -517,7 +525,7 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
       row: lead,
       workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
       sleeping,
-      why: whyOf(all),
+      why: whyOf(lead, workers),
     });
     // The rows the heading hides when it folds: the project's own row and
     // every worker under it, drawn or folded.
