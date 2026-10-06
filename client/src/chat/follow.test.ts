@@ -556,6 +556,72 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a wheel-down did not move them').toEqual([PIN]);
   });
 
+  it("disarms on the reader's own key at any distance", async () => {
+    // The key is the terminal's own vocabulary: the ones that scroll the
+    // column up are the ones that may let the follow go.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own key moved them, at any distance').toEqual([]);
+  });
+
+  it('does not arm on a key that cannot scroll the column up', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a letter key was not a scroll').toEqual([PIN]);
+  });
+
+  it("disarms on the reader's own touch at any distance", async () => {
+    // Touch arms whole - a touch carries no direction - and Android is the
+    // other half of this client.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new Event('touchstart'));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'their own touch moved them, at any distance').toEqual([]);
+  });
+
+  it('disarms on a moving touch too', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new Event('touchmove'));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a moving touch is still their hand').toEqual([]);
+  });
+
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
     const seat = writable(LEAD);
     const server = stub();
