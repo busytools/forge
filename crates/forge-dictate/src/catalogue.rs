@@ -569,7 +569,15 @@ const CATALOGUE_CACHE_FILE: &str = "catalogue.json";
 
 /// The record's own layout version. A file written by a layout this
 /// build does not know is ignored rather than misread.
-const CATALOGUE_CACHE_VERSION: u32 = 1;
+///
+/// **Bump this whenever the entry shape grows a field the download path
+/// reads.** Every entry field defaults, so a cache written by an older
+/// build parses cleanly and answers the default - and a default is a
+/// silent wrong answer where a refetch is the right one. Bumped to 2 for
+/// `published_repo`: a cache written without it cannot find the download
+/// links of the variants whose only document is their repo's README, and
+/// the install failed a 404 on a doc that never existed.
+const CATALOGUE_CACHE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct CatalogueFile {
