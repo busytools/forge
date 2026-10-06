@@ -48,4 +48,22 @@ describe("the home header's update line", () => {
       target.remove();
     }
   });
+
+  it('retries an install from the failed line, and nothing restarts', async () => {
+    updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the download failed' });
+    mockInstall.mockResolvedValue(undefined);
+
+    const target = document.createElement('div');
+    document.body.append(target);
+    const app = mount(Home, { target, props: { wire: homeWire } });
+    try {
+      target.querySelector('button.upd')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      await vi.waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+      expect(mockRestart, 'the retry restarted instead of installing again').not.toHaveBeenCalled();
+    } finally {
+      await unmount(app);
+      target.remove();
+    }
+  });
 });

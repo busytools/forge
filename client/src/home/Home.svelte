@@ -74,7 +74,7 @@
           >client v{$updateState.version} ready - restart to finish</button
         >
       {:else if $updateState.stage === 'failed'}
-        {' \u{b7} '}<button class="upd" onclick={install}
+        {' \u{b7} '}<button class="upd" onclick={install} title={$updateState.detail}
           >client v{$updateState.version} - update failed, retry</button
         >
       {/if}

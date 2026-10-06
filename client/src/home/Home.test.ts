@@ -163,15 +163,29 @@ describe("the client's own update", () => {
     expect(draw()).not.toContain('v9.9.9');
   });
 
+  it('draws the installing stage, offering nothing to press', () => {
+    updateState.set({ stage: 'installing', version: '9.9.9' });
+
+    const body = draw();
+    expect(body).toContain('v9.9.9 updating...');
+    expect(body, 'the stage offers an action while one is already in flight').not.toMatch(
+      /<button[^>]*>client /,
+    );
+  });
+
   it('offers the restart once the update is installed', () => {
     updateState.set({ stage: 'restart', version: '9.9.9' });
 
     expect(draw()).toContain('restart to finish');
   });
 
-  it('draws a failed install with a retry', () => {
-    updateState.set({ stage: 'failed', version: '9.9.9' });
+  it('draws a failed install with a retry, and its reason on the control', () => {
+    updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the signature did not match' });
 
-    expect(draw()).toContain('update failed, retry');
+    const body = draw();
+    expect(body).toContain('update failed, retry');
+    expect(body, 'the reason the install failed was dropped').toContain(
+      'title="the signature did not match"',
+    );
   });
 });

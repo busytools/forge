@@ -24,6 +24,7 @@ import Inspector from './session/Inspector.svelte';
 import Session from './session/Session.svelte';
 import { sessionFrom, type SessionRecord } from './session/wire';
 import type { Connection } from './socket';
+import { updateState } from './update/state';
 import type { HomeWire } from './wire/home';
 import { DEFAULT_SETTINGS } from './wire/types';
 
@@ -106,6 +107,25 @@ describe('axe over the rendered pages', () => {
   it('draws the home with no violations', async () => {
     const html = render(Home, { props: { wire: homeWire, address: '127.0.0.1:8790' } }).body;
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The header's update line is a control, and the plain home draws it only
+   * when an update is available - so this is the render that puts it in front
+   * of axe. The store is left as it was found: it is shared by every test in
+   * this file.
+   */
+  it('draws the home with an update available, with no violations', async () => {
+    updateState.set({ stage: 'available', version: '9.9.9' });
+    try {
+      const html = render(Home, { props: { wire: homeWire, address: '127.0.0.1:8790' } }).body;
+      expect(html, 'the control the update line draws was not rendered').toContain(
+        'v9.9.9 available',
+      );
+      expect(await idsOf(html)).toEqual([]);
+    } finally {
+      updateState.set({ stage: 'current' });
+    }
   });
 
   it('draws the connect screen with no violations', async () => {

@@ -56,17 +56,34 @@ describe('install', () => {
     expect(get(updateState)).toEqual({ stage: 'restart', version: '1.0.116' });
   });
 
-  it('draws the failure and keeps the version for a retry', async () => {
+  it('draws the failure with its reason, keeping the version for a retry', async () => {
     updateState.set({ stage: 'available', version: '1.0.116' });
     mockInstall.mockRejectedValue(new Error('the download failed'));
 
     await install();
 
-    expect(get(updateState)).toEqual({ stage: 'failed', version: '1.0.116' });
+    expect(get(updateState)).toEqual({
+      stage: 'failed',
+      version: '1.0.116',
+      detail: 'the download failed',
+    });
+  });
+
+  it('carries a non-Error rejection the same way', async () => {
+    updateState.set({ stage: 'available', version: '1.0.116' });
+    mockInstall.mockRejectedValue('the signature did not match');
+
+    await install();
+
+    expect(get(updateState)).toEqual({
+      stage: 'failed',
+      version: '1.0.116',
+      detail: 'the signature did not match',
+    });
   });
 
   it('retries from a failure', async () => {
-    updateState.set({ stage: 'failed', version: '1.0.116' });
+    updateState.set({ stage: 'failed', version: '1.0.116', detail: 'the download failed' });
     mockInstall.mockResolvedValue(undefined);
 
     await install();
@@ -76,17 +93,17 @@ describe('install', () => {
 
   it('ignores a second call while one is in flight', async () => {
     updateState.set({ stage: 'available', version: '1.0.116' });
-    let land = (): void => {};
+    const lands: Array<() => void> = [];
     mockInstall.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          land = resolve;
+          lands.push(resolve);
         }),
     );
 
     const first = install();
     const second = install();
-    land();
+    for (const land of lands) land();
     await Promise.all([first, second]);
 
     expect(mockInstall).toHaveBeenCalledTimes(1);
