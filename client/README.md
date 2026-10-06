@@ -148,6 +148,36 @@ silent path exists for a sideloaded app. The Android side is
 permission, both project source that `tauri android init` would regenerate
 away - re-apply them the way the section below describes.
 
+## The web image
+
+The same build, served to browsers: a client-only image under `client/docker/`
+that carries the built `dist/` and serves it from a volume. There is no server
+half in it - a page connects to a forge somewhere else.
+
+```sh
+npm --prefix client run build
+docker build -f client/docker/Dockerfile -t forge-web client
+docker run -p 8080:8080 -v forge-web:/srv/forge-web forge-web
+```
+
+The image ships with the build inside it, so an empty volume is seeded on
+first start. A small poller then keeps the volume at the published release:
+it reads the same `latest.json` every other half reads, takes the `web`
+block's version, url and sha256, verifies the archive before extracting it,
+and flips a `current` symlink - an update lands on the next request and
+nothing ever restarts. A failed poll is not fatal; the container keeps
+serving what it has. The manifest is written beside the app, and the page
+reads it same-origin to draw which build it is serving and what is published.
+
+`Cache-Control: no-cache` plus an ETag is a rule, not a default: a swapped
+build must not hide behind a cache. It is pinned in `docker/nginx.conf` and
+in `docker/test_serving.sh`, which runs against the built image;
+`docker/test_poller.sh` pins the poller's swap, its same-version skip and its
+refusal of an archive that does not match the manifest's sha256.
+
+The image is published to `ghcr.io/busytools/forge-web` on a release tag,
+under `v<version>` and a moving `latest`.
+
 ## The Android target
 
 The same shell builds for Android through Tauri's own CLI. It wants the

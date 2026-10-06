@@ -1058,7 +1058,9 @@ one that never built, or was signed by anything else, cannot read as a
 released half. `client-web-release` stages the web archive at the bundle
 root, and then `publish` writes `latest.json` - the manifest the desktop,
 the phone and the web half each read - and creates the release with the
-five assets. `just check-release`
+five assets. The tag push also triggers the image workflow, which builds
+the web client's image from the same tree and publishes it to ghcr under
+the release version and `latest`. `just check-release`
 and `just check-feature-configs` gate the recipe because `cargo install`
 builds in release mode and would otherwise find the error after the tag
 exists. The second is the one that compiles the configuration `install.sh`

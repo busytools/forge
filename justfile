@@ -676,6 +676,28 @@ client-web-release version:
     tar -C "$dist" -czf "$out/forge-web-{{version}}.tar.gz" .
     echo "[OK] staged the web release: $out/forge-web-{{version}}.tar.gz"
 
+# The web image's own gate. Neither `just check` nor the cargo jobs reach any
+# of it: the scripts run inside the image, and the image workflow builds and
+# exercises it on a pull request that touches client/docker. This is the same
+# pair of scripts for a local run - the poller test wants jq, curl and
+# python3, and the image half wants docker, so a machine without a daemon is
+# told what did not run rather than being told a pass.
+#
+# Run the web image's checks.
+web-image-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ./client/docker/test_poller.sh
+
+    if ! docker info > /dev/null 2>&1; then
+        echo "[WARN] no docker daemon - the image build and its serving test did not run" >&2
+        exit 0
+    fi
+    npm --prefix client run build
+    docker build -f client/docker/Dockerfile -t forge-web client
+    ./client/docker/test_serving.sh forge-web
+
 # Run the app: the debug webview over the Vite dev server, with a frontend edit
 # reloading into the open window. Nothing is installed and no disk image is
 # produced - `client-tauri-check` is the one that builds what ships.
