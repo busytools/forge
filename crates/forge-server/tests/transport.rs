@@ -3369,6 +3369,26 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     }
 }
 
+/// **A client built before v6 still reaches this server, and this is what a
+/// live machine depends on.** The server gates nothing on the protocol -
+/// nothing a client sends carries the version it speaks - so a subscribe
+/// written before the `browser` field existed decodes and is answered like
+/// any other. What such a client does with a NEWER greeting is the client's
+/// business, and the v5 client's answer is to draw the skew sentence naming
+/// the release to install rather than to connect against a shape it cannot
+/// read.
+#[tokio::test]
+async fn a_subscribe_from_a_client_that_predates_v6_is_answered() {
+    let mut socket = connected().await;
+    socket
+        .send(Message::Text(r#"{"kind":"subscribe","what":"home","answering":false}"#.into()))
+        .await
+        .expect("the older subscribe sends");
+
+    let (subject, _, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "the field v6 added is absent, and the ask is answered");
+}
+
 /// The host's next browser ask, passing over whatever updates arrive first.
 ///
 /// A connection forwards the core's news as well as the asks, so a test that
