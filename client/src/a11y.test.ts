@@ -20,6 +20,9 @@ import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
 import session from './dev/fixtures/session.json';
 import Home from './home/Home.svelte';
+import Models from './models/Models.svelte';
+import ModelsBody from './models/ModelsBody.svelte';
+import { modelsWire } from './models/testing';
 import Inspector from './session/Inspector.svelte';
 import Session from './session/Session.svelte';
 import { sessionFrom, type SessionRecord } from './session/wire';
@@ -402,6 +405,37 @@ describe('axe over the rendered pages', () => {
         onclose: () => {},
       },
     }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The models page with a feed in front of axe: the four sections, the
+   * proposal, the chips, the search form and the check's own control.
+   */
+  it('draws the models page with no violations', async () => {
+    const html = render(ModelsBody, {
+      props: { wire: modelsWire, oncheck: () => {} },
+    }).body;
+    expect(html, 'the feed drew, so axe saw it').toContain('update available');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /** Dictation off: the off state, with the feed's rows still behind the search. */
+  it('draws the models page with dictation off, with no violations', async () => {
+    const html = render(ModelsBody, {
+      props: {
+        wire: { ...modelsWire, enabled: false, in_use: [], updates: [], check: { state: 'never' } },
+        oncheck: () => {},
+      },
+    }).body;
+    expect(html).toContain('dictation is off');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /** The route before the first read lands: the page's own loading state. */
+  it('draws the models route waiting for its read, with no violations', async () => {
+    const html = render(Models, { props: { connection: null } }).body;
+    expect(html).toContain('Reading the models');
     expect(await idsOf(html)).toEqual([]);
   });
 });

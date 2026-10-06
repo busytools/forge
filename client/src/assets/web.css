@@ -102,6 +102,13 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .svc.bad { border-color: rgba(224,104,62,.4); }
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
+/* The one card that is a way in. The chevron is drawn at rest rather than
+   uncovered by the pointer - an affordance only hover reveals is what rule 22
+   forbids - and the hover recolours it, the way a row's own chrome does. */
+.band a.svc { display: block; text-decoration: none; color: inherit; }
+.band a.svc .arw { margin-left: auto; color: var(--dim); }
+.band a.svc:hover { border-color: var(--ctl); }
+.band a.svc:hover .arw { color: var(--accent); }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
    TUI runs once, before a browser can attach, so on the web it could only
@@ -122,6 +129,15 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
 .dot.failed { background: var(--bad);
   clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+/* The verdict pair: how a service or a model is, rather than what state a
+   session is in. The triangle is the shape `.dot.needs` draws, without the
+   pulse - the vocabulary is four shapes - and the rules live here rather than
+   on a page because the band and the models page draw the same two, each
+   resetting the size it wants. */
+.dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border: 0; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+.dot.warn { width: 9px; height: 9px; flex: 0 0 9px; border: 0;
+  background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
 
 /* The work spinner is the RING: the mark for work in flight, wherever it
    is drawn. */
@@ -1992,3 +2008,108 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 /* The path above a diff is one unbroken token and often longer than a phone. It
    is a location rather than code, so it wraps rather than scrolling. */
 .dif .h { overflow-wrap: anywhere; }
+
+/* ---------- the models page ----------
+   Everything under `.models`, for the reason the `.pop` block gives: `.model`,
+   `.status`, `.col` and `.note` are short names another surface already uses,
+   and a bare rule here would reach it by coming later. The pieces it shares -
+   the header, the band card's gradient, the chip, the empty box and the four
+   state shapes - are the shipped ones; these are the page's own layout. */
+
+.models .title { display: flex; flex-direction: column; }
+.models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  color: var(--text); }
+.models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 11px; }
+.models .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The one line a page with no read yet draws, and the one a refused
+   subscription draws: the session page's own pending treatment. */
+.models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+.models .block { margin-bottom: 30px; }
+/* The section heading and its mono tail, at the home's own weights: the tail
+   is what a reader skims for, so it says the rule rather than repeating the
+   heading. */
+.models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
+  text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
+.models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+  text-transform: none; color: var(--dim); font-weight: 400; }
+
+/* the model rows: the band card's own ground, grown to a full-width row */
+.models .model { display: flex; align-items: center; gap: 14px;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 13px 15px; margin-bottom: 10px; }
+.models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--dim); flex: 0 0 118px; }
+/* The row's middle column. Not `.body`: that name is the chat turn's own
+   drawing, and the sheet's sweeps read a rule by its class name wherever it
+   sits. */
+.models .facts { min-width: 0; flex: 1; }
+.models .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin-top: 3px; }
+.models .meta b { color: var(--muted); font-weight: 500; }
+.models .side { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* the chip: the dictation panel's own chip, at this page's scale */
+.models .chip { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+.models .chip.go { border-color: rgba(244,118,0,.5); color: var(--hot); }
+.models button.chip.go:hover { background: rgba(244,118,0,.12); }
+
+/* the check line and an update line: one shape, toned by what it says */
+.models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+  padding: 12px 15px; margin-bottom: 10px; }
+.models .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .status .spacer { margin-left: auto; }
+.models .status.warn { border-color: rgba(201,161,59,.35); }
+.models .status.warn .t { color: var(--warn); }
+.models .status.failed { border-color: rgba(224,104,62,.4); }
+.models .status.failed .t { color: var(--bad); }
+.models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); padding-left: 19px; }
+.models .status .detail b { color: var(--muted); font-weight: 500; }
+
+/* the search the page does on this side: the feed is already here */
+.models .searchbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.models .searchbar input { flex: 1 1 260px; min-width: 0; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--text); background: var(--s1);
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+.models .searchbar input::placeholder { color: var(--dim); }
+.models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin-top: 10px; }
+
+/* a candidate row: the home's row shape, shrunk to a list item */
+.models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+  overflow: hidden; background: rgba(13,17,26,.4); }
+.models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+  border-bottom: 1px solid var(--line); }
+.models .cand:last-child { border-bottom: 0; }
+.models .cand .nm { flex: 1 1 auto; min-width: 0; }
+.models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models .cand .col b { color: var(--muted); font-weight: 500; }
+
+@media (pointer: coarse) {
+  /* A button and an input already take the 44 from the shared rule; these are
+     the two targets it cannot reach: the way back, and a candidate row. */
+  .models .back, .models .cand { min-height: 44px; }
+  .models .back { display: inline-flex; align-items: center; }
+}
+
+@media (max-width: 760px) {
+  .models .model { flex-wrap: wrap; gap: 8px; }
+  .models .role, .models .side { flex-basis: 100%; }
+  .models .cand { flex-wrap: wrap; }
+  .models .cand .col { flex-basis: 100%; }
+}
