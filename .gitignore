@@ -22,3 +22,8 @@ client/src-tauri/gen/schemas/
 # sandbox survives a crashed run, so it must not read as a dirty tree.
 client/.stryker-tmp/
 client/reports/
+# The vendored browser stack: node, @playwright/mcp and Chrome for Testing,
+# half a gigabyte, produced by `just vendor-browser-stack` rather than
+# committed. The README that explains the layout is the one tracked file.
+client/src-tauri/browser-stack/*
+!client/src-tauri/browser-stack/README.md

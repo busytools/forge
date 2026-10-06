@@ -1,6 +1,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use tauri::Manager as _;
+
+pub mod browser;
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -14,8 +18,23 @@ pub fn run() {
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .build(),
         )
-        .setup(|_app| {
+        .invoke_handler(tauri::generate_handler![browser::browser_call])
+        .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
+            // The browser host is handed to the frontend whether or not its
+            // directories resolve: a client that cannot host says so when it
+            // is asked, rather than refusing to start.
+            let host = match browser::StackPaths::resolve(app.handle()) {
+                Ok(paths) => {
+                    tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                    std::sync::Arc::new(browser::BrowserHost::new(paths))
+                }
+                Err(why) => {
+                    tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                    std::sync::Arc::new(browser::BrowserHost::unavailable(why))
+                }
+            };
+            app.manage(host);
             Ok(())
         })
         .run(context);
