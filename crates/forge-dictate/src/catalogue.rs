@@ -234,6 +234,9 @@ pub struct CatalogueSource {
     pub entry_base: String,
     /// The project's latest release, whose tag labels the feed.
     pub release: String,
+    /// URL prefix a variant's per-model doc is appended to, which is where
+    /// the download links for its files live.
+    pub doc_base: String,
 }
 
 impl Default for CatalogueSource {
@@ -246,8 +249,63 @@ impl Default for CatalogueSource {
                     .to_owned(),
             release: "https://api.github.com/repos/handy-computer/transcribe.cpp/releases/latest"
                 .to_owned(),
+            doc_base:
+                "https://raw.githubusercontent.com/handy-computer/transcribe.cpp/main/docs/models/"
+                    .to_owned(),
         }
     }
+}
+
+/// The markers the feed wraps its machine-readable regions in.
+const DOWNLOADS_OPEN: &str = "<!-- catalog:downloads -->";
+const TABLE_CLOSE: &str = "<!-- /catalog -->";
+
+/// The download links one variant's doc carries, by file name.
+///
+/// **Read from the doc's marked region, never the whole prose.** A doc's
+/// intro may link the upstream repository holding the ORIGINAL weights,
+/// which is not the GGUF this runtime loads, so taking any URL on the page
+/// would offer an install that cannot work. A file name is the URL's own
+/// last segment, so the name a download is recorded under and the URL it
+/// came from cannot disagree.
+///
+/// A doc this build does not understand yields nothing rather than a guess,
+/// and the caller reports that the doc carried no table.
+pub fn doc_links(raw: &str) -> Vec<(String, String)> {
+    let Some(region) = raw
+        .split_once(DOWNLOADS_OPEN)
+        .and_then(|(_, rest)| rest.split_once(TABLE_CLOSE))
+        .map(|(table, _)| table)
+    else {
+        return Vec::new();
+    };
+
+    let mut links = Vec::new();
+    for target in region.lines().flat_map(link_targets) {
+        if !target.ends_with(".gguf") {
+            continue;
+        }
+        let Some((_, file)) = target.rsplit_once('/') else {
+            continue;
+        };
+        links.push((file.to_owned(), target));
+    }
+    links
+}
+
+/// Every markdown link target on one line: the text between `](` and `)`.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("](") {
+        let after = &rest[at + 2..];
+        let Some(end) = after.find(')') else {
+            break;
+        };
+        targets.push(after[..end].to_owned());
+        rest = &after[end..];
+    }
+    targets
 }
 
 /// The feed as one fetch found it.
@@ -621,6 +679,57 @@ mod tests_catalogue {
         assert_eq!(entry.fleurs_en_wer(), None);
         assert!(!entry.streaming(), "absent capabilities are not a claim of support");
     }
+
+    /// **The doc's marked table is the only place a download URL comes
+    /// from.** The granite doc's own intro links an upstream Hugging Face
+    /// repo, which is not a file forge can fetch, so a parser that took any
+    /// URL in the prose would offer a dead install; the `catalog:downloads`
+    /// markers are the feed's own statement of where its files are.
+    #[test]
+    fn parses_the_docs_marked_table_into_filenames_and_urls() {
+        let raw = include_str!("../tests/fixtures/docs/granite-speech-5.0-470m-turboctc.md");
+        let links = doc_links(raw);
+
+        let expected = "granite-speech-5.0-470m-turboctc-Q4_K_M.gguf";
+        let (file, url) = links
+            .iter()
+            .find(|(file, _)| file == expected)
+            .expect("the table's Q4 row did not parse");
+        assert_eq!(file, expected, "the file is the URL's own last segment");
+        assert!(
+            url.starts_with("https://huggingface.co/handy-computer/"),
+            "the URL is the table's own, got {url}"
+        );
+        assert_eq!(links.len(), 6, "one link per quant row");
+        assert!(
+            links.iter().all(|(file, _)| file.ends_with(".gguf")),
+            "a row without a .gguf file parsed as a download"
+        );
+    }
+
+    /// The second real doc, so the convention is pinned beyond one sample.
+    #[test]
+    fn parses_a_second_variants_table() {
+        let raw = include_str!("../tests/fixtures/docs/medasr.md");
+        let links = doc_links(raw);
+
+        assert_eq!(links.len(), 6);
+        assert!(
+            links.iter().any(|(file, _)| file == "medasr-Q8_0.gguf"),
+            "the second doc's own table did not parse"
+        );
+    }
+
+    /// A doc shape this build does not understand offers no links rather
+    /// than a guess - the caller reports that the doc carried no table.
+    #[test]
+    fn a_doc_with_no_marked_table_parses_to_nothing() {
+        assert!(doc_links("# a doc with prose only").is_empty());
+        assert!(
+            doc_links("see https://huggingface.co/some/repo for the weights").is_empty(),
+            "a URL in the prose is not a download link"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -691,6 +800,7 @@ mod tests_catalogue_fetch {
             listing: format!("{base}/catalog"),
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
         }
     }
 
