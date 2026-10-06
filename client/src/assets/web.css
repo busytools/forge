@@ -2131,8 +2131,8 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
   font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
-.models .chip.go { border-color: rgba(244,118,0,.5); color: var(--hot); }
-.models button.chip.go:hover { background: rgba(244,118,0,.12); }
+/* `go` and its hover left with the Search button: the box filters as it is
+   typed, so no chip on this page starts anything. */
 
 /* the check line and an update line: one shape, toned by what it says */
 .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;

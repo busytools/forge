@@ -25,6 +25,9 @@
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    /* The app sheet's own type scale, token for token, so the page's rules
+       read here the way they read there. */
+    --fs-prose: 15.5px; --fs-base: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
     --r: 10px;
     --pad: 16px;
   }
@@ -52,9 +55,9 @@
   .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
     background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
     padding: 14px 16px 16px; margin-bottom: 18px; }
-  .tcap { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 12px; }
   .tcap b { color: var(--text); font-weight: 400; }
-  .tnote { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
 
   /* ---------- the page's own rules (web.css, `.models`) ---------- */
 
@@ -72,15 +75,20 @@
   .brand .mark svg { display: block; width: 100%; height: 100%; }
   .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
   .models .title { display: flex; flex-direction: column; }
-  .models .title .t { font-size: 18px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
-  .models .title .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
-  .models .back { margin-left: auto; font-family: var(--mono); font-size: 12.5px;
+  .models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+  .models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--muted); text-decoration: none; border: 1px solid var(--line);
     border-radius: 9px; padding: 6px 11px; }
+  .models .back:hover { border-color: var(--ctl); color: var(--text); }
+  /* The two one-line states the route draws before a read: the loading line,
+     and the server's own words for a refused subscription. */
+  .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+    text-align: center; }
 
   .models .block { margin-bottom: 30px; }
   .models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
-    font-size: 12.5px; font-weight: 600; letter-spacing: .11em;
+    font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
     text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
   .models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
     text-transform: none; color: var(--dim); font-weight: 400; }
@@ -89,40 +97,40 @@
     background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
     border: 1px solid var(--line); border-radius: var(--r);
     padding: 13px 15px; margin-bottom: 10px; }
-  .models .role { font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase;
+  .models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
     color: var(--dim); flex: 0 0 118px; }
   .models .facts { min-width: 0; flex: 1; }
-  .models .nm { font-family: var(--mono); font-size: 14px; color: var(--text);
+  .models .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .models .meta { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+  .models .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 3px; }
   .models .meta b { color: var(--muted); font-weight: 500; }
   .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
   .models .chip { display: inline-flex; align-items: center; gap: 7px;
-    font-family: var(--mono); font-size: 12.5px; padding: 4px 10px;
+    font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
     border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
     background: none; white-space: nowrap; }
-  .models .chip.go { border-color: rgba(244,118,0,.5); color: var(--hot); }
+  /* `go` left with the Search button: the box filters as it is typed. */
 
   .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
     padding: 12px 15px; margin-bottom: 10px; }
-  .models .status .t { font-family: var(--mono); font-size: 14px; color: var(--text); }
-  .models .status .when { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .models .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .models .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .models .status .spacer { margin-left: auto; }
   .models .status.warn { border-color: rgba(201,161,59,.35); }
   .models .status.warn .t { color: var(--warn); }
   .models .status.failed { border-color: rgba(224,104,62,.4); }
   .models .status.failed .t { color: var(--bad); }
-  .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: 12.5px;
+  .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); padding-left: 19px; }
   .models .status .detail b { color: var(--muted); font-weight: 500; }
 
   .models .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
-    font-size: 14px; color: var(--text); background: var(--s1);
+    font-size: var(--fs-data); color: var(--text); background: var(--s1);
     border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
   .models .find::placeholder { color: var(--dim); }
-  .models .note { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+  .models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
 
   .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
     overflow: hidden; background: rgba(13,17,26,.4); }
@@ -131,17 +139,19 @@
   .models .cand:last-child { border-bottom: 0; }
   .models .cand:hover { background: var(--s2); }
   .models .cand .nm { flex: 1 1 auto; min-width: 0; }
-  .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: 12.5px;
+  .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .models .cand .col b { color: var(--muted); font-weight: 500; }
   .models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
   .models .cand:hover .go { color: var(--accent); }
-  .models .list li { list-style: none; }
+  /* The app sheet's own rule, unscoped there and here: the candidate list is
+     a ul, and its markers are the sheet's business rather than the page's. */
+  .list { list-style: none; }
 
   .models .empty { border: 1px dashed var(--line); border-radius: var(--r);
     padding: 46px 24px; text-align: center; }
   .models .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
-  .models .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+  .models .empty .d { font-size: var(--fs-label); color: var(--dim); max-width: 46ch; margin: 0 auto; }
   /* The empty box's code is the shipped one; a code inside a NOTE has no
      shipped rule and renders as plain text, so neither does one here. */
   .models .empty code {
@@ -273,6 +283,15 @@
   </div>
 
   <h2>The states it can be in</h2>
+
+  <div class="tile">
+    <div class="tcap">the two one-line states before a read lands: <b>reading</b>, and a <b>refused</b> subscription in the server's own words</div>
+    <div class="models">
+      <p class="pending" style="margin-top:0">Reading the models...</p>
+      <p class="pending" style="margin-top:12px">This forge would not answer for the models: no models on this forge</p>
+    </div>
+    <div class="tnote">Both are the route's, not the body's: a page that drew the four sections here would read as an empty catalogue rather than as one that has not arrived, and a refusal is the server's answer rather than an address that is wrong.</div>
+  </div>
 
   <div class="tile">
     <div class="tcap">the check line, in the states the feed can be in - <b>not checked yet</b>, <b>checking</b>, <b>unreachable</b>, and a state this client cannot read</div>
