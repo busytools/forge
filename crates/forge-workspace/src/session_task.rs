@@ -4984,6 +4984,69 @@ provider = "anthropic"
         assert_eq!(lead_bucket[0].text, "lead work");
     }
 
+    /// Every echo in a multi-fire bucket names its OWN entry: the bucket
+    /// holds one entry per due cron, so an identity read once for the
+    /// bucket - the shape the loop's surrounding arguments invite - would
+    /// print the first schedule on every row. Sorted rather than
+    /// positional, so this does not pin drain order.
+    #[tokio::test]
+    async fn a_drain_names_each_entry_in_a_multi_fire_bucket() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
+        let session_key = SessionSlot::lead("TestOrg", "cron-drain");
+        workspace.park_cron(&session_key, &test_cron("c1", "morning reminder"), false);
+        workspace.park_cron(&session_key, &test_cron("c2", "worker digest"), true);
+        // A once-off registered without a description: the reply's own
+        // contract says the key is null then, and the row falls back to the
+        // prompt's first line.
+        let mut bare = test_cron("c3", "check the queue");
+        bare.description = None;
+        workspace.park_cron(&session_key, &bare, false);
+
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(connected_event(&session_key.display(), "/tmp/cron-drain"));
+
+        let mut heard: Vec<(String, String, Option<String>)> = Vec::new();
+        while let Ok(u) = update_rx.try_recv() {
+            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } = u
+                && key == session_key
+            {
+                heard.push((text, cron_id, description));
+            }
+        }
+        heard.sort();
+        assert_eq!(
+            heard,
+            vec![
+                (
+                    "[missed cron] worker digest".to_owned(),
+                    "c2".to_owned(),
+                    Some("c2 summary".to_owned())
+                ),
+                ("check the queue".to_owned(), "c3".to_owned(), None),
+                ("morning reminder".to_owned(), "c1".to_owned(), Some("c1 summary".to_owned())),
+            ],
+            "each echo carries its own entry's identity, and a missing description stays null",
+        );
+    }
+
     /// **A session that runs long does not carry its whole run.** The copy a
     /// replay answers with is a window, for the reason the transport's held
     /// copy is: what its reader does with it is cut it to the newest turns,
