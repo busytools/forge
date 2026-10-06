@@ -19,6 +19,80 @@
   outline-offset: 2px;
 }
 
+/* ---------- one scrollbar skin for every scroller on the page ----------
+   The root viewport (the home page scrolls the document), the rail, the chat,
+   the autocomplete, the segment list, the dictation popover and both text
+   fields - the composer's and the dock's. An unstyled bar is a white or grey
+   strip against the dark panels. The parts do not take the element's own
+   cursor, so the pointer is set per part; the thumb brightens on hover and
+   again while dragged. `scrollbar-gutter: stable` stays each scroller's own
+   concern. */
+html::-webkit-scrollbar,
+.rail .scroll::-webkit-scrollbar,
+.conv::-webkit-scrollbar,
+.ac .rows::-webkit-scrollbar,
+.sg-list::-webkit-scrollbar,
+.pop::-webkit-scrollbar,
+.box textarea::-webkit-scrollbar,
+.dock .notes::-webkit-scrollbar {
+  width: 8px;
+  cursor: pointer;
+}
+html::-webkit-scrollbar-track,
+.rail .scroll::-webkit-scrollbar-track,
+.conv::-webkit-scrollbar-track,
+.ac .rows::-webkit-scrollbar-track,
+.sg-list::-webkit-scrollbar-track,
+.pop::-webkit-scrollbar-track,
+.box textarea::-webkit-scrollbar-track,
+.dock .notes::-webkit-scrollbar-track {
+  background: transparent;
+  cursor: pointer;
+}
+html::-webkit-scrollbar-corner,
+.rail .scroll::-webkit-scrollbar-corner,
+.conv::-webkit-scrollbar-corner,
+.ac .rows::-webkit-scrollbar-corner,
+.sg-list::-webkit-scrollbar-corner,
+.pop::-webkit-scrollbar-corner,
+.box textarea::-webkit-scrollbar-corner,
+.dock .notes::-webkit-scrollbar-corner {
+  background: transparent;
+  cursor: pointer;
+}
+html::-webkit-scrollbar-thumb,
+.rail .scroll::-webkit-scrollbar-thumb,
+.conv::-webkit-scrollbar-thumb,
+.ac .rows::-webkit-scrollbar-thumb,
+.sg-list::-webkit-scrollbar-thumb,
+.pop::-webkit-scrollbar-thumb,
+.box textarea::-webkit-scrollbar-thumb,
+.dock .notes::-webkit-scrollbar-thumb {
+  background: var(--s3);
+  border-radius: 99px;
+  cursor: pointer;
+}
+html::-webkit-scrollbar-thumb:hover,
+.rail .scroll::-webkit-scrollbar-thumb:hover,
+.conv::-webkit-scrollbar-thumb:hover,
+.ac .rows::-webkit-scrollbar-thumb:hover,
+.sg-list::-webkit-scrollbar-thumb:hover,
+.pop::-webkit-scrollbar-thumb:hover,
+.box textarea::-webkit-scrollbar-thumb:hover,
+.dock .notes::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
+html::-webkit-scrollbar-thumb:active,
+.rail .scroll::-webkit-scrollbar-thumb:active,
+.conv::-webkit-scrollbar-thumb:active,
+.ac .rows::-webkit-scrollbar-thumb:active,
+.sg-list::-webkit-scrollbar-thumb:active,
+.pop::-webkit-scrollbar-thumb:active,
+.box textarea::-webkit-scrollbar-thumb:active,
+.dock .notes::-webkit-scrollbar-thumb:active {
+  background: var(--muted);
+}
+
 :root {
   /* --ui and --mono are injected from [web] font, not declared here: at
      equal specificity a stack in this block lands after the injected one
@@ -359,7 +433,7 @@ section.org .note {
 .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block;
   position: relative; top: -1px; }
 /* One chevron, turned by the open state, on every disclosure on the page. */
-.arw { transition: transform .12s ease; }
+.arw { transition: transform .12s ease, opacity .12s ease; opacity: 0; }
 details[open] > summary .arw { transform: rotate(90deg); }
 .dim { color: var(--dim); }
 
@@ -406,9 +480,6 @@ details[open] > summary .arw { transform: rotate(90deg); }
   box-shadow: 0 18px 48px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.03); }
 /* An appearing scrollbar must not shift the layout under the pointer. */
 .rail .scroll { overflow-y: auto; flex: 1; padding: 0 8px 12px; scrollbar-gutter: stable; }
-.rail .scroll::-webkit-scrollbar { width: 8px; }
-.rail .scroll::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-.rail .scroll::-webkit-scrollbar-track { background: transparent; }
 .banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
 .banner .t { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
   text-transform: uppercase; color: var(--accent); }
@@ -491,9 +562,6 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 /* The refusal above a conversation already drawn: the server's words for the
    ask that failed, at the column's own padding, with the rows left alone. */
 .refused { padding: 2px 8px 6px 0; color: var(--muted); }
-.conv::-webkit-scrollbar { width: 8px; }
-.conv::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-.conv::-webkit-scrollbar-track { background: transparent; }
 /* ---------- projects: three state groups, one row shape ---------- */
 
 .state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
@@ -818,6 +886,11 @@ details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-sp
    prose tone rather than the row's own muting, so a mark reads as a mark. */
 details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
+/* A thought's expansion is reasoning, not the turn's own words: it reads as a
+   quiet block off the column - a hairline and the muted tone - instead of more
+   prose. Both folds draw through this one row. */
+details.leaf.think > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+details.leaf.think > .body .prose { color: var(--muted); }
 /* A dispatch row's own fields, joined from the record's card: the agent type,
    the background chip, and - once settled - the figures at the row's right.
    Namespaced `sg-` so no bare name of the sheet's other surfaces catches
@@ -886,12 +959,6 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   min-width: 330px; max-height: 60vh; overflow-y: auto; background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
-/* The list's scrollbar wears the same skin as every other scroller on the
-   page - an unstyled one is a white bar over a dark panel - and it is stable:
-   nothing here appears or moves on hover. */
-.sg-list::-webkit-scrollbar { width: 8px; }
-.sg-list::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-.sg-list::-webkit-scrollbar-track { background: transparent; }
 .sg-list .sg-it { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 13px;
   background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
 .sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
@@ -909,7 +976,6 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    and leaves. */
 details.leaf.sg-hit { animation: sg-flash 1.6s ease-out 1; }
 @keyframes sg-flash { 0% { background: rgba(244,118,0,.14); } 100% { background: transparent; } }
-details.leaf:hover > summary .arw { color: var(--muted); }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -954,6 +1020,21 @@ details.leaf.running > summary { color: var(--text); }
 .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
   border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
 .dec .foot .sep { opacity: .5; }
+/* A structured value's disclosure, under the row's own words: the value in
+   full, its chevron turned and accented by the sheet's own open rules. */
+.dec details.raw { margin-top: 2px; }
+.dec > details.raw { margin: 2px 14px 0; }
+.dec details.raw > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: center; gap: 5px; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.dec details.raw > summary::-webkit-details-marker { display: none; }
+.dec details.raw > summary:hover { color: var(--muted); }
+.dec details.raw > summary .arw { width: 11px; height: 11px; flex: 0 0 11px; }
+.dec details.raw[open] > summary .arw { color: var(--accent); }
+.dec details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--s1); font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
+  overflow-wrap: anywhere; }
 /* A source file a call read or wrote. Its token classes are the
    highlighter's own (`hljs-*`), coloured by the theme that ships beside the
    module: the `.k` / `.s` / `.f` rules that stood here read three tokens the
@@ -1591,9 +1672,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    a short one - a phone on its side - still leaves the box on screen with
    nothing able to scroll to it. */
 .ac .rows { max-height: min(333px, 40vh); overflow-y: auto; scrollbar-gutter: stable; }
-.ac .rows::-webkit-scrollbar { width: 8px; }
-.ac .rows::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-.ac .rows::-webkit-scrollbar-track { background: transparent; }
 .ac .it { display: flex; align-items: center; gap: 10px; padding: 5px 13px;
   font-family: var(--mono); font-size: var(--fs-base); }
 .ac .it .p { color: var(--text); overflow: hidden; text-overflow: ellipsis;
@@ -1733,6 +1811,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+/* The take's card is built for the composer - top left, its draft below it -
+   and `align-self: flex-start` with the trailing margin is what that shape
+   reserves. In the dock's row there is no draft under it and the mic stands
+   beside it, so left alone the card pins to the row's top and the mic centres
+   against the card's margin box: four pixels below the card's own centre, and
+   the recording dot's. Centred here instead, with the margin the composer's
+   shape reserved dropped. */
+.dock .custom .tc { align-self: center; margin-bottom: 0; }
 .dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
@@ -2041,3 +2127,17 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    it: no top margin of its own, and it never wraps. */
 .fam-item .fam-tag { flex: none; margin-top: 0; }
 .fam-item .fam-when { margin-left: auto; color: var(--dim); flex: none; }
+
+/* ---------- the chevron arrives with the pointer ----------
+   Hidden at rest, so a column of rows carries no marks it does not need;
+   under the pointer it shows in the muted tone - the hover colour these rows
+   always had - and an open row keeps it: the accent, which the surface rules
+   above already set. A touch screen has no pointer to arrive with, so there
+   it rests faintly visible instead: the chevron is the one thing that says a
+   row opens. These rules sit last so the hover tone lands over the
+   per-surface resting colours. */
+details > summary:hover .arw { opacity: 1; color: var(--muted); }
+details[open] > summary .arw { opacity: 1; }
+@media (hover: none) {
+  .arw { opacity: 1; color: var(--dim); }
+}
