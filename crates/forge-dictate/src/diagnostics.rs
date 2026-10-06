@@ -52,9 +52,14 @@ pub(crate) struct TakeRecord<'a> {
     pub(crate) recognition_error: Option<(usize, String)>,
 }
 
-/// How many takes the store keeps. Ten typical dictations are a few
-/// hundred megabytes; anything older than the tenth take is gone.
-const RETAINED_TAKES: usize = 10;
+/// How many takes the store keeps, and the bench's corpus along with it.
+///
+/// Measured on the maintainer's live store (2026-10-06, ten takes,
+/// read-only): 10.3 MB in total, median 226 KB, mean 1.03 MB, worst
+/// 7.68 MB. 400 takes is around 90 MB typical and about 3 GB if every
+/// take were the worst case, which is the price of a shelf wide enough
+/// for a bench to score against.
+const RETAINED_TAKES: usize = 400;
 
 /// The unix-millisecond stamp a take directory is named by, as
 /// `take-<13 digits>`: sortable, and 13 digits holds until the year
@@ -322,7 +327,7 @@ mod tests {
         let stages = Stages::default();
         let audio = vec![0.5; 16];
         let windows = vec![];
-        for id in 1..=11u128 {
+        for id in 1..=RETAINED_TAKES as u128 + 1 {
             capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
         }
         assert!(foreign.is_dir(), "a user directory sharing the take- prefix must survive pruning");
@@ -332,18 +337,25 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("take-0"))
             .collect();
-        assert_eq!(takes.len(), RETAINED_TAKES, "eleven takes leave ten, got {takes:?}");
+        assert_eq!(
+            takes.len(),
+            RETAINED_TAKES,
+            "the store kept a different number than its own cap, got {takes:?}"
+        );
     }
 
     /// The store cannot grow without bound: past the retained count the
-    /// oldest takes leave, by directory name.
+    /// oldest takes leave, by directory name. **The cap is the knob, so
+    /// this is a test of the pruning, not of the number** - it writes
+    /// one past whatever `RETAINED_TAKES` is and asserts the survivors.
     #[test]
-    fn the_store_keeps_the_last_ten_takes() {
+    fn the_store_keeps_the_last_of_its_retention() {
         let dir = tempfile::tempdir().unwrap();
         let audio = vec![0.5; 16];
         let stages = Stages::default();
         let windows = vec![];
-        for id in 1..=12u128 {
+        let newest = RETAINED_TAKES as u128 + 2;
+        for id in 1..=newest {
             capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
         }
         let takes: Vec<_> = std::fs::read_dir(dir.path())
@@ -351,13 +363,17 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(takes.len(), RETAINED_TAKES, "twelve takes leave ten, got {takes:?}");
+        assert_eq!(
+            takes.len(),
+            RETAINED_TAKES,
+            "{newest} takes leave the cap's number, got {takes:?}"
+        );
         assert!(
             !takes.contains(&"take-0000000000001".to_owned()),
             "the oldest take is pruned, got {takes:?}"
         );
         assert!(
-            takes.contains(&"take-0000000000012".to_owned()),
+            takes.contains(&format!("take-{newest:013}")),
             "the newest take survives, got {takes:?}"
         );
     }
