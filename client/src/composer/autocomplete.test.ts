@@ -36,6 +36,10 @@ const sources = (): Sources => ({
     file('crates/forge-web/src/home.rs'),
     file('docs/home-notes.md'),
     file('src/tap.rs'),
+    // A name with a space in it, which is the only shape where a scan that
+    // skips a trailing space becomes visible: its query would match here
+    // where the closed-token rule must open nothing.
+    file('docs/space here.md'),
   ],
   agents: [
     { name: 'cli-version', description: 'settled 3m' },
@@ -67,6 +71,20 @@ describe('which list a draft opens', () => {
     expect(offer('Foo::bar', sources), 'and neither does a second colon').toBeNull();
     expect(offer('note :t', sources), 'one character selects nothing').toBeNull();
     expect(offer('look at @', sources), 'a bare trigger has nothing to match on').toBeNull();
+  });
+
+  it('reads the token the draft ENDS in, so a closed token opens nothing', () => {
+    // The end anchor is the whole of it: a draft ending in whitespace has no
+    // final token. The scan behind this reads backwards, where the
+    // regex it replaced went quadratic the moment a long token was followed
+    // by a space - and it must keep answering the same.
+    expect(offer('/m ', sources), 'a space did not close the command').toBeNull();
+    expect(offer('@home\n', sources), 'a newline did not close the file picker').toBeNull();
+    expect(
+      offer('@space ', sources),
+      'a trailing space stayed in the query and matched a name it must not',
+    ).toBeNull();
+    expect(offer('ask &cli', sources)?.kind, 'the ordinary tail still opens').toBe('agent');
   });
 
   it('names what the row writes, which is the value the draft takes', () => {
