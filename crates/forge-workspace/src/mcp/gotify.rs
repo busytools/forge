@@ -120,9 +120,11 @@ impl Tool for Subscribe {
          arrives it is delivered to you as a user turn (spawning your session if it's asleep). \
          Optionally filter by `applications` (a set of Gotify app NAMEs; a notification matches \
          when its app is any one of them) and/or `min_priority` (only notifications at or above \
-         this priority). Both default to any (omit or leave empty). Returns the subscription id \
-         (use it with gotify__unsubscribe). Errors if no [gotify] server is configured. Any \
-         session in the project may subscribe."
+         this priority). Both default to any (omit or leave empty). Returns the created \
+         subscription as {id, applications, min_priority, names_resolve}; a false names_resolve \
+         means a filter naming apps will not match until the stream reconnects (the \
+         subscription is live either way). Use the id with gotify__unsubscribe. Errors if no \
+         [gotify] server is configured. Any session in the project may subscribe."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -157,14 +159,15 @@ impl Tool for Subscribe {
             .subscribe(&self.slot, args.applications.unwrap_or_default(), args.min_priority)
             .await
         {
-            Ok(outcome) if outcome.names_resolve => {
-                ToolOutput::text(format!("subscribed to Gotify (id {})", outcome.id))
-            }
-            Ok(outcome) => ToolOutput::text(format!(
-                "subscribed to Gotify (id {}) but the application index could not be refreshed, \
-                 so a filter naming applications will not match until the stream reconnects",
-                outcome.id,
-            )),
+            Ok(outcome) => match serde_json::to_string_pretty(&serde_json::json!({
+                "id": outcome.id.to_string(),
+                "applications": outcome.applications,
+                "min_priority": outcome.min_priority,
+                "names_resolve": outcome.names_resolve,
+            })) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
             Err(err) => tool_error(format_subscribe_error(&err)),
         }
     }
@@ -225,7 +228,7 @@ impl Tool for Unsubscribe {
     fn description(&self) -> &'static str {
         "Remove one of YOUR OWN Gotify subscriptions by id (from gotify__list / \
          gotify__subscribe), scoped to what you subscribed - a caller manages only what it \
-         created. Any session in the project may call this."
+         created. Returns the removed subscription. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -247,10 +250,15 @@ impl Tool for Unsubscribe {
         let Ok(id) = Uuid::parse_str(&args.id) else {
             return tool_error(format!("not a valid subscription id: {}", args.id));
         };
-        if self.facade.unsubscribe(&self.slot, id) {
-            ToolOutput::text(format!("unsubscribed {id}"))
-        } else {
-            tool_error(format!("no subscription with id {id} in your project"))
+        match self.facade.unsubscribe(&self.slot, id) {
+            Some(removed) => {
+                let envelope = crate::mcp::deleted::removed_record(&sub_to_json(&removed));
+                match serde_json::to_string_pretty(&envelope) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            None => tool_error(format!("no subscription with id {id} in your project")),
         }
     }
 }
@@ -395,18 +403,32 @@ mod tests {
         ToolInput { value }
     }
 
+    /// The result is one structured row carrying the filter that was
+    /// actually registered, so a reader can draw it; the old prose line
+    /// named only the id.
     #[tokio::test]
-    async fn subscribe_calls_facade_and_returns_id() {
+    async fn subscribe_returns_the_effective_filter() {
         let id = Uuid::from_u128(0x42);
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome { id, names_resolve: true }));
+        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome {
+            id,
+            applications: vec!["alerts".to_owned()],
+            min_priority: Some(5),
+            names_resolve: true,
+        }));
         let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({ "applications": ["alerts"], "min_priority": 5 })))
             .await;
         assert!(!out.is_error, "valid subscribe succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains(&id.to_string()), "output carries the id");
+        assert_eq!(out.blocks.len(), 1, "the outcome stays one text block: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the structured row");
+        assert_eq!(json["id"], id.to_string());
+        assert_eq!(json["applications"], serde_json::json!(["alerts"]));
+        assert_eq!(json["min_priority"], 5);
+        assert_eq!(json["names_resolve"], true);
 
         let calls = mock.subscribe_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -415,24 +437,30 @@ mod tests {
     }
 
     /// A subscription whose application-name filter could not be resolved
-    /// has to say so: a reply of plain success reads exactly like the
-    /// silent drop #1298 was filed for.
+    /// has to say so as a FIELD: a reply of plain success reads exactly
+    /// like the silent drop #1298 was filed for, and the degraded case
+    /// buried in a sentence cannot be drawn.
     #[tokio::test]
     async fn subscribe_reports_a_filter_it_could_not_resolve() {
         let id = Uuid::from_u128(0x43);
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome { id, names_resolve: false }));
+        *mock.subscribe_result.lock() = Some(Ok(SubscribeOutcome {
+            id,
+            applications: vec!["phone-agent".to_owned()],
+            min_priority: None,
+            names_resolve: false,
+        }));
         let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "applications": ["phone-agent"] }))).await;
 
         assert!(!out.is_error, "the subscription was created, so this is not an error");
-        assert!(out.blocks[0].text.contains(&id.to_string()), "the id still comes back");
-        assert!(
-            out.blocks[0].text.contains("index could not be refreshed"),
-            "the reply names the unresolved filter: {}",
-            out.blocks[0].text,
-        );
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the structured row");
+        assert_eq!(json["id"], id.to_string(), "the id still comes back");
+        assert_eq!(json["applications"], serde_json::json!(["phone-agent"]));
+        assert_eq!(json["min_priority"], serde_json::Value::Null, "no floor stays null");
+        assert_eq!(json["names_resolve"], false, "the unresolved filter is a field: {json}");
     }
 
     #[tokio::test]
@@ -467,25 +495,33 @@ mod tests {
         );
     }
 
+    /// An unsubscribe echoes the row it removed, so a reader can name
+    /// what stopped; `unsubscribed <uuid>` named nothing a human can
+    /// place.
     #[tokio::test]
-    async fn unsubscribe_removes_by_id() {
+    async fn unsubscribe_echoes_the_removed_row() {
         let id = Uuid::from_u128(0xc1);
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.unsubscribe_result.lock() = Some(true);
+        *mock.unsubscribe_result.lock() = Some(sample_sub(id, "p"));
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
-        assert!(!out.is_error);
+        assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
+        let json: serde_json::Value =
+            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+        assert_eq!(json["status"], "deleted");
+        assert_eq!(json["removed"]["id"], id.to_string());
+        assert_eq!(json["removed"]["applications"], serde_json::json!(["alerts"]));
+        assert_eq!(json["removed"]["min_priority"], 5);
         assert_eq!(mock.unsubscribe_calls.lock()[0].1, id);
     }
 
-    /// The facade reports `false` both for an unknown id and for one
+    /// The facade reports `None` both for an unknown id and for one
     /// owned by another session, so reaching for someone else's
     /// subscription gets exactly what a bad id gets.
     #[tokio::test]
     async fn unsubscribe_unowned_or_missing_id_is_error() {
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.unsubscribe_result.lock() = Some(false);
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out =

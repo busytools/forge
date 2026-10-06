@@ -26,14 +26,19 @@ pub(crate) enum GotifySubscribeError {
     UnknownCallerProject,
 }
 
-/// A created subscription, plus whether its filter can resolve a message.
-/// `names_resolve` is false only when the filter names applications and the
-/// `/application` lookup behind them failed: the subscription is live, but
-/// those names will not match until the next stream reconnect. Always true
-/// for a match-any filter, which needs no names.
+/// A created subscription's effective filter, plus whether that filter can
+/// resolve a message. `names_resolve` is false only when the filter names
+/// applications and the `/application` lookup behind them failed: the
+/// subscription is live, but those names will not match until the next
+/// stream reconnect. Always true for a match-any filter, which needs no
+/// names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubscribeOutcome {
     pub id: Uuid,
+    /// The app names the subscription matches; empty matches any app.
+    pub applications: Vec<String>,
+    /// The priority floor, `None` for any.
+    pub min_priority: Option<u8>,
     pub names_resolve: bool,
 }
 
@@ -69,9 +74,9 @@ pub(crate) trait GotifyFacade: Send + Sync {
     fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription>;
 
     /// Remove one of the caller's OWN subscriptions by id within its
-    /// project. `true` when an entry was removed; `false` both when no
-    /// such id exists and when it belongs to another owner.
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool;
+    /// project, returning the row as it stood. `None` both when no such
+    /// id exists and when it belongs to another owner.
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription>;
 
     /// The application NAMEs on the configured server (`GET /application`)
     /// so a session can self-discover what it may subscribe to.
@@ -122,6 +127,7 @@ impl GotifyFacade for ProdGotifyFacade {
         };
         let names_applications = !sub.applications.is_empty();
         let id = sub.id;
+        let applications = sub.applications.clone();
         ws.add_gotify_subscription(sub, durable);
         // The pump starts before the lookup: it must not wait behind a
         // network round trip, and no window may sit between the
@@ -135,7 +141,7 @@ impl GotifyFacade for ProdGotifyFacade {
         } else {
             true
         };
-        Ok(SubscribeOutcome { id, names_resolve })
+        Ok(SubscribeOutcome { id, applications, min_priority, names_resolve })
     }
 
     fn list(&self, caller: &SessionSlot) -> Vec<GotifySubscription> {
@@ -150,9 +156,9 @@ impl GotifyFacade for ProdGotifyFacade {
             .collect()
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
-        let Some(ws) = self.workspace.upgrade() else { return false };
-        let Some(cx) = caller_context(&ws, caller) else { return false };
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription> {
+        let ws = self.workspace.upgrade()?;
+        let cx = caller_context(&ws, caller)?;
         let removed = ws.remove_gotify_subscription_owned_by(
             &cx.project_name,
             id,
@@ -249,7 +255,7 @@ pub(crate) struct MockGotifyFacade {
     pub subscribe_result:
         parking_lot::Mutex<Option<Result<SubscribeOutcome, GotifySubscribeError>>>,
     pub unsubscribe_calls: parking_lot::Mutex<Vec<(SessionSlot, Uuid)>>,
-    pub unsubscribe_result: parking_lot::Mutex<Option<bool>>,
+    pub unsubscribe_result: parking_lot::Mutex<Option<GotifySubscription>>,
     pub apps_result: parking_lot::Mutex<Option<Result<Vec<String>, GotifyReadError>>>,
     pub recent_calls: parking_lot::Mutex<Vec<RecentCall>>,
     pub recent_result: parking_lot::Mutex<Option<Result<Vec<GotifyRecent>, GotifyReadError>>>,
@@ -274,20 +280,24 @@ impl GotifyFacade for MockGotifyFacade {
         applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<SubscribeOutcome, GotifySubscribeError> {
-        self.subscribe_calls.lock().push((caller.clone(), applications, min_priority));
-        self.subscribe_result
-            .lock()
-            .clone()
-            .unwrap_or_else(|| Ok(SubscribeOutcome { id: Uuid::nil(), names_resolve: true }))
+        self.subscribe_calls.lock().push((caller.clone(), applications.clone(), min_priority));
+        self.subscribe_result.lock().clone().unwrap_or_else(|| {
+            Ok(SubscribeOutcome {
+                id: Uuid::nil(),
+                applications,
+                min_priority,
+                names_resolve: true,
+            })
+        })
     }
 
     fn list(&self, _caller: &SessionSlot) -> Vec<GotifySubscription> {
         self.subs.lock().clone()
     }
 
-    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> bool {
+    fn unsubscribe(&self, caller: &SessionSlot, id: Uuid) -> Option<GotifySubscription> {
         self.unsubscribe_calls.lock().push((caller.clone(), id));
-        self.unsubscribe_result.lock().unwrap_or(false)
+        self.unsubscribe_result.lock().clone()
     }
 
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
@@ -430,6 +440,12 @@ client_token = "Ctest"
             .expect("subscribe to the configured server");
 
         assert!(outcome.names_resolve, "a refreshed index leaves the name filter resolvable");
+        assert_eq!(
+            outcome.applications,
+            ["phone-agent"],
+            "the outcome carries the filter that was stored, not an empty default",
+        );
+        assert_eq!(outcome.min_priority, None, "and the priority floor it registered");
         assert_eq!(stub.application_fetches(), 1, "the subscribe refreshed the index");
         let resolved = host.app_name(7);
         let subs = ws.gotify_subscriptions_for_project("myproj");
@@ -563,20 +579,30 @@ client_token = "Ctest"
         let worker_id = seed_sub(&ws, Some("reviewer"));
         let sibling_id = seed_sub(&ws, Some("analyst"));
 
-        assert!(!facade.unsubscribe(&worker, lead_id), "a worker cannot unsubscribe the lead's");
         assert!(
-            !facade.unsubscribe(&worker, sibling_id),
+            facade.unsubscribe(&worker, lead_id).is_none(),
+            "a worker cannot unsubscribe the lead's",
+        );
+        assert!(
+            facade.unsubscribe(&worker, sibling_id).is_none(),
             "a worker cannot unsubscribe a sibling worker's",
         );
-        assert!(!facade.unsubscribe(&lead, worker_id), "a lead cannot unsubscribe a worker's");
+        assert!(
+            facade.unsubscribe(&lead, worker_id).is_none(),
+            "a lead cannot unsubscribe a worker's",
+        );
         assert_eq!(
             ws.gotify_subscriptions_for_project("myproj").len(),
             3,
             "a refused unsubscribe removes nothing",
         );
 
-        assert!(facade.unsubscribe(&worker, worker_id), "a worker unsubscribes its own");
-        assert!(facade.unsubscribe(&lead, lead_id), "a lead unsubscribes its own");
+        let removed = facade
+            .unsubscribe(&worker, worker_id)
+            .expect("a worker unsubscribes its own, and gets the row back");
+        assert_eq!(removed.id, worker_id, "the echoed row is the one that went");
+        assert_eq!(removed.applications, ["alerts"], "carrying its effective filter");
+        assert!(facade.unsubscribe(&lead, lead_id).is_some(), "a lead unsubscribes its own");
         assert_eq!(
             ws.gotify_subscriptions_for_project("myproj").iter().map(|s| s.id).collect::<Vec<_>>(),
             vec![sibling_id],

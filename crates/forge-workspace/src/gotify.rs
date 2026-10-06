@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use forge_connectors::gotify::GotifyHost;
+use forge_primitives::GotifySubscription;
 
 use crate::protocol::{Command, SessionUpdate};
 use crate::target::ProjectKey;
@@ -58,26 +59,26 @@ impl Workspace {
     /// Remove the subscription `id` in `project` only when its owner
     /// matches `owner` (`None` = a lead subscription, `Some(label)` =
     /// that worker's), from both the active set and (when present) the
-    /// redb store. Returns whether an entry was removed. Backs the
-    /// owner-scoped `gotify__unsubscribe` so a caller removes only what
-    /// it subscribed, mirroring [`Self::remove_cron_owned_by`]. Worker
-    /// teardown uses [`Self::remove_gotify_subscriptions_for_worker`]
-    /// instead and is deliberately not owner-gated.
+    /// redb store. Returns the row as it stood (`None` when nothing
+    /// matched). Backs the owner-scoped `gotify__unsubscribe` so a caller
+    /// removes only what it subscribed, mirroring
+    /// [`Self::remove_cron_owned_by`]. Worker teardown uses
+    /// [`Self::remove_gotify_subscriptions_for_worker`] instead and is
+    /// deliberately not owner-gated.
     pub(crate) fn remove_gotify_subscription_owned_by(
         &self,
         project: &str,
         id: uuid::Uuid,
         owner: Option<&str>,
-    ) -> bool {
+    ) -> Option<GotifySubscription> {
         let removed = {
             let mut subs = self.gotify_subs.lock();
-            let before = subs.len();
-            subs.retain(|s| {
-                !(s.id == id && s.project == project && s.team_role.as_deref() == owner)
+            let pos = subs.iter().position(|s| {
+                s.id == id && s.project == project && s.team_role.as_deref() == owner
             });
-            subs.len() != before
+            pos.map(|pos| subs.remove(pos))
         };
-        if removed
+        if removed.is_some()
             && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::remove(db, id)
         {
@@ -87,7 +88,7 @@ impl Workspace {
                 "removing a persisted Gotify subscription failed",
             );
         }
-        if removed {
+        if removed.is_some() {
             self.announce_connector_subscriptions_changed(project);
         }
         removed
@@ -461,9 +462,10 @@ mod tests {
         assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
         assert_eq!(persisted()[0].id, durable.id);
 
-        assert!(
-            ws.remove_gotify_subscription_owned_by("p", durable.id, None),
-            "the lead's own durable id removes",
+        assert_eq!(
+            ws.remove_gotify_subscription_owned_by("p", durable.id, None).map(|s| s.id),
+            Some(durable.id),
+            "the lead's own durable id removes, and the row comes back",
         );
         assert!(persisted().is_empty(), "removal cleared the persisted record");
     }
@@ -971,7 +973,7 @@ mod tests {
         assert_eq!(slack.len(), 1, "beside the sibling connector's own set: {slack:?}");
 
         assert!(
-            ws.remove_gotify_subscription_owned_by("forge", subscription.id, None),
+            ws.remove_gotify_subscription_owned_by("forge", subscription.id, None).is_some(),
             "precondition: the lead removes its own subscription",
         );
         let (_, gotify, slack) = next_connectors_changed(&mut rx);
@@ -1004,7 +1006,7 @@ mod tests {
         let view_key = ws.project_key_for_name("forge").expect("seeded project");
 
         assert!(
-            !ws.remove_gotify_subscription_owned_by("forge", uuid::Uuid::new_v4(), None),
+            ws.remove_gotify_subscription_owned_by("forge", uuid::Uuid::new_v4(), None).is_none(),
             "precondition: no subscription carries the id",
         );
         ws.remove_gotify_subscriptions_for_worker(&view_key, "nobody");
