@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
+import { JSDOM } from 'jsdom';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -138,6 +141,59 @@ describe('the models page as it draws', () => {
     expect(row?.getAttribute('target')).toBe('_blank');
   });
 
+  /**
+   * **The hairline between rows survives the row becoming a link.** Every
+   * `.cand` is its `<li>`'s only child, so a `:last-child` written on the ROW
+   * matches all of them at once and the separator dies in the whole list -
+   * which is exactly what the anchor restructure did, silently. The rule
+   * belongs to the li.
+   *
+   * **Asserted on selectors rather than computed styles**, and deliberately:
+   * jsdom drops a `var()` inside a shorthand (`border-bottom: 1px solid
+   * var(--line)` computes to `0px none`), so a cascade read here would be an
+   * instrument that cannot see the very rule it guards. What runs instead is
+   * the real selector engine over the real markup.
+   */
+  it('keeps a hairline between candidate rows, and none under the last', () => {
+    const host = open();
+    const input = host.querySelector('input');
+    if (input !== null) {
+      input.value = 'granite';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }
+
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    const dom = new JSDOM(`<style>${sheet}</style><div class="models">${host.innerHTML}</div>`);
+    const rows = [...dom.window.document.querySelectorAll('.models .list li')];
+    expect(rows.length, 'the search drew no rows to read').toBeGreaterThan(1);
+
+    // The hazard itself, so a reader sees why the rule cannot key on the row.
+    for (const li of rows) {
+      expect(
+        li.querySelector('.cand')?.matches('.models .cand:last-child'),
+        "a row that is NOT its li's last child",
+      ).toBe(true);
+    }
+    // And the rules that decide it: the last li drops the hairline, and no
+    // `.cand` rule claims one.
+    expect(rows[0]?.matches('.models .list li:last-child'), 'the first row is the last').toBe(
+      false,
+    );
+    expect(
+      rows[rows.length - 1]?.matches('.models .list li:last-child'),
+      'the last row does not carry the rule that drops its hairline',
+    ).toBe(true);
+    expect(sheet, 'the hairline rule is back on the row, which kills it list-wide').not.toContain(
+      '.models .cand:last-child',
+    );
+    // Read as text, because the computed value is what jsdom cannot give:
+    // this is the half that says the li is where the hairline is drawn.
+    expect(sheet, 'nothing draws the hairline on the li').toMatch(
+      /\.models \.list li(?::last-child)? \{[^}]*border-bottom/,
+    );
+  });
+
   it('says so when nothing matches', () => {
     const host = open();
     const input = host.querySelector('input');
@@ -250,6 +306,27 @@ describe('the models route as it draws', () => {
     flushSync();
     expect(forge.dispatched, 'Check now dispatched nothing').toEqual(['dictate_catalogue_check']);
     expect(forge.refreshed, 'the click did not ask for the read').toEqual([MODELS]);
+  });
+
+  /**
+   * **Leaving the page releases the catalogue.** The effect's teardown is the
+   * only thing that does it, and the route's own doc promises it: without it
+   * the unsubscribe never goes, and a forge is left encoding a read nobody
+   * draws for the rest of the session.
+   */
+  it('releases the catalogue when the route is left', async () => {
+    const forge = fakeConnection();
+    route(forge);
+    await tick();
+    expect(forge.subscribed).toEqual([MODELS]);
+
+    // The route this test just mounted is the last one drawn.
+    const component = drawn.pop();
+    if (component === undefined) throw new Error('the route was not mounted');
+    void unmount(component);
+
+    expect(forge.unsubscribed, 'leaving the page left the catalogue subscribed').toEqual([MODELS]);
+    expect(forge.listening(), 'the release left a listener on the connection').toBe(0);
   });
 
   /**

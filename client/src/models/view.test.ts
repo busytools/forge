@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+// **The clock's claim is "the reader's own time, not the stamp's text", so
+// this file pins a zone whose offset is not zero.** On a UTC runner - which
+// is what CI is - a UTC-hardcoded body agrees with the conversion on every
+// stamp, and the test would discriminate only on a developer's machine. The
+// assignment is read by `Date` from the next construction on.
+process.env.TZ = 'Asia/Kolkata';
+
 import type { CatalogueRow, InUseModel } from '../wire/models';
 import {
   candidateFacts,

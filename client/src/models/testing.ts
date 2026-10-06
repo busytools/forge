@@ -116,6 +116,20 @@ export const modelsWire: DictateModelsWire = modelsFrom({
       ['en'],
       false,
     ),
+    // The feed carries the non-commercial twin too, and the page lists it:
+    // only a PROPOSAL excludes one, which is the server's rule.
+    row(
+      'granite-speech-5.0-470m-turboctc-nc',
+      'Granite Speech 5.0 470M TurboCTC NC',
+      'granite',
+      473_014_752,
+      'CC-BY-NC-SA-4.0',
+      279_000_000,
+      401.6,
+      4.3,
+      ['en'],
+      false,
+    ),
     row(
       'parakeet-unified-en-0.6b',
       'Parakeet Unified EN',

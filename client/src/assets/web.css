@@ -2179,9 +2179,14 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    a hover ground and a marker drawn at rest rather than on the pointer. */
 .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
   overflow: hidden; background: rgba(13,17,26,.4); }
+/* The hairline is the LI's, which is the home's own pattern: the row inside
+   it is an anchor, and an anchor is always its li's only child - a
+   `:last-child` on the row would match every one of them and the separator
+   would be dead in the whole list. */
+.models .list li { border-bottom: 1px solid var(--line); }
+.models .list li:last-child { border-bottom: 0; }
 .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
-  border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
-.models .cand:last-child { border-bottom: 0; }
+  color: inherit; text-decoration: none; }
 .models .cand:hover { background: var(--s2); }
 .models .cand .nm { flex: 1 1 auto; min-width: 0; }
 .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);

@@ -36,7 +36,9 @@ describe('the models fixture', () => {
     for (const file of filesUnder(SRC)) {
       if (!/\.(ts|svelte)$/.test(file)) continue;
       const where = path.relative(SRC, file);
-      if (path.basename(file) === 'testing.ts') continue;
+      // This module, and nothing else: the rule is about what imports THIS
+      // file, and sibling directories carry a `testing.ts` of their own.
+      if (where === path.join('models', 'testing.ts')) continue;
       const text = readFileSync(file, 'utf8');
       // A sibling `./testing` import means THIS module only from a file under
       // `models/`: every other directory has a `testing` of its own, and a
@@ -45,8 +47,8 @@ describe('the models fixture', () => {
         /from '[^']*\/models\/testing'/.test(text) ||
         (where.startsWith(`models${path.sep}`) && /from '\.\/testing'/.test(text));
       if (!importsIt) continue;
-      // A `reference` or `svelte` file is source; a test importing it is the
-      // only intended reader.
+      // The readers: a test is the intended one, anything else is an import of
+      // mock data into shipped source, which is the failure.
       if (file.endsWith('.test.ts')) testFiles.push(where);
       else shipped.push(where);
     }

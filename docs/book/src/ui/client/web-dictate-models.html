@@ -11,9 +11,16 @@
 <style>
   /* ============================================================
      forge - the dictation models page, as the client draws it.
-     The palette is the shipped one, token for token; the page's
-     own rules are `client/src/assets/web.css`'s `.models` block,
-     and the frame around them is this drawing's.
+     The palette and the type scale are the shipped ones, token for
+     token; the page's own rules are `client/src/assets/web.css`'s
+     `.models` block, and the frame around them is this drawing's.
+
+     Reconciling the two: compare rule for rule, and expect exactly
+     ONE spelling difference - the empty box's rules are scoped here
+     (`.models .empty`, `.models .empty .t`, `.models .empty .d`,
+     `.models .empty code`) and unscoped in the sheet (`.empty`, ...)
+     because there they sit inside the page's own root. Values are
+     equal; nothing else differs.
      ============================================================ */
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -134,9 +141,13 @@
 
   .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
     overflow: hidden; background: rgba(13,17,26,.4); }
+  /* The hairline is the li's: the row inside it is an anchor, and an anchor
+     is always its li's only child, so a `:last-child` on the row would match
+     every one of them. */
+  .models .list li { border-bottom: 1px solid var(--line); }
+  .models .list li:last-child { border-bottom: 0; }
   .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
-    border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
-  .models .cand:last-child { border-bottom: 0; }
+    color: inherit; text-decoration: none; }
   .models .cand:hover { background: var(--s2); }
   .models .cand .nm { flex: 1 1 auto; min-width: 0; }
   .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
@@ -175,9 +186,9 @@
   .dot.ok, .dot.warn, .dot.failed, .dot.off, .dot.live { display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) {
-    /* The ring is the one mark that moves; reduced, it keeps its accent on a
-       static border rather than dropping to a plain disc. */
-    .dot.live { animation: none; border-top-color: rgba(244,118,0,.3); border-left-color: var(--accent); }
+    /* The sheet's own rule, verbatim: the ring stops and takes the accent as
+       a solid border - not the mock's half-lit arc. */
+    .dot.live { animation: none; border-color: var(--accent); }
   }
 
   @media (pointer: coarse) {
