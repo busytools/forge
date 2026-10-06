@@ -150,6 +150,23 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  it('opens on hover and closes once the pointer leaves', async () => {
+    const shown = show(false, true);
+    const segment = shown.target.querySelector('.bz-seg');
+    if (!(segment instanceof HTMLElement)) throw new Error('no segment');
+    expect(shown.target.querySelector('.bz-list'), 'closed at rest').toBeNull();
+
+    segment.dispatchEvent(new PointerEvent('pointerenter'));
+    flushSync();
+    expect(shown.target.querySelector('.bz-list'), 'the pointer arriving opens it').not.toBeNull();
+
+    segment.dispatchEvent(new PointerEvent('pointerleave'));
+    await vi.waitFor(() => {
+      expect(shown.target.querySelector('.bz-list'), 'and leaving closes it').toBeNull();
+    });
+    shown.stop();
+  });
+
   it('offers Take over only where a click can honestly serve it, and sends it', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));

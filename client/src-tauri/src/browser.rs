@@ -315,6 +315,22 @@ impl BrowserHost {
         chromium::show(&chromium::chrome_binary(&paths.stack), &paths.profile).await
     }
 
+    /// Whether a WINDOW is up on the browser this client hosts.
+    ///
+    /// The marker a headed launch leaves, plus a browser still answering as
+    /// that launch: a marker alone outlives a browser that died, and a dock
+    /// that trusted it would refuse a raise that was the right thing to do.
+    pub async fn window_up(&self) -> Result<bool, String> {
+        let paths = self.paths.clone()?;
+        if !chromium::launched_windowed(&paths.profile) {
+            return Ok(false);
+        }
+        let Some(active) = chromium::read_active_port(&paths.profile) else {
+            return Ok(false);
+        };
+        Ok(chromium::answers_as(&paths.profile, active.port).await)
+    }
+
     /// The browser's own context: one, cached, whose driver builds and
     /// rebuilds itself under its own lock.
     ///
@@ -411,6 +427,13 @@ pub async fn browser_call(
 #[tauri::command]
 pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
     host.show().await.map(|_| ())
+}
+
+/// Whether a browser window is already up, for a dock's own line: a button
+/// that says Open over a window already open is a click that does nothing.
+#[tauri::command]
+pub async fn browser_window(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
+    host.window_up().await
 }
 
 /// One named context, as the client's own browser strip draws it.

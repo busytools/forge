@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { showBrowser } from '../browser/host';
+import { browserWindowUp, showBrowser } from '../browser/host';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -12,7 +12,11 @@ import { showBrowser } from '../browser/host';
  */
 vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
-  return { ...actual, showBrowser: vi.fn(actual.showBrowser) };
+  return {
+    ...actual,
+    showBrowser: vi.fn(actual.showBrowser),
+    browserWindowUp: vi.fn(() => Promise.resolve(false)),
+  };
 });
 
 /**
@@ -4264,7 +4268,7 @@ describe('the dock', () => {
     await Promise.resolve();
     flushSync();
 
-    expect(drawn(), 'no false "up"').not.toContain('The browser is up.');
+    expect(drawn(), 'no false "up"').not.toContain('The browser window is up.');
     expect(drawn()).toContain('could not be raised here');
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
@@ -4279,8 +4283,24 @@ describe('the dock', () => {
     await Promise.resolve();
     flushSync();
 
-    expect(drawn(), 'the claim follows the raise that answered').toContain('The browser is up.');
+    expect(drawn(), 'the claim follows the raise that answered').toContain(
+      'The browser window is up.',
+    );
     expect(drawn()).not.toContain('could not be raised here');
+  });
+
+  /** A window already up is said, not offered again: Open over one cannot do
+   * what it says, so the button goes and the line says the window is up. */
+  it('does not offer Open over a window already up', async () => {
+    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    await vi.waitFor(() => {
+      expect(drawn(), 'the up line lands when the read answers').toContain(
+        'The browser window is up.',
+      );
+    });
+    expect(drawn(), 'and the button that cannot serve is gone').not.toContain('Open browser');
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {

@@ -70,6 +70,35 @@
   });
 
   /**
+   * How the panel closes when the pointer leaves: with a grace period, because
+   * a 6px gap sits between the toggle and the panel and a pointer crossing it
+   * would otherwise never reach the rows.
+   */
+  let leaving: ReturnType<typeof setTimeout> | null = null;
+
+  /** Open, and read the contexts fresh, which is what every opening does. */
+  function show(): void {
+    open = true;
+    void readContexts();
+  }
+
+  function entered(): void {
+    if (leaving !== null) {
+      clearTimeout(leaving);
+      leaving = null;
+    }
+    show();
+  }
+
+  function left(): void {
+    if (leaving !== null) clearTimeout(leaving);
+    leaving = setTimeout(() => {
+      leaving = null;
+      open = false;
+    }, 200);
+  }
+
+  /**
    * What the collapsed row says this client holds.
    *
    * A count is a claim about a read, so before one has answered - or when the
@@ -98,9 +127,10 @@
     return () => document.removeEventListener('pointerdown', away);
   });
 
+  /** The toggle opens: touch has no hover, and closing is the pointer leaving,
+   * Escape, or a click outside. */
   function toggle(): void {
-    open = !open;
-    if (open) void readContexts();
+    show();
   }
 
   /** Escape closes from either of the list's controls. */
@@ -122,7 +152,7 @@
   }
 </script>
 
-<span class="bz-seg" class:open bind:this={segEl}>
+<span class="bz-seg" class:open bind:this={segEl} onpointerenter={entered} onpointerleave={left}>
   <button type="button" class="bz-tog" aria-expanded={open} onclick={toggle} onkeydown={esc}>
     <Icon name="web" />
     browser

@@ -126,6 +126,24 @@ export async function showBrowser(): Promise<boolean> {
 }
 
 /**
+ * Whether a browser window is already up.
+ *
+ * A dock asks before offering to open one: a button that says Open over a
+ * window already open is a click that cannot do what it says - nothing can
+ * raise another application's window - so the dock says the window is up
+ * instead. `false` outside the shell, where nothing was raised.
+ */
+export async function browserWindowUp(): Promise<boolean> {
+  if (!canHost()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('browser_window');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Close a named context from the client's own UI: the strip's row, acting
  * for the person rather than for a session - the door a context whose
  * owning session is gone comes back through.

@@ -1,7 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import { showBrowser } from '../browser/host';
+  import { browserWindowUp, showBrowser } from '../browser/host';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -515,6 +515,26 @@
       : 'browser hand-off',
   );
   const opened = $derived(ask.kind === 'browser_hand_off' && openedFor === ask.request.id);
+  /** A window this dock did not raise: one already up when the hand-off came. */
+  let windowUpFor = $state<string | null>(null);
+  const windowIsUp = $derived(
+    ask.kind === 'browser_hand_off' && (opened || windowUpFor === ask.request.id),
+  );
+
+  /**
+   * **A window already up is read when the hand-off appears**, because Open
+   * must not be offered over one: the click cannot raise another app's
+   * window, it just answers Ok, and the button reads as broken.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held === null || held.kind !== 'browser_hand_off') return;
+    if (windowUpFor === held.request.id) return;
+    const id = held.request.id;
+    void browserWindowUp().then((up) => {
+      if (up) windowUpFor = id;
+    });
+  });
   /** And which one a raise was asked for and did not happen, by the same id. */
   let raiseFailedFor = $state<string | null>(null);
   const raiseFailed = $derived(
@@ -810,8 +830,8 @@
          and a summary of it would be the client guessing at the act. -->
     <div class="d-q">{ask.request.reason}</div>
     <div class="desc">
-      {opened
-        ? 'The browser is up. Do what is needed there, then press Done - closing the window counts too.'
+      {windowIsUp
+        ? 'The browser window is up. Do what is needed there, then press Done - closing it counts too.'
         : raiseFailed
           ? 'The browser could not be raised here - act in the desktop client if you have one, then press Done.'
           : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
@@ -969,10 +989,14 @@
   {#if ask.kind === 'browser_hand_off'}
     <div class="acts">
       <!-- Open is the client's own act, not the core's: it brings the app's
-           browser up visibly and answers nothing. Done is the answer, and
-           Not now declines - the session waits with no timeout, so one of
-           the two must be reachable from here. -->
-      <button class="btn p" onclick={open}>Open browser</button>
+           browser up visibly and answers nothing. **It is offered only while
+           no window is up** - nothing can raise another app's window, so a
+           second Open would answer Ok and change nothing on screen. Done is
+           the answer, and Not now declines - the session waits with no
+           timeout, so one of the two must be reachable from here. -->
+      {#if !windowIsUp}
+        <button class="btn p" onclick={open}>Open browser</button>
+      {/if}
       <button class="btn" onclick={() => handOff(true)}>Done</button>
       <button class="btn d" onclick={() => handOff(false)}>Not now</button>
     </div>

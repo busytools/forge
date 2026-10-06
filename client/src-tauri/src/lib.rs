@@ -56,6 +56,7 @@ pub fn run() {
             browser::browser_context_close,
             browser::browser_contexts,
             browser::browser_show,
+            browser::browser_window,
             check_update,
             install_update,
             restart_app
@@ -66,7 +67,8 @@ pub fn run() {
         browser::browser_call,
         browser::browser_context_close,
         browser::browser_contexts,
-        browser::browser_show
+        browser::browser_show,
+        browser::browser_window
     ]);
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
@@ -81,6 +83,7 @@ pub fn run() {
         browser::browser_context_close,
         browser::browser_contexts,
         browser::browser_show,
+        browser::browser_window,
         check_update,
         install_update
     ]);
