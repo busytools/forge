@@ -298,6 +298,54 @@ describe('the forge card row', () => {
     expect(drawn, 'and the body keeps the whole of it').toContain('errhint');
   });
 
+  it('draws a card-supplied tail, which is a clean answer and not a failure', () => {
+    // A blocked despawn answers cleanly; the tail is the card's, and the
+    // row's own `failed` styling must not be needed for it to draw.
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          forge: {
+            title: "worker 'implementer' still live",
+            chips: [],
+            figure: null,
+            pieces: [],
+            tail: { text: '3 uncommitted files', tone: 'warn' },
+          },
+        }),
+        k: 't10',
+      },
+    }).body;
+
+    expect(drawn, 'the reason rides the row').toContain('3 uncommitted files');
+    expect(drawn, 'in the warn tone the card stated').toContain('fam-tail warn');
+  });
+
+  it('draws the meter a card asks for, where its numbers are', () => {
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          row: { kind: 'forge', family: 'agents' },
+          name: 'mcp__forge__agents__capacity',
+          forge: {
+            title: 'worker capacity',
+            chips: [
+              { text: '7 live', tone: 'plain' },
+              { text: 'cap 8', tone: 'dim' },
+            ],
+            figure: '1 free',
+            pieces: [],
+            meter: { fill: 7, of: 8 },
+          },
+        }),
+        k: 't11',
+      },
+    }).body;
+
+    expect(drawn, 'the bar draws').toContain('fam-meter');
+    expect(drawn, 'filled to the count against the cap').toContain('width: 88%');
+    expect(drawn, 'with both numbers still stated in words').toContain('7 live');
+  });
+
   it('keeps the reason off every other failed row', () => {
     // Ved's shape: the tail is the MCP family cards' own, and a generic call
     // row keeps its reason in the body alone.

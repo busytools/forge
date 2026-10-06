@@ -1989,10 +1989,20 @@ details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: no
   font-family: var(--mono); font-size: var(--fs-data); }
 details.leaf > summary .fam-fig + .arw { margin-left: 8px; }
 /* A failure's reason, inline after the title: the one thing a reader acts on,
-   and never a figure in the right-hand column. The body keeps the whole of it. */
+   and never a figure in the right-hand column. The body keeps the whole of it.
+   A card's own tail carries a warn tone instead - a clean answer that refused
+   something - and says its own word. */
 details.leaf > summary .fam-tail { color: var(--bad); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 details.leaf > summary .fam-tail::before { content: 'failed: '; color: var(--dim); }
+details.leaf > summary .fam-tail.warn { color: var(--warn); }
+details.leaf > summary .fam-tail.warn::before { content: 'kept: '; }
+/* The one proportion a row carries, drawn where its numbers are: capacity's
+   live count against the cap the server stated. */
+details.leaf > summary .fam-meter { flex: none; width: 44px; height: 6px;
+  border-radius: 99px; background: var(--s3); overflow: hidden; }
+details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
+  border-radius: 99px; background: var(--muted); }
 
 /* The card's body: facts, a quote of the words a call carried, and what it
    found. The facts draw as ONE inline run rather than a label column with the

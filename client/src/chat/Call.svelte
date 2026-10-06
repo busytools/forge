@@ -231,6 +231,18 @@
   );
 
   /**
+   * The row's tail: the failed call's reason, or the card's own when the call
+   * answered cleanly with something a reader must see at the row - a despawn
+   * refused at a dirty worktree. `null` draws no tail.
+   */
+  const rowTail = $derived(
+    failure !== null ? { text: failure, tone: 'bad' as const } : (forge?.tail ?? null),
+  );
+
+  /** The proportion the card asks the row to meter, if it asks for one. */
+  const meter = $derived(forge?.meter ?? null);
+
+  /**
    * Whether the row's text brightens, which is the narrower condition the
    * group's own rule uses: a call that has a frame in hand. A dispatch takes
    * the instance's answer instead, so it brightens for as long as the agent
@@ -318,6 +330,17 @@
     {#if figures !== null}
       <span class="sg-fig">{figures}</span>
     {/if}
+    {#if meter !== null}
+      <!-- The one proportion a card can carry, drawn where the number it is
+           the proportion OF is: capacity's live-against-cap. The bar is the
+           chips' own numbers drawn, never their substitute. -->
+      <span class="fam-meter" role="img" aria-label={`${meter.fill} of ${meter.of}`}>
+        <span
+          class="fam-f"
+          style={`width: ${Math.round((meter.fill / Math.max(meter.of, 1)) * 100)}%`}
+        ></span>
+      </span>
+    {/if}
     {#if forge !== null}
       {#each forge.chips as chip, at (at)}
         <span class="fam-chip {chip.tone}">{chip.text}</span>
@@ -326,11 +349,12 @@
         <span class="fam-fig">{forge.figure}</span>
       {/if}
     {/if}
-    {#if failure !== null}
+    {#if rowTail !== null}
       <!-- A call that failed says why on the row itself, after the title: the
            reason is the one thing a reader acts on, and the body keeps every
-           word of it. -->
-      <span class="fam-tail" title={failure}>{failure}</span>
+           word of it. A card whose clean answer refused something - a despawn
+           at a dirty worktree - says that there too. -->
+      <span class="fam-tail {rowTail.tone}" title={rowTail.text}>{rowTail.text}</span>
     {/if}
     <Chevron />
   </summary>

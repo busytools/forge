@@ -479,3 +479,99 @@ describe('the agents spawn card', () => {
     });
   });
 });
+
+describe('the worker lifecycle cards', () => {
+  it('names an update by its label and chips the fields the server wrote', () => {
+    // The result carries the field NAMES, not their new values, so the row
+    // says what moved and never what it moved to.
+    const card = forgeCardOf(
+      'mcp__forge__agents__update',
+      { label: 'card-smoke', kick: 'stand down' },
+      result(JSON.stringify({ label: 'card-smoke', updated: ['kick', 'resume_kick'] })),
+    );
+    expect(card?.title).toBe("updated worker 'card-smoke'");
+    expect(card?.chips).toEqual([
+      { text: 'kick', tone: 'plain' },
+      { text: 'resume kick', tone: 'plain' },
+    ]);
+    expect(card?.figure, 'when the fields take effect').toBe('next respawn');
+  });
+
+  it('draws capacity as its two numbers and the proportion between them', () => {
+    const card = forgeCardOf(
+      'mcp__forge__agents__capacity',
+      {},
+      result(
+        JSON.stringify({
+          project: 'forge',
+          cap: 8,
+          live: 7,
+          available: 1,
+          cap_source: 'max_workers',
+        }),
+      ),
+    );
+    expect(card?.title).toBe('worker capacity');
+    expect(card?.chips, 'both numbers, each in its own words').toEqual([
+      { text: '7 live', tone: 'plain' },
+      { text: 'cap 8', tone: 'dim' },
+    ]);
+    expect(card?.figure).toBe('1 free');
+    expect(card?.meter, 'the bar is the chips drawn, never their substitute').toEqual({
+      fill: 7,
+      of: 8,
+    });
+    expect(pairsOf(card)).toEqual([
+      ['project', 'forge'],
+      ['cap source', 'forge.toml'],
+    ]);
+  });
+
+  it('names a despawn by the worker it closed', () => {
+    const card = forgeCardOf(
+      'mcp__forge__agents__despawn',
+      { label: 'card-smoke' },
+      result(JSON.stringify({ status: 'despawned' })),
+    );
+    expect(card?.title).toBe("closed worker 'card-smoke'");
+    expect(card?.chips).toEqual([{ text: 'worktree removed', tone: 'dim' }]);
+    expect(card?.pieces, 'a clean despawn carries no text').toEqual([]);
+  });
+
+  it('keeps what a despawn could not clean as its warnings', () => {
+    const card = forgeCardOf(
+      'mcp__forge__agents__despawn',
+      { label: 'card-smoke' },
+      result(
+        JSON.stringify({
+          status: 'despawned',
+          branch_cleanup_warning: "branch 'worktree-w1' kept: 2 commits",
+        }),
+      ),
+    );
+    expect(card?.title).toBe("closed worker 'card-smoke'");
+    expect(card?.pieces).toEqual([
+      { kind: 'warnline', label: 'branch', text: "branch 'worktree-w1' kept: 2 commits" },
+    ]);
+  });
+
+  it('says a refused despawn on the row, since the call itself answered cleanly', () => {
+    // The blocked shape is a RESULT, not a tool error: nothing failed, and the
+    // reason is still the one thing a reader acts on.
+    const card = forgeCardOf(
+      'mcp__forge__agents__despawn',
+      { label: 'implementer' },
+      result(JSON.stringify({ status: 'blocked', reason: '3 uncommitted files' })),
+    );
+    expect(card?.title).toBe("worker 'implementer' still live");
+    expect(card?.tail, 'the reason rides the row').toEqual({
+      text: '3 uncommitted files',
+      tone: 'warn',
+    });
+    expect(card?.figure, 'no figures for a refusal').toBeNull();
+    expect(card?.pieces[0], 'and the body keeps it in words').toMatchObject({
+      kind: 'warnline',
+      label: 'blocked',
+    });
+  });
+});

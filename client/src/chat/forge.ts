@@ -45,6 +45,17 @@ export interface ForgeCard {
   chips: ForgeChip[];
   figure: string | null;
   pieces: ForgePiece[];
+  /**
+   * A proportion the row draws as a meter, for a card whose subject IS a
+   * count against a limit: the capacity row.
+   */
+  meter?: { fill: number; of: number } | null;
+  /**
+   * A line after the title that is a result rather than a failure, with the
+   * word it is read by: a despawn that stopped at a dirty worktree says so on
+   * the row, where a failed CALL says its reason there too.
+   */
+  tail?: { text: string; tone: 'warn' | 'bad' } | null;
 }
 
 /**
@@ -504,6 +515,9 @@ function statusTone(status: string): ForgeChip['tone'] {
  * server echoed rides the body beside where the worker landed.
  */
 function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  if (verb === 'update') return updateCard(input, answer);
+  if (verb === 'capacity') return capacityCard(answer);
+  if (verb === 'despawn') return despawnCard(input, answer);
   if (verb !== 'spawn') return null;
   const held = obj(answer);
   const session = str(held, 'session_id');
@@ -546,6 +560,90 @@ function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     title: `spawned worker '${label}'`,
     chips,
     figure: session.slice(0, 6),
+    pieces,
+  };
+}
+
+/**
+ * A worker whose fields moved: the label and the field names the server says
+ * it wrote. The values are not echoed - only the names - so the row chips the
+ * names and says when they take effect rather than inventing what they became.
+ */
+function updateCard(input: unknown, answer: unknown): ForgeCard | null {
+  const held = obj(answer);
+  const label = str(held, 'label') ?? str(obj(input), 'label');
+  const updated = held['updated'];
+  if (label === null || !Array.isArray(updated)) return null;
+  const fields = updated.filter((field): field is string => typeof field === 'string');
+  return {
+    title: `updated worker '${label}'`,
+    chips: fields.map((field) => ({ text: spaced(field), tone: 'plain' as const })),
+    figure: 'next respawn',
+    pieces: [],
+  };
+}
+
+/**
+ * The pool as it stands against its cap, with the meter carrying the one
+ * proportion a reader wants: the two numbers are the chips, the bar is them.
+ */
+function capacityCard(answer: unknown): ForgeCard | null {
+  const held = obj(answer);
+  const cap = countOf(held['cap']);
+  const live = countOf(held['live']);
+  if (cap === null || live === null) return null;
+  const source = str(held, 'cap_source');
+  const pairs: [string, string][] = [];
+  const project = str(held, 'project');
+  if (project !== null) pairs.push(['project', project]);
+  if (source !== null) pairs.push(['cap source', source === 'max_workers' ? 'forge.toml' : source]);
+  const available = countOf(held['available']);
+  return {
+    title: 'worker capacity',
+    chips: [
+      { text: `${live} live`, tone: 'plain' },
+      { text: `cap ${cap}`, tone: 'dim' },
+    ],
+    figure: available === null ? null : `${available} free`,
+    pieces: pairs.length === 0 ? [] : [{ kind: 'kv', pairs }],
+    meter: { fill: live, of: cap },
+  };
+}
+
+/**
+ * A worker taken out of the pool, or the refusal that stopped it.
+ *
+ * A refusal is a RESULT and not a failed call - the tool answered cleanly that
+ * the worker stays up - so the row carries the reason on its own tail, where a
+ * failed call carries its error, and says the same in words in the body.
+ */
+function despawnCard(input: unknown, answer: unknown): ForgeCard | null {
+  const held = obj(answer);
+  const status = str(held, 'status');
+  const label = str(obj(input), 'label') ?? 'worker';
+  if (status === 'blocked') {
+    const reason = str(held, 'reason') ?? 'the worker could not be closed';
+    return {
+      title: `worker '${label}' still live`,
+      chips: [],
+      figure: null,
+      pieces: [{ kind: 'warnline', label: 'blocked', text: reason }],
+      tail: { text: reason, tone: 'warn' },
+    };
+  }
+  if (status !== 'despawned') return null;
+  const pieces: ForgePiece[] = [];
+  for (const [field, name] of [
+    ['worktree_cleanup_warning', 'worktree'],
+    ['branch_cleanup_warning', 'branch'],
+  ] as const) {
+    const warning = str(held, field);
+    if (warning !== null) pieces.push({ kind: 'warnline', label: name, text: warning });
+  }
+  return {
+    title: `closed worker '${label}'`,
+    chips: [{ text: 'worktree removed', tone: 'dim' }],
+    figure: null,
     pieces,
   };
 }
