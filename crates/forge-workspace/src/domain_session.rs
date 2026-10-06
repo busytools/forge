@@ -337,7 +337,7 @@ impl DomainSession {
     /// since the last change keeps one more change to be linked.
     pub(crate) fn replace_background_tasks(&mut self, tasks: Vec<crate::BackgroundTask>) {
         self.background_tasks = tasks;
-        self.link_background_commands();
+        self.link_background_calls();
         let live: HashSet<&str> =
             self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
         self.task_tool_use.retain(|task_id, _| live.contains(task_id.as_str()));
@@ -351,14 +351,14 @@ impl DomainSession {
     pub(crate) fn hold_background_command(&mut self, tool_use_id: String, command: String) {
         self.staged_commands.insert(tool_use_id.clone());
         self.background_commands.insert(tool_use_id, command);
-        self.link_background_commands();
+        self.link_background_calls();
     }
 
     /// Record which tool call began a task, which is the link that names the
     /// command, and fill in that task's command if the card is already held.
     pub(crate) fn hold_task_tool_use(&mut self, task_id: String, tool_use_id: String) {
         self.task_tool_use.insert(task_id, tool_use_id);
-        self.link_background_commands();
+        self.link_background_calls();
     }
 
     /// Let go of the registry and everything that resolves a command in it: a
@@ -416,11 +416,14 @@ impl DomainSession {
         self.prompt_queue.retain(|p| p.uuid != uuid);
     }
 
-    /// Fill in the command of every entry whose card and tool call are both
-    /// known. Called after either half lands, so the order the CLI sends them
-    /// in does not matter.
-    fn link_background_commands(&mut self) {
+    /// Fill in the call that began each entry, and the command its card
+    /// carried, wherever both halves are known. Called after either half
+    /// lands, so the order the CLI sends them in does not matter.
+    fn link_background_calls(&mut self) {
         for task in &mut self.background_tasks {
+            if task.tool_use_id.is_none() {
+                task.tool_use_id = self.task_tool_use.get(&task.task_id).cloned();
+            }
             if task.command.is_some() {
                 continue;
             }

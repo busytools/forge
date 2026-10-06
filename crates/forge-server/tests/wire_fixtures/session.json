@@ -43,7 +43,8 @@
       "task_id": "t-fixture",
       "task_type": "local_bash",
       "description": "gh run watch",
-      "command": "gh run watch 123 --exit-status"
+      "command": "gh run watch 123 --exit-status",
+      "tool_use_id": "tu-fixture"
     }
   ],
   "monitors": [],

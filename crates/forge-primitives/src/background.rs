@@ -21,4 +21,7 @@ pub struct BackgroundTask {
     /// adopts a detached process by. `None` when forge has not seen the card:
     /// the task still draws, without one.
     pub command: Option<String>,
+    /// The tool call that began the task, from the CLI's `task_started` link.
+    /// `None` until forge has seen it: the row draws without a call to reach.
+    pub tool_use_id: Option<String>,
 }

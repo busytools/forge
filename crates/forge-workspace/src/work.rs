@@ -909,6 +909,7 @@ provider = "anthropic"
                 task_type: "local_bash".to_owned(),
                 description: "gh run watch".to_owned(),
                 command: Some("gh run watch 123 --exit-status".to_owned()),
+                tool_use_id: None,
             },
             // The agent task CARRIES a command: the hold that records one is
             // not scoped to a card's tool, so the type is the thing that keeps
@@ -918,12 +919,14 @@ provider = "anthropic"
                 task_type: "local_agent".to_owned(),
                 description: "a sub-agent".to_owned(),
                 command: Some("investigate".to_owned()),
+                tool_use_id: None,
             },
             crate::BackgroundTask {
                 task_id: "t3".to_owned(),
                 task_type: "local_bash".to_owned(),
                 description: "a bash whose card forge never saw".to_owned(),
                 command: None,
+                tool_use_id: None,
             },
         ];
 

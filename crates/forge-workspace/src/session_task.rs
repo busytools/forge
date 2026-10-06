@@ -1662,6 +1662,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
                     task_type: entry.get("task_type")?.as_str()?.to_owned(),
                     description: entry.get("description")?.as_str()?.to_owned(),
                     command: None,
+                    tool_use_id: None,
                 })
             })
             .collect();
@@ -6776,6 +6777,44 @@ provider = "anthropic"
         assert!(
             task.domain.lock().background_tasks.is_empty(),
             "the whole set arrives each change, so an empty snapshot clears",
+        );
+    }
+
+    /// The same link carries the CALL, the id a view jumps by: a registry row
+    /// names the tool_use_id `task_started` held for its task, whichever order
+    /// the two halves land in.
+    #[test]
+    fn the_registry_carries_the_tool_call_its_link_names() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        // Registry first, then the link - the CLI's own order.
+        send(&mut task, background_tasks(one_live_task()));
+        assert_eq!(
+            task.domain.lock().background_tasks[0].tool_use_id,
+            None,
+            "before the link lands the row carries no call rather than a guess",
+        );
+        send(&mut task, a_task_started("t1", "toolu_1"));
+        assert_eq!(
+            task.domain.lock().background_tasks[0].tool_use_id.as_deref(),
+            Some("toolu_1"),
+            "the link fills the call once the registry is held",
+        );
+
+        // The reverse order on a fresh seat: the link first, then the snapshot.
+        let key = SessionSlot::from_str_for_test("w-bg2");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        send(&mut task, a_task_started("t1", "toolu_1"));
+        send(&mut task, background_tasks(one_live_task()));
+        assert_eq!(
+            task.domain.lock().background_tasks[0].tool_use_id.as_deref(),
+            Some("toolu_1"),
+            "and the snapshot fills from a link that arrived first",
         );
     }
 
