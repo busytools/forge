@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; dictation models</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* ============================================================
+     forge - the dictation models page, as the client draws it.
+     The palette is the shipped one, token for token; the page's
+     own rules are `client/src/assets/web.css`'s `.models` block,
+     and the frame around them is this drawing's.
+     ============================================================ */
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294; --ctl:#516590;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- the drawing's own frame ---------- */
+
+  .page { max-width: 1180px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 96ch; margin-bottom: 8px; }
+  h2 { font-size: 15.5px; font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
+    padding: 14px 16px 16px; margin-bottom: 18px; }
+  .tcap { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+
+  /* ---------- the page's own rules (web.css, `.models`) ---------- */
+
+  .wrap { padding: 0; }
+  header.top {
+    display: flex; align-items: center; gap: 14px;
+    padding-bottom: 18px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+  .models .title { display: flex; flex-direction: column; }
+  .models .title .t { font-size: 18px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+  .models .title .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .models .back { margin-left: auto; font-family: var(--mono); font-size: 12.5px;
+    color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+    border-radius: 9px; padding: 6px 11px; }
+
+  .models .block { margin-bottom: 30px; }
+  .models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    font-size: 12.5px; font-weight: 600; letter-spacing: .11em;
+    text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
+  .models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+    text-transform: none; color: var(--dim); font-weight: 400; }
+
+  .models .model { display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 13px 15px; margin-bottom: 10px; }
+  .models .role { font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dim); flex: 0 0 118px; }
+  .models .facts { min-width: 0; flex: 1; }
+  .models .nm { font-family: var(--mono); font-size: 14px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .models .meta { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+  .models .meta b { color: var(--muted); font-weight: 500; }
+  .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
+
+  .models .chip { display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 12.5px; padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+    background: none; white-space: nowrap; }
+  .models .chip.go { border-color: rgba(244,118,0,.5); color: var(--hot); }
+
+  .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+    padding: 12px 15px; margin-bottom: 10px; }
+  .models .status .t { font-family: var(--mono); font-size: 14px; color: var(--text); }
+  .models .status .when { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .models .status .spacer { margin-left: auto; }
+  .models .status.warn { border-color: rgba(201,161,59,.35); }
+  .models .status.warn .t { color: var(--warn); }
+  .models .status.failed { border-color: rgba(224,104,62,.4); }
+  .models .status.failed .t { color: var(--bad); }
+  .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: 12.5px;
+    color: var(--dim); padding-left: 19px; }
+  .models .status .detail b { color: var(--muted); font-weight: 500; }
+
+  .models .searchbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .models .searchbar input { flex: 1 1 260px; min-width: 0; font-family: var(--mono);
+    font-size: 14px; color: var(--text); background: var(--s1);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+  .models .searchbar input::placeholder { color: var(--dim); }
+  .models .searchbar button { font-family: var(--mono); font-size: 12.5px; padding: 4px 10px;
+    border: 1px solid rgba(244,118,0,.5); border-radius: 9px; color: var(--hot);
+    background: none; cursor: pointer; }
+  .models .note { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+
+  .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+    overflow: hidden; background: rgba(13,17,26,.4); }
+  .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+    border-bottom: 1px solid var(--line); }
+  .models .cand:last-child { border-bottom: 0; }
+  .models .cand .nm { flex: 1 1 auto; min-width: 0; }
+  .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: 12.5px;
+    color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .models .cand .col b { color: var(--muted); font-weight: 500; }
+
+  .models .empty { border: 1px dashed var(--line); border-radius: var(--r);
+    padding: 46px 24px; text-align: center; }
+  .models .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .models .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+  .models .empty code, .models .note code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+  /* the state marks, the shared vocabulary: shape carries it */
+  .dot { width: 11px; height: 11px; flex: 0 0 11px; display: inline-block; }
+  .dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+  .dot.warn { width: 9px; height: 9px; flex: 0 0 9px;
+    background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+  .dot.failed { width: 9px; height: 9px; flex: 0 0 9px; background: var(--bad);
+    clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+  .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+  .dot.live { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+    border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent); }
+  .dot.ok, .dot.warn, .dot.failed, .dot.off, .dot.live { display: inline-block; }
+
+  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Dictation models</h1>
+  <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
+  pinned, what the transcribe.cpp catalogue proposes, and the feed's rows the search reads. One
+  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing and the
+  models finishing their load are the two updates that move it. The benchmark section's run is a
+  separate piece of work, so this page ends there.</p>
+
+  <h2>The page</h2>
+  <div class="tile">
+    <div class="tcap">the ordinary case, with the feed proposing one model</div>
+    <main class="wrap models">
+      <header class="top">
+        <div class="brand">
+          <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+          <span class="word">forge</span>
+        </div>
+        <div class="title">
+          <h1 class="t">Dictation models</h1>
+          <span class="s">transcribing &middot; cleanup &middot; updates &middot; benchmarks</span>
+        </div>
+        <a class="back" href="#">&larr; home</a>
+      </header>
+
+      <section class="block">
+        <h2 class="hd4">In use <span class="why">the models every take runs through, pinned by file and digest</span></h2>
+
+        <div class="model">
+          <span class="role">transcribing</span>
+          <div class="facts">
+            <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
+            <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
+            <div class="meta">metal &middot; <b>72.9&times; realtime on m4-max</b> &middot; 14 languages</div>
+          </div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+        </div>
+
+        <div class="model">
+          <span class="role">cleanup</span>
+          <div class="facts">
+            <div class="nm">s1-mini-f16.gguf</div>
+            <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
+            <div class="meta">llama.cpp &middot; not in the feed</div>
+          </div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+        </div>
+
+        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; verified by size and sha-256 before any load</p>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Updates <span class="why">the transcribe.cpp catalogue is the feed; a pinned file never moves on its own</span></h2>
+
+        <div class="status warn" role="status">
+          <span class="dot warn"></span>
+          <span class="t">update available</span>
+          <span class="when">checked 11:42 &middot; catalogue v0.3.1</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">Check now</button>
+        </div>
+
+        <div class="status warn">
+          <span class="dot warn"></span>
+          <span class="t">Granite Speech 5.0 470M TurboCTC</span>
+          <span class="when">for transcribing</span>
+          <span class="detail">473M &middot; Q4_K_M 279 MB &middot; <b>388.8&times; vs 72.9&times;</b> &middot; FLEURS-en 4.61 vs 5.08 &middot; Apache-2.0 &middot; English only, offline</span>
+        </div>
+
+        <p class="note">an adoption is never silent: a better model becomes a pull request with this page's numbers beside it, and you merge it</p>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Find a model <span class="why">reads the catalogue the runtime already publishes, from this machine alone</span></h2>
+
+        <form class="searchbar" onsubmit="return false">
+          <input type="search" aria-label="Search the model catalogue" placeholder="search 73 variants - parakeet, granite, whisper, moonshine...">
+          <button type="submit">Search</button>
+        </form>
+
+        <p class="note">nothing searched yet &middot; the feed's whole catalogue is already here, so a search reads nothing off the network</p>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Benchmark <span class="why">your corpus, your mic: term accuracy first, speed second</span></h2>
+        <div class="empty">
+          <p class="t">no benchmark has run on this machine yet</p>
+          <p class="d">The bench will take the takes forge has recorded here, plus the read-aloud set, and score each candidate on your own words. Until it lands, the numbers above are the catalogue's measurements and not this machine's.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <h2>The states it can be in</h2>
+
+  <div class="tile">
+    <div class="tcap">the check line, in the states the feed can be in - <b>not checked yet</b>, <b>checking</b>, <b>unreachable</b>, and a state this client cannot read</div>
+    <div class="models">
+      <div class="status">
+        <span class="dot off"></span>
+        <span class="t">not checked yet</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">Check now</button>
+        <span class="detail">the feed refreshes at the next boot, or when you check it</span>
+      </div>
+      <div class="status">
+        <span class="dot live"></span>
+        <span class="t">checking the catalogue</span>
+        <span class="spacer"></span>
+      </div>
+      <div class="status failed">
+        <span class="dot failed"></span>
+        <span class="t">the catalogue could not be reached</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">Check now</button>
+        <span class="detail">github.com/handy-computer/transcribe.cpp answered 502; the last-known feed stands and nothing in use changed</span>
+      </div>
+      <div class="status">
+        <span class="dot off"></span>
+        <span class="t">the check state is one this client cannot read</span>
+        <span class="detail">this client is older than the forge serving it</span>
+      </div>
+    </div>
+    <div class="tnote">A check in flight offers no second Check now: a second check is refused, and a control that reports nothing when pressed reads as broken. The unknown line is the boundary's own statement - the value was narrowed once where the read entered, never drawn as a fresh check.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned and nothing proposed - the feed's rows still cross</div>
+    <div class="models">
+      <div class="empty">
+        <p class="t">dictation is off</p>
+        <p class="d"><code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are loaded and a take has nothing to run through. Add it and restart forge.</p>
+      </div>
+      <div class="status" style="margin-top:12px">
+        <span class="dot off"></span>
+        <span class="t">not checked yet</span>
+        <span class="detail">the feed refreshes at the next boot, or when you check it</span>
+      </div>
+      <p class="note">nothing searched yet &middot; the feed's whole catalogue is already here, so a search reads nothing off the network</p>
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the pin mid-load: the chip carries the preflight state, and the download carries its fraction</div>
+    <div class="models">
+      <div class="model">
+        <span class="role">transcribing</span>
+        <div class="facts">
+          <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
+          <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
+          <div class="meta">transcribe.cpp &middot; not in the feed</div>
+        </div>
+        <div class="side"><span class="chip"><span class="dot live"></span>fetching 38%</span></div>
+      </div>
+      <div class="model">
+        <span class="role">cleanup</span>
+        <div class="facts">
+          <div class="nm">s1-mini-f16.gguf</div>
+          <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
+          <div class="meta">llama.cpp &middot; not in the feed</div>
+        </div>
+        <div class="side"><span class="chip"><span class="dot off"></span>waiting</span></div>
+      </div>
+    </div>
+    <div class="tnote">A page open through a first download hears the models finish loading (<span class="mono">dictate_availability</span>) and reads again, so the chips do not stay on <span class="mono">waiting</span> until the next check.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">a search that matches a family, and one that matches nothing</div>
+    <div class="models">
+      <ul class="list" aria-label="Catalogue results">
+        <li class="cand">
+          <span class="nm">granite-speech-5.0-470m-turboctc</span>
+          <span class="col">Q4_K_M 279 MB &middot; <b>388.8&times; realtime</b> &middot; FLEURS-en 4.61 &middot; Apache-2.0</span>
+          <span class="col">English only &middot; offline</span>
+        </li>
+        <li class="cand">
+          <span class="nm">granite-speech-5.0-470m-turboctc-nc</span>
+          <span class="col">Q4_K_M 279 MB &middot; FLEURS-en 4.61 &middot; CC-BY-NC-SA-4.0</span>
+          <span class="col">English only &middot; offline</span>
+        </li>
+      </ul>
+      <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+      <p class="note">no entry matches <code>wav2vec</code> &middot; try a family name</p>
+    </div>
+    <div class="tnote">The search is the client's: the whole feed arrives with the read, so a query filters what is here. Nothing is filtered out for the reader - a non-commercial variant is listed and only ever excluded from a proposal.</div>
+  </div>
+
+</div>
+</body>
+</html>

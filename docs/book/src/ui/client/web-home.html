@@ -78,6 +78,13 @@
   .svc.bad { border-color: rgba(224,104,62,.4); }
   .svc.bad .v { color: var(--bad); }
   .svc.off { opacity: .72; }
+  /* The one card that is a way in: the dictation card opens the models page.
+     The chevron is drawn at rest, not uncovered by the pointer. */
+  .band a.svc { display: block; text-decoration: none; color: inherit; }
+  .band a.svc .ic { display: block; width: 15px; height: 15px; flex: 0 0 15px; }
+  .band a.svc .arw { margin-left: auto; color: var(--dim); }
+  .band a.svc:hover { border-color: var(--ctl); }
+  .band a.svc:hover .arw { color: var(--accent); }
 
   .banner {
     display: flex; align-items: center; gap: 10px;
@@ -404,11 +411,12 @@
       <div class="v">127.0.0.1:8790</div>
       <div class="sub">this page</div>
     </div>
-    <div class="svc">
-      <div class="k"><span class="dot ok"></span> dictation</div>
+    <a class="svc" href="#models">
+      <div class="k"><span class="dot ok"></span> dictation
+        <svg class="ic arw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></div>
       <div class="v">2 models</div>
       <div class="sub">cohere loaded &middot; take 08:17</div>
-    </div>
+    </a>
     <div class="svc">
       <div class="k"><span class="dot ok"></span> accounts</div>
       <div class="v">6 ready</div>
