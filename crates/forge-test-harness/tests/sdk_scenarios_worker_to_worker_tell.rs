@@ -47,6 +47,7 @@ async fn worker_to_worker_tell_scenario() {
         mcp_families: None,
         rate_limited_account: None,
         durability_warning: None,
+        worktree: None,
         session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
     // Pre-seed the worker pool so agents__send_message finds a live

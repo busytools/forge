@@ -141,6 +141,10 @@ pub struct WorkerSpawnReply {
     /// warning so the lead knows the "durable" promise didn't hold for
     /// this one. Mirrors `worktree_cleanup_warning` on despawn.
     pub durability_warning: Option<String>,
+    /// Where the worker landed: its worktree, or `None` when the project
+    /// is not a git repo and the worker runs in the project root. Set by
+    /// the spawn handler, which is the only place that knows both.
+    pub worktree: Option<String>,
     /// Which session the spawn landed on. The handler states what its own
     /// arguments say; the MCP facade restates it with the resolution it
     /// made, which is the only place a `resume_session` fallback is known.
@@ -2549,6 +2553,7 @@ mod workers_command_tests {
             mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
+            worktree: None,
             session_choice: SessionChoice::Fresh,
         };
         assert_eq!(r.tag, "forge:worker:reviewer");

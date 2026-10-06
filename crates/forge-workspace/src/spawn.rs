@@ -451,6 +451,15 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
     if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
 }
 
+/// Where a spawned worker runs, as the spawn reply states it: a git
+/// project's worker gets its worktree, and a non-git one runs in the
+/// project root and has no worktree to name.
+fn spawn_worktree(project_root: &std::path::Path, label: &str, is_git: bool) -> Option<String> {
+    is_git.then(|| {
+        crate::mcp::workers::types::worker_tag_dir(project_root, label, true).display().to_string()
+    })
+}
+
 /// Deliver a due cron's prompt into its OWNER's session as a plain user
 /// turn AND echo it as a cron block. `team_role` `None` routes to the
 /// project lead, `Some(label)` to that worker. A live owner gets a
@@ -1674,6 +1683,11 @@ pub(crate) fn handle_spawn_worker(
                 // re-spawn paths drop the reply, so they read the warn
                 // instead.
                 durability_warning,
+                // Where the worker runs, which this handler decided above:
+                // a git project's worker gets `<root>/.claude/worktrees/
+                // <label>`, and everything else runs in the project root
+                // and has no worktree to name.
+                worktree: spawn_worktree(&view.path, label, is_git),
                 // What the arguments say, which is all this handler
                 // knows: a `resume_session` spawn whose lookup found
                 // nothing arrives here as a fresh spawn like any other,
@@ -2442,6 +2456,22 @@ mod tests {
         crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
     }
 
+    /// The spawn reply's worktree names a git worker's own directory and
+    /// says nothing for a worker that runs in the project root: a path
+    /// pointing at the project root would name a worktree that is not one.
+    #[test]
+    fn a_git_spawn_names_its_worktree_and_a_plain_project_names_none() {
+        assert_eq!(
+            spawn_worktree(std::path::Path::new("/repo"), "reviewer", true).as_deref(),
+            Some("/repo/.claude/worktrees/reviewer"),
+        );
+        assert_eq!(
+            spawn_worktree(std::path::Path::new("/repo"), "reviewer", false),
+            None,
+            "a non-git project's worker runs in the project root, not a worktree",
+        );
+    }
+
     /// A fatal error is an App-level event with no state behind it, so a
     /// view that was not subscribed when it fired could never learn of it -
     /// and a client attaching to a running forge would draw a healthy
@@ -2932,7 +2962,18 @@ provider = "anthropic"
     #[tokio::test]
     async fn a_fresh_worker_is_keyed_by_the_id_it_runs_under() {
         let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        // A repo of this test's own, because it reads the worktree the reply
+        // names: the fixture project's gitness must not depend on where the
+        // suite runs, and a fixed home path is a git repo on one machine and
+        // a plain directory on a runner.
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+        write_forge_toml(dir.path(), &repo.path().to_string_lossy());
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
@@ -2966,6 +3007,21 @@ provider = "anthropic"
             uuid::Uuid::parse_str(&reply.session_id).is_ok(),
             "the worker is told the id it runs under, not a placeholder: {}",
             reply.session_id,
+        );
+        // The fixture project is a git repo, so this worker runs in its own
+        // worktree and the reply names it: the path a lead uses to find the
+        // worker's work has to be the directory the worker actually runs in.
+        let expected_worktree = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .path
+            .join(".claude/worktrees/tester");
+        assert_eq!(
+            reply.worktree.as_deref(),
+            Some(expected_worktree.to_string_lossy().into_owned().as_str()),
+            "the reply names the worktree the worker was spawned into",
         );
         let entry = ws
             .list_projects()
@@ -4393,6 +4449,10 @@ provider = "anthropic"
             Some("Stargate"),
             "the bailed account is named in the reply, which is what raises the notice",
         );
+        // This fixture's projects are throwaway dirs, not git repos, so this
+        // worker runs in the project root: the reply must not name a worktree
+        // that was never created.
+        assert_eq!(reply.worktree, None, "a non-git project's worker has no worktree");
         workspace.release_session(&SessionSlot::from_str_for_test(reply.session_id));
     }
 

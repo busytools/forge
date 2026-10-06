@@ -54,6 +54,7 @@ async fn worker_spawn_scenario() {
         mcp_families: None,
         rate_limited_account: None,
         durability_warning: None,
+        worktree: None,
         session_choice: forge_workspace::protocol::SessionChoice::Fresh,
     }));
     // Pre-seed the worker pool so a follow-up agents__list call

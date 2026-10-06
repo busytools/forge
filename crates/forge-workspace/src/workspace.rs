@@ -14150,6 +14150,7 @@ provider = "anthropic"
                 mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
+                worktree: None,
                 session_choice: SessionChoice::Resumed,
             }))
             .expect("the facade is awaiting its reply");
@@ -14268,6 +14269,7 @@ provider = "anthropic"
                 mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
+                worktree: None,
                 session_choice: SessionChoice::Fresh,
             }))
             .expect("the facade is awaiting its reply");
@@ -14320,6 +14322,7 @@ provider = "anthropic"
                 mcp_families: None,
                 rate_limited_account: None,
                 durability_warning: None,
+                worktree: None,
                 session_choice: SessionChoice::Fresh,
             }))
             .expect("the facade is awaiting its reply");

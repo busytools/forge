@@ -1130,6 +1130,7 @@ mod mock_tests {
             mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
+            worktree: None,
             session_choice: SessionChoice::Fresh,
         }));
         let res = mock

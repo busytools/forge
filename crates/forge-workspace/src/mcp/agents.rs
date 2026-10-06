@@ -555,7 +555,10 @@ impl Tool for Spawn {
          'begin now' line in the charter does NOT run on its own, so pass \
          `kick` for any ad-hoc spawn you want to start now. Returns the \
          worker's \
-         session_id and tag (`forge:worker:<label>`). A spawned worker is \
+         session_id and tag (`forge:worker:<label>`), whether the session \
+         was resumed or started fresh, the worker's own row (the same \
+         shape agents__list draws for it), and the worktree it landed in \
+         when the project is a git repo. A spawned worker is \
          DURABLE: it survives forge restarts and is automatically \
          re-spawned, resuming where it left off (a restarted worker is \
          told to continue, not start over), until you explicitly despawn \
@@ -658,6 +661,7 @@ impl Tool for Spawn {
             Ok(families) => families,
             Err(message) => return tool_error(message),
         };
+        let label = args.label.clone();
         match self
             .facade
             .spawn_worker(
@@ -673,19 +677,37 @@ impl Tool for Spawn {
             .await
         {
             Ok(reply) => {
+                let resumed = reply.session_choice == SessionChoice::Resumed;
                 let mut body = serde_json::json!({
                     "session_id": reply.session_id,
                     "tag": reply.tag,
-                    "session": match reply.session_choice {
-                        SessionChoice::Resumed => "resumed the label's prior session",
-                        SessionChoice::Fresh => "started a new session (resume_session was not set)",
-                        SessionChoice::FreshWithoutPrior => {
-                            "started a new session: no prior session found for this label"
-                        }
-                    },
+                    "resumed": resumed,
+                    "session_choice": reply.session_choice,
                 });
                 if let Some(families) = &reply.mcp_families {
                     body["mcp_families"] = serde_json::json!(families);
+                }
+                if let Some(worktree) = &reply.worktree {
+                    body["worktree"] = serde_json::Value::String(worktree.clone());
+                }
+                // The row `agents__list` draws for this worker, so a caller
+                // reads the spawn's own record rather than making a second
+                // call to learn the same fields. A row the registry has not
+                // landed yet is simply absent.
+                //
+                // Matched by the session id the reply carries, not by the
+                // label alone: a Failed row is deliberately kept under its
+                // label so a re-spawn can recover, so a label lookup lands
+                // on the PREVIOUS occupant in exactly the failure-then-recover
+                // flow a lead is most likely reading - stale status and a
+                // dead session id beside the fresh one above it.
+                if let Some(status) =
+                    self.facade.list_workers(&self.slot).into_iter().find(|worker| {
+                        worker.label == label && worker.session_id == reply.session_id
+                    })
+                    && let Ok(worker) = row(&status.slot, &status)
+                {
+                    body["worker"] = worker;
                 }
                 if let Some(account) = &reply.rate_limited_account {
                     body["notice"] = serde_json::Value::String(format!(
@@ -1389,6 +1411,163 @@ mod tests {
         assert_eq!(parsed["available"], 0, "a cap under the live count leaves no free slot");
     }
 
+    /// The spawn result echoes the worker's own row - compared whole
+    /// against the row the `agents__list` call itself draws, so a trimmed
+    /// subset or a row addressed by the caller's own slot cannot pass -
+    /// plus where it landed; the resume outcome is a field, and the old
+    /// `session` sentence is gone rather than sent beside it.
+    #[tokio::test]
+    async fn spawn_echoes_the_worker_row_and_its_worktree() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "reviewer-session".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: Some(vec!["tasks".to_owned(), "slack".to_owned()]),
+            rate_limited_account: None,
+            durability_warning: None,
+            session_choice: SessionChoice::Resumed,
+            worktree: Some("/repo/.claude/worktrees/reviewer".to_owned()),
+        }));
+        // The live entry the spawn just created, as `agents__list` reads it.
+        host.workers
+            .workers
+            .lock()
+            .entry("core".to_owned())
+            .or_default()
+            .push(worker("acme", "core", "reviewer"));
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "review the diff" }),
+            })
+            .await;
+        assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
+        assert_eq!(output.blocks.len(), 1, "the answer stays one text block: {output:?}");
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["resumed"], true, "resumed is a field a caller can branch on");
+        assert_eq!(
+            parsed["session_choice"], "resumed",
+            "and the three-way outcome stays machine-readable",
+        );
+        assert_eq!(parsed["worktree"], "/repo/.claude/worktrees/reviewer");
+        let listed = call_list(&host, None).await;
+        let row = listed
+            .iter()
+            .find(|row| row["slot"]["label"] == "reviewer")
+            .expect("agents__list draws a row for the worker");
+        assert_eq!(
+            parsed["worker"], *row,
+            "the echo is the whole row agents__list draws, slot included",
+        );
+        assert_eq!(parsed["session_id"], "reviewer-session", "the id stays where callers read it");
+        assert_eq!(parsed["mcp_families"], serde_json::json!(["tasks", "slack"]));
+        assert!(
+            parsed.get("session").is_none(),
+            "the outcome is fields now, not a sentence: {parsed}",
+        );
+    }
+
+    /// The echoed row is the occupant THIS spawn landed on: a Failed row is
+    /// deliberately kept under its label so a re-spawn can recover, so a
+    /// label-only lookup would echo the previous occupant - its stale status
+    /// and its dead session id - beside the fresh id in the same answer.
+    #[tokio::test]
+    async fn spawn_echoes_the_occupant_it_landed_on_not_the_labels_previous_one() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "fresh-session".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: None,
+            rate_limited_account: None,
+            durability_warning: None,
+            session_choice: SessionChoice::Fresh,
+            worktree: None,
+        }));
+        let mut stale = worker("acme", "core", "reviewer");
+        stale.status = WorkerLiveness::Failed;
+        stale.session_id = "dead-session".to_owned();
+        stale.diagnostic = Some("spawn failed".to_owned());
+        let mut fresh = worker("acme", "core", "reviewer");
+        fresh.session_id = "fresh-session".to_owned();
+        host.workers.workers.lock().insert("core".to_owned(), vec![stale, fresh]);
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "review the diff" }),
+            })
+            .await;
+        assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(
+            parsed["worker"]["session_id"], "fresh-session",
+            "the row is the occupant that was just spawned, not the failed predecessor: {parsed}",
+        );
+        assert_eq!(parsed["worker"]["status"], "Running", "and it reads as the state it holds");
+    }
+
+    /// A non-git project spawns its worker in the project root, so there is
+    /// no worktree to name and the key is absent rather than pointing at a
+    /// directory that is not one.
+    #[tokio::test]
+    async fn a_spawn_without_a_worktree_omits_the_path() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "s-1".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: None,
+            rate_limited_account: None,
+            durability_warning: None,
+            session_choice: SessionChoice::Fresh,
+            worktree: None,
+        }));
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "review the diff" }),
+            })
+            .await;
+        assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["resumed"], false, "a fresh spawn says so");
+        assert_eq!(parsed["session_choice"], "fresh");
+        assert!(parsed.get("worktree").is_none(), "no worktree, no path: {parsed}");
+    }
+
+    /// A resume that found no prior session started fresh, so `resumed`
+    /// must read false: a caller told it resumed believes the old context
+    /// came back when nothing did.
+    #[tokio::test]
+    async fn a_resume_that_found_nothing_reports_itself_as_not_resumed() {
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "s-1".to_owned(),
+            tag: "forge:worker:reviewer".to_owned(),
+            mcp_families: None,
+            rate_limited_account: None,
+            durability_warning: None,
+            worktree: None,
+            session_choice: SessionChoice::FreshWithoutPrior,
+        }));
+        let tool =
+            Spawn { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "review the diff" }),
+            })
+            .await;
+        assert!(!output.is_error, "the spawn must be answered: {:?}", output.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&output.blocks[0].text).expect("JSON");
+        assert_eq!(parsed["resumed"], false, "nothing was resumed");
+        assert_eq!(parsed["session_choice"], "fresh_without_prior", "and the fallback is named");
+    }
+
     #[tokio::test]
     async fn spawn_hands_the_kick_and_the_interactive_flag_to_the_facade() {
         // `kick` is what starts a worker at all and `interactive` decides
@@ -1402,6 +1581,7 @@ mod tests {
             mcp_families: None,
             rate_limited_account: None,
             durability_warning: None,
+            worktree: None,
             session_choice: SessionChoice::Fresh,
         }));
         let tool =
@@ -1733,6 +1913,7 @@ mod tests {
             mcp_families: families,
             rate_limited_account: None,
             durability_warning: None,
+            worktree: None,
             session_choice: SessionChoice::Fresh,
         }
     }
