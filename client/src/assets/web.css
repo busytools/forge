@@ -2053,20 +2053,20 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    frame lands. */
 .turn { min-height: 24px; }
 /* ---------- arriving at the foot ----------
-   The newest row settles in once, when it mounts: a new message or row
-   arriving, never a streamed frame (the row a stream grows into is not
-   remounted, so nothing replays at 50Hz). Opacity only, in place - no
-   movement, so nothing can fight the follow's own arithmetic. Scoped to the
-   last row of the last item, so scrolling back through history lands
-   plainly. Ved settled on this over the rise-and-fade candidate, both tried
-   live (2026-10-06). */
+   The newest turn's last row settles in as it arrives. The mark rides the
+   item's own wrapper (`itemProps` in the column, where each item is the last
+   child of its own wrapper) and is dropped after its window, so an item the
+   list recreates on a later scroll carries nothing to replay; the row a
+   stream grows into is not remounted, so nothing replays at 50Hz. Opacity
+   only, in place - no movement, so nothing can fight the follow's own
+   arithmetic. A row mid-reveal keeps its own flash. */
 @keyframes arrive {
   from { opacity: .35; }
   to { opacity: 1; }
 }
-.conv .turn:last-child [data-k]:last-child { animation: arrive 150ms ease-out; }
+.conv .arriving [data-k]:last-child:not(.sg-hit) { animation: arrive 150ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .conv .turn:last-child [data-k]:last-child { animation: none; }
+  .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
 }
 
 /* A search hit is a location and the line it matched, on two lines. The design

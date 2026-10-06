@@ -58,6 +58,8 @@
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /** How long the arrival mark stays on the newest item's wrapper. */
+  const ARRIVE_MS = 300;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
@@ -129,6 +131,24 @@
   );
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
+  /**
+   * The item whose arrival fade is owed, dropped again after the window.
+   *
+   * The mark cannot sit on `newest` itself: a CSS animation restarts per
+   * element insertion, and the list recreates items as they leave its
+   * window - a class still carried would replay the fade on the next scroll
+   * back to the foot. The window is the animation's own length plus a frame.
+   */
+  let arriving = $state<string | null>(null);
+  $effect(() => {
+    const key = newest;
+    if (key === null) return;
+    arriving = key;
+    const timer = setTimeout(() => {
+      if (arriving === key) arriving = null;
+    }, ARRIVE_MS);
+    return () => clearTimeout(timer);
+  });
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -993,6 +1013,8 @@
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
+    itemProps={({ item }: { item: HeldTurn }) =>
+      item.key === arriving ? { class: 'arriving' } : undefined}
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}
