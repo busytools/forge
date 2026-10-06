@@ -4215,13 +4215,18 @@ impl Workspace {
                     && let Some(domain) = self.domain_session_for(&key)
                 {
                     let mut guard = domain.lock();
+                    // A prompt committed with no turn in flight starts a new
+                    // one, and a cancel stamp the last turn left armed expires
+                    // here: nothing would spend it, and left standing it would
+                    // exempt this turn's genuine failure. A prompt that only
+                    // queues behind a busy turn keeps the stamp - that turn
+                    // is still the one it was armed for, and its error Result
+                    // still has to read as the reader's own cancel.
+                    if !guard.turn_in_flight() {
+                        guard.pending_cancel = false;
+                    }
                     guard.turn_pending = true;
                     guard.failed_turn_at = None;
-                    // A committed turn also expires any cancel stamp the last
-                    // turn left armed: nothing will spend it once this turn
-                    // runs, and left standing it would exempt this turn's
-                    // genuine failure.
-                    guard.pending_cancel = false;
                 }
                 // Arm the cancel stamp on the routed path, so the turn's
                 // own failed `Result` can tell a reader's interrupt from a
@@ -10426,9 +10431,26 @@ provider = "anthropic"
             "a committed prompt moves past the failure: the newest turn is this one",
         );
         assert!(
+            domain.lock().pending_cancel,
+            "a prompt that only queues behind the busy turn keeps the cancel stamp - \
+             its error Result still has to read as the reader's own cancel",
+        );
+
+        // The busy turn ends, and a prompt committed with nothing in flight
+        // starts a new one: the stamp expires there, or this turn's genuine
+        // failure would go unmarked.
+        domain.lock().turn_pending = false;
+        domain.lock().pending_cancel = true;
+        workspace
+            .dispatch(Command::Prompt {
+                key: key.clone(),
+                text: "go".to_owned(),
+                attachments: Vec::new(),
+            })
+            .expect("dispatch");
+        assert!(
             !domain.lock().pending_cancel,
-            "and it expires a stamp the last turn left armed, or this turn's \
-             genuine failure would go unmarked",
+            "a prompt committed with no turn in flight expires the stamp",
         );
     }
 
