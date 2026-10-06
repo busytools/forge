@@ -137,7 +137,7 @@
    * The mark cannot sit on `newest` itself: a CSS animation restarts per
    * element insertion, and the list recreates items as they leave its
    * window - a class still carried would replay the fade on the next scroll
-   * back to the foot. The window is the animation's own length plus a frame.
+   * back to the foot. The window is twice the animation's length.
    */
   let arriving = $state<string | null>(null);
   $effect(() => {
