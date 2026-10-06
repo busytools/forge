@@ -3,14 +3,11 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import GitSection from './sections/GitSection.svelte';
-  import GotifySection from './sections/GotifySection.svelte';
   import McpSection from './sections/McpSection.svelte';
   import MonitorsSection from './sections/MonitorsSection.svelte';
-  import ProcessesSection from './sections/ProcessesSection.svelte';
   import SchedulesSection from './sections/SchedulesSection.svelte';
-  import SlackSection from './sections/SlackSection.svelte';
   import TasksSection from './sections/TasksSection.svelte';
-  import { gitSection, gotifySection, mcpSection, projectOf, slackSection } from './view';
+  import { gitSection, mcpSection, projectOf } from './view';
   import type { SessionRecord } from './wire';
 
   /**
@@ -46,12 +43,7 @@
 
   const tasks = $derived(project?.tasks ?? []);
   const crons = $derived(project?.crons ?? []);
-  // The sections' subscriptions come off the seat's own row, like its tasks
-  // and crons; the connector liveness they draw beside them is home-wide.
-  const gotify = $derived(gotifySection(wire, project));
-  const slack = $derived(slackSection(wire, project));
   const mcp = $derived(record === null ? null : mcpSection(record));
-  const walk = $derived(record?.processes ?? null);
   const monitors = $derived(record?.monitors ?? []);
 </script>
 
@@ -82,17 +74,8 @@
     {#if crons.length > 0}
       <SchedulesSection {crons} {now} />
     {/if}
-    {#if gotify !== null}
-      <GotifySection view={gotify} />
-    {/if}
-    {#if slack !== null}
-      <SlackSection view={slack} />
-    {/if}
     {#if mcp !== null}
       <McpSection view={mcp} />
-    {/if}
-    {#if walk !== null && walk.processes.length > 0}
-      <ProcessesSection {walk} {now} />
     {/if}
     {#if monitors.length > 0}
       <MonitorsSection {monitors} {now} />

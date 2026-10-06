@@ -18,6 +18,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
   decision: null,
+  forge: null,
   skill: null,
   image: null,
   imageNote: null,
@@ -57,6 +58,7 @@ describe('the row one call draws', () => {
           body: [{ kind: 'text', text: 'Launching skill: unslop' }],
           mutation: null,
           decision: null,
+          forge: null,
           skill: '# Unslop\n\nEdit text to remove AI patterns.',
           image: null,
           imageNote: null,
@@ -87,6 +89,7 @@ describe('the row one call draws', () => {
           body: [],
           mutation: null,
           decision: null,
+          forge: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -120,6 +123,7 @@ describe('the row one call draws', () => {
           ],
           mutation: null,
           decision: null,
+          forge: null,
           skill: null,
           image: { mime: 'image/png', data: 'AAAA' },
           imageNote: 'original 100x100, displayed at 100x100.',
@@ -223,6 +227,7 @@ describe('the row one call draws', () => {
             question: null,
             criteria: {},
           },
+          forge: null,
           skill: null,
           image: null,
           imageNote: null,
@@ -233,6 +238,241 @@ describe('the row one call draws', () => {
     expect(drawn, 'the block draws').toContain('class="dec"');
     expect(drawn, 'with the answer as its number').toContain('0.93');
     expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
+  });
+});
+
+describe('the forge card row', () => {
+  /** One `mcp__forge__tasks__update` call, as the fold hands it to the row. */
+  const tasksUpdate = (over: Partial<ToolLeaf> = {}): ToolLeaf => ({
+    id: 'toolu_tasks',
+    row: { kind: 'forge', family: 'tasks' },
+    name: 'mcp__forge__tasks__update',
+    title: 'Wire the review notice into the chat',
+    command: null,
+    status: 'completed',
+    note: null,
+    body: [],
+    mutation: null,
+    decision: null,
+    forge: {
+      title: 'Wire the review notice into the chat',
+      chips: [{ text: 'in progress', tone: 'info' }],
+      figure: 'owner lead',
+      pieces: [{ kind: 'kv', pairs: [['changed', 'status']] }],
+    },
+    skill: null,
+    image: null,
+    imageNote: null,
+    ...over,
+  });
+
+  it('draws the subject as the title, the chip and figure beside it, the facts below', () => {
+    const drawn = render(Call, { props: { call: tasksUpdate(), k: 't7' } }).body;
+
+    // The subject, never the tool's name: `tasks__update` is plumbing.
+    expect(drawn, 'the row is titled by the subject').toContain(
+      'Wire the review notice into the chat',
+    );
+    expect(drawn, 'and never by the tool').not.toContain('tasks__update');
+    expect(drawn, 'the state is a chip that carries its own word').toContain('fam-chip info');
+    expect(drawn, 'with the word in it').toContain('in progress');
+    expect(drawn, 'and the owner is the figure').toContain('owner lead');
+    expect(drawn, 'the body draws the facts as one inline run').toContain('fam-meta');
+    expect(drawn, 'with the changed field named').toContain('changed');
+  });
+
+  it('draws every kind of piece a card body can carry', () => {
+    // The body's arms past the meta line - the tag, the quote, the warning
+    // line, the list and the empty row - are what every list-bearing card
+    // resolves to (tasks, cron, gotify recent, Slack hits, review comments),
+    // so an arm losing its words takes them all down together.
+    const drawn = render(Call, {
+      props: {
+        k: 't14',
+        call: tasksUpdate({
+          forge: {
+            title: 'task sweep',
+            chips: [],
+            figure: null,
+            pieces: [
+              { kind: 'tag', text: 'tag-words' },
+              { kind: 'quote', text: 'quote-words' },
+              { kind: 'warnline', label: 'blocked', text: 'warn-words' },
+              {
+                kind: 'list',
+                items: [
+                  {
+                    id: 'abcdef',
+                    state: { text: 'open', tone: 'bad' },
+                    text: 'list-words',
+                    tag: 'tag-row-words',
+                    when: 'when-words',
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      },
+    }).body;
+
+    expect(drawn, 'the tag draws').toContain('fam-tag');
+    expect(drawn, 'with its words').toContain('tag-words');
+    expect(drawn, 'the quote draws').toContain('fam-quote');
+    expect(drawn, 'with its words').toContain('quote-words');
+    expect(drawn, 'the warning line draws').toContain('fam-warnline');
+    expect(drawn, 'with its label and words').toContain('warn-words');
+    expect(drawn, 'the list draws').toContain('fam-list');
+    expect(drawn, 'with the row state as its own word').toContain('open');
+    expect(drawn, 'the row text').toContain('list-words');
+    expect(drawn, 'the row tag').toContain('tag-row-words');
+    expect(drawn, 'the trailing fact').toContain('when-words');
+
+    const empty = render(Call, {
+      props: {
+        k: 't15',
+        call: tasksUpdate({
+          forge: {
+            title: 'tasks',
+            chips: [],
+            figure: null,
+            pieces: [{ kind: 'empty', text: 'empty-words' }],
+          },
+        }),
+      },
+    }).body;
+    expect(empty, 'the empty row draws its own words').toContain('empty-words');
+  });
+
+  it('draws a completed result the page cannot read as its own text', () => {
+    // A completed call whose result is not JSON draws the text it came back
+    // with: the row is a forge row, the card is null, and the text is the one
+    // thing a reader has.
+    const drawn = render(Call, {
+      props: {
+        k: 't16',
+        call: tasksUpdate({
+          status: 'completed',
+          forge: null,
+          body: [{ kind: 'text', text: 'not json at all' }],
+        }),
+      },
+    }).body;
+
+    expect(drawn, 'the raw text draws').toContain('not json at all');
+    expect(drawn, 'and no card chrome is invented for it').not.toContain('fam-meta');
+  });
+
+  it('states a failed forge call reason on the row itself', () => {
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          status: 'failed',
+          forge: null,
+          body: [{ kind: 'error', message: 'no task with id t-91c2', detail: '' }],
+        }),
+        k: 't8',
+      },
+    }).body;
+
+    expect(drawn, 'the reason rides the row').toContain('fam-tail');
+    expect(drawn, 'in its own words').toContain('no task with id t-91c2');
+    expect(drawn, 'and the body keeps the whole of it').toContain('errhint');
+  });
+
+  it('states a reason that arrived as plain text, which is how an MCP tool fails', () => {
+    // The CLI wraps only its OWN refusals in `<tool_use_error>`; an MCP tool's
+    // `is_error` answer reaches the fold as text, so a tail that read only the
+    // error piece drew nothing at all for the failures a reader most needs.
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          status: 'failed',
+          forge: null,
+          body: [
+            {
+              kind: 'text',
+              text: 'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+            },
+          ],
+        }),
+        k: 't12',
+      },
+    }).body;
+
+    expect(drawn, 'the reason rides the row').toContain('fam-tail');
+    expect(drawn, 'in its own words').toContain('several Slack workspaces are configured');
+  });
+
+  it('draws a card-supplied tail, which is a clean answer and not a failure', () => {
+    // A blocked despawn answers cleanly; the tail is the card's, and the
+    // row's own `failed` styling must not be needed for it to draw.
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          forge: {
+            title: "worker 'implementer' still live",
+            chips: [],
+            figure: null,
+            pieces: [],
+            tail: { text: '3 uncommitted files', tone: 'warn' },
+          },
+        }),
+        k: 't10',
+      },
+    }).body;
+
+    expect(drawn, 'the reason rides the row').toContain('3 uncommitted files');
+    expect(drawn, 'in the warn tone the card stated').toContain('fam-tail warn');
+  });
+
+  it('draws the meter a card asks for, where its numbers are', () => {
+    const drawn = render(Call, {
+      props: {
+        call: tasksUpdate({
+          row: { kind: 'forge', family: 'agents' },
+          name: 'mcp__forge__agents__capacity',
+          forge: {
+            title: 'worker capacity',
+            chips: [
+              { text: '7 live', tone: 'plain' },
+              { text: 'cap 8', tone: 'dim' },
+            ],
+            figure: '1 free',
+            pieces: [],
+            meter: { fill: 7, of: 8 },
+            glyph: 'gauge',
+          },
+        }),
+        k: 't11',
+      },
+    }).body;
+
+    expect(drawn, 'the bar draws').toContain('fam-meter');
+    expect(drawn, 'filled to the count against the cap').toContain('width: 88%');
+    expect(drawn, 'with both numbers still stated in words').toContain('7 live');
+    expect(drawn, "the card's own mark, not the family's").toContain('href="#i-gauge"');
+  });
+
+  it('keeps the reason off every other failed row', () => {
+    // Ved's shape: the tail is the MCP family cards' own, and a generic call
+    // row keeps its reason in the body alone.
+    const drawn = render(Call, {
+      props: {
+        call: {
+          ...tasksUpdate(),
+          row: { kind: 'family', family: 'bash' },
+          name: 'Bash',
+          status: 'failed',
+          forge: null,
+          body: [{ kind: 'error', message: 'exit code 1', detail: '' }],
+        } as ToolLeaf,
+        k: 't9',
+      },
+    }).body;
+
+    expect(drawn, 'the reason draws in the body').toContain('exit code 1');
+    expect(drawn, 'and not on the row').not.toContain('fam-tail');
   });
 });
 
@@ -253,6 +493,7 @@ describe('the dispatch row, joined to its instance', () => {
     body: [{ kind: 'text', text: 'Report: **closed**.' }],
     mutation: null,
     decision: null,
+    forge: null,
     skill: null,
     image: null,
     imageNote: null,

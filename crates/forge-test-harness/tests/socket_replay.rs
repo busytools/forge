@@ -306,6 +306,37 @@ census!(ClientMessage,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
+/// **A unit command crosses as its own name, and the client writes that
+/// name.** The models page's Check now builds this frame by hand - the
+/// command is the core's one unit variant a client sends - so both halves
+/// are pinned here: what the core writes for the variant, and that the exact
+/// frame the page hands the socket decodes back to it. A server that
+/// stopped accepting the string form would refuse the frame as a message it
+/// does not know, and the command would do nothing when it is pressed with
+/// nothing on either side saying so.
+#[test]
+fn a_unit_command_crosses_as_its_name() {
+    assert_eq!(
+        serde_json::to_value(Command::DictateCatalogueCheck).expect("the variant encodes"),
+        json!("dictate_catalogue_check"),
+        "the core's unit variant no longer crosses as its own name"
+    );
+
+    let frame = json!({
+        "kind": "command",
+        "command": "dictate_catalogue_check",
+        "reply_to": null,
+    });
+
+    let message: ClientMessage =
+        serde_json::from_value(frame).expect("the frame the models page writes parses");
+    let ClientMessage::Command { command, reply_to } = message else {
+        panic!("a command frame decoded as {message:?}");
+    };
+    assert!(matches!(*command, Command::DictateCatalogueCheck), "got {command:?}");
+    assert!(reply_to.is_none(), "the outcome rides the subscription, not a reply");
+}
+
 /// Where the records live, named by the protocol the server speaks rather
 /// than by a literal: a version bump looks for a directory that is not there
 /// and fails, which is the right answer for a client that would refuse to

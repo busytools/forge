@@ -28,6 +28,7 @@
     slot,
     connection,
     waking: false,
+    spawning: false,
     reason: null,
     read: $reads,
   });

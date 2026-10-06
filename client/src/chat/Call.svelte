@@ -5,12 +5,13 @@
   import Icon from '../components/Icon.svelte';
   import Code from './Code.svelte';
   import Decision from './Decision.svelte';
+  import Forge from './Forge.svelte';
   import Call from './Call.svelte';
   import { iconOf } from './families';
   import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
-  import { searchHits } from './text';
+  import { firstLine, searchHits } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
   import { dispatchFrames } from './timeline';
@@ -208,6 +209,53 @@
       : card.running,
   );
 
+  /** Whether the call failed, which a forge row states on the row itself. */
+  const failed = $derived(call.status === 'failed' || call.status === 'killed');
+
+  /** The card the chips and figure draw from: none while the row says it failed. */
+  const forge = $derived(failed ? null : (call.forge ?? null));
+
+  /**
+   * A failed forge call's own reason, as the row's tail: the first line of the
+   * error the fold unwrapped, with the detail left to the body that keeps it.
+   *
+   * Read off the ROW's kind rather than the card, which a failed call has none
+   * of by construction - the reason is what a failure draws AS. `null` for a
+   * row that did not fail and for one whose failure said nothing: a mark with
+   * no words after it is a word a reader cannot act on.
+   */
+  const failure = $derived(call.row.kind !== 'forge' || !failed ? null : reasonOf(call.body));
+
+  /**
+   * The row's tail: the failed call's reason, or the card's own when the call
+   * answered cleanly with something a reader must see at the row - a despawn
+   * refused at a dirty worktree. `null` draws no tail.
+   */
+  const rowTail = $derived(
+    failure !== null ? { text: failure, tone: 'bad' as const } : (forge?.tail ?? null),
+  );
+
+  /** The proportion the card asks the row to meter, if it asks for one. */
+  const meter = $derived(forge?.meter ?? null);
+
+  /**
+   * A failed call's own reason, as the row's tail draws it.
+   *
+   * Two shapes reach a forge row: the CLI's error envelope, which the fold
+   * unwraps into an `error` piece, and a plain-text result - which is what an
+   * MCP tool's own `is_error` answer arrives as, with no envelope at all.
+   * Either way the first line is the tail and the body keeps the whole of it.
+   */
+  function reasonOf(body: CallBody[]): string | null {
+    const error = body.find((piece) => piece.kind === 'error');
+    if (error !== undefined) return error.message;
+    const text = body.find((piece) => piece.kind === 'text');
+    return text === undefined ? null : firstLine(text.text);
+  }
+
+  /** The row's mark: the card's own where it named one, else its family's. */
+  const glyph = $derived(forge?.glyph ?? iconOf(call.row));
+
   /**
    * Whether the row's text brightens, which is the narrower condition the
    * group's own rule uses: a call that has a frame in hand. A dispatch takes
@@ -276,7 +324,7 @@
   data-sg={card?.dispatch_id}
 >
   <summary>
-    <Icon name={card === undefined ? iconOf(call.row) : 'subagents'} class={`gl${shownTone}`} />
+    <Icon name={card === undefined ? glyph : 'subagents'} class={`gl${shownTone}`} />
     {#if card !== undefined && card.failed}
       <!-- A shape, not the glyph's tint alone: a failed instance and a clean
            one must not differ by colour only on a closed row - and the cross
@@ -295,6 +343,32 @@
     {/if}
     {#if figures !== null}
       <span class="sg-fig">{figures}</span>
+    {/if}
+    {#if meter !== null}
+      <!-- The one proportion a card can carry, drawn where the number it is
+           the proportion OF is: capacity's live-against-cap. The bar is the
+           chips' own numbers drawn, never their substitute. -->
+      <span class="fam-meter" role="img" aria-label={`${meter.fill} of ${meter.of}`}>
+        <span
+          class="fam-f"
+          style={`width: ${Math.round((meter.fill / Math.max(meter.of, 1)) * 100)}%`}
+        ></span>
+      </span>
+    {/if}
+    {#if forge !== null}
+      {#each forge.chips as chip, at (at)}
+        <span class="fam-chip {chip.tone}">{chip.text}</span>
+      {/each}
+      {#if forge.figure !== null}
+        <span class="fam-fig">{forge.figure}</span>
+      {/if}
+    {/if}
+    {#if rowTail !== null}
+      <!-- A call that failed says why on the row itself, after the title: the
+           reason is the one thing a reader acts on, and the body keeps every
+           word of it. A card whose clean answer refused something - a despawn
+           at a dirty worktree - says that there too. -->
+      <span class="fam-tail {rowTail.tone}" title={rowTail.text}>{rowTail.text}</span>
     {/if}
     <Chevron />
   </summary>
@@ -396,6 +470,14 @@
          they read, and an unreadable result never reaches this branch. -->
     <div class="body">
       <Decision decision={call.decision} />
+    </div>
+  {:else if call.forge !== null}
+    <!-- The result's own JSON is the same facts undressed; the card is how
+         they read, and an unreadable result never reaches this branch. A
+         failed forge call carries no card, so its reason draws below the way
+         every failure draws. -->
+    <div class="body">
+      <Forge card={call.forge} {glyph} />
     </div>
   {:else if call.body.length > 0}
     <div class="body">

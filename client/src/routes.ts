@@ -13,6 +13,8 @@ export type Route =
   | { name: 'home' }
   | { name: 'session'; slot: SessionSlot }
   | { name: 'connect' }
+  /** The dictation models: the pins, the catalogue and the updates it proposes. */
+  | { name: 'models' }
   /** A development route: the home drawn from the fixture, with no server. */
   | { name: 'fixture' }
   | { name: 'notFound' };
@@ -22,6 +24,7 @@ export function parseRoute(path: string): Route {
   const segments = path.split('/').filter((segment) => segment !== '');
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
+  if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };
   if (segments.length === 1 && segments[0] === 'fixture') return { name: 'fixture' };
   if (segments.length === 4 && segments[0] === 'session') {
     const [, org, project, label] = segments as [string, string, string, string];
@@ -40,6 +43,8 @@ export function hrefFor(route: Route): string {
       return '/';
     case 'connect':
       return '/connect';
+    case 'models':
+      return '/models';
     case 'fixture':
       return '/fixture';
     case 'session':
@@ -66,6 +71,7 @@ export function hrefForSlot(slot: SessionSlot): string {
  * crosses as it stands; everywhere else keeps the plain `forge`.
  */
 export function titleFor(route: Route): string {
+  if (route.name === 'models') return 'forge \u{b7} models';
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;
   return label === 'lead' ? project : `${project} \u{b7} ${label}`;

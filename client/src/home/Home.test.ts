@@ -115,6 +115,21 @@ describe('the home page as it draws', () => {
   });
 
   /**
+   * The way into the models page, which the view test cannot see: it asserts
+   * the field, not that a component draws what the field says. The card is
+   * the whole target, and the chevron is drawn at rest - an affordance only
+   * the pointer uncovers is what the standard forbids.
+   */
+  it('opens the models page from the dictation card', () => {
+    const body = draw();
+
+    expect(body).toContain('href="/models"');
+    expect(body, 'the door draws no marker a reader can see').toContain('i-chev');
+    // One door, not four: the band's other cards are facts about this forge.
+    expect(body.match(/href="\/models"/g)).toHaveLength(1);
+  });
+
+  /**
    * The row's mark reaches the page, which the view test cannot see: it
    * asserts the mapping, not that a component draws what the mapping says.
    */

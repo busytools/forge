@@ -16,6 +16,7 @@ place.
 |---|---|---|
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
+| Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | The queue pile | (session page pending) | `web-queue.html` |
 
 The session page, the chat and the composer are built; their drawings are

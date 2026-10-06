@@ -14,6 +14,8 @@
  * does.
  */
 
+import { SvelteSet } from 'svelte/reactivity';
+
 import type { Command, ServerMessage } from '../protocol';
 import { subjectKey } from '../protocol';
 import { goTo, type Route } from '../routes';
@@ -35,16 +37,37 @@ function keyOf(slot: SessionSlot): string {
  * itself, in the same breath as the click; a client's roster is a read
  * that lands later, so for a moment a closed lead still reads as live and
  * the cascade's removals would land the reader back on it.
+ *
+ * **Reactive, because the rail draws the mark**: a row whose seat is closing
+ * says so until the roster lands, so the set is read during render and has
+ * to wake the row it changed.
  */
-const closedHere = new Set<string>();
+const closedHere = new SvelteSet<string>();
+
+/**
+ * Whether this client has closed `slot` and the roster has not caught up:
+ * the row says where the seat is going rather than reading as still live.
+ */
+export function closingSeat(slot: SessionSlot): boolean {
+  return closedHere.has(keyOf(slot));
+}
 
 /**
  * Forget the closed seats the roster has caught up with, so the set stays
  * small and a project started again later is not suppressed by an old mark.
+ *
+ * **Caught up means arrived, not only gone**: a closed worker's label stays
+ * in the roster - it lands there asleep rather than vanishing - so the mark
+ * has to drop when the seat reads asleep too, and a row that says "going to
+ * sleep" goes as the row itself goes quiet. (A closed LEAD is the other
+ * shape: `home.agents` stops naming it, so its mark goes by the first arm.)
  */
 export function forgetClosed(home: HomeWire): void {
   for (const key of closedHere) {
-    if (!home.agents.some((agent) => keyOf(agent.slot) === key)) closedHere.delete(key);
+    const agent = home.agents.find((candidate) => keyOf(candidate.slot) === key);
+    if (agent === undefined || agent.lifecycle === 'Sleeping' || agent.lifecycle === 'LoggedOut') {
+      closedHere.delete(key);
+    }
   }
 }
 

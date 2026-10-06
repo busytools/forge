@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
 import { SubagentCards, reachableIds, reveal, transcribable } from './subagents.svelte';
@@ -137,10 +137,13 @@ describe('the dispatches the loaded turns hold', () => {
 
 describe('revealing the row a dispatch drew', () => {
   it('opens the row, brings it into view and flashes it', () => {
+    let seen: ScrollIntoViewOptions | undefined;
     const held = {
       open: false,
       offsetWidth: 0,
-      scrollIntoView: () => {},
+      scrollIntoView: (options?: ScrollIntoViewOptions) => {
+        seen = options;
+      },
       classList: { remove: () => {}, add: () => {} },
     };
     const root = {
@@ -149,6 +152,69 @@ describe('revealing the row a dispatch drew', () => {
 
     expect(reveal('toolu_task', root), 'the row is on the page').toBe(true);
     expect(held.open, 'and the reveal opened it').toBe(true);
+    // The one-motion landing: instant, and nearest, so a row the turn-scroll
+    // already put on screen is not moved a second time.
+    expect(seen, 'the jump is instant and nearest, never smooth or centred').toEqual({
+      behavior: 'auto',
+      block: 'nearest',
+    });
+  });
+
+  it('falls back to the plain call row when no card names the id', () => {
+    // A backgrounded bash has no subagent card; its row carries the fold's
+    // own name, `call-c-<tool_use_id>`, which is what the fallback finds.
+    const held = {
+      open: false,
+      offsetWidth: 0,
+      scrollIntoView: () => {},
+      classList: { remove: () => {}, add: () => {} },
+    };
+    const root = {
+      querySelector: (selector: string) => (selector.includes('call-c-tu_bash') ? held : null),
+    } as unknown as ParentNode;
+
+    expect(reveal('tu_bash', root), 'a bash call reveals by its own row').toBe(true);
+    expect(held.open, 'and the reveal opened it').toBe(true);
+  });
+
+  it('restarts the six-second flash when a second reveal lands inside it', () => {
+    // The removal timer is kept per row: without that, the FIRST flash's
+    // timer cuts the second one short and a quick re-click reads as no flash
+    // at all.
+    vi.useFakeTimers();
+    try {
+      const state = { hit: false };
+      const row = {
+        open: false,
+        offsetWidth: 0,
+        scrollIntoView: () => {},
+        classList: {
+          remove: (name: string) => {
+            if (name === 'sg-hit') state.hit = false;
+          },
+          add: (name: string) => {
+            if (name === 'sg-hit') state.hit = true;
+          },
+        },
+      };
+      const root = { querySelector: () => row } as unknown as ParentNode;
+
+      reveal('tu_a', root);
+      vi.advanceTimersByTime(700);
+      expect(state.hit, 'the flash lit').toBe(true);
+
+      vi.advanceTimersByTime(1300);
+      reveal('tu_a', root);
+      vi.advanceTimersByTime(700);
+
+      vi.advanceTimersByTime(5400);
+      expect(state.hit, 'the first timer must not cut the second flash short').toBe(true);
+
+      vi.advanceTimersByTime(700);
+      expect(state.hit, 'and the restarted window still ends').toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers false for a row the page does not hold', () => {

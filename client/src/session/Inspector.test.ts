@@ -147,95 +147,12 @@ describe('the inspector as it draws', () => {
     expect(body).toContain('gh run watch 18234567');
   });
 
-  /**
-   * The processes section is the one that came from a character grid: the
-   * terminal indented each row with two spaces per level, and a list inside a
-   * list is the shape it was drawing.
-   */
-  it('nests a process under its parent rather than indenting it with spaces', () => {
-    draw({
-      record: {
-        ...record,
-        processes: {
-          scanned_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-          processes: [
-            { pid: 10, parent_pid: 1, name: 'claude', command: 'claude', memory_bytes: 0 },
-            {
-              pid: 20,
-              parent_pid: 10,
-              name: 'cargo',
-              command: '/opt/homebrew/bin/cargo nextest run',
-              memory_bytes: 412 * 1024 * 1024,
-            },
-          ],
-        },
-      },
-    });
-    openSection('processes');
-    const body = drawn();
-    expect(sections(body)).toContain('processes');
-    expect(body).toContain('cargo nextest run');
-    expect(body).toContain('412 MB');
-    // The child sits in the parent's own item, which is what makes it a level
-    // of hierarchy rather than a row drawn after it.
-    expect(body, 'the child was drawn beside its parent rather than under it').toMatch(
-      /<li>[\s\S]*claude[\s\S]*<ul class="tree">[\s\S]*cargo nextest run/,
-    );
-  });
-
   it('draws an empty MCP read as the failure it is, with the reason', () => {
     draw({ record: withMcp({ servers: [], error: 'the CLI refused' }) });
     openSection('mcp servers');
     const body = drawn();
     expect(body).toContain('failed');
     expect(body).toContain('the CLI refused');
-  });
-
-  it('hangs each slack subscription off the workspace it watches', () => {
-    const project = homeWire.projects[0];
-    if (project === undefined) throw new Error('the fixture holds no project');
-    draw({
-      wire: {
-        ...homeWire,
-        projects: [
-          {
-            ...project,
-            connectors: {
-              gotify: [],
-              slack: [
-                {
-                  workspace: 'Trust Machines',
-                  target: { Conversation: { id: 'C1', name: '#granite-alerts', mode: 'All' } },
-                },
-              ],
-            },
-          },
-          // A second project whose subscription must NOT draw: the sets are
-          // per project, and a section reading the fleet's own draws another
-          // project's channels on this seat.
-          {
-            ...project,
-            project: { ...project.project, name: 'other', key: 'TestOrg-other' },
-            connectors: {
-              gotify: [],
-              slack: [{ workspace: 'Acme', target: 'Mentions' }],
-            },
-          },
-        ],
-        connectors: {
-          gotify: { connected: false },
-          slack: {
-            connected_workspaces: [['Trust Machines', true]],
-            load_failed: false,
-          },
-        },
-      },
-    });
-    openSection('slack');
-    const body = drawn();
-    expect(sections(body)).toContain('slack');
-    expect(body).toMatch(/<li>[\s\S]*Trust Machines[\s\S]*<ul class="subs">[\s\S]*#granite-alerts/);
-    expect(body, "another project's channel drew on this seat").not.toContain('Acme');
   });
 
   it('draws the tasks a project holds, in the order a person reads them', () => {

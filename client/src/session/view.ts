@@ -9,7 +9,7 @@
  * only when the record has something behind it - a section that is always
  * there says nothing when it is empty.
  *
- * Four of the nine sections do not read the seat's own record. A project's
+ * Four of the seven sections do not read the seat's own record. A project's
  * tasks, its schedules and the connector views are keyed by PROJECT on the
  * home's snapshot, and the home is the subscription the shell already holds
  * for the rest of the app.
@@ -31,14 +31,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import type {
-  McpServer,
-  MonitorRecord,
-  ProcessEntry,
-  ProcessSnapshot,
-  SessionHeader,
-  SessionRecord,
-} from './wire';
+import type { McpServer, MonitorRecord, SessionHeader, SessionRecord } from './wire';
 
 /** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
@@ -145,27 +138,6 @@ export interface ScheduleRow {
   v: string;
 }
 
-/** A slack workspace, with the subscriptions that watch it under it. */
-export interface SlackWorkspace {
-  name: string;
-  connected: boolean;
-  /** `id` is the wire's own, and it is what a row is keyed by: two
-   * subscriptions in one workspace can draw the same words. */
-  subs: { id: string; k: string; v: string }[];
-}
-
-/** The gotify section, as its rows draw it. */
-export interface GotifyView {
-  summary: string;
-  rows: Kv[];
-}
-
-/** The slack section, as its rows draw it. */
-export interface SlackView {
-  summary: string;
-  workspaces: SlackWorkspace[];
-}
-
 /** The MCP section, as its rows draw it. */
 export interface McpView {
   summary: string;
@@ -189,6 +161,12 @@ export interface ConversationProps {
   /** The directory the seat's calls are named against. */
   /** Whether a seat is behind this page at all. */
   waking: boolean;
+  /**
+   * Whether the core is bringing the seat up. Its own state beside `waking`:
+   * both draw the waking line, and the column reads the conversation only
+   * once neither is true (#1712's follow-up).
+   */
+  spawning: boolean;
   /** Why it is not running, when the roster says. */
   reason: string | null;
   slot: SessionSlot;
@@ -325,20 +303,6 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
   };
 }
 
-/**
- * One process as its row draws it, with the processes below it.
- *
- * The shape is the tree rather than a flat list with a depth on each row: the
- * depth IS the nesting, so a row does not have to carry a number that says
- * what its position already says.
- */
-export interface ProcessNode {
-  headline: string;
-  memory: string;
-  pid: number;
-  children: ProcessNode[];
-}
-
 /** One monitor as its card draws it. */
 export interface MonitorView {
   running: boolean;
@@ -452,14 +416,32 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
 }
 
 /**
+ * The line a failed row draws under itself: the core's recorded reason, or the
+ * fallback for a failure it left no text for.
+ *
+ * The fallback word follows the terminal's split: a failed row it holds no
+ * text for reads "spawn failed" there (its sub-row exists only on a failed
+ * worker), while a seat waiting on sign-in draws no sub-row at all and keeps
+ * the client's own words.
+ */
+export function failedLine(row: Row): string | null {
+  if (row.state.kind !== 'lifecycle') return null;
+  const lifecycle = row.state.lifecycle;
+  if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
+  return row.reason ?? (lifecycle === 'Failed' ? 'spawn failed' : 'not running');
+}
+
+/**
  * The reason line: what a person has to do about this project, in the row's
  * own words rather than a second vocabulary for the same two asks.
  *
  * A project whose worker is held reads as held, whether or not its lead is the
- * one held, so the workers are searched beside the lead.
+ * one held, so the workers are searched beside the lead. A failure is not
+ * shared that way: it stays on the seat that failed, drawn on that seat's own
+ * row ({@link failedLine}), so the project's line is the lead's alone.
  */
-function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
-  for (const row of rows) {
+function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null {
+  for (const row of [lead, ...workers]) {
     if (row.pending !== null) {
       return {
         line:
@@ -468,12 +450,8 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
       };
     }
   }
-  for (const row of rows) {
-    if (row.state.kind !== 'lifecycle') continue;
-    if (row.state.lifecycle !== 'Failed' && row.state.lifecycle !== 'AuthRequired') continue;
-    return { line: row.reason ?? 'not running', bad: true };
-  }
-  return null;
+  const failed = failedLine(lead);
+  return failed === null ? null : { line: failed, bad: true };
 }
 
 /**
@@ -484,8 +462,20 @@ function whyOf(rows: Row[]): { line: string; bad: boolean } | null {
  * why the rows come from `projectRows` rather than from the home's own
  * org-grouped view. The states themselves are the home's: a rail that derived
  * one for itself would disagree with the page a click away.
+ *
+ * **`closing` is the one state the caller brings in**, because it is the
+ * client's own and not the home's: a seat this client has closed reads as
+ * asleep the moment it is closed, so the reader's click moves it out of their
+ * working section at once rather than leaving it sitting there for the
+ * seconds the core takes to shut it down (#1712). The default answers false,
+ * which is every caller but the rail.
  */
-export function railGroups(home: HomeWire, current: SessionSlot, now: number): RailGroup[] {
+export function railGroups(
+  home: HomeWire,
+  current: SessionSlot,
+  now: number,
+  closing: (slot: SessionSlot) => boolean = () => false,
+): RailGroup[] {
   const groups: RailGroup[] = [
     { heading: 'needs you', klass: 'state needs', hidden: null, holds: false, projects: [] },
     { heading: 'working', klass: 'state', hidden: null, holds: false, projects: [] },
@@ -499,10 +489,12 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
   for (const entry of home.projects) {
     const { lead, workers } = projectRows(home, entry);
     const all = [lead, ...workers];
-    const rank = all.reduce((best, row) => Math.min(best, rankOf(row.state, row.pending)), 2);
+    const rankOfRow = (row: Row): number =>
+      closing(row.slot) ? 2 : rankOf(row.state, row.pending);
+    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
     const group = groups[rank];
     if (group === undefined) continue;
-    const sleeping = workers.filter((row) => rankOf(row.state, row.pending) === 2);
+    const sleeping = workers.filter((row) => rankOfRow(row) === 2);
     const shown =
       entry.project.org === current.org && entry.project.name === current.project
         ? current.label
@@ -515,9 +507,16 @@ export function railGroups(home: HomeWire, current: SessionSlot, now: number): R
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
-      workers: workers.filter((row) => rankOf(row.state, row.pending) !== 2),
+      workers: workers.filter((row) => rankOfRow(row) !== 2),
       sleeping,
-      why: whyOf(all),
+      // A closing seat writes on no line: the lead's whole line goes with it,
+      // and a closing worker is out of both searches.
+      why: closing(lead.slot)
+        ? null
+        : whyOf(
+            lead,
+            workers.filter((row) => !closing(row.slot)),
+          ),
     });
     // The rows the heading hides when it folds: the project's own row and
     // every worker under it, drawn or folded.
@@ -815,67 +814,6 @@ export function untilOf(at: { secs_since_epoch: number } | null, now: number): s
   return `in ${Math.floor(remaining / 86_400)}d`;
 }
 
-/** The gotify section, or `null` when nothing is subscribed and it is not up. */
-export function gotifySection(home: HomeWire, project: ProjectWire | null): GotifyView | null {
-  const view = connectorsOf(home).gotify;
-  if (view === null) return null;
-  const subscriptions = rowConnectors(project).gotify;
-  if (!view.connected && subscriptions.length === 0) return null;
-
-  const apps: string[] = [];
-  for (const sub of subscriptions) {
-    for (const app of sub.applications) if (!apps.includes(app)) apps.push(app);
-  }
-  // One subscription with no floor makes the whole set unbounded, which is
-  // what `any` says: a delivery is let through when ANY subscription matches,
-  // so the set's floor is the lowest of them and an absent one removes it.
-  const floors = subscriptions.map((sub) => sub.min_priority);
-  const floor = floors.includes(null)
-    ? null
-    : floors.reduce<number | null>(
-        (lowest, value) =>
-          value === null ? lowest : lowest === null ? value : Math.min(lowest, value),
-        null,
-      );
-  return {
-    summary: view.connected ? 'connected' : 'not connected',
-    rows: [
-      { k: 'apps', v: apps.join(', ') },
-      { k: 'priority', v: floor === null ? 'any' : `>=${floor}` },
-    ],
-  };
-}
-
-/**
- * The slack section, or `null` when the home carries no workspace.
- *
- * A workspace and its subscriptions come back as a parent and its children
- * rather than as a flat list, because the hierarchy is what the section has to
- * draw: a subscription watches a workspace, and a target prefixed with two
- * spaces said so in a way nothing could style or wrap.
- */
-export function slackSection(home: HomeWire, project: ProjectWire | null): SlackView | null {
-  const view = connectorsOf(home).slack;
-  if (view === null) return null;
-  const subscriptions = rowConnectors(project).slack;
-  const names: string[] = view.connected_workspaces.map(([name]) => name);
-  for (const sub of subscriptions) {
-    if (!names.includes(sub.workspace)) names.push(sub.workspace);
-  }
-  if (names.length === 0) return null;
-
-  return {
-    summary: `${names.length} workspace${names.length === 1 ? '' : 's'}`,
-    workspaces: names.map((name) => ({
-      name,
-      connected: view.connected_workspaces.find(([held]) => held === name)?.[1] === true,
-      subs: subscriptions
-        .filter((sub) => sub.workspace === name)
-        .map((sub) => ({ id: sub.id, k: targetOf(sub.target), v: modeOf(sub.target) })),
-    })),
-  };
-}
-
 /**
  * What a subscription watches: a conversation by its name, or the class it
  * covers.
@@ -907,46 +845,109 @@ function conversationOf(target: unknown): Record<string, unknown> {
   return isRecord(held) ? held : {};
 }
 
-/**
- * The connectors' LIVENESS, which the home's snapshot carries beside the
- * fleet. What a project is subscribed to is not here: it rides the project's
- * own row, since the sets are per project and a home-level list would be one
- * no read can fill. See {@link rowConnectors}.
- */
-interface ConnectorViews {
-  gotify: { connected: boolean } | null;
-  slack: { connected_workspaces: [string, boolean][] } | null;
-}
-
-/** One project's connector subscriptions, as its two sections draw them. */
+/** One project's connector subscriptions, as the strip's rows draw them. */
 interface RowConnectorViews {
-  gotify: { applications: string[]; min_priority: number | null }[];
-  slack: { id: string; workspace: string; target: unknown }[];
+  gotify: {
+    id: string;
+    applications: string[];
+    min_priority: number | null;
+    team_role: string | null;
+  }[];
+  slack: { id: string; workspace: string; target: unknown; team_role: string | null }[];
 }
 
 /**
- * The connectors' liveness, narrowed where it enters.
+ * One seat's own connector subscriptions, as a row draws them.
  *
- * The home's own type leaves this member `unknown`, because no page in that
- * slice drew one; the two section bodies above are the readers, so the
- * narrowing belongs here rather than in the wire's own module.
+ * **Ownership is `team_role`**: a subscription names the worker label it
+ * belongs to, and `None` targets the project lead - so the lead's page reads
+ * the None set and a worker's page reads its own label's, and neither shows
+ * the other's. The sets ride the project's home row (all of the project's,
+ * both owners in one list), which is why the seat filter happens here.
  */
-function connectorsOf(home: HomeWire): ConnectorViews {
+export interface SeatConnectorRow {
+  /** Which connector the row belongs to: its glyph names it at a glance. */
+  kind: 'gotify' | 'slack';
+  /** The subscription's own id, which is what a row is KEYED by: two
+   *  subscriptions in one workspace can draw the same words (a mentions
+   *  watcher beside the auto-subscribed conversation), and keying by the
+   *  drawn text throws on exactly that pair. */
+  id: string;
+  /** The line the row leads with: the apps, or what the slack target watches. */
+  key: string;
+  /** What the row says beside it: the floor, or the slack mode - and the
+   *  connector's own state where the stream is not up, because a
+   *  disconnected stream must not read as if all were well. */
+  value: string;
+}
+
+export function seatConnectorRows(home: HomeWire, slot: SessionSlot): SeatConnectorRow[] {
+  const held = rowConnectors(projectOf(home, slot));
+  const live = connectorsLiveness(home);
+  const mine = <T extends { team_role: string | null }>(subs: T[]): T[] =>
+    subs.filter((sub) =>
+      slot.label === 'lead' ? sub.team_role === null : sub.team_role === slot.label,
+    );
+
+  const rows: SeatConnectorRow[] = [];
+  for (const sub of mine(held.gotify)) {
+    const parts = [sub.min_priority === null ? 'any priority' : `>=${sub.min_priority}`];
+    if (!live.gotify) parts.push('offline');
+    rows.push({
+      kind: 'gotify',
+      id: sub.id,
+      key: sub.applications.length === 0 ? 'any app' : sub.applications.join(', '),
+      value: parts.join(' \u{b7} '),
+    });
+  }
+  for (const sub of mine(held.slack)) {
+    const parts = [targetOf(sub.target), modeOf(sub.target)];
+    if (!live.slack.has(sub.workspace)) parts.push('not connected');
+    rows.push({
+      kind: 'slack',
+      id: sub.id,
+      key: sub.workspace,
+      value: parts.join(' \u{b7} '),
+    });
+  }
+  // A boot that could not read the durable slack subscriptions leaves the
+  // project's set empty, so the failure draws as a row of its own - this is
+  // the only surface left that can say so (rule 22's failed state).
+  if (live.slackFailed) {
+    rows.push({
+      kind: 'slack',
+      id: 'slack-load',
+      key: 'slack',
+      value: 'subscriptions failed to load',
+    });
+  }
+  return rows;
+}
+
+/**
+ * The connectors' liveness, as the rows state it: whether the gotify stream
+ * is up, and the slack workspaces that are connected. A subscription row says
+ * so where its stream is not up - the one fact that must not go unrendered
+ * (rule 22), since a silent row reads as a working one.
+ */
+function connectorsLiveness(home: HomeWire): {
+  gotify: boolean;
+  slack: Set<string>;
+  slackFailed: boolean;
+} {
   const held = isRecord(home.connectors) ? home.connectors : {};
-  const gotify = isRecord(held['gotify']) ? held['gotify'] : null;
-  const slack = isRecord(held['slack']) ? held['slack'] : null;
+  const gotify = isRecord(held['gotify']) ? held['gotify'] : {};
+  const slack = isRecord(held['slack']) ? held['slack'] : {};
+  const connected = new Set<string>();
+  for (const entry of array(slack['connected_workspaces'])) {
+    if (Array.isArray(entry) && entry[1] === true && typeof entry[0] === 'string') {
+      connected.add(entry[0]);
+    }
+  }
   return {
-    gotify: gotify === null ? null : { connected: gotify['connected'] === true },
-    slack:
-      slack === null
-        ? null
-        : {
-            connected_workspaces: array(slack['connected_workspaces']).flatMap((entry) =>
-              Array.isArray(entry) && typeof entry[0] === 'string'
-                ? [[entry[0], entry[1] === true] as [string, boolean]]
-                : [],
-            ),
-          },
+    gotify: gotify['connected'] === true,
+    slack: connected,
+    slackFailed: slack['load_failed'] === true,
   };
 }
 
@@ -955,17 +956,20 @@ function connectorsOf(home: HomeWire): ConnectorViews {
  *
  * A seat with no row on the home - a project that left `forge.toml` between
  * the record and this snapshot - reads as nothing subscribed rather than as
- * the page's problem: the sections the row would feed draw empty, the way
- * they do for a project nobody has subscribed anything to.
+ * the page's problem: the strip's row draws nothing, the way it does for a
+ * project nobody has subscribed anything to.
  */
 function rowConnectors(project: ProjectWire | null): RowConnectorViews {
   const held = isRecord(project?.connectors) ? project.connectors : {};
   return {
     gotify: array(held['gotify']).map((entry) => {
       const sub = isRecord(entry) ? entry : {};
+      const id = sub['id'];
       return {
+        id: typeof id === 'string' ? id : '',
         applications: array(sub['applications']).map((app) => String(app)),
         min_priority: typeof sub['min_priority'] === 'number' ? sub['min_priority'] : null,
+        team_role: typeof sub['team_role'] === 'string' ? sub['team_role'] : null,
       };
     }),
     slack: array(held['slack']).map((entry) => {
@@ -976,6 +980,7 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
         id: typeof id === 'string' ? id : '',
         workspace: typeof workspace === 'string' ? workspace : '',
         target: sub['target'],
+        team_role: typeof sub['team_role'] === 'string' ? sub['team_role'] : null,
       };
     }),
   };
@@ -1035,101 +1040,6 @@ export function toolSummary(count: number): string {
   return count === 1 ? '1 tool' : `${count} tools`;
 }
 
-/**
- * The processes section as a tree: parents before their children, and the
- * walk's own order within each sibling group.
- *
- * **The nesting is the tree rather than an indent counted onto a flat row.**
- * The terminal wrote two `&nbsp;` per level inside the row's key cell, which
- * is a character run standing in for hierarchy: no rule could reach it, it did
- * not wrap, and a space is not a layout step. A list inside a list is the
- * shape the section was drawing, and it is the shape the home's own nested
- * rows already use.
- *
- * The walk returns entries by memory rather than by parentage, so drawing them
- * in that order would nest a row under whatever happened to come before it. A
- * row whose parent the walk did not carry is a root of its own, which is what
- * makes a partial snapshot still list everything in it.
- */
-export function processTree(walk: ProcessSnapshot): ProcessNode[] {
-  const childrenOf = new Map<number, ProcessEntry[]>();
-  const present = new Set<number>();
-  for (const entry of walk.processes) {
-    const siblings = childrenOf.get(entry.parent_pid);
-    if (siblings === undefined) childrenOf.set(entry.parent_pid, [entry]);
-    else siblings.push(entry);
-    present.add(entry.pid);
-  }
-
-  const placed = new Set<number>();
-  const take = (entry: ProcessEntry): ProcessNode => {
-    const children: ProcessNode[] = [];
-    for (const child of childrenOf.get(entry.pid) ?? []) {
-      if (placed.has(child.pid)) continue;
-      placed.add(child.pid);
-      children.push(take(child));
-    }
-    return {
-      headline: processHeadline(entry),
-      memory: memoryLabel(entry.memory_bytes),
-      pid: entry.pid,
-      children,
-    };
-  };
-
-  const roots: ProcessNode[] = [];
-  for (const entry of walk.processes) {
-    if (present.has(entry.parent_pid) || placed.has(entry.pid)) continue;
-    placed.add(entry.pid);
-    roots.push(take(entry));
-  }
-  // A pid cycle reaches no root, and neither does a subtree hanging off one.
-  // Every row is still drawn, once.
-  for (const entry of walk.processes) {
-    if (placed.has(entry.pid)) continue;
-    placed.add(entry.pid);
-    roots.push(take(entry));
-  }
-  return roots;
-}
-
-/**
- * What a row calls its process: the command it is running, with the
- * executable's path stripped, and the command a shell wrapper wraps rather
- * than its own chrome.
- */
-export function processHeadline(entry: ProcessEntry): string {
-  const command = entry.command.trim();
-  const inner = extractInnerCommand(entry.command);
-  if (inner !== null) return basenameExe(inner);
-  if (command === '') return entry.name === '' ? '(process)' : entry.name;
-  return basenameExe(command);
-}
-
-/**
- * The command a shell wrapper wraps, or `null` when this is not one.
- *
- * It terminates at the OUTERMOST `' < /dev/null`, so a command that itself
- * contains that redirect does not cut off early, and reverses the POSIX escape
- * the wrapper applies to a single quote.
- */
-export function extractInnerCommand(cmdline: string): string | null {
-  const afterEval = cmdline.split("eval '")[1];
-  if (afterEval === undefined) return null;
-  const at = afterEval.lastIndexOf("' < /dev/null");
-  if (at < 0) return null;
-  return afterEval.slice(0, at).trim().replaceAll(`'"'"'`, "'");
-}
-
-/** The executable's directory stripped from a headline, args kept verbatim. */
-export function basenameExe(cmdline: string): string {
-  const trimmed = cmdline.trim();
-  const at = trimmed.search(/\s/);
-  const cut = (value: string): string => value.split('/').pop() ?? value;
-  if (at < 0) return cut(trimmed);
-  return `${cut(trimmed.slice(0, at))} ${trimmed.slice(at + 1)}`;
-}
-
 /** Resident memory, in the unit the reader thinks in. */
 export function memoryLabel(bytes: number): string {
   const KB = 1024;
@@ -1139,22 +1049,6 @@ export function memoryLabel(bytes: number): string {
   if (bytes < MB) return `${Math.floor(bytes / KB)} KB`;
   if (bytes < GB) return `${Math.floor(bytes / MB)} MB`;
   return `${Math.floor(bytes / GB)}.${Math.floor((bytes % GB) / (GB / 10))} GB`;
-}
-
-/**
- * When the walk behind these rows was taken.
- *
- * The walk is only ever performed for the session a view is looking at, so a
- * slot nobody is looking at serves the last tree left on it, and rows from an
- * hour ago drawn exactly like rows from a second ago would be a wrong answer
- * rather than an old one.
- */
-export function walkedNote(
-  scannedAt: { secs_since_epoch: number; nanos_since_epoch: number },
-  now: number,
-): string {
-  const age = elapsedLabel(scannedAt, now);
-  return age === 'now' ? 'walked just now' : `walked ${age} ago`;
 }
 
 /** The monitors section, as its cards draw it. */

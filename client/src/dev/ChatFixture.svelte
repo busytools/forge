@@ -1,8 +1,10 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
+  import { connectors } from '../chat/connectors.svelte';
+  import { processes } from '../chat/processes.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import type { ServerMessage } from '../protocol';
-  import { subagentCardFrom } from '../session/wire';
+  import { backgroundTaskFrom, processesFrom, subagentCardFrom } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
 
@@ -36,6 +38,12 @@
     /** The seat's instances, as the record carries them: raw wire JSON,
      * narrowed where it enters like the record's own read. */
     cards?: unknown[];
+    /** The seat's walk and the CLI's registry, as the record carries them,
+     * narrowed the same way. */
+    processes?: unknown;
+    background_tasks?: unknown[];
+    /** The seat's own connector subscriptions, already in row shape. */
+    connectors?: { kind: 'gotify' | 'slack'; id: string; key: string; value: string }[];
   }
 
   /**
@@ -238,6 +246,21 @@
       // this fixture mounts Chat without a Session, so nothing else would and
       // the strip's agents row could never be looked at here.
       subagents.sync(page.cards === undefined ? null : page.cards.map(subagentCardFrom));
+      // The record's pair for the processes row, seeded the same way and for
+      // the same reason: the strip's second row is drawn from this store, and
+      // nothing else here would ever fill it.
+      processes.sync(
+        processesFrom(page.processes),
+        page.background_tasks === undefined
+          ? null
+          : page.background_tasks.flatMap(backgroundTaskFrom),
+        false,
+        { calls: new Map(), owners: new Map() },
+      );
+      // The record's connector subscriptions, seeded the same way: the
+      // strip's third row reads this store, and nothing else here would fill
+      // it.
+      connectors.sync(page.connectors ?? null);
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

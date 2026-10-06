@@ -67,6 +67,7 @@ const CALL = inPage(
         ],
         mutation: null,
         decision: null,
+        forge: null,
         skill: null,
         image: null,
         imageNote: null,

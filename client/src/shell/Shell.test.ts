@@ -9,8 +9,11 @@ import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberAddress } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
+import { closeSeat, closingSeat } from '../session/close';
+import type { Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
+import type { AgentRow, HomeWire } from '../wire/home';
 import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
 import type { SessionSlot } from '../wire/types';
 import Shell from './Shell.svelte';
@@ -148,6 +151,12 @@ async function stubForge(
             settings: { ...DEFAULT_SETTINGS, ...settings },
           }),
         );
+      }
+    },
+    /** The next home read, which the server pushes when the fleet moves. */
+    home(wire: HomeWire) {
+      for (const socket of server.clients) {
+        socket.send(JSON.stringify({ kind: 'snapshot', subject: 'home', data: wire }));
       }
     },
     /** Remove a seat, as a lead's cascade or another view's despawn does. */
@@ -413,6 +422,39 @@ describe('a forge that is not the protocol this client speaks', () => {
 });
 
 describe('a seat removed under the reader', () => {
+  /**
+   * The mark's clearing rides the roster's own read, not the removal frame:
+   * a close that lands by SLEEPING pushes no removal, and the mark held the
+   * row's "going to sleep" up until a reload (#1712). Every home read drops
+   * the seats it has landed, asleep or gone.
+   */
+  it("drops a closed seat's mark when a home read lands it", async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await crossed();
+
+    const template = homeWire.agents[0];
+    if (template === undefined) throw new Error('the fixture holds no agent');
+    const row = (label: string, lifecycle: AgentRow['lifecycle']): AgentRow => ({
+      ...template,
+      slot: { ...template.slot, label },
+      label,
+      lifecycle,
+    });
+    const wire: HomeWire = { ...homeWire, agents: [row('lead', 'Running'), row('w1', 'Running')] };
+    const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+    // The close, as the rail makes it; the handle never crosses the stub.
+    closeSeat({ dispatch: () => null } as unknown as Connection, wire, W1, LEAD, 0);
+    expect(closingSeat(W1), 'the close left no mark to clear').toBe(true);
+
+    forge.home({ ...wire, agents: [row('lead', 'Running'), row('w1', 'Sleeping')] });
+    await crossed();
+    expect(closingSeat(W1), 'a home read left the landed mark standing').toBe(false);
+  });
+
   /**
    * The other door onto a landing: the reader closed nothing, but the seat
    * they are on went - a lead's cascade releasing the workers under it, a

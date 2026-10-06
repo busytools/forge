@@ -275,9 +275,46 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the reader own words drew above it').toContain('go');
   });
 
-  it('draws the seat that has no session behind it as its own state', () => {
+  it('wakes a lead rather than drawing it as one nothing runs', () => {
+    // A lead's page dispatches the spawn on open, so this state is a wait
+    // with a keeper: the waking line sweeps rather than refusing.
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);
+
+    expect(drawn()).toContain('Waking up agent...');
+    expect(document.querySelector('.hold .shimmer'), 'the wake does not sweep').not.toBeNull();
+    expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
+  });
+
+  it('keeps the waking line up while the spawn is in flight', () => {
+    // The wake reads as one state on both sides of the roster noticing:
+    // before the row lands (waking) and while the core brings it up
+    // (spawning), so the column never flashes a not-running line in between.
+    const server = stub();
+    draw({ spawning: true }, server);
+
+    expect(drawn(), 'the spawn in flight lost its waking line').toContain('Waking up agent...');
+    expect(
+      document.querySelector('.hold .shimmer'),
+      'the spawn line does not sweep',
+    ).not.toBeNull();
+  });
+
+  it('keeps the waking line up for a worker seat the core is spawning', () => {
+    // The roster can name a WORKER Spawning (its lead's spawn), and the
+    // not-running refusal there would read as a dead seat at the moment it is
+    // coming up - the inner arm has to answer for any spawning seat, not
+    // only a lead.
+    const server = stub();
+    draw({ spawning: true, slot: { ...LEAD, label: 'w1' } }, server);
+
+    expect(drawn(), 'a spawning worker read as a dead seat').toContain('Waking up agent...');
+    expect(drawn(), 'a spawning worker drew the refusal').not.toContain('not running');
+  });
+
+  it('draws a seat that has no session behind it as its own state', () => {
+    const server = stub();
+    draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);
 
     expect(drawn()).toContain('not running');
     expect(drawn()).toContain('no model declared');
@@ -1056,5 +1093,59 @@ describe('the reader own words before the core has them', () => {
       mark?.state === 'sending' ? mark.running : null,
       'the retry reads the drawn turn where the connection has no store',
     ).toBe(true);
+  });
+});
+
+describe('the arrival mark', () => {
+  /** One page turn, whose text is all a row needs to draw. */
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  /**
+   * **The mark rides the item through the list's own `itemProps`.** Keyed on
+   * the turn's tail instead, the rule marks every mounted turn at once - and a
+   * stub that drops `itemProps` sees neither mistake.
+   */
+  it('marks the arriving item through the list, and only it', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t1'), turn('t2')]);
+      await painted();
+
+      const items = [...document.querySelectorAll('.conv > *')];
+      expect(items.length, 'the list drew no items').toBe(2);
+      expect(
+        items[1]?.classList.contains('arriving'),
+        "the arriving item's wrapper lost its mark",
+      ).toBe(true);
+      expect(
+        items[0]?.classList.contains('arriving'),
+        'a settled item carried the arrival mark',
+      ).toBe(false);
+
+      vi.advanceTimersByTime(300);
+      flushSync();
+
+      expect(
+        document.querySelector('.conv .arriving'),
+        'the mark outlived its window, and would replay on a remount',
+      ).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -215,8 +215,11 @@ const MAX_RETRY_MS = 2000;
  * caller that spread two of them together - and the server would refuse the
  * result as a message it does not know, which reads at the far end as a
  * command that silently never ran. Thrown here, where the caller can see it.
+ *
+ * A unit variant IS its name, and it has no keys to count.
  */
 function variantOf(command: Command): string {
+  if (typeof command === 'string') return command;
   const names = Object.keys(command);
   const [only] = names;
   if (names.length !== 1 || only === undefined) {

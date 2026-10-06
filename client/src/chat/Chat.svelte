@@ -24,7 +24,7 @@
   import Pinned from './Pinned.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
-  import { reachableIds, reveal, subagents } from './subagents.svelte';
+  import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
   import { fold, type TurnInfo } from './units';
 
   /**
@@ -46,18 +46,23 @@
     slot,
     connection,
     waking = false,
+    spawning = false,
     reason = null,
   }: {
     slot: SessionSlot;
     connection: Connection;
     /** The roster holds no session for this seat, which is its own state. */
     waking?: boolean;
+    /** Whether the core is bringing the seat up, the waking line's other half. */
+    spawning?: boolean;
     /** Why, when it does. */
     reason?: string | null;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
   const REACH = 400;
+  /** How long the arrival mark stays on the newest item's wrapper. */
+  const ARRIVE_MS = 300;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
@@ -129,6 +134,24 @@
   );
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
+  /**
+   * The item whose arrival fade is owed, dropped again after the window.
+   *
+   * The mark cannot sit on `newest` itself: a CSS animation restarts per
+   * element insertion, and the list recreates items as they leave its
+   * window - a class still carried would replay the fade on the next scroll
+   * back to the foot. The window is twice the animation's length.
+   */
+  let arriving = $state<string | null>(null);
+  $effect(() => {
+    const key = newest;
+    if (key === null) return;
+    arriving = key;
+    const timer = setTimeout(() => {
+      if (arriving === key) arriving = null;
+    }, ARRIVE_MS);
+    return () => clearTimeout(timer);
+  });
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -248,6 +271,19 @@
   let pinEcho: number | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
+  /**
+   * The signature of the keys above the anchor that a parked pass has PAID
+   * for: the restore has run against this order, so only a change to it owes
+   * another pass.
+   *
+   * **Stamped when the pass runs, never when it is scheduled** (#1734's fix
+   * round): the effect's teardown cancels a pending rAF on every re-run, and
+   * a second publish landing before the paint is ordinary - so a stamp at
+   * schedule time would drop the restore with the cancel, and the next run
+   * would find the debt already paid and never re-arm. Held here, the cancel
+   * leaves the debt standing.
+   */
+  let owed: string | null = null;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -342,7 +378,12 @@
   function captureAnchor(): void {
     if (viewport === null) return;
     const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
-    if (landed !== null) anchor = landed;
+    if (landed !== null) {
+      anchor = landed;
+      // A fresh capture owes nothing until an order moves under it; the next
+      // parked run schedules against a clean slate.
+      owed = null;
+    }
   }
 
   /**
@@ -728,8 +769,8 @@
     // A dispatch's row may sit in a turn the virtualised list has not drawn:
     // scroll to its turn first, then chase the row, which mounts a frame
     // after the scroll that asked for it.
-    if (ask?.what === 'dispatch' && ask.dispatch !== undefined) {
-      const wanted = ask.dispatch;
+    if (ask?.what === 'dispatch' && ask.call !== undefined) {
+      const wanted = ask.call;
       const at = turnOfDispatch(held.turns, wanted);
       if (at !== null) {
         asking = false;
@@ -738,8 +779,53 @@
         // draw: the chase runs on a wall-clock budget rather than frames, so
         // a slow mount is not mistaken for a dispatch that is not there.
         const until = Date.now() + 2500;
+        // A revealed row does not stay where it was put: the turn it lives in
+        // has just mounted with estimated heights and corrects itself as it
+        // measures, and the row's own open grows it. Both move the row AFTER
+        // the reveal's scroll - the reproduced "first click random, second
+        // click right". Re-place it, without re-opening or re-flashing, until
+        // it holds still.
+        //
+        // RECORDED ACCEPTANCE, not a pinned test: this loop and the anchor
+        // re-capture ride real layout - the virtualiser measuring, the row
+        // growing on open - and jsdom performs no layout, so the suite cannot
+        // distinguish it from a no-op. The class it leaves open is the
+        // landing's exactness under post-mount movement; the acceptance is
+        // Ved clicking a cold row on the live page (it did, and the fix is
+        // what he signed off), and the reintroduction would read exactly as
+        // "first click random, second click right" did. The unit-level half
+        // IS pinned: reveal's instant, nearest argument in subagents.test.
+        const settle = () => {
+          if (viewport === null) return;
+          const row = callRow(wanted, viewport);
+          if (row === null) return;
+          const box = row.getBoundingClientRect();
+          const seen = viewport.getBoundingClientRect();
+          // Only when the settle moved the row clean out of view: a small
+          // drift is left alone, because re-centring it here is the second
+          // step the reveal just stopped taking.
+          if (box.bottom < seen.top || box.top > seen.bottom) {
+            row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+            captureAnchor();
+          }
+        };
         const chase = () => {
-          if (reveal(wanted)) return;
+          // The reveal scrolled: re-capture the anchor HERE, so the column's
+          // own restorer (which runs on the layout mutations the reveal's
+          // open causes) holds this new place rather than pulling the reader
+          // back to the row they left.
+          if (reveal(wanted)) {
+            captureAnchor();
+            // The first pass waits a beat for the mount's own measurements to
+            // land; the rest catch whatever settled behind them.
+            const settleUntil = Date.now() + 1000;
+            const hold = () => {
+              settle();
+              if (Date.now() < settleUntil) setTimeout(hold, 120);
+            };
+            setTimeout(hold, 400);
+            return;
+          }
           if (Date.now() < until) setTimeout(chase, 60);
         };
         setTimeout(chase, 0);
@@ -770,31 +856,26 @@
   // transitions that set it are the two below.
   $effect(() => {
     if (follows === null || !held.loaded || !held.following) return;
-    const foot = land();
-    // **And once more after this frame's layout - but only when the layout
-    // moved.** The foot a pin asks for is the one that is true at the moment
-    // it asks, and a row's own content - code, a disclosure opening, a table
-    // - is laid out after this column's effects have run. On a seat whose
-    // history is already written that is the whole of the difference between
-    // opening at the newest turn and opening most of a screen above it.
-    // **One pass per size change** (issue #1710): a second look that finds
-    // the same height has nothing to correct, and asking anyway is a write
-    // and an event per frame.
-    const settled = requestAnimationFrame(() => {
-      if (viewport !== null && viewport.scrollHeight !== foot) land();
-    });
-    return () => cancelAnimationFrame(settled);
+    land();
   });
 
   /**
    * The place a reader away from the foot is holding, put back whenever the
    * conversation changes around them.
    *
-   * **The other half of the follow's own pass.** That one pins the foot for a
-   * reader who is at it; this one holds the row for a reader who is not, and
-   * it runs on the same signal - a conversation change - with the same
-   * once-more-after-this-frame's-layout pass, because the row that moved was
-   * laid out after this column's effects ran.
+   * **The other half of the follow's pass.** That one pins the foot for a
+   * reader who is at it; this one holds the row for a reader who is not.
+   *
+   * **Scheduled only when the rows above the anchor REORDERED** (#1734). A
+   * size change under them is the observer's pass - it fires post-layout and
+   * the `restored` counter below guards the overlap - and a frame that moved
+   * nothing schedules nothing, where a pass per frame was the per-frame rAF
+   * cost the issue measured. What is left is the move no observer event
+   * reports: an equal-height reorder puts the anchor row somewhere else with
+   * the sizes unchanged, and the signature of the keys above it is the data
+   * that says so. (The follow's own second look is gone for the same reason:
+   * at the foot an equal-height move changes nothing, and any size change is
+   * the observer's.)
    *
    * **Skipped while the prepend compensation is on**: that path holds the
    * reader by the list's own shift as older turns arrive above them, and two
@@ -803,19 +884,46 @@
   $effect(() => {
     const park = held;
     const moving = shift;
-    if (anchor === null || park.following || !park.loaded || moving) return;
-    // **Not gated on the height like the pin's pass, but gated on the
-    // observer** (issue #1710): a size change is the one way the layout
-    // reports itself, and the observer's pass is post-layout - so when it has
-    // already put the parked reader back for this change, this frame's own
-    // pass would only repeat the same read. It stays for the moves the
-    // observer cannot see, where nothing else answers at all.
+    if (anchor === null || park.following || !park.loaded || moving) {
+      // No anchor parked, nothing owed: the next parked run schedules against
+      // a clean slate rather than against an order from before the episode.
+      owed = null;
+      return;
+    }
+    const above = keysAbove();
+    if (above === null || above === owed) return;
+    const want = above;
     const seen = restored;
     const settled = requestAnimationFrame(() => {
+      // The debt is paid HERE, by the pass that runs - so a teardown's cancel
+      // before the paint leaves it standing for the next run to re-arm.
+      owed = want;
       if (restored === seen) restoreAnchor();
     });
     return () => cancelAnimationFrame(settled);
   });
+
+  /**
+   * The ordered keys of the drawn rows above the anchor, as one signature -
+   * or `null` when the anchor row is not drawn at all.
+   *
+   * Read off the document rather than the model because the fold decides the
+   * order - the rows are what the reader sees move - and attribute reads
+   * force no layout, unlike a box. **`null` rather than a slice running to
+   * the window's end**: an anchor out of the drawn window has nothing for a
+   * pass to restore, and the window's own churn (rows entering and leaving it
+   * as the reader scrolls) is not a reorder.
+   */
+  function keysAbove(): string | null {
+    if (viewport === null || anchor === null) return null;
+    const keys: string[] = [];
+    for (const row of viewport.querySelectorAll('[data-k]')) {
+      const key = row.getAttribute('data-k') ?? '';
+      if (key === anchor.key) return JSON.stringify(keys);
+      keys.push(key);
+    }
+    return null;
+  }
 
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
@@ -935,18 +1043,25 @@
   }
 </script>
 
-{#if waking}
+{#if waking || spawning}
   <!-- Each state below is the column in that state, so each carries the
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
   <div class="conv">
-    <!-- A seat with no session behind it. It claims nothing about a spawn:
-         this page cannot start one, and a line saying one is coming would be
-         a promise no code keeps. -->
-    <div class="hold off">
-      not running
-      <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
-    </div>
+    <!-- A seat that is coming up, either side of the roster noticing: a
+         spawn the core is running, or - for a LEAD the roster does not name
+         yet - the one this page dispatched on open. Both draw the waking
+         line, so the wake reads as one state rather than two. A worker's
+         seat the roster does not name has no spawn coming toward it - only
+         its lead can start it - and its line claims nothing. -->
+    {#if spawning || slot.label === 'lead'}
+      <div class="hold"><span class="shimmer">Waking up agent...</span></div>
+    {:else}
+      <div class="hold off">
+        not running
+        <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
+      </div>
+    {/if}
   </div>
 {:else if held.refused !== null && held.turns.length === 0}
   <!-- A refusal with nothing drawn under it is the column in that state. With
@@ -993,6 +1108,8 @@
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
+    itemProps={({ item }: { item: HeldTurn }) =>
+      item.key === arriving ? { class: 'arriving' } : undefined}
     {shift}
     onscroll={scrolled}
     {@attach scrollViewport}

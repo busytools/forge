@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; dictation models</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* ============================================================
+     forge - the dictation models page, as the client draws it.
+     The palette and the type scale are the shipped ones, token for
+     token; the page's own rules are `client/src/assets/web.css`'s
+     `.models` block, and the frame around them is this drawing's.
+
+     Reconciling the two: compare rule for rule, and expect exactly
+     ONE spelling difference - the empty box's rules are scoped here
+     (`.models .empty`, `.models .empty .t`, `.models .empty .d`,
+     `.models .empty code`) and unscoped in the sheet (`.empty`, ...)
+     because there they sit inside the page's own root. Values are
+     equal; nothing else differs.
+     ============================================================ */
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294; --ctl:#516590;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    /* The app sheet's own type scale, token for token, so the page's rules
+       read here the way they read there. */
+    --fs-prose: 15.5px; --fs-base: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+    --r: 10px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- the drawing's own frame ---------- */
+
+  .page { max-width: 1180px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 96ch; margin-bottom: 8px; }
+  h2 { font-size: 15.5px; font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
+    padding: 14px 16px 16px; margin-bottom: 18px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 12px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
+
+  /* ---------- the page's own rules (web.css, `.models`) ---------- */
+
+  .wrap { padding: 0; }
+  header.top {
+    display: flex; align-items: center; gap: 14px;
+    padding-bottom: 18px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  /* The mark rides the same optical lift the shipped rule carries: svg ink
+     centered against a text line box reads low. */
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent);
+    position: relative; top: -1px; }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  .models .title { display: flex; flex-direction: column; }
+  .models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+  .models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+    border-radius: 9px; padding: 6px 11px; }
+  .models .back:hover { border-color: var(--ctl); color: var(--text); }
+  /* The two one-line states the route draws before a read: the loading line,
+     and the server's own words for a refused subscription. */
+  .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+    text-align: center; }
+
+  .models .block { margin-bottom: 30px; }
+  .models .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
+    text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
+  .models .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
+    text-transform: none; color: var(--dim); font-weight: 400; }
+
+  .models .model { display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+    border: 1px solid var(--line); border-radius: var(--r);
+    padding: 13px 15px; margin-bottom: 10px; }
+  .models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dim); flex: 0 0 118px; }
+  .models .facts { min-width: 0; flex: 1; }
+  .models .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .models .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 3px; }
+  .models .meta b { color: var(--muted); font-weight: 500; }
+  .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
+
+  .models .chip { display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+    background: none; white-space: nowrap; }
+  /* `go` left with the Search button: the box filters as it is typed. */
+
+  .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+    padding: 12px 15px; margin-bottom: 10px; }
+  .models .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .models .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models .status .spacer { margin-left: auto; }
+  .models .status.warn { border-color: rgba(201,161,59,.35); }
+  .models .status.warn .t { color: var(--warn); }
+  .models .status.failed { border-color: rgba(224,104,62,.4); }
+  .models .status.failed .t { color: var(--bad); }
+  .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); padding-left: 19px; }
+  .models .status .detail b { color: var(--muted); font-weight: 500; }
+
+  .models .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
+    font-size: var(--fs-data); color: var(--text); background: var(--s1);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+  .models .find::placeholder { color: var(--dim); }
+  .models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
+  /* What can be searched before a reader knows a name: the feed's families as
+     chips, and its fastest rows as links in the note under them. */
+  .models .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .models .chip b { color: var(--dim); font-weight: 400; }
+  .models .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
+    color: var(--muted); text-decoration: underline; }
+  .models .link:hover { color: var(--text); }
+
+  .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+    overflow: hidden; background: rgba(13,17,26,.4); }
+  /* The hairline is the li's: the row inside it is an anchor, and an anchor
+     is always its li's only child, so a `:last-child` on the row would match
+     every one of them. */
+  .models .list li { border-bottom: 1px solid var(--line); }
+  .models .list li:last-child { border-bottom: 0; }
+  .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+    color: inherit; text-decoration: none; }
+  .models .cand:hover { background: var(--s2); }
+  .models .cand .nm { flex: 1 1 auto; min-width: 0; }
+  .models .cand .col { flex: 0 1 auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .models .cand .col b { color: var(--muted); font-weight: 500; }
+  .models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
+  .models .cand:hover .go { color: var(--accent); }
+  /* The app sheet's own rule, unscoped there and here: the candidate list is
+     a ul, and its markers are the sheet's business rather than the page's. */
+  .list { list-style: none; }
+
+  .models .empty { border: 1px dashed var(--line); border-radius: var(--r);
+    padding: 46px 24px; text-align: center; }
+  .models .empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .models .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
+  /* The empty box's code is the shipped one; a code inside a NOTE has no
+     shipped rule and renders as plain text, so neither does one here. */
+  .models .empty code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+
+  /* the state marks, the shared vocabulary: shape carries it. The pair the
+     page added is at the verdict size; the cross and the ring are the shared
+     marks at their base size, which is how the sheet draws them inside a
+     chip (no page-scoped reset reaches them). */
+  .dot { width: 11px; height: 11px; flex: 0 0 11px; display: inline-block; }
+  .dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+  .dot.warn { width: 9px; height: 9px; flex: 0 0 9px;
+    background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+  .dot.failed { background: var(--bad);
+    clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+  .dot.off { width: 9px; height: 9px; flex: 0 0 9px; border: 1.4px solid var(--dim); border-radius: 50%; }
+  .dot.live { border-radius: 50%; border: 1.6px solid rgba(244,118,0,.3);
+    border-top-color: var(--accent); animation: spin 900ms linear infinite; }
+  .dot.ok, .dot.warn, .dot.failed, .dot.off, .dot.live { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    /* The sheet's own rule, verbatim: the ring stops and takes the accent as
+       a solid border - not the mock's half-lit arc. */
+    .dot.live { animation: none; border-color: var(--accent); }
+  }
+
+  @media (pointer: coarse) {
+    .models .back, .models .cand { min-height: 44px; }
+    .models .back { display: inline-flex; align-items: center; }
+  }
+
+  @media (max-width: 760px) {
+    .models .model { flex-wrap: wrap; gap: 8px; }
+    .models .role, .models .side { flex-basis: 100%; }
+    .models .cand { flex-wrap: wrap; }
+    .models .cand .col { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Dictation models</h1>
+  <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
+  pinned, what the transcribe.cpp catalogue proposes, and the feed's rows the search reads. One
+  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing and the
+  models finishing their load are the two updates that move it. The benchmark section's run is a
+  separate piece of work, so this page ends there.</p>
+
+  <h2>The page</h2>
+  <div class="tile">
+    <div class="tcap">the ordinary case, with the feed proposing one model</div>
+    <main class="wrap models">
+      <header class="top">
+        <div class="brand">
+          <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+          <span class="word">forge</span>
+        </div>
+        <div class="title">
+          <h1 class="t">Dictation models</h1>
+          <span class="s">transcribing &middot; cleanup &middot; updates &middot; benchmarks</span>
+        </div>
+        <a class="back" href="#">&larr; home</a>
+      </header>
+
+      <section class="block">
+        <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
+
+        <div class="model">
+          <span class="role">transcribing</span>
+          <div class="facts">
+            <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
+            <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
+            <div class="meta">metal &middot; <b>72.9&times; realtime on m4-max</b> &middot; 14 languages</div>
+          </div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+        </div>
+
+        <div class="model">
+          <span class="role">cleanup</span>
+          <div class="facts">
+            <div class="nm">s1-mini-f16.gguf</div>
+            <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
+            <div class="meta">llama.cpp &middot; not in the feed</div>
+          </div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+        </div>
+
+        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; verified by size and sha-256 before any load</p>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Updates <span class="why">whether a better model is on the feed</span></h2>
+
+        <div class="status warn" role="status">
+          <span class="dot warn"></span>
+          <span class="t">update available</span>
+          <span class="when">checked 11:42 &middot; catalogue v0.3.1</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">Check now</button>
+        </div>
+
+        <p class="note">a check reads the catalogue the transcribe.cpp runtime publishes - every variant with its sizes, licences, and the speeds and error rates its maintainers measured - and compares it with the two models pinned here. It measures nothing on this machine.</p>
+
+        <div class="status warn">
+          <span class="dot warn"></span>
+          <span class="t">Granite Speech 5.0 470M TurboCTC</span>
+          <span class="when">replaces the transcribing model</span>
+          <span class="detail">473M &middot; Q4_K_M 279 MB &middot; <b>388.8&times; vs 72.9&times;</b> &middot; FLEURS-en 4.61 vs 5.08 &middot; Apache-2.0 &middot; English only, offline</span>
+          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max - and its licence allows forge to ship it. Taking it means pinning it here and opening a pull request; the bench that re-checks a candidate on your own recordings is not built yet.</span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Find a model <span class="why">search the catalogue the runtime publishes</span></h2>
+
+        <input class="find" type="search" aria-label="Search the model catalogue" placeholder="search 74 variants - parakeet, granite, whisper, moonshine...">
+        <p class="note">type a name, or pick a family below &middot; the feed's whole catalogue is already here, so this reads nothing off the network</p>
+        <!-- An excerpt: the live page draws all of them and they wrap. Each
+             count is what the click will show, so moonshine's 17 includes the
+             three moonshine-streaming rows its name also matches. -->
+        <div class="chips">
+          <button class="chip" type="button">parakeet<b>16</b></button>
+          <button class="chip" type="button">moonshine<b>17</b></button>
+          <button class="chip" type="button">whisper<b>13</b></button>
+          <button class="chip" type="button">canary<b>5</b></button>
+          <button class="chip" type="button">gigaam<b>4</b></button>
+          <span class="chip" aria-hidden="true">&hellip;</span>
+        </div>
+        <p class="note">fastest on the feed:
+          <button class="link" type="button">medasr 881.5&times;</button> &middot;
+          <button class="link" type="button">gigaam-v3-ctc 526.3&times;</button> &middot;
+          <button class="link" type="button">gigaam-v3-e2e-ctc 511.4&times;</button>
+        </p>
+      </section>
+
+      <section class="block">
+        <h2 class="hd4">Benchmark <span class="why">score a model on your own recordings</span></h2>
+        <div class="empty">
+          <p class="t">the benchmark is not built yet</p>
+          <p class="d">It will score each candidate on the takes forge has already recorded here, plus a read-aloud set - term accuracy first, speed second - and that score is what decides an update. Until it lands, every number on this page is the feed's own, measured on an m4 max and not on your machine.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <h2>The states it can be in</h2>
+
+  <div class="tile">
+    <div class="tcap">the two one-line states before a read lands: <b>reading</b>, and a <b>refused</b> subscription in the server's own words</div>
+    <div class="models">
+      <p class="pending" style="margin-top:0">Reading the models...</p>
+      <p class="pending" style="margin-top:12px">This forge would not answer for the models: no models on this forge</p>
+    </div>
+    <div class="tnote">Both are the route's, not the body's: a page that drew the four sections here would read as an empty catalogue rather than as one that has not arrived, and a refusal is the server's answer rather than an address that is wrong.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the check line, in the states the feed can be in - <b>not checked yet</b>, <b>checking</b>, <b>unreachable</b>, and a state this client cannot read</div>
+    <div class="models">
+      <div class="status">
+        <span class="dot off"></span>
+        <span class="t">not checked yet</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">Check now</button>
+        <span class="detail">the feed refreshes at the next boot, or when you check it</span>
+      </div>
+      <div class="status">
+        <span class="dot live"></span>
+        <span class="t">checking the catalogue</span>
+        <span class="spacer"></span>
+      </div>
+      <div class="status failed">
+        <span class="dot failed"></span>
+        <span class="t">the catalogue could not be reached</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">Check now</button>
+        <span class="detail">github.com/handy-computer/transcribe.cpp answered 502; the last-known feed stands and nothing in use changed</span>
+      </div>
+      <div class="status">
+        <span class="dot off"></span>
+        <span class="t">the check state is one this client cannot read</span>
+        <span class="detail">this client is older than the forge serving it</span>
+      </div>
+    </div>
+    <div class="tnote">A check in flight offers no second Check now: a second check is refused, and a control that reports nothing when pressed reads as broken. The unknown line is the boundary's own statement - the value was narrowed once where the read entered, never drawn as a fresh check.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned, nothing proposed, and the catalogue has not been read at all</div>
+    <div class="models">
+      <div class="empty">
+        <p class="t">dictation is off</p>
+        <p class="d"><code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are loaded and a take has nothing to run through. Add it and restart forge.</p>
+      </div>
+      <div class="status" style="margin-top:12px">
+        <span class="dot off"></span>
+        <span class="t">not checked yet</span>
+        <span class="detail">the feed is read only with [dictate] enabled set</span>
+      </div>
+      <p class="note">the feed is read only with <code>[dictate] enabled</code> set &middot; switch it on and restart forge, and the catalogue loads here</p>
+    </div>
+    <div class="tnote">The catalogue is loaded only for an enabled section, so the off forge's read answers no rows: a search box here would answer every query with "no entry matches", which reads as a feed that found nothing rather than one that was never fetched.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the pin mid-load: the chip carries the preflight state, and the download carries its fraction</div>
+    <div class="models">
+      <div class="model">
+        <span class="role">transcribing</span>
+        <div class="facts">
+          <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
+          <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
+          <div class="meta">transcribe.cpp &middot; not in the feed</div>
+        </div>
+        <div class="side"><span class="chip"><span class="dot live"></span>fetching 38%</span></div>
+      </div>
+      <div class="model">
+        <span class="role">cleanup</span>
+        <div class="facts">
+          <div class="nm">s1-mini-f16.gguf</div>
+          <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
+          <div class="meta">llama.cpp &middot; not in the feed</div>
+        </div>
+        <div class="side"><span class="chip"><span class="dot off"></span>waiting</span></div>
+      </div>
+    </div>
+    <div class="tnote">A page open through a first download hears the models finish loading (<span class="mono">dictate_availability</span>) and reads again, so the chips do not stay on <span class="mono">waiting</span> until the next check.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">a search that matches a family, and one that matches nothing</div>
+    <div class="models">
+      <p class="note" style="margin-top:0">2 of 74 entries &middot; each opens its catalogue entry</p>
+      <ul class="list" aria-label="Catalogue results">
+        <li>
+          <a class="cand" href="#">
+            <span class="nm">granite-speech-5.0-470m-turboctc</span>
+            <span class="col">Q4_K_M 279 MB &middot; <b>388.8&times; realtime</b> &middot; FLEURS-en 4.61 &middot; Apache-2.0</span>
+            <span class="col">English only &middot; offline</span>
+            <span class="go" aria-hidden="true">&#8599;</span>
+          </a>
+        </li>
+        <li>
+          <a class="cand" href="#">
+            <span class="nm">granite-speech-5.0-470m-turboctc-nc</span>
+            <span class="col">Q4_K_M 279 MB &middot; FLEURS-en 4.61 &middot; CC-BY-NC-SA-4.0</span>
+            <span class="col">English only &middot; offline</span>
+            <span class="go" aria-hidden="true">&#8599;</span>
+          </a>
+        </li>
+      </ul>
+      <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+      <p class="note">no entry matches <code>wav2vec</code> &middot; try a family name</p>
+    </div>
+    <div class="tnote">The search is the client's and follows the box: the whole feed arrives with the read, so a query filters what is here and nothing is asked of the server. Each row is a link to the entry's own document, in the tree the server fetches from, with its marker drawn at rest. Nothing is filtered out for the reader - a non-commercial variant is listed and only ever excluded from a proposal.</div>
+  </div>
+
+</div>
+</body>
+</html>

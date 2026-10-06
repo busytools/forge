@@ -378,6 +378,24 @@ describe('the connection', () => {
     await Promise.allSettled(asks.filter((ask) => ask !== null));
   });
 
+  /**
+   * **A unit variant is its name alone.** The core's externally-tagged enum
+   * writes `DictateCatalogueCheck` as the string `"dictate_catalogue_check"`,
+   * and a client that wrapped it in a field bag would send a shape the server
+   * decodes as an unknown command - refused rather than run, with nothing on
+   * this side saying so.
+   */
+  it('sends a unit variant as its own name, with no reply channel', async () => {
+    const { server, conn } = await connected();
+
+    expect(conn.dispatch('dictate_catalogue_check')).toBeNull();
+    await until(() => commands(server.received).length === 1, 'the check command');
+
+    const [sent] = commands(server.received);
+    expect(sent?.command).toBe('dictate_catalogue_check');
+    expect(sent?.reply_to).toBeNull();
+  });
+
   /** A command the server never hears is a command that never ran, and nothing else says so. */
   it('refuses a command and a page-ask rather than send them nowhere', async () => {
     const { conn } = await connected();

@@ -11,6 +11,7 @@
     "src/wire/types.ts",
     "src/stores.ts",
     "src/chat/units.ts",
+    "src/chat/forge.ts",
     "src/chat/conversation.ts",
     "src/chat/report.ts",
     "src/composer/view.ts",

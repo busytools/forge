@@ -11,8 +11,12 @@
   import SessionId from './SessionId.svelte';
   import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
+  import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { connectors } from '../chat/connectors.svelte';
+  import { outcomesFrom } from '../chat/outcomes';
+  import { processes } from '../chat/processes.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
@@ -20,6 +24,7 @@
     compactionFigure,
     headerFacts,
     orgNeeded,
+    seatConnectorRows,
     seatState,
     type ComposerProps,
     type ConversationProps,
@@ -81,6 +86,31 @@
   $effect(() => {
     subagents.sync(record?.subagent_instances ?? null);
   });
+
+  /**
+   * The processes join follows the record the same way: the walk and the
+   * CLI's registry move on different frames, and the strip's row reads both
+   * from the one store. The outcomes come from the conversation's own task
+   * frames, joined by the call id the row already carries.
+   */
+  const outcomes = $derived(outcomesFrom(record?.conversation.turns ?? []));
+  $effect(() => {
+    processes.sync(
+      record?.processes ?? null,
+      record?.background_tasks ?? null,
+      record?.header.turn_in_flight ?? false,
+      outcomes,
+    );
+  });
+
+  /**
+   * The connectors row follows the HOME, not the seat's record: the
+   * subscription sets ride the project's own row there, and the seat's own
+   * are the ones whose `team_role` names it.
+   */
+  $effect(() => {
+    connectors.sync(seatConnectorRows(wire, slot));
+  });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */
   const collides = $derived(orgNeeded(wire, slot));
@@ -103,13 +133,23 @@
 
   /**
    * Start a lead nothing is running behind, which is the terminal's own rail
-   * click (`switch_to_project_lead`). A seat the roster already names is up or
-   * on its way, and switching to it is what the route this page is on already
-   * did.
+   * click (`switch_to_project_lead`). A seat the roster names as awake is up
+   * or on its way, and switching to it is what the route this page is on
+   * already did.
+   *
+   * **A named lead the roster has landed asleep is the same wake** (#1704's
+   * rule: opening the page starts it), and the page's own words promise the
+   * spawn either way - so the ask goes for a sleeping lead too, and the latch
+   * clears the moment the seat is up, so a seat that goes away again in the
+   * same mount is a fresh wake rather than a promise nothing keeps.
    *
    * A project's own lead is the one seat the core can start by name: a worker
    * is spawned by the lead that owns it, so a worker seat with nothing behind
    * it stays as it is rather than asking for a spawn the core cannot place.
+   *
+   * **A seat this client just closed is never asked**: the mark is in force
+   * because the close was made here, and the roster landing the seat asleep
+   * is that close arriving, not a wake to start.
    *
    * The only refusal this can meet is the socket's own - the ask names a
    * project the roster carries, so the core has one to start, and its refusal
@@ -118,8 +158,12 @@
   $effect(() => {
     const open = connection;
     const seatSlot = slot;
-    if (seatSlot.label !== 'lead' || !seat.waking) return;
     const key = subjectKey({ session: seatSlot });
+    if (!seat.waking && seat.lifecycle !== 'Sleeping' && seat.lifecycle !== 'LoggedOut') {
+      if (asked.has(key)) asked.delete(key);
+      return;
+    }
+    if (seatSlot.label !== 'lead' || closingSeat(seatSlot)) return;
     if (asked.has(key)) return;
     asked.add(key);
     try {
@@ -259,6 +303,7 @@
 
   const conversationProps = $derived<ConversationProps>({
     waking: seat.waking,
+    spawning: seat.lifecycle === 'Spawning',
     reason: seat.reason,
     slot,
     connection,
@@ -434,14 +479,20 @@
          would put a second scroller outside the one that scrolls. -->
     {#if conversation !== null}
       {@render conversation(conversationProps)}
-    {:else if seat.waking}
-      <!-- The seat's own state, which this column owns: a seat nothing is
-           running behind says so rather than drawing an empty page. -->
+    {:else if seat.waking || seat.lifecycle === 'Spawning'}
+      <!-- The seat's own state, which this column owns: a seat coming up -
+           a spawn the core is running, or the lead's own this page
+           dispatched - draws the waking line, while a worker's seat the
+           roster does not name has no spawn coming and says so. -->
       <div class="conv">
-        <div class="hold off">
-          not running
-          <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
-        </div>
+        {#if seat.lifecycle === 'Spawning' || slot.label === 'lead'}
+          <div class="hold"><span class="shimmer">Waking up agent...</span></div>
+        {:else}
+          <div class="hold off">
+            not running
+            <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
+          </div>
+        {/if}
       </div>
     {/if}
   </main>

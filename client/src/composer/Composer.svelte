@@ -257,7 +257,7 @@
     dockPresent: dockOpen,
   } satisfies Where);
 
-  const blocker = $derived(blocked(seat, composer, box.sent));
+  const blocker = $derived(blocked(seat, composer, box.sent, slot.label === 'lead'));
   const filled = $derived(box.draft.trim() !== '');
 
   /**
@@ -992,7 +992,7 @@
       <div class="blocked">
         <span class="b1">
           {#if blocker.waiting}<span class="ring"></span>{/if}
-          {blocker.line}
+          <span class:shimmer={blocker.shimmer}>{blocker.line}</span>
         </span>
         {#if blocker.sub !== null}<span class="b2">{blocker.sub}</span>{/if}
       </div>

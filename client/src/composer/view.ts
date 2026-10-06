@@ -177,13 +177,22 @@ export interface Blocker {
   bad: boolean;
   /** Whether the line is a wait, which draws the ring. */
   waiting: boolean;
+  /**
+   * Whether the line itself carries the wait, sweeping a highlight through
+   * its words, where a ring would be a second animation beside it.
+   */
+  shimmer: boolean;
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
 export const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
 
 /** A blocked state draws no ring, and one that reports a failure draws none either. */
-const STOPPED: Pick<Blocker, 'bad' | 'waiting'> = { bad: false, waiting: false };
+const STOPPED: Pick<Blocker, 'bad' | 'waiting' | 'shimmer'> = {
+  bad: false,
+  waiting: false,
+  shimmer: false,
+};
 
 /**
  * The reason the seat takes no input, or `null` when it does.
@@ -196,6 +205,7 @@ export function blocked(
   seat: SeatRead,
   composer: ComposerState,
   command: string | null,
+  lead: boolean,
 ): Blocker | null {
   // Sign-in keeps its box: the hint above it is where the reader is told.
   if (seat.lifecycle === 'AuthRequired') return null;
@@ -205,16 +215,23 @@ export function blocked(
       sub: seat.reason ?? 'Quit forge and start it again to recover this session.',
       bad: true,
       waiting: false,
+      shimmer: false,
     };
   }
   // A seat with no lifecycle is one nothing has started, which is the same
   // state `waking` names - so the two cannot draw different reasons for it.
+  // A LEAD in that state is being woken: opening its page dispatches the
+  // spawn, so the one line it owns is the wake - where a worker's seat has
+  // no spawn coming, and its line keeps saying so (#1712's follow-up).
   if (
     seat.waking ||
     seat.lifecycle === null ||
     seat.lifecycle === 'Sleeping' ||
     seat.lifecycle === 'LoggedOut'
   ) {
+    if (lead) {
+      return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
+    }
     return {
       line: 'not running',
       sub: seat.reason ?? 'this seat has no session behind it',
@@ -222,13 +239,13 @@ export function blocked(
     };
   }
   if (seat.lifecycle === 'Spawning') {
-    return { line: 'Connecting to Claude Code...', sub: null, bad: false, waiting: true };
+    return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
   }
   if (composer.compacting) {
-    return { line: 'Compacting context...', sub: null, bad: false, waiting: true };
+    return { line: 'Compacting context...', sub: null, bad: false, waiting: true, shimmer: false };
   }
   if (command !== null) {
-    return { line: `Running ${command}`, sub: null, bad: false, waiting: true };
+    return { line: `Running ${command}`, sub: null, bad: false, waiting: true, shimmer: false };
   }
   return null;
 }

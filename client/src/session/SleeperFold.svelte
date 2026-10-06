@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Row } from '../home/view';
   import Chevron from '../components/Chevron.svelte';
+  import type { SessionSlot } from '../wire/types';
   import { railMark } from './view';
 
   /**
@@ -17,8 +18,16 @@
    * behind it, so opening it draws a refusal, and the terminal's own answer
    * for these rows is a label with no hit target. So no link, and no close
    * chip - there is nothing behind either of them to act on.
+   *
+   * `closing` is the rail's own mark for a seat this client has just closed:
+   * such a row lands here at once and keeps a settling dot while the core
+   * finishes shutting it down (#1712).
    */
-  let { sleeping, shown }: { sleeping: Row[]; shown: string | null } = $props();
+  let {
+    sleeping,
+    shown,
+    closing,
+  }: { sleeping: Row[]; shown: string | null; closing: (slot: SessionSlot) => boolean } = $props();
 
   const holds = () => sleeping.some((row) => row.slot.label === shown);
   // Read once, through a call: the initial value is the whole of what the
@@ -37,7 +46,7 @@
   </summary>
   {#each sleeping as worker (worker.slot.label)}
     <div class="wk" class:on={shown === worker.slot.label}>
-      <span class="dot {railMark(worker.state)}"></span>
+      <span class="dot {closing(worker.slot) ? 'off settling' : railMark(worker.state)}"></span>
       <span class="nm">{worker.slot.label}</span>
     </div>
   {/each}

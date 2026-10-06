@@ -16,7 +16,7 @@
  */
 
 import { taskStatus } from './families';
-import { blocksOf, leafOf, type BackgroundTask, type Block, type ToolLeaf } from './leaves';
+import { blocksOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
 
 /** One line of the instance's own work. */
 export type SubLine =
@@ -100,7 +100,7 @@ export function dispatchFrames(messages: readonly unknown[], dispatchId: string)
   /** The task id the CLI assigned a child call, so its ending can be placed. */
   const owners = new Map<string, string>();
   /** What the roster said about each child call, by call id. */
-  const tasks = new Map<string, BackgroundTask>();
+  const tasks = new Map<string, TaskFact>();
   let brief: string | null = null;
   let model: string | null = null;
   let isolation: string | null = null;
