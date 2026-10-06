@@ -85,7 +85,7 @@ pub struct ReviewTurnView {
 /// What `review__reply` and `review__resolve` answer with: where the
 /// comment is anchored and the review round its latest turn belongs to,
 /// alongside the state it now holds. `number` is the review's 1-based
-/// ordinal, absent while the thread is filed in no round.
+/// ordinal, null while the thread is filed in no round.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CommentAnchorView {
     pub comment_id: String,
@@ -858,6 +858,7 @@ mod tests {
             .call(ToolInput { value: serde_json::json!({ "comment_id": "c-71", "text": "fixed" }) })
             .await;
         assert!(!out.is_error, "reply happy path: {:?}", out.blocks);
+        assert_eq!(out.blocks.len(), 1, "the anchor stays one text block: {out:?}");
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
         assert_eq!(parsed["comment_id"], "c-71");
         assert_eq!(parsed["file"], "src/chat/units.ts");
@@ -865,6 +866,32 @@ mod tests {
         assert_eq!(parsed["side"], "new");
         assert_eq!(parsed["number"], 3);
         assert_eq!(parsed["status"], "addressed");
+    }
+
+    /// A comment filed in no round yet carries a null `number`: the key is
+    /// always there, so a reader never has to tell an absent key from an
+    /// unfiled comment.
+    #[tokio::test]
+    async fn a_comment_in_no_round_reports_a_null_number() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.reply_anchor.lock() = CommentAnchorView {
+            comment_id: "c-9".to_owned(),
+            file: "src/x.rs".to_owned(),
+            line: 1,
+            side: "new",
+            status: "addressed",
+            number: None,
+        };
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewReply { facade, slot: caller_slot() };
+
+        let out = tool
+            .call(ToolInput { value: serde_json::json!({ "comment_id": "c-9", "text": "x" }) })
+            .await;
+        assert!(!out.is_error, "reply happy path: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        assert_eq!(parsed["number"], serde_json::Value::Null, "the key is present and null");
+        assert!(parsed.get("number").is_some(), "not dropped from the shape: {parsed}");
     }
 
     /// A resolve echoes the same anchor: the row says which comment, on
@@ -885,6 +912,7 @@ mod tests {
 
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c-68" }) }).await;
         assert!(!out.is_error, "resolve happy path: {:?}", out.blocks);
+        assert_eq!(out.blocks.len(), 1, "the anchor stays one text block: {out:?}");
         let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
         assert_eq!(parsed["comment_id"], "c-68");
         assert_eq!(parsed["file"], "src/chat/Inbound.svelte");

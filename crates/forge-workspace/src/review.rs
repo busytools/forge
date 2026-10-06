@@ -463,6 +463,11 @@ impl Workspace {
         let anchor = {
             let guard = self.db.lock();
             let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            // The anchor is read BEFORE the write: a read failure then
+            // means nothing has landed and a failure is honest. The same
+            // read failing after the append would report a landed reply as
+            // failed, and a retry would duplicate it.
+            let (thread, reviews) = comment_anchor_parts(db, project, branch, comment_id)?;
             let status = crate::store::review::append_reply(
                 db,
                 project,
@@ -483,7 +488,7 @@ impl Workspace {
                 );
                 format!("{error:#}")
             })?;
-            comment_anchor(db, project, branch, comment_id, status)?
+            crate::mcp::review::comment_anchor(&thread, &reviews, status)
         };
         self.note_review_activity(caller, project, branch, comment_id, true);
         Ok(anchor)
@@ -503,6 +508,9 @@ impl Workspace {
         let anchor = {
             let guard = self.db.lock();
             let db = guard.as_ref().ok_or_else(|| "review store is unavailable".to_owned())?;
+            // Read before the write, as `review_reply` does: a failure here
+            // is reported before anything has landed.
+            let (thread, reviews) = comment_anchor_parts(db, project, branch, comment_id)?;
             match crate::store::review::set_status(
                 db,
                 project,
@@ -526,7 +534,7 @@ impl Workspace {
                     return Err(format!("{error:#}"));
                 }
             }
-            comment_anchor(db, project, branch, comment_id, ReviewStatus::Resolved)?
+            crate::mcp::review::comment_anchor(&thread, &reviews, ReviewStatus::Resolved)
         };
         self.note_review_activity(caller, project, branch, comment_id, false);
         Ok(anchor)
@@ -672,22 +680,27 @@ impl Workspace {
     }
 }
 
-/// The anchor echo for a reply or resolve on `comment_id`: where the
-/// thread sits and the review round its latest turn is filed in.
-fn comment_anchor(
+/// The thread a reply or resolve names, and the branch's reviews: the
+/// parts an anchor echo is built from. Read before the write, so a
+/// failure cannot make a landed write look failed - and both calls
+/// double as the "no such comment" check, whose error the result would
+/// otherwise only surface as a missing thread.
+fn comment_anchor_parts(
     db: &crate::store::Db,
     project: &str,
     branch: &str,
     comment_id: &str,
-    status: ReviewStatus,
-) -> Result<crate::mcp::review::CommentAnchorView, String> {
+) -> Result<
+    (forge_primitives::review::ReviewThread, Vec<forge_primitives::review::ReviewSet>),
+    String,
+> {
     let missing = || format!("no review comment {comment_id} on ({project}, {branch})");
     let thread = crate::store::review::find_thread_by_id(db, project, branch, comment_id)
         .map_err(|error| format!("{error:#}"))?
         .ok_or_else(missing)?;
     let reviews = crate::store::review::load_reviews(db, project, branch)
         .map_err(|error| format!("{error:#}"))?;
-    Ok(crate::mcp::review::comment_anchor(&thread, &reviews, status))
+    Ok((thread, reviews))
 }
 
 #[cfg(test)]
@@ -1301,19 +1314,24 @@ mod tests {
 
     /// A reply and a resolve both answer with the comment's anchor and the
     /// review round its turn is filed in, so the caller can name the spot
-    /// and the round instead of only the comment id. `c-71` is filed in
-    /// the SECOND round, so the number cannot come out of "the project's
-    /// first review" and read right by accident.
+    /// and the round instead of only the comment id.
+    ///
+    /// **`c-71` spans rounds and the branch runs on past it**: it is filed
+    /// in rounds 1 and 2, and a third round seals only `c-1`. So the
+    /// number must be the round this comment's LATEST turn is filed in
+    /// (2) - the thread's first round reads 1 and the branch's newest
+    /// reads 3, and both are wrong here. Its side is Old while the other
+    /// fixture is New, so a hardcoded side fails too.
     #[test]
     fn reply_and_resolve_echo_the_comment_anchor() {
         use forge_primitives::review::{
             ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
         };
-        let thread = |id: &str, path: &str, line: u32| ReviewThread {
+        let thread = |id: &str, path: &str, line: u32, side: ReviewSide| ReviewThread {
             id: id.to_owned(),
             anchor: ReviewAnchor {
                 path: path.to_owned(),
-                side: ReviewSide::New,
+                side,
                 line,
                 content_hash: 1,
                 context: vec!["const glyph = ...".to_owned()],
@@ -1338,13 +1356,35 @@ mod tests {
         ws.save_review_threads(
             "forge",
             "feat",
-            &[thread("c-1", "src/other.rs", 3), thread("c-71", "src/chat/units.ts", 919)],
+            &[
+                thread("c-1", "src/other.rs", 3, ReviewSide::New),
+                thread("c-71", "src/chat/units.ts", 919, ReviewSide::Old),
+            ],
         );
         let reviewer = SessionSlot::from_str_for_test("reviewer");
-        ws.submit_review("forge", "feat", None, &["c-1".to_owned()], reviewer.clone())
-            .expect("first round");
-        ws.submit_review("forge", "feat", None, &["c-71".to_owned()], reviewer)
+        ws.submit_review(
+            "forge",
+            "feat",
+            None,
+            &["c-1".to_owned(), "c-71".to_owned()],
+            reviewer.clone(),
+        )
+        .expect("first round seals both");
+        // A fresh user turn on c-71, so the second round has something to
+        // seal and the thread spans two rounds.
+        let mut threads = ws.load_review_threads("forge", "feat").expect("load");
+        let c71 = threads.iter_mut().find(|t| t.id == "c-71").expect("c-71 is there");
+        c71.comments.push(ReviewComment {
+            author: ReviewAuthor::User,
+            text: "still unguarded".to_owned(),
+            at: "2026-07-24T10:00:00Z".to_owned(),
+            review_id: None,
+        });
+        ws.save_review_threads("forge", "feat", &threads);
+        ws.submit_review("forge", "feat", None, &["c-71".to_owned()], reviewer.clone())
             .expect("second round");
+        ws.submit_review("forge", "feat", None, &["c-1".to_owned()], reviewer)
+            .expect("third round, c-71 in neither the first nor the last");
         let caller = SessionSlot::from_str_for_test("worker");
 
         let replied = ws
@@ -1353,14 +1393,15 @@ mod tests {
         assert_eq!(replied.comment_id, "c-71");
         assert_eq!(replied.file, "src/chat/units.ts", "the file the comment is anchored to");
         assert_eq!(replied.line, 919);
-        assert_eq!(replied.side, "new");
-        assert_eq!(replied.number, Some(2), "the round this comment's turn is filed in");
+        assert_eq!(replied.side, "old", "the side the anchor holds, not a default");
+        assert_eq!(replied.number, Some(2), "the round this comment's latest turn is filed in");
         assert_eq!(replied.status, "addressed");
 
         let resolved = ws.review_resolve(&caller, "forge", "feat", "c-71").expect("resolve");
         assert_eq!(resolved.comment_id, "c-71");
         assert_eq!(resolved.file, "src/chat/units.ts", "the anchor survives the resolve");
         assert_eq!(resolved.line, 919);
+        assert_eq!(resolved.side, "old");
         assert_eq!(resolved.number, Some(2));
         assert_eq!(resolved.status, "resolved");
     }
