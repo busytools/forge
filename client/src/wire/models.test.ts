@@ -24,6 +24,8 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
           runtime: 'transcribe.cpp',
         },
         catalogue: null,
+        from: { from: 'pin' },
+        at: null,
       },
       {
         role: 'normalization',
@@ -33,11 +35,16 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
         state: 'loading',
         facts: { quant: 'F16', params: 596_000_000, license: 'Apache-2.0', runtime: 'llama.cpp' },
         catalogue: null,
+        from: { from: 'pin' },
+        at: null,
       },
     ],
     check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 2 },
     updates: [],
     rows: [],
+    install: { state: 'idle' },
+    activate: { state: 'idle' },
+    installed: [],
     ...over,
   } as unknown as DictateModelsWire;
 }
@@ -160,5 +167,54 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(wire.rows).toEqual([row]);
     expect(wire.updates[0]?.current).toEqual({ speed_x: 72.9, fleurs_en_wer: 5.08 });
     expect(wire.updates[0]?.candidate.speed?.xrt_wall).toBe(388.8);
+  });
+
+  /**
+   * Where a role's model came from is the fourth union this page narrows. An
+   * unreadable source keeps the row - the model is still in use - and says
+   * only that this client cannot place it.
+   */
+  it('narrows an active-model source outside the shipped set, keeping its own', () => {
+    const sourced = (from: unknown) =>
+      modelsFrom(payload({ in_use: [{ ...(payload().in_use[0] as InUseModel), from }] })).in_use[0]
+        ?.from;
+
+    expect(sourced({ from: 'borrowed' })).toEqual({ from: 'unknown' });
+    expect(sourced({ from: 'pin' })).toEqual({ from: 'pin' });
+    expect(sourced({ from: 'installed', variant: 'granite' })).toEqual({
+      from: 'installed',
+      variant: 'granite',
+    });
+    expect(sourced({ from: 'config', key: 'transcribe_model', variant: 'granite' })).toEqual({
+      from: 'config',
+      key: 'transcribe_model',
+      variant: 'granite',
+    });
+  });
+
+  /**
+   * A download state this client is older than says so rather than reading as
+   * idle: `idle` here would claim nothing is downloading on a forge that is.
+   */
+  it('narrows a download state it cannot read rather than drawing idle', () => {
+    expect(modelsFrom(payload({ install: { state: 'paused' } })).install).toEqual({
+      state: 'unknown',
+    });
+    expect(
+      modelsFrom(payload({ install: { state: 'downloading', file: 'x.gguf', got: 1, total: 2 } }))
+        .install,
+    ).toEqual({ state: 'downloading', file: 'x.gguf', got: 1, total: 2 });
+  });
+
+  /** The activation state carries a role, and it is narrowed the same way. */
+  it('narrows an activation state and the role it names', () => {
+    const activating = modelsFrom(
+      payload({ activate: { state: 'activating', role: 'summarizing', file: 'x.gguf' } }),
+    );
+
+    expect(activating.activate).toEqual({ state: 'activating', role: 'other', file: 'x.gguf' });
+    expect(modelsFrom(payload({ activate: { state: 'queued' } })).activate).toEqual({
+      state: 'unknown',
+    });
   });
 });

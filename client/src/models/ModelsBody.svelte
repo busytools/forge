@@ -1,13 +1,17 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
-  import type { DictateModelsWire } from '../wire/models';
+  import type { CatalogueRow, DictateModelsWire, ModelRole } from '../wire/models';
   import {
+    activateLine,
+    activeSource,
     candidateFacts,
     checkLine,
     entryUrl,
     inUseRowFacts,
+    installLine,
     modelChip,
     roleWord,
+    rowAction,
     search,
     updateFacts,
     type FactPart,
@@ -20,12 +24,27 @@
    * server, and a page that fell back to bundled data is the failure the
    * standard names. What the page does about a wire it has not got yet - the
    * loading line, the refusal - is the route's, in `Models.svelte`.
+   *
+   * The actions are the route's too: this component draws the controls and
+   * says which row was pressed, and never talks to the connection itself.
    */
   let {
     wire,
     oncheck,
+    oninstall,
+    onactivate,
+    ondeactivate,
+    refusal = null,
     mark = null,
-  }: { wire: DictateModelsWire; oncheck: () => void; mark?: string | null } = $props();
+  }: {
+    wire: DictateModelsWire;
+    oncheck: () => void;
+    oninstall: (variant: string) => void;
+    onactivate: (file: string) => void;
+    ondeactivate: (role: ModelRole) => void;
+    refusal?: string | null;
+    mark?: string | null;
+  } = $props();
 
   let query = $state('');
 
@@ -37,12 +56,55 @@
   const placeholder = $derived(
     `search ${wire.rows.length} variants - parakeet, granite, whisper, moonshine...`,
   );
+
+  // One download and one activation run at a time (the core refuses a
+  // second), so a control is disabled while either is in flight rather than
+  // offered and then refused.
+  const busy = $derived(
+    wire.install.state === 'downloading' || wire.activate.state === 'activating',
+  );
+  const transcribing = $derived(wire.in_use.find((model) => model.role === 'transcribing') ?? null);
+  const download = $derived(installLine(wire.install));
+  const building = $derived(activateLine(wire.activate));
 </script>
 
 {#snippet facts(list: FactPart[])}
   {#each list as part, i (`${i}/${part.text}`)}{#if i > 0}{' \u{b7} '}{/if}{#if part.hl}<b
         >{part.text}</b
       >{:else}{part.text}{/if}{/each}
+{/snippet}
+
+{#snippet op(opline: {
+  mark: string;
+  title: string;
+  detail: string | null;
+  percent: number | null;
+})}
+  <div class="status {opline.mark === 'live' ? '' : opline.mark}" role="status">
+    <span class="dot {opline.mark}"></span>
+    <span class="t">{opline.title}</span>
+    {#if opline.percent !== null}
+      <progress class="bar" max="100" value={opline.percent} aria-label="download progress"
+      ></progress>
+    {/if}
+    <span class="spacer"></span>
+    {#if opline.detail !== null}<span class="when">{opline.detail}</span>{/if}
+  </div>
+{/snippet}
+
+{#snippet control(entry: CatalogueRow)}
+  {@const action = rowAction(entry, wire.installed, transcribing)}
+  {#if action.do === 'install'}
+    <button class="chip" type="button" disabled={busy} onclick={() => oninstall(entry.variant)}
+      >{action.label}</button
+    >
+  {:else if action.do === 'activate'}
+    <button class="chip" type="button" disabled={busy} onclick={() => onactivate(action.file)}
+      >{action.label}</button
+    >
+  {:else if action.do === 'off'}
+    <span class="chip">{action.label}</span>
+  {/if}
 {/snippet}
 
 <main class="wrap models">
@@ -57,6 +119,18 @@
     </div>
     <a class="back" href="/">&larr; home</a>
   </header>
+
+  <!-- The page's own state: a refused action in the core's words, and
+       whichever download or activation is in flight. One place, because both
+       sections start the same work. -->
+  {#if refusal !== null}
+    <div class="status failed" role="alert">
+      <span class="dot failed"></span>
+      <span class="t">{refusal}</span>
+    </div>
+  {/if}
+  {#if download !== null}{@render op(download)}{/if}
+  {#if building !== null}{@render op(building)}{/if}
 
   <section class="block">
     <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
@@ -75,22 +149,32 @@
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
         {@const chip = modelChip(model.state)}
         {@const factsOf = inUseRowFacts(model)}
+        {@const source = activeSource(model.from)}
         <div class="model">
           <span class="role">{roleWord(model.role)}</span>
           <div class="facts">
             <div class="nm">{model.file}</div>
             <div class="meta">{@render facts(factsOf.pinned)}</div>
             <div class="meta">{@render facts(factsOf.measured)}</div>
+            <div class="meta src">{source}</div>
           </div>
           <div class="side">
+            {#if model.from.from === 'installed'}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() => ondeactivate(model.role)}>use the default</button
+              >
+            {/if}
             <span class="chip"><span class="dot {chip.mark}"></span>{chip.text}</span>
           </div>
         </div>
       {/each}
       {#if wire.models_dir !== null}
         <p class="note">
-          files live in <code>{wire.models_dir}</code> &middot; verified by size and sha-256 before any
-          load
+          files live in <code>{wire.models_dir}</code> &middot; a download is checked against the feed's
+          own byte length before any load; these files publish no digest
         </p>
       {/if}
     {/if}
@@ -117,13 +201,16 @@
         <span class="dot warn"></span>
         <span class="t">{update.candidate.display_name}</span>
         <span class="when">replaces the {roleWord(update.role)} model</span>
+        <span class="spacer"></span>
+        {@render control(update.candidate)}
         <span class="detail">
           {@render facts(updateFacts(update))}
         </span>
         <span class="detail">
-          Faster and more accurate than the model in use, on the feed's own test set. Taking it
-          means pinning it here and opening a pull request - the bench that checks a candidate on
-          your own recordings is not built yet.
+          Faster and more accurate than the model in use, on the feed's own test set. Install it,
+          then make it the transcribing model - it loads while the current one keeps running. The
+          bench that scores a candidate on your own recordings is not built yet, so every number
+          here is the feed's own.
         </span>
       </div>
     {/each}
@@ -184,6 +271,7 @@
                   <span class="col">{@render facts(face.kind)}</span>
                   <span class="go" aria-hidden="true">&#8599;</span>
                 </a>
+                {@render control(entry)}
               </li>
             {/each}
           </ul>

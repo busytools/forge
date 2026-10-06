@@ -410,13 +410,46 @@ describe('axe over the rendered pages', () => {
 
   /**
    * The models page with a feed in front of axe: the four sections, the
-   * proposal, the chips, the search form and the check's own control.
+   * proposal, the chips, the search form, the check's own control and the
+   * row controls.
    */
   it('draws the models page with no violations', async () => {
     const html = render(ModelsBody, {
-      props: { wire: modelsWire, oncheck: () => {} },
+      props: {
+        wire: modelsWire,
+        oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+      },
     }).body;
     expect(html, 'the feed drew, so axe saw it').toContain('update available');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The page with a download running: the progress line, its bar and the
+   * disabled controls a second press would land on.
+   */
+  it('draws a download in flight with no violations', async () => {
+    const html = render(ModelsBody, {
+      props: {
+        wire: {
+          ...modelsWire,
+          install: {
+            state: 'downloading',
+            file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+            got: 106_000_000,
+            total: 279_000_000,
+          },
+        },
+        oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+      },
+    }).body;
+    expect(html).toContain('downloading');
     expect(await idsOf(html)).toEqual([]);
   });
 
@@ -436,6 +469,9 @@ describe('axe over the rendered pages', () => {
           rows: [],
         },
         oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
       },
     }).body;
     expect(html).toContain('dictation is off');

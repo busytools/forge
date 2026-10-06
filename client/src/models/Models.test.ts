@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { DictateModelsWire } from '../wire/models';
+import type { DictateModelsWire, ModelRole } from '../wire/models';
 import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
 import { fakeConnection, MODELS, modelsWire } from './testing';
@@ -34,11 +34,30 @@ function offWire(): DictateModelsWire {
 }
 
 /** The page as it draws, mounted so a control can be reached. */
-function open(wire: DictateModelsWire = modelsWire, oncheck: () => void = () => {}) {
+function open(
+  wire: DictateModelsWire = modelsWire,
+  handlers: Partial<{
+    oncheck: () => void;
+    oninstall: (variant: string) => void;
+    onactivate: (file: string) => void;
+    ondeactivate: (role: ModelRole) => void;
+    refusal: string | null;
+  }> = {},
+) {
   const host = document.createElement('div');
   document.body.append(host);
   hosts.push(host);
-  const component = mount(ModelsBody, { target: host, props: { wire, oncheck } });
+  const component = mount(ModelsBody, {
+    target: host,
+    props: {
+      wire,
+      oncheck: handlers.oncheck ?? (() => {}),
+      oninstall: handlers.oninstall ?? (() => {}),
+      onactivate: handlers.onactivate ?? (() => {}),
+      ondeactivate: handlers.ondeactivate ?? (() => {}),
+      refusal: handlers.refusal ?? null,
+    },
+  });
   drawn.push(component);
   return host;
 }
@@ -76,7 +95,7 @@ describe('the models page as it draws', () => {
     expect(html).toContain('Granite Speech 5.0 470M TurboCTC');
     expect(html).toContain('388.8\u{d7} vs 72.9\u{d7}');
     expect(html).toContain('FLEURS-en 4.61 vs 5.08');
-    expect(html).toContain('a pull request');
+    expect(html).toContain('make it the transcribing model');
   });
 
   /**
@@ -91,14 +110,19 @@ describe('the models page as it draws', () => {
     });
 
     expect(host.textContent).toContain('checking the catalogue');
-    expect(host.querySelector('.status button'), 'a check in flight offers another').toBeNull();
+    const check = [...host.querySelectorAll('button')].find((c) =>
+      c.textContent?.includes('Check now'),
+    );
+    expect(check, 'a check in flight offers another').toBeUndefined();
   });
 
   /** The check's own click is what dispatches, once per press. */
   it('asks for a check when the control is pressed', () => {
     let checks = 0;
-    const host = open(modelsWire, () => {
-      checks += 1;
+    const host = open(modelsWire, {
+      oncheck: () => {
+        checks += 1;
+      },
     });
 
     const button = host.querySelector('button');
@@ -142,11 +166,11 @@ describe('the models page as it draws', () => {
   });
 
   /**
-   * **The hairline between rows survives the row becoming a link.** Every
-   * `.cand` is its `<li>`'s only child, so a `:last-child` written on the ROW
-   * matches all of them at once and the separator dies in the whole list -
-   * which is exactly what the anchor restructure did, silently. The rule
-   * belongs to the li.
+   * **The hairline between rows survives the row becoming a link, and then a
+   * control beside it.** A `:last-child` written on the ROW matches none of
+   * them - the control follows the anchor - so the separator would die in the
+   * whole list, which is what the anchor restructure did silently once
+   * already. The rule belongs to the li.
    *
    * **Asserted on selectors rather than computed styles**, and deliberately:
    * jsdom drops a `var()` inside a shorthand (`border-bottom: 1px solid
@@ -168,12 +192,15 @@ describe('the models page as it draws', () => {
     const rows = [...dom.window.document.querySelectorAll('.models .list li')];
     expect(rows.length, 'the search drew no rows to read').toBeGreaterThan(1);
 
-    // The hazard itself, so a reader sees why the rule cannot key on the row.
+    // The hazard itself, so a reader sees why the rule cannot key on the
+    // row: each row's control follows its anchor, so no `.cand` is its li's
+    // last child and a hairline rule written on the row would be dead in the
+    // whole list.
     for (const li of rows) {
       expect(
         li.querySelector('.cand')?.matches('.models .cand:last-child'),
-        "a row that is NOT its li's last child",
-      ).toBe(true);
+        "a row that IS its li's last child - the rule could key on the row",
+      ).toBe(false);
     }
     // And the rules that decide it: the last li drops the hairline, and no
     // `.cand` rule claims one.
@@ -258,6 +285,140 @@ describe('the models page as it draws', () => {
 
     expect(host.textContent).toContain('the catalogue could not be reached');
     expect(host.textContent).toContain('github.com answered 502');
+  });
+
+  /**
+   * The recommended candidate's own control, which is what makes the UPDATES
+   * line actionable rather than a statement. The fixture's candidate is
+   * already installed here, so the control is the activation and it names the
+   * file the core should load.
+   */
+  it('offers the recommended candidate as the transcribing model', () => {
+    const activated: string[] = [];
+    const host = open(modelsWire, { onactivate: (file) => activated.push(file) });
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('use for transcribing'),
+    );
+    expect(button, 'the update row drew no activation control').not.toBeUndefined();
+    button?.click();
+    flushSync();
+
+    expect(activated).toEqual(['granite-speech-5.0-470m-turboctc-Q4_K_M.gguf']);
+  });
+
+  /**
+   * A candidate this machine does not have offers the download instead, and
+   * the press names the variant - the feed's own verb, which is what the core
+   * resolves a doc and a URL from.
+   */
+  it('offers the download for a candidate this machine does not have', () => {
+    const installed: string[] = [];
+    const host = open(
+      { ...modelsWire, installed: [] },
+      { oninstall: (variant) => installed.push(variant) },
+    );
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('install Q4_K_M'),
+    );
+    expect(button, 'the update row drew no install control').not.toBeUndefined();
+    button?.click();
+    flushSync();
+
+    expect(installed).toEqual(['granite-speech-5.0-470m-turboctc']);
+  });
+
+  /**
+   * The download as it runs: the core's own file name, the whole percent and
+   * the bytes, with the progress element carrying the same figure.
+   */
+  it('draws a download in flight with its percent', () => {
+    const host = open({
+      ...modelsWire,
+      install: {
+        state: 'downloading',
+        file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+        got: 100_000_000,
+        total: 200_000_000,
+      },
+    });
+
+    expect(host.textContent).toContain('downloading granite-speech-5.0-470m-turboctc-Q4_K_M.gguf');
+    expect(host.textContent).toContain('50%');
+    expect(host.textContent).toContain('of 200 MB');
+    const bar = host.querySelector<HTMLProgressElement>('progress');
+    expect(bar?.value, 'the bar and the words must be the same figure').toBe(50);
+  });
+
+  /**
+   * **A failed download says why, in the core's words, and nothing calls a
+   * downloaded file verified.** These files publish no digest, so the check
+   * was the feed's own byte length - the page must not upgrade that into a
+   * claim nobody can back.
+   */
+  it("draws a failed download in the core's words without claiming a verification", () => {
+    const host = open({
+      ...modelsWire,
+      install: {
+        state: 'failed',
+        file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+        reason: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf is 5 bytes, expected 6',
+      },
+    });
+
+    expect(host.textContent).toContain('the download did not finish');
+    expect(host.textContent).toContain('is 5 bytes, expected 6');
+    expect(host.textContent?.toLowerCase()).not.toContain('verified');
+    expect(host.textContent).toContain('publish no digest');
+  });
+
+  /**
+   * Where the model in use came from, in the row's own words: a config pin
+   * names the key that has to go for the runtime to move the role, and the
+   * role offers no activation control while it stands.
+   */
+  it('names the [dictate] key that pins a role, and offers no activation for it', () => {
+    const host = open({
+      ...modelsWire,
+      // Nothing installed here, so the download control is the one the pinned
+      // role must keep.
+      installed: [],
+      in_use: modelsWire.in_use.map((model) =>
+        model.role === 'transcribing'
+          ? {
+              ...model,
+              from: {
+                from: 'config',
+                key: 'transcribe_model',
+                variant: 'cohere-transcribe-03-2026',
+              },
+            }
+          : model,
+      ),
+    });
+
+    expect(host.textContent).toContain('pinned by [dictate] transcribe_model');
+    const activation = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('use for transcribing'),
+    );
+    expect(activation, 'a pinned role drew an activation control').toBeUndefined();
+    // The download stays: a pinned role can still pull candidates down.
+    const download = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('install'),
+    );
+    expect(download, 'a pinned role lost its download control').not.toBeUndefined();
+  });
+
+  /** A refused action is drawn in the core's own words, at the page's top. */
+  it('draws a refused action in the words the core sent', () => {
+    const host = open(modelsWire, {
+      refusal:
+        '[dictate] transcribe_model pins this model in forge.toml; remove the key to change it here',
+    });
+
+    expect(host.textContent).toContain('[dictate] transcribe_model pins this model in forge.toml');
+    expect(host.querySelector('.status.failed[role="alert"]')).not.toBeNull();
   });
 });
 
@@ -351,5 +512,56 @@ describe('the models route as it draws', () => {
 
     expect(host.textContent).toContain('no models on this forge');
     expect(host.textContent, 'a refusal drew the loading line').not.toContain('Reading the models');
+  });
+
+  /**
+   * **The update row's control is the route's own action.** The body names
+   * the file; the route writes the command. A break between them is a control
+   * that draws and does nothing, with every drawing test still green.
+   */
+  it('dispatches the activation its row presses, and asks for the read', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('use for transcribing'),
+    );
+    button?.click();
+    flushSync();
+
+    expect(forge.dispatched).toEqual([
+      {
+        dictate_activate: {
+          role: 'transcribing',
+          file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+        },
+      },
+    ]);
+    expect(forge.refreshed, 'the press did not ask for the re-read').toEqual([MODELS]);
+  });
+
+  /**
+   * A refused dispatch arrives as an `error` frame, and the page draws the
+   * core's words. Without the listener a press on a pinned role's row would
+   * look like nothing happened - which is precisely what that refusal is.
+   */
+  it("draws a refused action in the core's words", async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
+    await tick();
+
+    forge.arrive({
+      kind: 'error',
+      what: 'dispatch',
+      why: '[dictate] transcribe_model pins this model in forge.toml; remove the key to change it here',
+    });
+    await tick();
+
+    expect(host.textContent).toContain('[dictate] transcribe_model pins this model in forge.toml');
   });
 });

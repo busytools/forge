@@ -7,17 +7,21 @@ import { describe, expect, it } from 'vitest';
 // assignment is read by `Date` from the next construction on.
 process.env.TZ = 'Asia/Kolkata';
 
-import type { CatalogueRow, InUseModel } from '../wire/models';
+import type { CatalogueRow, InstalledModel, InUseModel } from '../wire/models';
 import {
+  activateLine,
+  activeSource,
   candidateFacts,
   checkLine,
   clock,
   entryUrl,
+  installLine,
   inUseRowFacts,
   languagesLabel,
   modelChip,
   paramsLabel,
   roleWord,
+  rowAction,
   search,
   sizeLabel,
   speedLabel,
@@ -334,6 +338,8 @@ function inUse(over: Partial<InUseModel> = {}): InUseModel {
       languages: ['en'],
       speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 72.9 },
     },
+    from: { from: 'pin' },
+    at: null,
     ...over,
   };
 }
@@ -379,5 +385,129 @@ describe('the in-use rows', () => {
 
     expect(facts.pinned[0]).toEqual({ text: '1.56 GB', hl: true });
     expect(facts.measured).toEqual([{ text: 'transcribe.cpp' }, { text: 'not in the feed' }]);
+  });
+});
+
+describe("where a role's model came from", () => {
+  /** The config pin names its key, because that key is what has to go. */
+  it('names the [dictate] key a config pin holds the role with', () => {
+    expect(activeSource({ from: 'config', key: 'transcribe_model', variant: 'granite' })).toBe(
+      'pinned by [dictate] transcribe_model',
+    );
+  });
+
+  it('says the compiled default for a pin, and nothing for a source it cannot read', () => {
+    expect(activeSource({ from: 'pin' })).toBe('compiled default');
+    expect(activeSource({ from: 'installed', variant: 'granite' })).toBe('installed here');
+    expect(activeSource({ from: 'unknown' })).toBe('set by a newer forge');
+  });
+});
+
+/** One installed record, for the row controls. */
+function installed(over: Partial<InstalledModel> = {}): InstalledModel {
+  return {
+    variant: 'granite-speech-5.0-470m-turboctc',
+    file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+    url: 'https://huggingface.co/handy-computer/granite-gguf/resolve/main/x.gguf',
+    size: 279_000_000,
+    facts: { quant: 'Q4_K_M', params: 470_000_000, license: 'Apache-2.0', runtime: null },
+    at: '2026-10-06T09:00:00Z',
+    ...over,
+  };
+}
+
+describe('what a catalogue row offers', () => {
+  /** A model not on this machine: the control is the download. */
+  it('offers the download for a variant this machine does not have', () => {
+    expect(rowAction(row(), [], inUse())).toEqual({ do: 'install', label: 'install Q4_K_M' });
+  });
+
+  /** Installed and not active: the control is the activation, naming its file. */
+  it('offers the activation once the variant is installed', () => {
+    expect(rowAction(row(), [installed()], inUse())).toEqual({
+      do: 'activate',
+      label: 'use for transcribing',
+      file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+    });
+  });
+
+  /** The active model is a state, not an action. */
+  it('draws the active model as a state rather than a control', () => {
+    const active = inUse({ file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf' });
+
+    expect(rowAction(row(), [installed()], active)).toEqual({ do: 'off', label: 'active' });
+  });
+
+  /**
+   * **A pinned role draws no activation control.** `forge.toml` wins over
+   * every runtime pick, so the core refuses the dispatch - and a control
+   * that is always refused reads as broken. The download stays.
+   */
+  it('draws no activation control while [dictate] pins the role', () => {
+    const pinned = inUse({
+      role: 'transcribing',
+      from: { from: 'config', key: 'transcribe_model', variant: 'cohere-transcribe-03-2026' },
+    });
+
+    expect(rowAction(row(), [installed()], pinned)).toEqual({ do: 'off', label: 'installed' });
+    expect(rowAction(row({ variant: 'other' }), [], pinned)).toEqual({
+      do: 'install',
+      label: 'install Q4_K_M',
+    });
+  });
+
+  /** An entry with no download this machine would run offers nothing. */
+  it('offers nothing for an entry with no download', () => {
+    expect(rowAction(row({ download: null }), [], inUse())).toEqual({ do: 'none' });
+  });
+});
+
+describe('the operation lines', () => {
+  it('draws the download with its whole-percent figure', () => {
+    expect(
+      installLine({
+        state: 'downloading',
+        file: 'granite-Q4_K_M.gguf',
+        got: 50_000_000,
+        total: 100_000_000,
+      }),
+    ).toEqual({
+      mark: 'live',
+      title: 'downloading granite-Q4_K_M.gguf',
+      detail: '50% \u{b7} 50 MB of 100 MB',
+      percent: 50,
+    });
+  });
+
+  it("draws a failed download with the core's own reason", () => {
+    const line = installLine({
+      state: 'failed',
+      file: 'granite-Q4_K_M.gguf',
+      reason: 'granite-Q4_K_M.gguf is 5 bytes, expected 6',
+    });
+
+    expect(line?.mark).toBe('failed');
+    expect(line?.detail).toContain('is 5 bytes, expected 6');
+    expect(line?.percent).toBeNull();
+  });
+
+  it("draws nothing while idle, and an unreadable state as this client's own", () => {
+    expect(installLine({ state: 'idle' })).toBeNull();
+    expect(installLine({ state: 'unknown' })?.mark).toBe('off');
+    expect(activateLine({ state: 'idle' })).toBeNull();
+    expect(activateLine({ state: 'unknown' })?.mark).toBe('off');
+  });
+
+  /** A failed activation says the current model is still running. */
+  it('draws a failed activation with the model that keeps running', () => {
+    const line = activateLine({
+      state: 'failed',
+      role: 'transcribing',
+      file: 'granite-Q4_K_M.gguf',
+      reason: 'the file is not a model',
+    });
+
+    expect(line?.detail).toContain('the file is not a model');
+    expect(line?.detail).toContain('the current model is still running');
   });
 });

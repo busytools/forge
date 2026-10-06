@@ -8,8 +8,12 @@
 
 import { modelState } from '../home/view';
 import type {
+  ActivateState,
+  ActiveFrom,
   CatalogueCheck,
   CatalogueRow,
+  InstallState,
+  InstalledModel,
   InUseModel,
   ModelRole,
   ModelUpdate,
@@ -262,6 +266,123 @@ export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
       field.toLowerCase().includes(needle),
     ),
   );
+}
+
+/**
+ * Where an in-use row's model came from, in the row's own words. A config
+ * pin names its key, because that key is what has to go for the runtime to
+ * move the role.
+ */
+export function activeSource(from: ActiveFrom): string {
+  switch (from.from) {
+    case 'config':
+      return `pinned by [dictate] ${from.key}`;
+    case 'installed':
+      return 'installed here';
+    case 'pin':
+      return 'compiled default';
+    case 'unknown':
+      return 'set by a newer forge';
+  }
+}
+
+/**
+ * What one catalogue row offers, from the page's own state.
+ *
+ * The order is the rule the core enforces: an installed model can be made
+ * active, except while `forge.toml` pins the role - a pin cannot be moved at
+ * runtime, so the row says `installed` rather than drawing a control that
+ * would be refused. A feed entry with no download this machine would run
+ * offers nothing.
+ */
+export type RowAction =
+  | { do: 'install'; label: string }
+  | { do: 'activate'; label: string; file: string }
+  | { do: 'off'; label: string }
+  | { do: 'none' };
+
+export function rowAction(
+  row: CatalogueRow,
+  installed: InstalledModel[],
+  transcribing: InUseModel | null,
+): RowAction {
+  const record = installed.find((model) => model.variant === row.variant);
+  if (record !== undefined) {
+    if (transcribing?.file === record.file) return { do: 'off', label: 'active' };
+    if (transcribing?.from.from === 'config') return { do: 'off', label: 'installed' };
+    return { do: 'activate', label: 'use for transcribing', file: record.file };
+  }
+  if (row.download === null) return { do: 'none' };
+  return { do: 'install', label: `install ${row.download.quant}` };
+}
+
+/** One operation line: the download's or the activation's, drawn where the page's state is. */
+export interface OpLine {
+  mark: string;
+  title: string;
+  detail: string | null;
+  /** The whole-percent figure, when the work has one to draw. */
+  percent: number | null;
+}
+
+/** The download's line, or `null` when nothing is downloading. */
+export function installLine(install: InstallState): OpLine | null {
+  switch (install.state) {
+    case 'idle':
+      return null;
+    case 'downloading': {
+      const percent = install.total > 0 ? Math.floor((install.got / install.total) * 100) : null;
+      return {
+        mark: 'live',
+        title: `downloading ${install.file}`,
+        detail: `${percent === null ? '' : `${percent}% \u{b7} `}${sizeLabel(install.got)} of ${sizeLabel(install.total)}`,
+        percent,
+      };
+    }
+    case 'failed':
+      return {
+        mark: 'failed',
+        title: 'the download did not finish',
+        detail: `${install.file} \u{b7} ${install.reason}`,
+        percent: null,
+      };
+    case 'unknown':
+      return {
+        mark: 'off',
+        title: 'the download state is one this client cannot read',
+        detail: 'this client is older than the forge serving it',
+        percent: null,
+      };
+  }
+}
+
+/** The activation's line, or `null` when none is running. */
+export function activateLine(activate: ActivateState): OpLine | null {
+  switch (activate.state) {
+    case 'idle':
+      return null;
+    case 'activating':
+      return {
+        mark: 'live',
+        title: `loading ${activate.file}`,
+        detail: `${roleWord(activate.role)} \u{b7} dictation keeps running the current model until this one is up`,
+        percent: null,
+      };
+    case 'failed':
+      return {
+        mark: 'failed',
+        title: 'the model did not load',
+        detail: `${activate.file} \u{b7} ${activate.reason} \u{b7} the current model is still running`,
+        percent: null,
+      };
+    case 'unknown':
+      return {
+        mark: 'off',
+        title: 'the activation state is one this client cannot read',
+        detail: 'this client is older than the forge serving it',
+        percent: null,
+      };
+  }
 }
 
 /** An in-use row's two fact lines. */

@@ -1,10 +1,12 @@
 # Dictation models
 
 The page that shows which dictation models forge runs, what the runtime's
-own catalogue publishes, and what the feed proposes adopting. It is drawn
-from one snapshot of the `dictate_models` subject - the pins, the
-catalogue check, the proposals and every row of the feed - and redrawn from
-the update stream after it. The drawing it is held against is
+own catalogue publishes, which models this machine has downloaded, and how
+to bring a candidate onto the machine and make it the one dictation runs. It
+is drawn from one snapshot of the `dictate_models` subject - the models in
+use, the catalogue check, the proposals, every row of the feed, the installed
+set and the download/activation state - and redrawn from the update stream
+after it. The drawing it is held against is
 [web-dictate-models.html](./web-dictate-models.html), beside this page.
 
 It lives at `/models`, which is its own address rather than a session's: the
@@ -12,26 +14,30 @@ models belong to the forge, not to a seat, and the subject carries no slot.
 The header's way back is the home.
 
 This page is a client-only surface: the terminal draws no catalogue. The
-read and the check command are the server's (`Subject::DictateModels`,
-`Command::DictateCatalogueCheck`), and this page is the first view of
-either.
+read and the actions are the server's (`Subject::DictateModels`,
+`Command::DictateInstall`, `Command::DictateActivate`,
+`Command::DictateDeactivate`), and this page is the first view of either.
 
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
-| In use | one row per pinned model: its role, its file, the facts the pin declares - size, quant, parameters, digest, licence - and the feed's own measurement when it has one, with the live state as a chip | `in_use` |
-| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal, each a comparison against the model in use | `check`, `updates` |
-| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes. Each row links to the entry's own document | `rows` |
+| The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
+| In use | one row per model forge runs: its role, its file, the facts the spec declares - size, quant, parameters, digest, licence - the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
+| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal with the control that takes it | `check`, `updates` |
+| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
 
-**A pin is drawn from the pin.** The first fact line comes off the pinned
+**A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
-verifies before a load - and never off the feed, so a model the feed does
-not carry still draws whole. The second line is the feed's: its runtime
-measurement and its languages. A pin with no join says `not in the feed`
-rather than borrowing a measurement.
+checks before a load - and never off the feed, so a model the feed does not
+carry still draws whole. The second line is the feed's: its runtime
+measurement and its languages. A model with no join says `not in the feed`
+rather than borrowing a measurement. The third line says where the model
+came from: `compiled default`, `installed here`, or `pinned by [dictate]
+<key>` - naming the key, because that key is what has to go for the runtime
+to move the role.
 
 **The check's line is the feed's freshness and its proposal at once.** A
 fresh check with nothing to propose reads `up to date`; the same check with
@@ -41,13 +47,24 @@ server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
 the rows the last fetch left stand.
 
-**An update line says what to do with it, because there is nothing to press
-yet.** It names the model it would replace, draws the comparison the server
-admitted it on - the candidate's speed and error against the model in use -
-and says in words what taking it means: pinning it here and opening a pull
-request. The bench that checks a candidate on this machine's own recordings
-is the piece that is not built, and the line says so rather than leaving a
-reader to look for a control that is not there.
+**A row's control is the rule the core enforces, drawn.** A variant this
+machine does not have offers `install <quant>`; the press fetches the
+variant's doc, takes the quant the row draws, and downloads it. An installed
+variant that is not the active transcribing model offers `use for
+transcribing`; the press loads it while the current model keeps running -
+the core builds the new engine first, swaps, and only then drops the old
+one. The active model draws as a state (`active`) rather than a control, and
+an installed model under a config pin draws `installed` with no activation
+control at all: `forge.toml` wins over every runtime pick, so the core
+refuses that dispatch, and a control that is always refused reads as
+broken. The download stays on a pinned role - pulling candidates down is
+still allowed.
+
+**An update line carries its own control**, which is the recommendation made
+pressable: the candidate's comparison against the model in use, then the
+install or activation the rule above would draw. The bench that scores a
+candidate on this machine's own recordings is the piece that is not built,
+and the line says so rather than leaving a reader to look for it.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no button to press and nothing
@@ -58,12 +75,17 @@ fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
 
+**A download is never called verified.** These files publish no digest; the
+core checks a download against the feed's own byte length and the engine's
+own load, and the page's note says exactly that. Nothing on this page may
+print `verified`, `checksum` or a digest the spec did not declare.
+
 ## The states the page can be in
 
-- **The ordinary case**: both pins loaded, a fresh check, nothing to
+- **The ordinary case**: both models loaded, a fresh check, nothing to
   propose.
 - **An update available**: one line per in-service model worth adopting,
-  which can be one or both.
+  which can be one or both, each with the control that takes it.
 - **Dictation off**: `[dictate] enabled` is unset, so no model is in use,
   none is proposed, and the feed has not been read at all - the server
   loads the catalogue only for an enabled section, so the read answers no
@@ -83,12 +105,33 @@ uncovered by the pointer.
 - **An unknown check state**: a `state` tag this client is older than is
   narrowed once, where the read enters (`wire/models.ts`), into the page's
   own `unknown` - which says so. It never draws as `never`, which would
-  claim nothing has fetched on a machine that has.
-- **A model mid-load**: the pin's chip carries the state the preflight
+  claim nothing has fetched on a machine that has. The download and
+  activation states take the same treatment, and so does a source for a
+  model in use this client has no case for.
+- **A model mid-load**: the row's chip carries the state the preflight
   snapshot reports - waiting, verifying, fetching with its fraction,
   loading, loaded, or failed. The page re-reads when the load finishes
   (`dictate_availability`), so chips do not stay on `waiting` until the
   next check.
+- **A download in flight**: one line under the header naming the file, the
+  whole percent and the bytes, with a progress element carrying the same
+  figure. Every install and activation control is disabled while it runs -
+  the core takes one download at a time - so a second press is not offered
+  and then refused.
+- **A download that did not finish**: the same line in the failed tone, with
+  the file and the core's own reason (a byte-length disagreement carries
+  both lengths).
+- **An activation in flight**: a line naming the file being loaded and the
+  role it will take, saying that dictation keeps running the current model
+  until the new one is up.
+- **An activation that did not load**: the failed line carries the reason
+  and says the current model is still running - the core builds the new
+  engine before it swaps, so a failure changes nothing.
+- **A refused action**: the core's own words under the header, on an
+  `error` frame the connection answered the dispatch with - a second
+  download while one runs, or an activation on a role `forge.toml` pins.
+- **A pinned role**: its row's source line names the `[dictate]` key, no
+  row offers an activation for it, and the download controls stay.
 - **A connection that dropped**: the shell's own line stands above every
   page, and this one keeps what it last read.
 - **A search that matches nothing**: the query is named, with the hint that
@@ -101,11 +144,16 @@ uncovered by the pointer.
   surface, and the `.svc` card's own shape for the check and update lines.
 - The empty box (`dictation is off`, and the benchmark section) from the
   home's own empty treatment.
-- The chip, at this page's scale, from the dictation panel's.
+- The chip, at this page's scale, from the dictation panel's - as a state
+  when it is a span and as an action when it is a button.
 - The state marks: the four shapes are the shared vocabulary
   (`web.css`), and the two this page needed - the verdict disc and the
   verdict triangle - were added to that vocabulary rather than to the page,
   because the band draws the same two.
+- The `.status` line, for the download and activation states, is the check
+  and update lines' own shape; the download's bar is the platform's
+  `progress` element, so the value it draws is the value the words beside it
+  carry.
 
 ## The two widths
 

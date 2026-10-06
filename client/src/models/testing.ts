@@ -67,6 +67,8 @@ export const modelsWire: DictateModelsWire = modelsFrom({
         languages: ['en', 'fr', 'de', 'es'],
         speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 72.9 },
       },
+      from: { from: 'pin' },
+      at: null,
     },
     {
       role: 'normalization',
@@ -81,8 +83,29 @@ export const modelsWire: DictateModelsWire = modelsFrom({
         runtime: 'llama.cpp',
       },
       catalogue: null,
+      from: { from: 'pin' },
+      at: null,
     },
   ],
+  // The recommended candidate is already on this machine, so the update row
+  // draws the activation control rather than a download.
+  installed: [
+    {
+      variant: 'granite-speech-5.0-470m-turboctc',
+      file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+      url: 'https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+      size: 279_000_000,
+      facts: {
+        quant: 'Q4_K_M',
+        params: 470_000_000,
+        license: 'Apache-2.0',
+        runtime: 'transcribe.cpp',
+      },
+      at: '2026-10-06T09:00:00Z',
+    },
+  ],
+  install: { state: 'idle' },
+  activate: { state: 'idle' },
   check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
   updates: [
     {

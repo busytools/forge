@@ -2276,13 +2276,19 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .meta b { color: var(--muted); font-weight: 500; }
 .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
-/* the chip: the dictation panel's own chip, at this page's scale */
+/* the chip: the dictation panel's own chip, at this page's scale - a state
+   when it is a span, an action when it is a button */
 .models .chip { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
-/* `go` and its hover left with the Search button: the box filters as it is
-   typed, so no chip on this page starts anything. */
+.models button.chip { cursor: pointer; }
+.models button.chip:hover { border-color: var(--ctl); color: var(--text); }
+/* One download and one activation run at a time, so a second control is
+   disabled rather than offered and then refused; a disabled one still says
+   what it would do. */
+.models button.chip:disabled { opacity: .5; cursor: default; }
+.models button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* the check line and an update line: one shape, toned by what it says */
 .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -2298,6 +2304,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); padding-left: 19px; }
 .models .status .detail b { color: var(--muted); font-weight: 500; }
+/* The download's bar: the figure the words beside it carry, drawn the way the
+   platform draws it rather than as a div sized by a style attribute. */
+.models .status progress { flex: none; width: 140px; height: 7px;
+  accent-color: var(--accent); }
 
 /* the search the page does on this side: the feed is already here, and the
    box filters as it is typed - a button over data this side already holds
@@ -2318,8 +2328,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    it is an anchor, and an anchor is always its li's only child - a
    `:last-child` on the row would match every one of them and the separator
    would be dead in the whole list. */
-.models .list li { border-bottom: 1px solid var(--line); }
+.models .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+  border-bottom: 1px solid var(--line); }
 .models .list li:last-child { border-bottom: 0; }
+/* A row's control sits beside its link, never inside it: an anchor holding a
+   button is markup no browser will run. */
+.models .list li > .chip { flex: none; }
 .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
   color: inherit; text-decoration: none; }
 .models .cand:hover { background: var(--s2); }

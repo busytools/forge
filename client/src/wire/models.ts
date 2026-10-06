@@ -54,7 +54,20 @@ export interface CatalogueJoin {
   speed: SpeedFact | null;
 }
 
-/** One model forge runs: the pin, its live state, and the feed's join. */
+/**
+ * Where a role's model came from.
+ *
+ * `config` is `forge.toml` naming the model, which the runtime cannot move;
+ * `installed` is a model chosen on this machine; `pin` is the compiled
+ * default. `unknown` is a source this client is older than.
+ */
+export type ActiveFrom =
+  | { from: 'config'; key: string; variant: string }
+  | { from: 'installed'; variant: string }
+  | { from: 'pin' }
+  | { from: 'unknown' };
+
+/** One model forge runs: its declaration, its live state, and the feed's join. */
 export interface InUseModel {
   role: ModelRole;
   file: string;
@@ -65,7 +78,43 @@ export interface InUseModel {
   state: DictateModelState;
   facts: ModelFacts;
   catalogue: CatalogueJoin | null;
+  /** Where this role's model came from. */
+  from: ActiveFrom;
+  /** RFC 3339, when a runtime pick chose it. */
+  at: string | null;
 }
+
+/** One model this machine has downloaded from the feed. */
+export interface InstalledModel {
+  variant: string;
+  file: string;
+  /** The doc's own URL, kept so a reader can see where the bytes came from. */
+  url: string;
+  size: number;
+  facts: ModelFacts;
+  /** RFC 3339. */
+  at: string;
+}
+
+/**
+ * Where the last model download got to. `unknown` is a state tag this client
+ * is older than; drawing `idle` would claim nothing is downloading.
+ */
+export type InstallState =
+  | { state: 'idle' }
+  | { state: 'downloading'; file: string; got: number; total: number }
+  | { state: 'failed'; file: string; reason: string }
+  | { state: 'unknown' };
+
+/**
+ * Where the last model activation got to, with the same `unknown` rule as
+ * [`InstallState`].
+ */
+export type ActivateState =
+  | { state: 'idle' }
+  | { state: 'activating'; role: ModelRole; file: string }
+  | { state: 'failed'; role: ModelRole; file: string; reason: string }
+  | { state: 'unknown' };
 
 /** One catalogue entry, as the candidate rows draw it. */
 export interface CatalogueRow {
@@ -113,6 +162,9 @@ export interface DictateModelsWire {
   check: CatalogueCheck;
   updates: ModelUpdate[];
   rows: CatalogueRow[];
+  install: InstallState;
+  activate: ActivateState;
+  installed: InstalledModel[];
 }
 
 /** The roles the core names. */
@@ -120,6 +172,15 @@ const ROLES: Exclude<ModelRole, 'other'>[] = ['transcribing', 'normalization'];
 
 /** The check states the server writes; the fifth is this client's own. */
 const CHECK_STATES = ['never', 'checking', 'fresh', 'unreachable'] as const;
+
+/** The sources the core names for an active model; the fourth is this client's own. */
+const FROM_SOURCES = ['config', 'installed', 'pin'] as const;
+
+/** The install states the server writes; the fourth is this client's own. */
+const INSTALL_STATES = ['idle', 'downloading', 'failed'] as const;
+
+/** The activation states the server writes; the fourth is this client's own. */
+const ACTIVATE_STATES = ['idle', 'activating', 'failed'] as const;
 
 /**
  * The snapshot as the types above describe it, with every union member
@@ -138,16 +199,53 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       ...model,
       role: narrow(model.role, ROLES, 'other'),
       state: modelStateFrom(model.state),
+      from: fromFrom(model.from),
     })),
     check: checkFrom(data.check),
     updates: data.updates.map((update) => ({
       ...update,
       role: narrow(update.role, ROLES, 'other'),
     })),
+    install: tagged(data.install, INSTALL_STATES),
+    activate: activateFrom(data.activate),
   };
 }
 
 function checkFrom(check: CatalogueCheck): CatalogueCheck {
   const state: string = check.state;
   return (CHECK_STATES as readonly string[]).includes(state) ? check : { state: 'unknown' };
+}
+
+function fromFrom(from: ActiveFrom | undefined): ActiveFrom {
+  const source: string | undefined = from?.from;
+  return typeof source === 'string' && (FROM_SOURCES as readonly string[]).includes(source)
+    ? (from as ActiveFrom)
+    : { from: 'unknown' };
+}
+
+/**
+ * One tagged state, kept when its tag is one this client knows.
+ *
+ * A missing value is a server that predates the field - it narrows the same
+ * way an unknown tag does, because drawing `idle` would claim the work this
+ * field exists to report is not happening.
+ */
+function tagged<T extends { state: string }>(
+  value: T | undefined,
+  states: readonly string[],
+): T | { state: 'unknown' } {
+  if (value === undefined || typeof value.state !== 'string') return { state: 'unknown' };
+  return states.includes(value.state) ? value : { state: 'unknown' };
+}
+
+function activateFrom(activate: ActivateState | undefined): ActivateState {
+  const state: string | undefined = activate?.state;
+  if (typeof state !== 'string' || !(ACTIVATE_STATES as readonly string[]).includes(state)) {
+    return { state: 'unknown' };
+  }
+  const known = activate as ActivateState;
+  if (known.state === 'activating' || known.state === 'failed') {
+    return { ...known, role: narrow(known.role, ROLES, 'other') };
+  }
+  return known;
 }
