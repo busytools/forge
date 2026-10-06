@@ -34,6 +34,20 @@ pub fn run() {
                     std::sync::Arc::new(browser::BrowserHost::unavailable(why))
                 }
             };
+            // **The browser comes up with the app**, so it is there before
+            // any session asks for it: the launch takes seconds and a tool
+            // call should not pay for it, and a browser that cannot start
+            // says so here, in the client's log, rather than as a failed tool
+            // call nobody can attribute. Spawned rather than awaited - the
+            // window does not wait on a browser - and the driver stays lazy,
+            // since it exists to serve calls.
+            let starting = std::sync::Arc::clone(&host);
+            tauri::async_runtime::spawn(async move {
+                match starting.start().await {
+                    Ok(()) => tauri_plugin_log::log::info!("the browser is up"),
+                    Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
+                }
+            });
             app.manage(host);
             Ok(())
         })

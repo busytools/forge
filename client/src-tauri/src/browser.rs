@@ -106,6 +106,25 @@ impl BrowserHost {
         driver.call(tool, args).await
     }
 
+    /// Bring the browser up, without the driver.
+    ///
+    /// **The app's own start, so the browser is there before anything asks
+    /// for it** rather than being launched under the first tool call: a
+    /// session's call should not pay a cold launch, and a browser that cannot
+    /// start at all says so in the app's log at startup instead of as a
+    /// failed tool call. The driver stays lazy - it exists to serve calls,
+    /// and one with no calls to serve is a child process held for nothing.
+    ///
+    /// Serialized through the same lock [`Self::driver`] takes, so a start
+    /// racing a first call launches ONE browser rather than two onto one
+    /// profile.
+    pub async fn start(&self) -> Result<(), String> {
+        let paths = self.paths.clone()?;
+        let _held = self.inner.lock().await;
+        chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await?;
+        Ok(())
+    }
+
     /// The driver to use, starting the browser and the driver if either is
     /// not up.
     ///
@@ -170,6 +189,20 @@ mod tests {
             refused,
             Err("the app's data directory cannot be resolved".to_owned()),
             "the reason a client can act on, not a panic and not a silence",
+        );
+    }
+
+    /// Bringing the browser up answers the same reason a call would, and
+    /// does not panic: the app's start must survive a machine where the
+    /// directories or the stack are missing, since the window does not wait
+    /// on either.
+    #[tokio::test]
+    async fn starting_a_host_with_no_directories_answers_why() {
+        let host = BrowserHost::unavailable("the browser stack was never vendored".to_owned());
+        assert_eq!(
+            host.start().await,
+            Err("the browser stack was never vendored".to_owned()),
+            "the start says why rather than panicking at the app's boot",
         );
     }
 

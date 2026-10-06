@@ -53,6 +53,19 @@ async fn a_session_drives_a_page() {
     };
     let host = BrowserHost::new(paths.clone());
 
+    // **The app's own start**: the browser is up before any call asks for it,
+    // and a second start ATTACHES to that launch rather than making another
+    // one - one browser for the app, however many times it is ensured.
+    host.start().await.expect("the browser comes up with the app");
+    let launched = forge_client::browser::chromium::read_active_port(&paths.profile)
+        .expect("the start wrote its port file");
+    host.start().await.expect("a second start attaches");
+    assert_eq!(
+        forge_client::browser::chromium::read_active_port(&paths.profile).map(|active| active.port),
+        Some(launched.port),
+        "the second start attached to the launch that was already there",
+    );
+
     let page = "data:text/html,<h1>forge browser host</h1>";
     let navigated = host.call("browser_navigate", json!({ "url": page })).await;
     let port = forge_client::browser::chromium::read_active_port(&paths.profile)
