@@ -87,9 +87,12 @@ line under it.
   newer release is published, checked once at launch. It is a control, where
   the CLI notice beside it is not: clicking installs the update and the line
   becomes `ready - restart to finish`, which is the click that swaps into the
-  new build. A failed install draws `- update failed, retry`, and a browser
-  tab against the same forge draws none of this - there is no shell to
-  update.
+  new build. On the phone the same click downloads and checks the APK and the
+  line becomes `ready - install it`, which hands it to the system installer;
+  tapping again re-opens that prompt from the checked file rather than
+  downloading twice. A failed install draws `- update failed, retry`, and a
+  browser tab against the same forge draws none of this - there is no shell
+  to update.
 - **Connected, waiting for the first read**: the door has gone and the fleet
   has not arrived. The server builds a home snapshot by reading each
   project's working tree, so the window is not instant, and it is its own

@@ -123,6 +123,21 @@ names and only warns when that is not the pinned one, so
 `tauri.conf.json`'s pubkey and the signed version with the release's, the way
 `client-android-release` reads the APK's signer back.
 
+The phone updates from the same manifest. Its top-level `version` is what the
+app compares against its own, and the `android` block beside `platforms`
+carries the APK's `url` (the desktop parser ignores that key). The download
+is checked before it can reach the installer - its signer against this
+install's own signer, which is the release keystore's on a release build and
+is exactly the identity the system installer checks anyway, and its
+`versionName` against the manifest's version. A file that fails is deleted
+rather than reused; a file that passes is kept in the cache, so handing it to
+the installer again is a tap with no second download. `REQUEST_INSTALL_PACKAGES`
+is what the handoff needs, the installer prompt is the confirmation, and no
+silent path exists for a sideloaded app. The Android side is
+`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt` plus the manifest
+permission, both project source that `tauri android init` would regenerate
+away - re-apply them the way the section below describes.
+
 ## The Android target
 
 The same shell builds for Android through Tauri's own CLI. It wants the
@@ -144,12 +159,14 @@ genuinely cannot.
 
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
-Gradle files are project source rather than build output, so its three
-local edits - the manifest's mic permissions, the activity's back handling
-and the release signing block in `app/build.gradle.kts` - survive a clean
-clone. Re-running `tauri android init` overwrites them, so re-apply them
-after one. The debug APK is one command, and it builds the frontend first
-the same way the desktop build does:
+Gradle files are project source rather than build output, so its four
+local edits - the manifest's mic permissions and its
+`REQUEST_INSTALL_PACKAGES`, the activity's back handling, the update plugin
+(`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and the release
+signing block in `app/build.gradle.kts` - survive a clean clone. Re-running
+`tauri android init` overwrites them, so re-apply them after one. The debug
+APK is one command, and it builds the frontend first the same way the
+desktop build does:
 
 ```sh
 npm run tauri -- android build --debug --apk --ci

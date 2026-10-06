@@ -5,6 +5,9 @@
          so a missing one denies the getUserMedia prompt outright. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- The app hands a downloaded APK to the system installer (UpdatePlugin);
+         without this the install intent is refused. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
