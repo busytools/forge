@@ -636,7 +636,7 @@ impl std::io::Write for ProgressWriter<'_, '_> {
 #[cfg(test)]
 mod tests_cached_verification {
     use super::*;
-    use crate::{ConfigBuilder, ModelSpec};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::Write as _;
@@ -650,6 +650,7 @@ mod tests_cached_verification {
             url: "http://127.0.0.1:1/unreachable".into(),
             size: body.len() as u64,
             sha256: hex::encode(Sha256::digest(body)),
+            facts: ModelFacts::default(),
         }
     }
 
@@ -873,7 +874,7 @@ mod tests_cached_verification {
 #[cfg(test)]
 mod tests_download {
     use super::*;
-    use crate::{ConfigBuilder, ModelSpec};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -989,6 +990,7 @@ mod tests_download {
             url: format!("{}{path}", server.base),
             size: body.len() as u64,
             sha256: hex::encode(Sha256::digest(body)),
+            facts: ModelFacts::default(),
         }
     }
 
@@ -1311,7 +1313,7 @@ mod tests_download {
 #[cfg(test)]
 mod tests_digest_cache {
     use super::*;
-    use crate::{ConfigBuilder, ModelSpec};
+    use crate::{ConfigBuilder, ModelFacts, ModelSpec};
     use std::fs;
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
@@ -1328,6 +1330,7 @@ mod tests_digest_cache {
             url: "http://127.0.0.1:1/unreachable".into(),
             size: body.len() as u64,
             sha256: hex::encode(Sha256::digest(body)),
+            facts: ModelFacts::default(),
         }
     }
 
