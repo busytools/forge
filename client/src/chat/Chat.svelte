@@ -60,10 +60,10 @@
   const REACH = 400;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
-  /** How long after a wheel, touch or scrolling key its events read as the reader's. */
+  /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
   const READER_WINDOW_MS = 250;
-  /** The keys a focused row scrolls the column with. */
-  const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+  /** The keys a focused row scrolls the column UP with, which are the ones that may disarm. */
+  const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
 
   /**
    * The conversation, held as a VALUE: a frame replaces the record rather than
@@ -282,14 +282,20 @@
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
     // The reader's own input, and the only evidence of a hand the column has:
-    // scroll events carry no source, so the gesture has to be heard separately.
+    // scroll events carry no source, so the gesture has to be heard separately
+    // - and only the UP-capable kinds, because a gesture that cannot move the
+    // reader up cannot have moved them up (the terminal disarms from
+    // `scroll_up` alone). A touch arms whole: it carries no direction.
     const arm = () => {
       readerAt = performance.now();
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (SCROLL_KEYS.has(event.key)) arm();
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) arm();
     };
-    node.addEventListener('wheel', arm, { passive: true });
+    const onKey = (event: KeyboardEvent) => {
+      if (SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) arm();
+    };
+    node.addEventListener('wheel', onWheel, { passive: true });
     node.addEventListener('touchstart', arm, { passive: true });
     node.addEventListener('touchmove', arm, { passive: true });
     node.addEventListener('keydown', onKey);
@@ -314,7 +320,7 @@
     if (content !== null) watcher.observe(content);
     return () => {
       watcher.disconnect();
-      node.removeEventListener('wheel', arm);
+      node.removeEventListener('wheel', onWheel);
       node.removeEventListener('touchstart', arm);
       node.removeEventListener('touchmove', arm);
       node.removeEventListener('keydown', onKey);

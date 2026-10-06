@@ -530,12 +530,30 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel'));
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
     readerAt(FOOT - 2);
     server.frame();
     await settle();
 
     expect(pinned(), 'their own wheel moved them, at any distance').toEqual([]);
+  });
+
+  it('does not arm on a wheel that can only move the reader down', async () => {
+    // **A gesture that cannot move the reader up cannot have moved them up.**
+    // A wheel-down at the foot scrolls nothing, and arming on it would excuse
+    // the next adjuster write as the reader's - the drift in a narrower window.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    readerAt(FOOT - 2);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a wheel-down did not move them').toEqual([PIN]);
   });
 
   it('opens at the foot after the seat changes under a scrolled-up reader', async () => {
