@@ -34,6 +34,26 @@ export function firstText(content: unknown): string | null {
   return null;
 }
 
+/**
+ * The text blocks AFTER the first, in order.
+ *
+ * A card reads the first block as its answer; a result that carries more -
+ * `review__list` appends a line naming the other branches that have reviews -
+ * has still said all of it, so what the card does not read is drawn beside it
+ * rather than dropped (rule 25).
+ */
+export function trailingTexts(content: unknown): string[] {
+  const texts: string[] = [];
+  let seen = 0;
+  for (const held of Array.isArray(content) ? content : []) {
+    const block = held as { type?: unknown; text?: unknown } | null;
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+    seen += 1;
+    if (seen > 1) texts.push(block.text);
+  }
+  return texts;
+}
+
 /** `value` as a plain record, or an empty one for everything else. */
 export function obj(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};

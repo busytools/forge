@@ -12,7 +12,7 @@
 
 import { untilOf } from '../session/view';
 import { forgeFamilyOf, type ForgeFamily } from './families';
-import { firstText, obj, parsedText, str } from './result-json';
+import { firstText, obj, parsedText, str, trailingTexts } from './result-json';
 import { isSlackId } from './text';
 
 /** One word on a forge row. The tone colours the word; the word carries it. */
@@ -58,7 +58,12 @@ export type ForgePiece =
   | { kind: 'warnline'; label: string; text: string }
   | { kind: 'comments'; items: ForgeComment[] }
   /** What a query found nothing of, said in words rather than drawn as a gap. */
-  | { kind: 'empty'; text: string };
+  | { kind: 'empty'; text: string }
+  /**
+   * A block the card itself does not read - a result's second text part -
+   * drawn as the words it is rather than dropped.
+   */
+  | { kind: 'text'; text: string };
 
 /** One forge call as its card. */
 export interface ForgeCard {
@@ -454,13 +459,25 @@ export function forgeCardOf(
     return firstText(result.content) === null ? null : acknowledgementCard(verbOf(name), input);
   }
   const answer = parsedText(result.content);
-  if (family === 'tasks') return tasksCard(verbOf(name), input, answer);
-  if (family === 'cron') return cronCard(verbOf(name), answer);
-  if (family === 'gotify') return gotifyCard(verbOf(name), answer);
-  if (family === 'slack') return slackCard(verbOf(name), input, answer);
-  if (family === 'review') return reviewCard(verbOf(name), input, answer);
-  if (family === 'agents') return agentsCard(verbOf(name), input, answer);
-  return null;
+  const card =
+    family === 'tasks'
+      ? tasksCard(verbOf(name), input, answer)
+      : family === 'cron'
+        ? cronCard(verbOf(name), answer)
+        : family === 'gotify'
+          ? gotifyCard(verbOf(name), answer)
+          : family === 'slack'
+            ? slackCard(verbOf(name), input, answer)
+            : family === 'review'
+              ? reviewCard(verbOf(name), input, answer)
+              : agentsCard(verbOf(name), input, answer);
+  // A result that said more than the one block the card reads draws the rest
+  // beside the card: the card replaces the body, and a block it swallowed
+  // would be the one thing a reader could not find.
+  if (card !== null) {
+    for (const text of trailingTexts(result.content)) card.pieces.push({ kind: 'text', text });
+  }
+  return card;
 }
 
 /**

@@ -57,6 +57,8 @@
         {/if}
       </div>
     {/each}
+  {:else if piece.kind === 'text'}
+    <div class="fam-text">{piece.text}</div>
   {:else if piece.kind === 'empty'}
     <div class="fam-empty">
       <Icon name={glyph} class="fam-empty-glyph" />

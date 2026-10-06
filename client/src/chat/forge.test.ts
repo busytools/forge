@@ -541,6 +541,41 @@ describe('the review card', () => {
     expect(card?.chips).toEqual([{ text: 'resolved', tone: 'ok' }]);
   });
 
+  it('keeps every text block a result carried, not only the one the card reads', () => {
+    // `review__list` appends a second block naming the other branches that
+    // have reviews; a card that read block one and drew INSTEAD of the body
+    // would put that sentence nowhere.
+    const rows = [
+      {
+        review_id: 'rv-1',
+        number: 1,
+        summary: 'First pass',
+        created_at: '2026-10-05T09:00:00Z',
+        open: 0,
+        addressed: 0,
+        resolved: 0,
+        outdated: 0,
+      },
+    ];
+    const card = forgeCardOf(
+      'mcp__forge__review__list',
+      {},
+      {
+        content: [
+          { type: 'text', text: JSON.stringify(rows) },
+          { type: 'text', text: 'this project also has reviews on: work/x.' },
+        ],
+        is_error: false,
+      },
+    );
+
+    expect(card?.title, 'the card still draws').toBe('review #1 - First pass');
+    expect(card?.pieces.at(-1), 'and the block it does not read draws beside it').toEqual({
+      kind: 'text',
+      text: 'this project also has reviews on: work/x.',
+    });
+  });
+
   it('tallies a review detail, drawing each comment as its own block', () => {
     const comment = (id: string, file: string, status: string, turns: number) => ({
       comment_id: id,

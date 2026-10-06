@@ -2125,6 +2125,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .fam-empty { display: flex; align-items: center; gap: 8px; padding: 7px 0 3px;
   color: var(--dim); font-size: var(--fs-base); }
 .fam-empty-glyph { width: 13px; height: 13px; flex: none; }
+/* A result's later text block, drawn as the words it is: the card reads the
+   first block, and the rest are still things the call said. */
+.fam-text { color: var(--muted); font-size: var(--fs-base); margin: 5px 0;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 .fam-meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin: 5px 0 3px; overflow-wrap: anywhere; }
 /* A label and its value, spaced: the run reads `estimate 2h`, and a label
