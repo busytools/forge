@@ -273,6 +273,9 @@ pub fn fetch_catalogue(source: &CatalogueSource) -> Result<Catalogue, Error> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60))
+        // api.github.com refuses any request without one, so a client
+        // without this reads every check as unreachable.
+        .user_agent(concat!("forge-dictate/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| Error::Http { url: source.listing.clone(), source: error })?;
     let listing = get_bounded_text(&client, &source.listing, MAX_RESPONSE_BYTES)?;
@@ -475,8 +478,13 @@ pub fn write_catalogue_cache(dir: &Path, catalogue: &Catalogue) -> Result<(), Er
         message: format!("the catalogue did not serialise: {source}"),
     })?;
     std::fs::create_dir_all(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+    // Written beside and renamed over, like the model files: a process
+    // that dies mid-write leaves the previous cache standing rather
+    // than a truncated one the offline read would find.
     let file = dir.join(CATALOGUE_CACHE_FILE);
-    std::fs::write(&file, body).map_err(|source| Error::Io { path: file, source })
+    let partial = dir.join(format!("{CATALOGUE_CACHE_FILE}.tmp"));
+    std::fs::write(&partial, body).map_err(|source| Error::Io { path: partial.clone(), source })?;
+    std::fs::rename(&partial, &file).map_err(|source| Error::Io { path: file, source })
 }
 
 #[cfg(test)]
@@ -628,10 +636,16 @@ mod tests_catalogue_fetch {
     }
 
     /// Loopback HTTP/1.1 server answering fixed paths, one request per
-    /// connection. Anything unrouted answers 404.
-    fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+    /// connection. Anything unrouted answers 404. Every request head it
+    /// saw is readable from the returned list, which is how the
+    /// User-Agent a real host demands is asserted rather than assumed.
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> (String, Seen) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&seen);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -641,12 +655,15 @@ mod tests_catalogue_fetch {
                     continue;
                 }
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let mut head = request;
                 loop {
                     let mut line = String::new();
                     if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
                         break;
                     }
+                    head.push_str(&line);
                 }
+                recorder.lock().unwrap().push(head);
                 let (status, body) = match routes.iter().find(|(route, _, _)| *route == path) {
                     Some((_, status, body)) => (*status, body.clone()),
                     None => (404, Vec::new()),
@@ -660,7 +677,7 @@ mod tests_catalogue_fetch {
                 let _ = stream.flush();
             }
         });
-        base
+        (base, seen)
     }
 
     fn listing(names: &[&str]) -> Vec<u8> {
@@ -681,7 +698,7 @@ mod tests_catalogue_fetch {
     /// the release the page stamps as the catalogue's version.
     #[test]
     fn every_listed_entry_is_fetched_and_parsed() {
-        let base = serve(vec![
+        let (base, _seen) = serve(vec![
             ("/catalog", 200, listing(&["a.json", "b.json", "_schema.json", "README.md"])),
             ("/catalog/a.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
             ("/catalog/b.json", 200, fixture("granite-speech-5.0-470m-turboctc.json").into_bytes()),
@@ -704,7 +721,7 @@ mod tests_catalogue_fetch {
     /// skipped and counted, and the count crosses.
     #[test]
     fn an_entry_that_does_not_parse_is_skipped_and_counted() {
-        let base = serve(vec![
+        let (base, _seen) = serve(vec![
             ("/catalog", 200, listing(&["good.json", "broken.json"])),
             (
                 "/catalog/good.json",
@@ -726,7 +743,7 @@ mod tests_catalogue_fetch {
     /// catalogue would draw a healthy page over a broken fetch.
     #[test]
     fn a_feed_where_nothing_parses_is_refused_rather_than_answered_empty() {
-        let base = serve(vec![
+        let (base, _seen) = serve(vec![
             ("/catalog", 200, listing(&["broken.json"])),
             ("/catalog/broken.json", 200, b"{}".to_vec()),
         ]);
@@ -742,7 +759,7 @@ mod tests_catalogue_fetch {
     /// fetch and the status is what a reader needs to see.
     #[test]
     fn a_listing_that_answers_an_error_is_refused_with_its_status() {
-        let base = serve(vec![("/catalog", 502, b"bad gateway".to_vec())]);
+        let (base, _seen) = serve(vec![("/catalog", 502, b"bad gateway".to_vec())]);
 
         let err = fetch_catalogue(&source(&base)).expect_err("a 502 listing is not a feed");
         assert!(
@@ -755,7 +772,7 @@ mod tests_catalogue_fetch {
     /// missing still has all its entries.
     #[test]
     fn a_missing_release_is_not_a_failed_fetch() {
-        let base = serve(vec![
+        let (base, _seen) = serve(vec![
             ("/catalog", 200, listing(&["a.json"])),
             ("/catalog/a.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
             // /release unrouted: 404.
@@ -772,7 +789,7 @@ mod tests_catalogue_fetch {
     #[test]
     fn an_oversized_entry_is_skipped_rather_than_buffered() {
         let oversized = vec![b'x'; usize::try_from(MAX_RESPONSE_BYTES).unwrap() + 1];
-        let base = serve(vec![
+        let (base, _seen) = serve(vec![
             ("/catalog", 200, listing(&["huge.json", "good.json"])),
             ("/catalog/huge.json", 200, oversized),
             ("/catalog/good.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
@@ -781,6 +798,72 @@ mod tests_catalogue_fetch {
         let catalogue = fetch_catalogue(&source(&base)).expect("the good entry assembles");
         assert_eq!(catalogue.entries.len(), 1, "the oversized one never becomes an entry");
         assert_eq!(catalogue.skipped, 1, "and it is counted as skipped");
+    }
+
+    /// A listing wide enough for several workers, with one unreadable
+    /// document mid-list, must still assemble the rest and count the
+    /// loss: a break in the per-chunk error arm would cost the whole
+    /// worker's slice, and every narrow fixture would stay green while it
+    /// did.
+    #[test]
+    fn a_wide_listing_assembles_across_workers_with_the_loss_counted() {
+        fn tiny(variant: &str) -> Vec<u8> {
+            format!(r#"{{"schema": "transcribe-catalog-v1", "variant": "{variant}"}}"#).into_bytes()
+        }
+        let names = [
+            "e0.json", "e1.json", "e2.json", "e3.json", "e4.json", "e5.json", "e6.json", "e7.json",
+        ];
+        let (base, _seen) = serve(vec![
+            ("/catalog", 200, listing(&names)),
+            ("/catalog/e0.json", 200, tiny("e0")),
+            ("/catalog/e1.json", 200, tiny("e1")),
+            // Unreadable, and deliberately NOT last in its worker's
+            // chunk: an error arm that abandons the slice would lose the
+            // documents behind it.
+            ("/catalog/e2.json", 200, b"{ not an entry".to_vec()),
+            ("/catalog/e3.json", 200, tiny("e3")),
+            ("/catalog/e4.json", 200, tiny("e4")),
+            ("/catalog/e5.json", 200, tiny("e5")),
+            ("/catalog/e6.json", 200, tiny("e6")),
+            ("/catalog/e7.json", 200, tiny("e7")),
+        ]);
+
+        let catalogue = fetch_catalogue(&source(&base)).expect("the feed assembles");
+
+        let mut variants: Vec<&str> =
+            catalogue.entries.iter().map(|entry| entry.variant.as_str()).collect();
+        variants.sort_unstable();
+        assert_eq!(
+            variants,
+            ["e0", "e1", "e3", "e4", "e5", "e6", "e7"],
+            "every readable document, whichever worker's slice it fell in"
+        );
+        assert_eq!(catalogue.skipped, 1, "and the one unreadable document is counted, not fatal");
+    }
+
+    /// api.github.com refuses any request with no User-Agent, and the
+    /// listing is the spine of the fetch: a client without one reads
+    /// Unreachable forever, with every call refused before a single entry
+    /// is read.
+    #[test]
+    fn every_request_carries_a_user_agent() {
+        let (base, seen) = serve(vec![
+            ("/catalog", 200, listing(&["a.json"])),
+            ("/catalog/a.json", 200, fixture("cohere-transcribe-03-2026.json").into_bytes()),
+            ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
+        ]);
+
+        fetch_catalogue(&source(&base)).expect("the feed must assemble");
+
+        let heads = seen.lock().unwrap();
+        assert_eq!(heads.len(), 3, "the listing, the entry and the release: {heads:?}");
+        for head in heads.iter() {
+            assert!(
+                head.to_ascii_lowercase().contains("user-agent: forge-dictate/"),
+                "api.github.com refuses a request with no User-Agent, so every call must carry \
+                 the crate's own: {head}"
+            );
+        }
     }
 
     /// The cache is what lets a page read the last-known feed offline,
@@ -808,6 +891,40 @@ mod tests_catalogue_fetch {
             .expect("the write must be readable")
             .expect("a written cache is present");
         assert_eq!(back, catalogue, "the cache carries the feed as it was fetched");
+    }
+
+    /// A write that cannot complete must leave the last good cache
+    /// standing: the offline read is what the cache exists for, and a
+    /// truncated file is exactly what it would find after a crash
+    /// mid-write.
+    ///
+    /// The sidecar is junked into a directory - the shape a killed
+    /// process leaves - so the write cannot land. A writer that writes
+    /// the cache in place would replace the good file anyway and report
+    /// success.
+    #[test]
+    fn a_failed_cache_write_leaves_the_last_one_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Catalogue {
+            fetched_at: "2026-10-06T06:12:00Z".to_owned(),
+            release: Some("v0.3.1".to_owned()),
+            entries: vec![parse_entry(&fixture("cohere-transcribe-03-2026.json")).expect("parse")],
+            skipped: 0,
+        };
+        write_catalogue_cache(dir.path(), &first).expect("the first write lands");
+
+        std::fs::create_dir(dir.path().join(format!("{CATALOGUE_CACHE_FILE}.tmp")))
+            .expect("the sidecar is junked");
+        let second = Catalogue { fetched_at: "later".to_owned(), ..first.clone() };
+        assert!(
+            write_catalogue_cache(dir.path(), &second).is_err(),
+            "a write that cannot land must report it rather than claim success"
+        );
+
+        let back = read_catalogue_cache(dir.path())
+            .expect("the cache still reads")
+            .expect("and is still there");
+        assert_eq!(back, first, "the last good cache stands through the failed write");
     }
 
     /// A cache this build cannot read is refused by name; the caller
