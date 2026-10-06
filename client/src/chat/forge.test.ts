@@ -683,9 +683,12 @@ describe('the reads that draw a list or a fact', () => {
       {},
       result(JSON.stringify(['Backups', 'Alerts'])),
     );
-    expect(card?.title).toBe('applications');
-    expect(card?.figure).toBe('2');
-    expect(itemsOf(card).map((item) => item.text)).toEqual(['Backups', 'Alerts']);
+    expect(card?.title, 'the read is named by what it lists').toBe('applications');
+    expect(card?.figure, 'how many the server knows').toBe('2');
+    expect(
+      itemsOf(card).map((item) => item.text),
+      'each under its own name',
+    ).toEqual(['Backups', 'Alerts']);
   });
 
   it('draws a Slack search as its hits, the query in the title', () => {
@@ -707,8 +710,8 @@ describe('the reads that draw a list or a fact', () => {
     expect(card?.title, 'the query is the subject, the workspace follows').toBe(
       'search \u{b7} "smoke test" \u{b7} acme',
     );
-    expect(card?.figure).toBe('1 hits');
-    expect(itemsOf(card)[0]).toMatchObject({
+    expect(card?.figure, 'how many hits').toBe('1 hits');
+    expect(itemsOf(card)[0], 'each with its channel and its author').toMatchObject({
       text: 'smoke test passed on 1.0.115',
       tag: '#deploys',
       when: 'bot',
@@ -737,9 +740,9 @@ describe('the reads that draw a list or a fact', () => {
         }),
       ),
     );
-    expect(card?.title).toBe('conversations \u{b7} acme');
-    expect(card?.figure).toBe('2');
-    expect(itemsOf(card)[0]).toMatchObject({
+    expect(card?.title, 'the workspace is part of the address').toBe('conversations \u{b7} acme');
+    expect(card?.figure, 'how many the filter matched').toBe('2');
+    expect(itemsOf(card)[0], 'a watched channel marked and named').toMatchObject({
       text: '#ops',
       tag: 'public',
       state: { text: 'watching', tone: 'ok' },
@@ -761,8 +764,8 @@ describe('the reads that draw a list or a fact', () => {
       { user: 'U1' },
       result(JSON.stringify({ id: 'U1', name: 'alex', real_name: 'Alex Doe', tz: 'Asia/Kolkata' })),
     );
-    expect(card?.title).toBe('user alex');
-    expect(pairsOf(card)).toEqual([
+    expect(card?.title, 'the handle the row knows it by').toBe('user alex');
+    expect(pairsOf(card), 'and the facts the workspace reported').toEqual([
       ['real name', 'Alex Doe'],
       ['tz', 'Asia/Kolkata'],
     ]);
@@ -799,14 +802,16 @@ describe('the reads that draw a list or a fact', () => {
       { text: '4 open', tone: 'bad' },
       { text: '3 addressed', tone: 'info' },
     ]);
-    expect(card?.figure).toMatch(/^[a-z]{3} \d{1,2}$/);
+    expect(card?.figure, 'when it was written, as a month and a day').toMatch(/^[a-z]{3} \d{1,2}$/);
     expect(itemsOf(card)[0], 'and the rounds under it').toMatchObject({
       text: 'First pass',
       tag: '#2',
     });
 
     const none = forgeCardOf('mcp__forge__review__list', {}, result('[]'));
-    expect(none?.pieces).toEqual([{ kind: 'empty', text: 'no reviews on this branch' }]);
+    expect(none?.pieces, 'and no reviews says so rather than drawing an empty box').toEqual([
+      { kind: 'empty', text: 'no reviews on this branch' },
+    ]);
   });
 });
 
@@ -819,7 +824,9 @@ describe('the worker lifecycle cards', () => {
       { label: 'card-smoke', kick: 'stand down' },
       result(JSON.stringify({ label: 'card-smoke', updated: ['kick', 'resume_kick'] })),
     );
-    expect(card?.title).toBe("updated worker 'card-smoke'");
+    expect(card?.title, 'the worker, by the label the lead asked for').toBe(
+      "updated worker 'card-smoke'",
+    );
     expect(card?.chips, 'the field names as the server spells them').toEqual([
       { text: 'kick', tone: 'plain' },
       { text: 'resume_kick', tone: 'plain' },
@@ -879,8 +886,8 @@ describe('the worker lifecycle cards', () => {
         }),
       ),
     );
-    expect(branch?.title).toBe("closed worker 'card-smoke'");
-    expect(branch?.pieces).toEqual([
+    expect(branch?.title, 'the worker it closed').toBe("closed worker 'card-smoke'");
+    expect(branch?.pieces, 'the branch it could not clean, labelled as the branch').toEqual([
       { kind: 'warnline', label: 'branch', text: "branch 'worktree-w1' kept: 2 commits" },
     ]);
     expect(branch?.chips, 'a kept branch still had its worktree removed').toEqual([
@@ -899,7 +906,7 @@ describe('the worker lifecycle cards', () => {
         }),
       ),
     );
-    expect(worktree?.pieces).toEqual([
+    expect(worktree?.pieces, 'the other warning field, under its own label').toEqual([
       { kind: 'warnline', label: 'worktree', text: 'the directory lingers' },
     ]);
     expect(worktree?.chips, 'and the chip goes with it').toEqual([]);
