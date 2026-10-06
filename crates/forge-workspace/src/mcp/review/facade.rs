@@ -15,11 +15,10 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use forge_primitives::git_diff::RepoGate;
-use forge_primitives::review::ReviewStatus;
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::CallerContext;
-use crate::mcp::review::{ReviewDetail, ReviewSummary};
+use crate::mcp::review::{CommentAnchorView, ReviewDetail, ReviewSummary};
 use crate::workspace::Workspace;
 
 /// The caller's resolved review context. `(project, branch)` is the store
@@ -149,18 +148,20 @@ pub trait ReviewFacade: Send + Sync {
     /// scope's branch.
     fn get(&self, scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String>;
 
-    /// Append a reply to `comment_id`; returns the thread's status after
-    /// the append. `Err` when `comment_id` isn't in this scope.
+    /// Append a reply to `comment_id`; returns the comment's anchor and
+    /// the status after the append. `Err` when `comment_id` isn't in this
+    /// scope.
     fn reply(
         &self,
         scope: &ReviewScope,
         comment_id: &str,
         text: &str,
         at: &str,
-    ) -> Result<ReviewStatus, String>;
+    ) -> Result<CommentAnchorView, String>;
 
-    /// Mark `comment_id` Resolved. `Err` when it isn't in this scope.
-    fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<(), String>;
+    /// Mark `comment_id` Resolved; returns the comment's anchor and its
+    /// new status. `Err` when it isn't in this scope.
+    fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<CommentAnchorView, String>;
 }
 
 /// Production impl over a `Weak<Workspace>` (the same cycle-breaking shape
@@ -262,7 +263,7 @@ impl ReviewFacade for ProdReviewFacade {
         comment_id: &str,
         text: &str,
         at: &str,
-    ) -> Result<ReviewStatus, String> {
+    ) -> Result<CommentAnchorView, String> {
         let ws = self.0.upgrade().ok_or_else(|| "workspace unavailable".to_owned())?;
         ws.review_reply(
             &scope.caller,
@@ -275,7 +276,7 @@ impl ReviewFacade for ProdReviewFacade {
         )
     }
 
-    fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<(), String> {
+    fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<CommentAnchorView, String> {
         let ws = self.0.upgrade().ok_or_else(|| "workspace unavailable".to_owned())?;
         ws.review_resolve(&scope.caller, &scope.project, &scope.branch, comment_id)
     }
@@ -296,8 +297,10 @@ pub struct MockReviewFacade {
     pub reply_calls: parking_lot::Mutex<Vec<(String, String)>>,
     /// Captured `comment_id` resolve calls.
     pub resolve_calls: parking_lot::Mutex<Vec<String>>,
-    /// Status a successful `reply` returns.
-    pub reply_status: parking_lot::Mutex<ReviewStatus>,
+    /// The anchor a successful `reply` returns.
+    pub reply_anchor: parking_lot::Mutex<CommentAnchorView>,
+    /// The anchor a successful `resolve` returns.
+    pub resolve_anchor: parking_lot::Mutex<CommentAnchorView>,
     /// When set, `reply` / `resolve` return this error (scope rejection).
     pub force_error: parking_lot::Mutex<Option<String>>,
 }
@@ -317,7 +320,22 @@ impl MockReviewFacade {
             detail: parking_lot::Mutex::new(None),
             reply_calls: parking_lot::Mutex::new(Vec::new()),
             resolve_calls: parking_lot::Mutex::new(Vec::new()),
-            reply_status: parking_lot::Mutex::new(ReviewStatus::Addressed),
+            reply_anchor: parking_lot::Mutex::new(CommentAnchorView {
+                comment_id: "c1".to_owned(),
+                file: "src/x.rs".to_owned(),
+                line: 12,
+                side: "new",
+                status: "addressed",
+                number: Some(1),
+            }),
+            resolve_anchor: parking_lot::Mutex::new(CommentAnchorView {
+                comment_id: "c2".to_owned(),
+                file: "src/x.rs".to_owned(),
+                line: 12,
+                side: "new",
+                status: "resolved",
+                number: Some(1),
+            }),
             force_error: parking_lot::Mutex::new(None),
         }
     }
@@ -352,20 +370,20 @@ impl ReviewFacade for MockReviewFacade {
         comment_id: &str,
         text: &str,
         _at: &str,
-    ) -> Result<ReviewStatus, String> {
+    ) -> Result<CommentAnchorView, String> {
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
         }
         self.reply_calls.lock().push((comment_id.to_owned(), text.to_owned()));
-        Ok(*self.reply_status.lock())
+        Ok(self.reply_anchor.lock().clone())
     }
 
-    fn resolve(&self, _scope: &ReviewScope, comment_id: &str) -> Result<(), String> {
+    fn resolve(&self, _scope: &ReviewScope, comment_id: &str) -> Result<CommentAnchorView, String> {
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
         }
         self.resolve_calls.lock().push(comment_id.to_owned());
-        Ok(())
+        Ok(self.resolve_anchor.lock().clone())
     }
 }
 

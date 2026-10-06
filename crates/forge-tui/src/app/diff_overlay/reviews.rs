@@ -532,10 +532,10 @@ mod tests {
             .expect("first review sealed");
 
         // The agent answers, which flips the thread to Addressed.
-        let status = ws
+        let outcome = ws
             .review_reply(&origin, "forge", "feat", "t1", "implementer", "fixed in b3f1", "")
             .expect("agent reply");
-        assert_eq!(status, ReviewStatus::Addressed);
+        assert_eq!(outcome.status, "addressed");
 
         // The reviewer answers back on the already-filed thread.
         let mut replied =

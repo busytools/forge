@@ -82,6 +82,38 @@ pub struct ReviewTurnView {
     pub review: Option<u32>,
 }
 
+/// What `review__reply` and `review__resolve` answer with: where the
+/// comment is anchored and the review round its latest turn belongs to,
+/// alongside the state it now holds. `number` is the review's 1-based
+/// ordinal, absent while the thread is filed in no round.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CommentAnchorView {
+    pub comment_id: String,
+    pub file: String,
+    pub line: u32,
+    pub side: &'static str,
+    pub status: &'static str,
+    pub number: Option<u32>,
+}
+
+/// Build the anchor echo for `thread`, whose state just became `status`.
+pub(crate) fn comment_anchor(
+    thread: &ReviewThread,
+    reviews: &[ReviewSet],
+    status: ReviewStatus,
+) -> CommentAnchorView {
+    CommentAnchorView {
+        comment_id: thread.id.clone(),
+        file: thread.anchor.path.clone(),
+        line: thread.anchor.line,
+        side: side_str(thread.anchor.side),
+        status: status_str(status),
+        number: thread
+            .latest_review()
+            .and_then(|id| reviews.iter().find(|r| r.id == id).map(|r| r.number)),
+    }
+}
+
 /// One worker review action recorded during a turn, accumulated per
 /// caller and drained at the turn's end into a single notice per review.
 #[derive(Debug, PartialEq, Eq)]
@@ -427,7 +459,8 @@ impl Tool for ReviewReply {
          thread and flips it from open to addressed so the reviewer sees you \
          acted on it (a comment already resolved stays resolved). Use this to \
          say what you changed, ask a clarifying question, or push back. Pass \
-         the comment_id from review__get. Returns the comment's new status. \
+         the comment_id from review__get. Returns the comment's new status \
+         alongside the file, line and side it is anchored to. \
          Reply per comment, then use review__resolve for the ones you \
          consider done, or leave them addressed for the reviewer to resolve."
     }
@@ -460,10 +493,7 @@ impl Tool for ReviewReply {
             Err(out) => return out,
         };
         match self.facade.reply(&scope, &args.comment_id, &args.text, &rfc3339_now()) {
-            Ok(status) => json_or_error(&serde_json::json!({
-                "comment_id": args.comment_id,
-                "status": status_str(status),
-            })),
+            Ok(anchor) => json_or_error(&anchor),
             Err(err) => tool_error(err),
         }
     }
@@ -490,7 +520,9 @@ impl Tool for ReviewResolve {
         "Mark one review comment resolved - you consider it done. Prefer \
          replying first (review__reply) to say what you changed, then \
          resolve; or leave a comment addressed and let the reviewer resolve \
-         it themselves. Pass the comment_id from review__get."
+         it themselves. Pass the comment_id from review__get. Returns the \
+         comment's new status alongside the file, line and side it is \
+         anchored to."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -517,10 +549,7 @@ impl Tool for ReviewResolve {
             Err(out) => return out,
         };
         match self.facade.resolve(&scope, &args.comment_id) {
-            Ok(()) => json_or_error(&serde_json::json!({
-                "comment_id": args.comment_id,
-                "status": "resolved",
-            })),
+            Ok(anchor) => json_or_error(&anchor),
             Err(err) => tool_error(err),
         }
     }
@@ -806,6 +835,63 @@ mod tests {
         let calls = mock.reply_calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], ("c1".to_owned(), "fixed it".to_owned()));
+    }
+
+    /// The reply result carries the anchor, so the caller can say which
+    /// spot the reply landed on; `{comment_id, status}` could only print
+    /// an opaque id where the code's own location belongs.
+    #[tokio::test]
+    async fn review_reply_echoes_the_anchor() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.reply_anchor.lock() = CommentAnchorView {
+            comment_id: "c-71".to_owned(),
+            file: "src/chat/units.ts".to_owned(),
+            line: 919,
+            side: "new",
+            status: "addressed",
+            number: Some(3),
+        };
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewReply { facade, slot: caller_slot() };
+
+        let out = tool
+            .call(ToolInput { value: serde_json::json!({ "comment_id": "c-71", "text": "fixed" }) })
+            .await;
+        assert!(!out.is_error, "reply happy path: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        assert_eq!(parsed["comment_id"], "c-71");
+        assert_eq!(parsed["file"], "src/chat/units.ts");
+        assert_eq!(parsed["line"], 919);
+        assert_eq!(parsed["side"], "new");
+        assert_eq!(parsed["number"], 3);
+        assert_eq!(parsed["status"], "addressed");
+    }
+
+    /// A resolve echoes the same anchor: the row says which comment, on
+    /// which spot, is now resolved.
+    #[tokio::test]
+    async fn review_resolve_echoes_the_anchor() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.resolve_anchor.lock() = CommentAnchorView {
+            comment_id: "c-68".to_owned(),
+            file: "src/chat/Inbound.svelte".to_owned(),
+            line: 48,
+            side: "new",
+            status: "resolved",
+            number: Some(3),
+        };
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let tool = ReviewResolve { facade, slot: caller_slot() };
+
+        let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c-68" }) }).await;
+        assert!(!out.is_error, "resolve happy path: {:?}", out.blocks);
+        let parsed: serde_json::Value = serde_json::from_str(&out.blocks[0].text).expect("json");
+        assert_eq!(parsed["comment_id"], "c-68");
+        assert_eq!(parsed["file"], "src/chat/Inbound.svelte");
+        assert_eq!(parsed["line"], 48);
+        assert_eq!(parsed["side"], "new");
+        assert_eq!(parsed["number"], 3);
+        assert_eq!(parsed["status"], "resolved");
     }
 
     #[tokio::test]
