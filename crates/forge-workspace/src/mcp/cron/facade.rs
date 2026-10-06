@@ -315,9 +315,19 @@ mod prod_facade_tests {
 
     /// The delete hands back the entry it removed, so the tool can echo
     /// the schedule and prompt that went rather than a bare id.
+    ///
+    /// **A neighbour is registered FIRST**, so the removed set has a
+    /// record before the named one: an implementation answering with "the
+    /// first entry" instead of "the entry the id named" echoes the
+    /// neighbour here and leaves the named entry in the store, and both
+    /// assertions catch it.
     #[test]
     fn delete_returns_the_entry_it_removed() {
         let (_ws, facade, lead, _worker) = fixture();
+        let (kind, prompt) = daily("worker digest");
+        let neighbour = facade
+            .create_cron(&lead, kind, prompt, Some("Worker digest".to_owned()))
+            .expect("create the neighbour first");
         let (kind, prompt) = daily("morning summary");
         let cron = facade
             .create_cron(&lead, kind, prompt, Some("Morning summary".to_owned()))
@@ -333,7 +343,9 @@ mod prod_facade_tests {
             "carrying the schedule it was registered under: {:?}",
             removed.kind,
         );
-        assert!(facade.list_crons(&lead).is_empty(), "and it is gone from the store");
+        let left = facade.list_crons(&lead);
+        assert_eq!(left.len(), 1, "only the neighbour survives");
+        assert_eq!(left[0].id, neighbour.id, "and it is the neighbour that survives");
     }
 
     /// The other half of the refusal: an id the project never had is a
