@@ -70,7 +70,7 @@ export function take(over: Record<string, unknown> = {}): Record<string, unknown
 }
 
 /** A permission request for the dock, hand-written: the option ids are this test's, not the core's. */
-export function permissionAsk(toolId = 'tu-1'): unknown {
+export function permissionAsk(toolId = 'tu-1', over: Record<string, unknown> = {}): unknown {
   return {
     kind: 'permission',
     request: {
@@ -99,6 +99,7 @@ export function permissionAsk(toolId = 'tu-1'): unknown {
           action: { kind: 'deny' },
         },
       ],
+      ...over,
     },
   };
 }

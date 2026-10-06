@@ -2860,6 +2860,23 @@ describe('the dock', () => {
     ]);
   });
 
+  it('opens the words on Space over the custom row, rather than toggling an id of its own', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    // The custom row is the last one: an ArrowUp from the first wraps to it.
+    press('ArrowUp');
+    flushSync();
+    press(' ');
+    flushSync();
+
+    expect(commands(harness), 'Space on the door answers nothing').toEqual([]);
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+    expect(drawn(), 'and no count rides the key for a row that cannot be turned on').not.toContain(
+      'submit 1',
+    );
+  });
+
   it("hands a permission's words to its deny, which carries them", () => {
     const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
 
@@ -2993,6 +3010,209 @@ describe('the dock', () => {
       dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
       'the words landed in the box the prompt is drawing',
     ).toBe('custom words');
+  });
+
+  /**
+   * **The destination is captured per TAKE, not once per box.** One seat takes
+   * several in a row, and a capture that never re-runs hands the second take
+   * the first one's answer - the headline defect, from take two on.
+   */
+  it('gives each take its own destination: a later take under the question lands there', () => {
+    const harness = open();
+
+    // Take one begins with no prompt, so its words belong to the draft.
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // Then a question arrives, and take two begins under it.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the second take landed where IT began, not where the first one did',
+    ).toBe('second words');
+  });
+
+  it('gives each take its own destination: a later take begun in the composer stays there', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    // Take one begins under the question and lands in its row.
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'first words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // The question resolves, and take two begins in the composer.
+    harness.page.record = record();
+    flushSync();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    // A question arrives mid-flight; this take's words are still the draft's.
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'second words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'a prompt arriving mid-take did not take words spoken for the draft',
+    ).toBe('');
+
+    harness.page.record = record();
+    flushSync();
+    expect(field().value, 'the words are in the draft the take was spoken into').toContain(
+      'second words',
+    );
+  });
+
+  /**
+   * **A prompt that resolves before the words land is not the destination.**
+   * The capture says where the take began; the landing also checks what is
+   * still on screen - a dock that has gone leaves its words to the draft.
+   */
+  it('lands in the draft when the question resolved before the take did', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'orphan words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words went to the box that still exists').toContain('orphan words');
+  });
+
+  it('lands in the draft under a permission that offers no words row', () => {
+    const bare = permissionAsk('tu-1', {
+      options: [
+        { option_id: 'opt-once', name: 'Allow once', kind: 'allow', action: { kind: 'allow' } },
+        { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
+      ],
+    });
+    const harness = open({ record: record({ pending_asks: [bare] }) });
+
+    harness.page.record = record({
+      pending_asks: [bare],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [bare],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'draft words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    harness.page.record = record();
+    flushSync();
+    expect(field().value, 'no words row, so the draft is the box').toContain('draft words');
+  });
+
+  it('hides the send while a take draws in the words row', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    notes.value = 'words';
+    notes.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.dock .sendb'), 'words typed, a send to go').not.toBeNull();
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.dock .sendb'),
+      'the take draws its own controls, not the send',
+    ).toBeNull();
+
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'more', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.dock .sendb'),
+      'the card is gone, the send returns',
+    ).not.toBeNull();
   });
 
   /**
