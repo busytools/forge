@@ -240,6 +240,10 @@ describe('the rail', () => {
     expect(
       why(withHome({ agents: [{ ...failed, reason: null }] })),
       'a failure with no recorded text claimed nothing',
+    ).toEqual({ line: 'spawn failed', bad: true });
+    expect(
+      why(withHome({ agents: [{ ...failed, lifecycle: 'AuthRequired', reason: null }] })),
+      'a seat waiting on sign-in claimed a spawn failed',
     ).toEqual({ line: 'not running', bad: true });
   });
 

@@ -454,11 +454,17 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
 /**
  * The line a failed row draws under itself: the core's recorded reason, or the
  * fallback for a failure it left no text for.
+ *
+ * The fallback word follows the terminal's split: a failed row it holds no
+ * text for reads "spawn failed" there (its sub-row exists only on a failed
+ * worker), while a seat waiting on sign-in draws no sub-row at all and keeps
+ * the client's own words.
  */
 export function failedLine(row: Row): string | null {
   if (row.state.kind !== 'lifecycle') return null;
-  if (row.state.lifecycle !== 'Failed' && row.state.lifecycle !== 'AuthRequired') return null;
-  return row.reason ?? 'not running';
+  const lifecycle = row.state.lifecycle;
+  if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
+  return row.reason ?? (lifecycle === 'Failed' ? 'spawn failed' : 'not running');
 }
 
 /**

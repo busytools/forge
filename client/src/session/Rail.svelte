@@ -104,10 +104,12 @@
             <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
-          <!-- The failure draws under the row that failed: a worker's
-               diagnostic on the project's line reads as the lead's. -->
+          <!-- The failure draws under the row that failed, dim as the
+               terminal's sub-row draws it: the row's own failed dot carries
+               the colour, and on the project's line the diagnostic would
+               read as the lead's. -->
           {#if failed !== null}
-            <div class="why bad">{failed}</div>
+            <div class="why">{failed}</div>
           {/if}
         {/each}
         <!-- The seats this project has asleep, behind one row that counts

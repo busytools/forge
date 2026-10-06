@@ -192,13 +192,18 @@ describe("a worker's failure", () => {
       },
     }).body;
 
-    const workerRow = drawn.indexOf('<div class="wk"');
-    expect(workerRow, 'the failed worker has no row').toBeGreaterThan(-1);
+    // Anchored on the failed worker's OWN row rather than the document's
+    // first worker row: a fixture carrying another project ahead of this one
+    // would satisfy a looser anchor without the row under test being read.
+    const workerAt = drawn.indexOf('href="/session/TestOrg/proj/client-dev"');
+    expect(workerAt, 'the failed worker has no row').toBeGreaterThan(-1);
     expect(
-      drawn.slice(0, workerRow),
+      drawn.slice(0, workerAt),
       "a worker's failure drew under the project's line",
     ).not.toContain(reason);
-    expect(drawn.slice(workerRow), "the worker's own row lost its reason").toContain(reason);
+    expect(drawn.slice(workerAt), "the worker's own row lost its dim reason line").toContain(
+      `<div class="why">${reason}</div>`,
+    );
     expect(drawn.split(reason).length - 1, 'the diagnostic drew more than once').toBe(1);
   });
 });
