@@ -421,6 +421,37 @@ function stringSteps(fn: () => void): number {
   return steps;
 }
 
+describe("the wire's own meta lines", () => {
+  it('keeps the no-newline marker whole, and out of the count', () => {
+    // The wire sends `\ No newline at end of file` as its own line - 46 of
+    // them across 30 hunks in the transcripts scanned for the fix - and it is
+    // meta text, not file content: peeling its first column drew the row as
+    // if the file contained it, and advancing the counters on it numbered
+    // every line after it one too high.
+    const leaf = leafOf('t8', 'Edit', { file_path: '/x/a.rs' }, answered(NOTE), {
+      structuredPatch: [
+        {
+          oldStart: 10,
+          oldLines: 3,
+          newStart: 10,
+          newLines: 3,
+          lines: [' one', '-two', '\\ No newline at end of file', ' three'],
+        },
+      ],
+    });
+
+    const [hunk] = leaf.body;
+    if (hunk?.kind !== 'hunk') throw new Error('the row drew no hunk');
+    expect(hunk.lines[2]?.text, 'the marker keeps its backslash').toBe(
+      '\\ No newline at end of file',
+    );
+    expect(
+      [hunk.lines[3]?.old, hunk.lines[3]?.new],
+      'and the line after it keeps the numbers the wire counted',
+    ).toEqual([12, 11]);
+  });
+});
+
 describe('what one hunk line costs to read', () => {
   it('reads a line by its mark, with no character-iterator walk', () => {
     // Not hypothetical: two Edit results in the inbox-triage transcript carry
