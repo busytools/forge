@@ -104,7 +104,7 @@ being added beside it. Under `prefers-reduced-motion` it stops moving
 and goes solid, which says the same thing without motion.
 
 **The failed line names the address it tried**, and when nothing answered
-it points at `[web] enabled` in `forge.toml`: a forge whose owner turned
+it points at `[server] enabled` in `forge.toml`: a forge whose owner turned
 the socket off refuses in silence, with nothing wrong at either end, and
 a generic "could not connect" sends the reader off to look at their
 network.

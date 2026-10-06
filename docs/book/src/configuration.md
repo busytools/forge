@@ -443,7 +443,7 @@ Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
 
-## `[web]`
+## `[server]`
 
 The socket: one WebSocket served from the process that already owns the
 sessions, so a client costs a listener rather than a second scheduler.
@@ -451,9 +451,26 @@ On by default, so a restart leaves it serving.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
-| `port` | integer | `8790` | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`WebPortInvalid`), and so does the gateway's own port (`WebPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot. |
+| `enabled` | boolean | `true` | Whether the listener starts with forge. `false` is the opt-out, and the TUI is identical either way. |
+| `port` | integer | `8790` | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot. |
 | `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
+
+The server starts no subsystem of its own - no cron scheduler, no
+connector, no second gateway - so the cost of a client is the listener
+and the messages. The socket carries the whole view surface: the home and
+every session, a snapshot of each on subscribe and every update after it,
+with a client's commands going back the other way. **No page is served
+from here.** A client is its own program and draws everything itself; the
+socket hands it data. A bind that fails is logged and does not stop
+forge; the TUI is not downstream of the socket.
+
+## `[client]`
+
+Which of the sets forge ships a client draws with. Absent means every
+name unset, which is the built-in.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
 | `mark` | string | unset, drawing panes | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn. |
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
 | `font` | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, served from the process and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
@@ -466,25 +483,16 @@ reader tells them apart.
 
 An unset name is not an error and not a fallback: it means the built-in.
 A name forge does not ship fails the load with the key and the value in
-the message (`WebNameUnknown`, `web mark = "anvilish" ... names nothing
-forge ships; this key picks by name, never by path`), because a setting
-that is quietly ignored reads as the key not working. Like the port
-checks, none of them run while the socket is disabled.
+the message (`ClientNameUnknown`, `client mark = "anvilish" ... names
+nothing forge ships; this key picks by name, never by path`), because a
+setting that is quietly ignored reads as the key not working. Like the
+port checks, none of them run while the socket is disabled.
 
-`mark`, `theme` and `font` are a client's settings rather than this
+`mark`, `theme` and `font` are a client's settings rather than the
 server's, and the socket carries them to a client on connect, so a client
 never reads `forge.toml` for itself and the file stays the one source of
 truth. Nothing in forge draws them: the terminal has its own palette and
 the socket serves no page.
-
-The server starts no subsystem of its own - no cron scheduler, no
-connector, no second gateway - so the cost of a client is the listener
-and the messages. The socket carries the whole view surface: the home and
-every session, a snapshot of each on subscribe and every update after it,
-with a client's commands going back the other way. **No page is served
-from here.** A client is its own program and draws everything itself; the
-socket hands it data. A bind that fails is logged and does not stop
-forge; the TUI is not downstream of the socket.
 
 ## Unknown keys
 
@@ -493,7 +501,7 @@ and names itself rather than parsing clean and meaning something else -
 a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[[slack]]`, `[gotify]`, `[systemone]`, `[gateway]`,
-`[dictate]`, `[plugins]` and `[web]`.
+`[dictate]`, `[plugins]`, `[server]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -502,6 +510,14 @@ above a stray key is a typo and is refused; a ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
 itself warns.
+
+**`[web]` is the one retired section that fails the load.** It is a
+declared ghost too, but a hard stop rather than a warning
+(`WebSectionRenamed`): `[web] was renamed ... its listener keys
+(enabled, port, bind) are [server]'s and its drawing keys (mark, theme,
+font) are [client]'s`. There is no alias for the old name, and an ignored
+`bind` would quietly reset a server that was exposed on a network
+interface to loopback.
 
 `[ui]` is a ghost like the rest because dropping it as dead weight
 would refuse the boot of every config still carrying one - on a machine
@@ -586,10 +602,12 @@ thread_idle_days = 14
 [plugins]
 auto_update = true
 
-[web]
+[server]
 enabled = true
 port = 8790
 bind = "127.0.0.1"
+
+[client]
 mark = "panes"
 theme = "dark"
 ```
@@ -629,8 +647,8 @@ picker to enter chat.
 `auto_start` therefore controls what is warm when you arrive, not what
 you land on.
 
-The socket comes up on `[web] bind:port` during the same boot, unless
-`[web] enabled` is false.
+The socket comes up on `[server] bind:port` during the same boot, unless
+`[server] enabled` is false.
 
 ## Config versus state
 
