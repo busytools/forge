@@ -2095,6 +2095,31 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    values flung to the far edge - the dispatch row's own `sg-meta` shape,
    copied here rather than depended on, because a forge card is not an
    instance. */
+/* One review comment: the spot it was filed on, the code it was filed
+   against, and what has been said about it since. */
+.fam-cm { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
+  margin: 6px 0; }
+.fam-cm .fam-hd { display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  border-bottom: 1px solid var(--line); }
+.fam-cm .fam-hd .fam-where { font-family: var(--mono); font-size: var(--fs-data);
+  overflow-wrap: anywhere; }
+.fam-cm .fam-hd .fam-tag { margin-top: 0; }
+.fam-cm .fam-hd .fam-chip { color: var(--muted); }
+.fam-cm .fam-hd .fam-chip.info { color: var(--blue); }
+.fam-cm .fam-hd .fam-chip.ok { color: var(--ok); }
+.fam-cm .fam-hd .fam-chip.bad { color: var(--bad); }
+.fam-cm .fam-hd .fam-chip.warn { color: var(--warn); }
+/* The captured lines wrap rather than scrolling sideways: nothing in this
+   sheet scrolls a box, and a code line is often longer than a phone. */
+.fam-cm .fam-ctx { font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--muted); padding: 7px 12px; margin: 0; white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+.fam-cm .fam-turns { padding: 6px 12px 9px; display: grid; gap: 6px; }
+.fam-turn { font-size: var(--fs-base); color: var(--muted); }
+.fam-turn .fam-au { color: var(--dim); font-family: var(--mono);
+  font-size: var(--fs-label); margin-right: 7px; }
+.fam-turn.you .fam-au { color: var(--accent); }
+
 /* What a query found nothing of: said in words, at the glyph of the family
    that asked, rather than left as an empty box a reader cannot read. */
 .fam-empty { display: flex; align-items: center; gap: 8px; padding: 7px 0 3px;

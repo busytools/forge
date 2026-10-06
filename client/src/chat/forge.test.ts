@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  forgeCardOf,
-  forgeFailureTitle,
-  type ForgeCard,
-  type ForgeListItem,
-  type ForgePiece,
-} from './forge';
+import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
 
 /** A tool result as the wire delivers one: text parts, and whether it failed. */
 function result(text: string, is_error = false) {
@@ -51,31 +45,42 @@ function pairsOf(card: ForgeCard | null): unknown[][] {
 }
 
 /** The items of a card's first list piece, or an empty list. */
-function itemsOf(card: ForgeCard | null): ForgeListItem[] {
-  const list = (card?.pieces ?? []).find(
-    (piece): piece is Extract<ForgePiece, { kind: 'list' }> => piece.kind === 'list',
-  );
-  return list?.items ?? [];
+function itemsOf(card: ForgeCard | null) {
+  const list = (card?.pieces ?? []).find((piece) => piece.kind === 'list');
+  return list?.kind === 'list' ? list.items : [];
 }
 
-describe('a forge call that failed', () => {
+/** The blocks of a card's first comments piece, or an empty list. */
+function commentsOf(card: ForgeCard | null) {
+  const block = (card?.pieces ?? []).find((piece) => piece.kind === 'comments');
+  return block?.kind === 'comments' ? block.items : [];
+}
+
+describe('a forge call with no card of its own', () => {
   it('is titled by the subject its input named, else by the family own noun', () => {
     expect(
-      forgeFailureTitle('mcp__forge__slack__list', {}),
+      forgeRowTitle('mcp__forge__slack__list', {}, 'failed'),
       'a read with no input to name a subject by',
     ).toBe('conversations');
     expect(
-      forgeFailureTitle('mcp__forge__tasks__create', { subject: 'Sweep the worktrees' }),
+      forgeRowTitle('mcp__forge__tasks__create', { subject: 'Sweep the worktrees' }, 'failed'),
       'a create names what it was making',
     ).toBe('Sweep the worktrees');
     expect(
-      forgeFailureTitle('mcp__forge__agents__spawn', { label: 'reviewer' }),
-      'a spawn keeps the wording its pending row uses',
+      forgeRowTitle('mcp__forge__agents__spawn', { label: 'reviewer' }, 'failed'),
+      'a failed spawn uses the success wording, under a tail that says it failed',
+    ).toBe("spawned worker 'reviewer'");
+    expect(
+      forgeRowTitle('mcp__forge__agents__spawn', { label: 'reviewer' }, 'running'),
+      'while a spawn still out reads in flight',
     ).toBe('spawning reviewer');
-    expect(forgeFailureTitle('mcp__forge__slack__search', { query: 'smoke test' })).toBe(
+    expect(forgeRowTitle('mcp__forge__slack__post', { conversation: 'C1' }, 'failed')).toBe(
+      'posted to C1',
+    );
+    expect(forgeRowTitle('mcp__forge__slack__search', { query: 'smoke test' }, 'failed')).toBe(
       'search \u{b7} smoke test',
     );
-    expect(forgeFailureTitle('Bash', {}), 'and no other call is titled here').toBeNull();
+    expect(forgeRowTitle('Bash', {}, 'failed'), 'and no other call is titled here').toBeNull();
   });
 });
 
@@ -98,6 +103,47 @@ describe('a forge call the page cannot dress', () => {
       forgeCardOf('mcp__playwright__browser_click', {}, result(wellFormed)),
       'a call that is not forge',
     ).toBeNull();
+  });
+
+  it('refuses a payload each family reader cannot name its subject by', () => {
+    // One case per reader the arms share, so a relaxed guard is a failed
+    // assertion rather than a card drawing under a name nobody has.
+    const named = (name: string, answer: unknown): ForgeCard | null =>
+      forgeCardOf(name, {}, result(JSON.stringify(answer)));
+
+    expect(named('mcp__forge__gotify__list', [{ applications: ['Backups'] }]), 'no id').toBeNull();
+    expect(
+      named('mcp__forge__gotify__unsubscribe', { status: 'deleted', removed: {} }),
+      'a removed subscription the echo does not name',
+    ).toBeNull();
+    expect(
+      named('mcp__forge__cron__list', [{ description: 'Morning summary' }]),
+      'no id',
+    ).toBeNull();
+    expect(named('mcp__forge__tasks__list', [{ id: 't-1' }]), 'no subject').toBeNull();
+    expect(
+      named('mcp__forge__slack__unsubscribe', {
+        status: 'deleted',
+        removed: { target: { kind: 'conversation' } },
+      }),
+      'a target with no id',
+    ).toBeNull();
+    expect(
+      named('mcp__forge__slack__post', { ts: '1790186552.442169' }),
+      'a ts that is not a list',
+    ).toBeNull();
+    expect(
+      named('mcp__forge__agents__capacity', { cap: '8', live: 7 }),
+      'numbers arriving as strings',
+    ).toBeNull();
+
+    // The schedule reader has no null: a schedule it cannot read draws as the
+    // one word rather than dropping the entry.
+    const unreadable = named('mcp__forge__cron__list', [
+      { id: 'c1', prompt: 'sweep', schedule: {} },
+    ]);
+    expect(unreadable?.chips, 'an unreadable schedule still draws a word').toEqual([]);
+    expect(itemsOf(unreadable)[0]?.tag).toBe('scheduled');
   });
 });
 
@@ -492,15 +538,20 @@ describe('the review card', () => {
     expect(card?.chips).toEqual([{ text: 'resolved', tone: 'ok' }]);
   });
 
-  it('tallies a review detail in its chips and lists each comment by its anchor', () => {
+  it('tallies a review detail, drawing each comment as its own block', () => {
     const comment = (id: string, file: string, status: string, turns: number) => ({
       comment_id: id,
       file,
       line: 919,
       side: 'new',
       status,
-      context: [],
-      thread: Array.from({ length: turns }, () => ({})),
+      context: ['mcp__forge__agents__send_message: { body: "message" },'],
+      thread: Array.from({ length: turns }, (_held, at) => ({
+        author: at === 0 ? 'you' : 'worker',
+        text: at === 0 ? 'Reading this fresh' : 'Right - that is shipped',
+        at: '2026-10-05T09:00:00Z',
+        review: null,
+      })),
     });
     const detail = {
       review_id: 'r1',
@@ -516,17 +567,21 @@ describe('the review card', () => {
       { review_id: 'r1' },
       result(JSON.stringify(detail)),
     );
-    expect(card?.title).toBe('review #3');
-    expect(card?.chips).toEqual([
-      { text: '1 open', tone: 'bad' },
-      { text: '1 addressed', tone: 'info' },
-    ]);
+    expect(card?.title, 'the tally is in the title, the way the mock draws it').toBe(
+      'review #3 - 1 open, 1 addressed',
+    );
     expect(card?.figure).toBe('2 comments');
-    expect(itemsOf(card)[1]).toMatchObject({
-      text: 'src/chat/Inbound.svelte:919',
+    const blocks = commentsOf(card);
+    expect(blocks[1], 'each comment is a block of its own').toMatchObject({
+      where: 'src/chat/Inbound.svelte:919',
+      side: 'new side',
       state: { text: 'addressed', tone: 'info' },
-      when: 'c-68 · 2 turns',
+      context: ['mcp__forge__agents__send_message: { body: "message" },'],
     });
+    expect(blocks[1]?.turns, 'with the thread it was argued in').toEqual([
+      { author: 'you', text: 'Reading this fresh', you: true },
+      { author: 'worker', text: 'Right - that is shipped', you: false },
+    ]);
   });
 });
 
@@ -603,7 +658,9 @@ describe('the reads that draw a list or a fact', () => {
         ]),
       ),
     );
-    expect(card?.title).toBe('search \u{b7} acme');
+    expect(card?.title, 'the query is the subject, the workspace follows').toBe(
+      'search \u{b7} "smoke test" \u{b7} acme',
+    );
     expect(card?.figure).toBe('1 hits');
     expect(itemsOf(card)[0]).toMatchObject({
       text: 'smoke test passed on 1.0.115',
@@ -640,9 +697,7 @@ describe('the reads that draw a list or a fact', () => {
     const card = forgeCardOf(
       'mcp__forge__slack__user',
       { user: 'U1' },
-      result(
-        JSON.stringify({ id: 'U1', name: 'alex', real_name: 'Alex Doe', tz: 'Asia/Kolkata' }),
-      ),
+      result(JSON.stringify({ id: 'U1', name: 'alex', real_name: 'Alex Doe', tz: 'Asia/Kolkata' })),
     );
     expect(card?.title).toBe('user alex');
     expect(pairsOf(card)).toEqual([
@@ -652,32 +707,44 @@ describe('the reads that draw a list or a fact', () => {
     expect(card?.figure, 'a user is not a count').toBeNull();
   });
 
-  it('lists the reviews on the branch, each by its own number', () => {
+  it('draws the newest review by its number, tally and date, older rounds under it', () => {
+    const review = (number: number, summary: string, open: number, addressed: number) => ({
+      review_id: `rv-${String(number)}`,
+      number,
+      summary,
+      created_at: '2026-10-05T09:00:00Z',
+      comment_count: open + addressed,
+      open,
+      addressed,
+      resolved: 0,
+      outdated: 0,
+    });
+
     const card = forgeCardOf(
       'mcp__forge__review__list',
       {},
       result(
         JSON.stringify([
-          {
-            review_id: 'rv-1',
-            number: 3,
-            summary: 'Second pass over the card grammar',
-            created_at: '2026-10-05T09:00:00Z',
-            open: 4,
-            addressed: 3,
-            resolved: 2,
-            outdated: 0,
-          },
+          review(3, 'Second pass over the card grammar', 4, 3),
+          review(2, 'First pass', 0, 0),
         ]),
       ),
     );
-    expect(card?.title).toBe('reviews');
-    expect(card?.figure).toBe('1');
-    expect(itemsOf(card)[0]).toMatchObject({
-      text: 'Second pass over the card grammar',
-      tag: '#3',
-      when: 'rv-1',
+    expect(card?.title, 'the newest, by number and summary').toBe(
+      'review #3 - Second pass over the card grammar',
+    );
+    expect(card?.chips, 'its tally as chips').toEqual([
+      { text: '4 open', tone: 'bad' },
+      { text: '3 addressed', tone: 'info' },
+    ]);
+    expect(card?.figure).toMatch(/^[a-z]{3} \d{1,2}$/);
+    expect(itemsOf(card)[0], 'and the rounds under it').toMatchObject({
+      text: 'First pass',
+      tag: '#2',
     });
+
+    const none = forgeCardOf('mcp__forge__review__list', {}, result('[]'));
+    expect(none?.pieces).toEqual([{ kind: 'empty', text: 'no reviews on this branch' }]);
   });
 });
 
@@ -781,9 +848,20 @@ describe('the worker lifecycle cards', () => {
     expect(spawning?.pieces.at(-1)).toEqual({ kind: 'quote', text: 'be terse' });
 
     expect(
-      forgeCardOf('mcp__forge__tasks__create', { subject: 'x' }, undefined),
+      forgeCardOf('mcp__forge__tasks__list', {}, undefined),
       'a verb with nothing to say before it answers',
     ).toBeNull();
+    const creating = forgeCardOf(
+      'mcp__forge__tasks__create',
+      { subject: 'Draft the cron card copy', status: 'pending' },
+      undefined,
+    );
+    expect(creating?.title, 'a call still out says what it is making').toBe(
+      'Draft the cron card copy',
+    );
+    expect(creating?.chips, 'and the state it is making it in').toEqual([
+      { text: 'pending', tone: 'dim' },
+    ]);
   });
 
   it('says a refused despawn on the row, since the call itself answered cleanly', () => {

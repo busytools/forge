@@ -33,6 +33,30 @@
       <span class="fam-lb">{piece.label}</span>
       <span>{piece.text}</span>
     </div>
+  {:else if piece.kind === 'comments'}
+    {#each piece.items as comment, at (at)}
+      <div class="fam-cm">
+        <div class="fam-hd">
+          <span class="fam-where">{comment.where}</span>
+          <span class="fam-tag">{comment.side}</span>
+          <span class="fam-chip {comment.state.tone}">{comment.state.text}</span>
+        </div>
+        {#if comment.context.length > 0}
+          <!-- The captured lines, unnumbered: the wire sends them as text, and
+               a gutter this page worked out would be a number nobody measured. -->
+          <div class="fam-ctx">{comment.context.join('\n')}</div>
+        {/if}
+        {#if comment.turns.length > 0}
+          <div class="fam-turns">
+            {#each comment.turns as turn, turnAt (turnAt)}
+              <div class="fam-turn" class:you={turn.you}>
+                <span class="fam-au">{turn.author}</span>{turn.text}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/each}
   {:else if piece.kind === 'empty'}
     <div class="fam-empty">
       <Icon name={glyph} class="fam-empty-glyph" />

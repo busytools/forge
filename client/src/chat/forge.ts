@@ -13,6 +13,7 @@
 import { untilOf } from '../session/view';
 import { forgeFamilyOf, type ForgeFamily } from './families';
 import { firstText, obj, parsedText, str } from './result-json';
+import { isSlackId } from './text';
 
 /** One word on a forge row. The tone colours the word; the word carries it. */
 export interface ForgeChip {
@@ -30,6 +31,24 @@ export interface ForgeListItem {
   when: string | null;
 }
 
+/**
+ * One review comment as its own block: where it sits, the code it was filed
+ * against, and what has been said about it.
+ *
+ * The context lines carry no numbers: the wire sends the captured lines as
+ * strings, and a numbered gutter this page worked out for itself would be a
+ * line number nobody measured.
+ */
+export interface ForgeComment {
+  /** `file:line`, the way the review tools name the spot. */
+  where: string;
+  /** The side of the diff it sits on, as the comment's own words. */
+  side: string;
+  state: ForgeChip;
+  context: string[];
+  turns: { author: string; text: string; you: boolean }[];
+}
+
 /** What a card's body draws, in the row grammar the mock settled. */
 export type ForgePiece =
   | { kind: 'kv'; pairs: [string, string][] }
@@ -37,6 +56,7 @@ export type ForgePiece =
   | { kind: 'tag'; text: string }
   | { kind: 'list'; items: ForgeListItem[] }
   | { kind: 'warnline'; label: string; text: string }
+  | { kind: 'comments'; items: ForgeComment[] }
   /** What a query found nothing of, said in words rather than drawn as a gap. */
   | { kind: 'empty'; text: string };
 
@@ -151,25 +171,18 @@ function gotifyCard(verb: string, answer: unknown): ForgeCard | null {
   if (verb === 'apps') {
     if (!Array.isArray(answer)) return null;
     const names = answer.filter((held): held is string => typeof held === 'string');
+    const items: ForgeListItem[] = names.map((name) => ({
+      id: null,
+      state: null,
+      text: name,
+      tag: null,
+      when: null,
+    }));
     return {
       title: 'applications',
       chips: [],
       figure: names.length === 0 ? null : `${names.length}`,
-      pieces:
-        names.length === 0
-          ? []
-          : [
-              {
-                kind: 'list',
-                items: names.map((name) => ({
-                  id: null,
-                  state: null,
-                  text: name,
-                  tag: null,
-                  when: null,
-                })),
-              },
-            ],
+      pieces: listBody(items, 'the server has no applications'),
     };
   }
   if (verb === 'recent') {
@@ -196,7 +209,7 @@ function gotifyCard(verb: string, answer: unknown): ForgeCard | null {
       title: 'recent notifications',
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces: listBody(items, 'nothing has arrived from the server'),
     };
   }
   return null;
@@ -234,6 +247,28 @@ function subscriptionChips(sub: GotifyRow): ForgeChip[] {
     { text: appsText(sub.applications), tone: 'plain' },
     { text: floorText(sub.min_priority), tone: 'plain' },
   ];
+}
+
+/**
+ * A list-bearing body: the rows, or the words for finding none.
+ *
+ * The mock's rule is that a list with no rows draws a line rather than a blank
+ * box, so every read that answers with a list goes through here instead of
+ * each arm deciding what an empty answer looks like.
+ */
+function listBody(items: ForgeListItem[], empty: string): ForgePiece[] {
+  return items.length === 0 ? [{ kind: 'empty', text: empty }] : [{ kind: 'list', items }];
+}
+
+/** The class subscriptions a list answer carries: the DM class, the mentions target. */
+function classSubscriptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const held of value) {
+    const target = str(obj(held), 'target');
+    if (target !== null && target.trim() !== '') out.push(target);
+  }
+  return out;
 }
 
 /** The app names a filter matches, or the word for matching any. */
@@ -412,7 +447,7 @@ export function forgeCardOf(
   // A call still out draws from its own input, for the verbs whose input
   // names the thing it is working on - and for the two the dock can hold for
   // approval, where the wait is itself what the row must say.
-  if (result === undefined) return pendingCard(verbOf(name), input);
+  if (result === undefined) return pendingCard(family, verbOf(name), input);
   if (result.is_error === true) return null;
   // A write whose result is one word: the subject is in the input, and the
   // result only confirms that the write went through.
@@ -448,20 +483,35 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
 };
 
 /**
- * What a FAILED forge call's row is titled by.
+ * What a forge call's row is titled by when it carries no card.
  *
- * A failed call has no card - its result is the reason, and the reason draws
- * as every failure does - so the title comes from the call's own input where
- * that names a subject, and from the family's own noun where it does not.
- * Never the tool: `forge: slack__list` is the plumbing a reader scans past.
+ * Two cases have no card: a call still out, whose result has not landed, and
+ * a failed one, whose result IS the reason and draws as every failure does.
+ * Either way the title comes from the call's own input where that names a
+ * subject - in the SUCCESS card's own wording, so a failed write reads
+ * `spawned worker 'reviewer'` under a tail that says it failed - and from the
+ * family's own noun where the input names nothing. Never the tool:
+ * `forge: slack__list` is the plumbing a reader scans past.
  */
-export function forgeFailureTitle(name: string, input: unknown): string | null {
+export function forgeRowTitle(
+  name: string,
+  input: unknown,
+  outcome: 'running' | 'failed' = 'running',
+): string | null {
   const family = forgeFamilyOf(name);
   if (family === null) return null;
   const verb = verbOf(name);
-  const pending = pendingCard(verb, input);
-  if (pending !== null) return pending.title;
   const held = obj(input);
+  if (outcome === 'failed') {
+    const written = acknowledgementCard(verb, input);
+    if (written !== null) return written.title;
+    if (verb === 'post') return postTitle(str(held, 'workspace'), str(held, 'conversation'));
+    const spawned = verb === 'spawn' ? str(held, 'label') : null;
+    if (spawned !== null && spawned.trim() !== '') return `spawned worker '${spawned}'`;
+  } else {
+    const pending = pendingCard(family, verb, input);
+    if (pending !== null) return pending.title;
+  }
   const said = str(held, 'subject') ?? str(held, 'label');
   if (said !== null && said.trim() !== '') return said;
   const query = str(held, 'query');
@@ -476,8 +526,13 @@ export function forgeFailureTitle(name: string, input: unknown): string | null {
  * must not hide; a spawn says what it is bringing up. Every other verb has
  * nothing to draw until it answers and falls back to its raw text.
  */
-function pendingCard(verb: string, input: unknown): ForgeCard | null {
+function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCard | null {
   const held = obj(input);
+  // What the call says it is doing, where its input states it: a create or an
+  // update names the state it is writing, and the row says it while it waits.
+  const chips: ForgeChip[] = [];
+  const asked = str(held, 'status');
+  if (asked !== null && asked.trim() !== '') chips.push(statusChip(asked));
   if (verb === 'spawn') {
     const label = str(held, 'label');
     if (label === null) return null;
@@ -487,7 +542,7 @@ function pendingCard(verb: string, input: unknown): ForgeCard | null {
       pieces.push({ kind: 'tag', text: 'charter' });
       pieces.push({ kind: 'quote', text: charter });
     }
-    return { title: `spawning ${label}`, chips: [], figure: null, pieces };
+    return { title: `spawning ${label}`, chips, figure: null, pieces };
   }
   if (verb === 'post') {
     // The input carries an id and never a name, so the title spells it as
@@ -525,7 +580,12 @@ function pendingCard(verb: string, input: unknown): ForgeCard | null {
       pieces: [],
     };
   }
-  return null;
+  // A verb with no shape of its own still has what its input names: the
+  // subject it is writing, or the state it is writing it in.
+  const subject = str(held, 'subject');
+  const named = subject === null || subject.trim() === '' ? null : subject;
+  if (named === null && chips.length === 0) return null;
+  return { title: named ?? FAMILY_NOUN[family], chips, figure: null, pieces: [] };
 }
 
 /**
@@ -584,26 +644,45 @@ function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
   }
   if (verb === 'list') {
     if (!Array.isArray(answer)) return null;
-    const items: ForgeListItem[] = [];
+    const rows: Record<string, unknown>[] = [];
     for (const held of answer) {
       const review = obj(held);
-      const number = typeof review['number'] === 'number' ? review['number'] : null;
-      if (number === null) continue;
-      const summary = str(review, 'summary');
-      const review_id = str(review, 'review_id');
-      items.push({
-        id: null,
-        state: null,
-        text: summary === null || summary.trim() === '' ? `review #${number}` : summary,
-        tag: `#${number}`,
-        when: review_id,
-      });
+      if (typeof review['number'] !== 'number') continue;
+      rows.push(review);
     }
+    const [newest] = rows;
+    if (newest === undefined) {
+      return {
+        title: 'reviews',
+        chips: [],
+        figure: null,
+        pieces: listBody([], 'no reviews on this branch'),
+      };
+    }
+    const number = newest['number'] as number;
+    const summary = str(newest, 'summary');
+    const head =
+      summary === null || summary.trim() === ''
+        ? `review #${number}`
+        : `review #${number} - ${summary}`;
+    const pieces: ForgePiece[] = [];
+    const id = str(newest, 'review_id');
+    if (id !== null) pieces.push({ kind: 'kv', pairs: [['review id', id]] });
+    // Earlier rounds are kept as rows: the newest is what a reader acts on,
+    // and the ones under it are the history of the same branch.
+    const older: ForgeListItem[] = rows.slice(1).map((row) => ({
+      id: null,
+      state: null,
+      text: str(row, 'summary') ?? `review #${String(row['number'])}`,
+      tag: `#${String(row['number'])}`,
+      when: dayOf(str(row, 'created_at')),
+    }));
+    if (older.length > 0) pieces.push({ kind: 'list', items: older });
     return {
-      title: 'reviews',
-      chips: [],
-      figure: items.length === 0 ? null : `${items.length}`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      title: head,
+      chips: tallyChips(newest),
+      figure: dayOf(str(newest, 'created_at')),
+      pieces,
     };
   }
   if (verb === 'get') {
@@ -621,35 +700,75 @@ function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
       const count = counts[status] ?? 0;
       if (count > 0) chips.push({ text: `${count} ${status}`, tone: statusTone(status) });
     }
-    const items: ForgeListItem[] = [];
+    // Each comment is its own block, the way the mock draws one: the spot, the
+    // code it was filed against, and the thread the exchange happened in.
+    const blocks: ForgeComment[] = [];
     for (const held of comments) {
       const comment = obj(held);
       const file = str(comment, 'file');
+      if (file === null) continue;
       const line = typeof comment['line'] === 'number' ? comment['line'] : null;
-      const comment_id = str(comment, 'comment_id');
-      if (file === null || comment_id === null) continue;
       const status = str(comment, 'status') ?? 'unknown';
-      const turns = Array.isArray(comment['thread']) ? comment['thread'].length : null;
-      items.push({
-        id: null,
+      blocks.push({
+        where: line === null ? file : `${file}:${line}`,
+        side: str(comment, 'side') === 'old' ? 'old side' : 'new side',
         state: { text: status, tone: statusTone(status) },
-        text: line === null ? file : `${file}:${line}`,
-        tag: null,
-        when: turns === null ? comment_id : `${comment_id} \u{b7} ${turns} turns`,
+        context: Array.isArray(comment['context'])
+          ? comment['context'].filter((one): one is string => typeof one === 'string')
+          : [],
+        turns: turnsOf(comment['thread']),
       });
     }
     const pieces: ForgePiece[] = [];
     const summary = str(detail, 'summary');
     if (summary !== null && summary.trim() !== '') pieces.push({ kind: 'quote', text: summary });
-    if (items.length > 0) pieces.push({ kind: 'list', items });
+    if (blocks.length > 0) pieces.push({ kind: 'comments', items: blocks });
     return {
-      title: `review #${number}`,
+      title: `review #${number}${tallyPhrase(chips) === '' ? '' : ` - ${tallyPhrase(chips)}`}`,
       chips,
       figure: comments.length === 0 ? null : `${comments.length} comments`,
       pieces,
     };
   }
   return null;
+}
+
+/** The per-state tally a review answers with, as chips. */
+function tallyChips(row: Record<string, unknown>): ForgeChip[] {
+  const chips: ForgeChip[] = [];
+  for (const status of ['open', 'addressed', 'resolved', 'outdated'] as const) {
+    const count = typeof row[status] === 'number' ? row[status] : 0;
+    if (count > 0) chips.push({ text: `${count} ${status}`, tone: statusTone(status) });
+  }
+  return chips;
+}
+
+/** The same tally as one phrase, for a title: `2 open, 1 addressed`. */
+function tallyPhrase(chips: ForgeChip[]): string {
+  return chips.map((chip) => chip.text).join(', ');
+}
+
+/** The turns of a comment's thread, with the reviewer read apart from a worker. */
+function turnsOf(value: unknown): ForgeComment['turns'] {
+  if (!Array.isArray(value)) return [];
+  const turns: ForgeComment['turns'] = [];
+  for (const held of value) {
+    const turn = obj(held);
+    const text = str(turn, 'text');
+    if (text === null) continue;
+    const author = str(turn, 'author') ?? 'you';
+    turns.push({ author, text, you: author === 'you' });
+  }
+  return turns;
+}
+
+/** A date as the mock spells one: the month, then the day. */
+function dayOf(utc: string | null): string | null {
+  if (utc === null) return null;
+  const at = new Date(utc);
+  if (Number.isNaN(at.getTime())) return null;
+  const month = at.toLocaleDateString('en', { month: 'short' }).toLowerCase();
+  return `${month} ${at.getDate()}`;
 }
 
 /** The chip tone a review state's word draws. */
@@ -796,16 +915,21 @@ function despawnCard(input: unknown, answer: unknown): ForgeCard | null {
   }
   if (status !== 'despawned') return null;
   const pieces: ForgePiece[] = [];
+  let worktreeRemoved = true;
   for (const [field, name] of [
     ['worktree_cleanup_warning', 'worktree'],
     ['branch_cleanup_warning', 'branch'],
   ] as const) {
     const warning = str(held, field);
-    if (warning !== null) pieces.push({ kind: 'warnline', label: name, text: warning });
+    if (warning === null) continue;
+    if (field === 'worktree_cleanup_warning') worktreeRemoved = false;
+    pieces.push({ kind: 'warnline', label: name, text: warning });
   }
   return {
     title: `closed worker '${label}'`,
-    chips: [{ text: 'worktree removed', tone: 'dim' }],
+    // The chip is the factual half of the row and never contradicts the body:
+    // the server sends a worktree warning exactly when the teardown failed.
+    chips: worktreeRemoved ? [{ text: 'worktree removed', tone: 'dim' }] : [],
     figure: null,
     pieces,
   };
@@ -890,15 +1014,17 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
         id: null,
         state: null,
         text,
-        tag: channel === null ? null : channelName(channel),
+        tag: channel === null || channel === '' ? null : channelName(channel),
         when: user,
       });
     }
+    const query = str(obj(input), 'query');
+    const what = query === null || query.trim() === '' ? 'search' : `search \u{b7} "${query}"`;
     return {
-      title: withWorkspace('search', str(obj(input), 'workspace')),
+      title: withWorkspace(what, str(obj(input), 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length} hits`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces: listBody(items, 'no messages matched the search'),
     };
   }
   if (verb === 'list') {
@@ -917,11 +1043,19 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
         when: null,
       });
     }
+    const pieces = listBody(items, 'no conversations this token can see');
+    // The class subscriptions - the DM class and the workspace mention target
+    // - cover no single conversation, so they ride no row of the list; their
+    // ids are what `slack__unsubscribe` takes, so the card names them.
+    const classes = classSubscriptions(obj(answer)['subscriptions']);
+    if (classes.length > 0) {
+      pieces.push({ kind: 'kv', pairs: [['also watching', classes.join(', ')]] });
+    }
     return {
       title: withWorkspace('conversations', str(obj(input), 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces,
     };
   }
   if (verb === 'pins' || verb === 'bookmarks') {
@@ -945,7 +1079,7 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
       title: withWorkspace(title, str(obj(input), 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
-      pieces: items.length === 0 ? [] : [{ kind: 'list', items }],
+      pieces: listBody(items, `no ${verb} in this conversation`),
     };
   }
   if (verb === 'user') {
@@ -987,7 +1121,11 @@ function targetOf(value: unknown): { chip: ForgeChip; text: string } | null {
 
 /** A conversation's name, as the sheet spells a channel: the marker only on a name. */
 function channelName(name: string): string {
-  return name.startsWith('#') || name.startsWith('@') ? name : `#${name}`;
+  if (name === '' || name.startsWith('#') || name.startsWith('@')) return name;
+  // An id is never dressed as a channel: a DM's name falls back to the
+  // partner's user id, and `#U0AE0CBJ77G` reads as a channel that does not
+  // exist. The same heuristic the envelope's author clause uses.
+  return isSlackId(name) ? name : `#${name}`;
 }
 
 /** A read's title, naming the workspace the call went into when it named one. */

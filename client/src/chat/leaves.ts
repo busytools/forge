@@ -13,7 +13,7 @@
 import { languageOf } from './code';
 import { decisionOf, decisionWord, type Decision } from './decisions';
 import { isEdit, mcpParts, type CallStatus, type KindRow, rowOf } from './families';
-import { forgeCardOf, forgeFailureTitle, type ForgeCard } from './forge';
+import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
 import { firstLine, headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
@@ -576,7 +576,14 @@ export function leafOf(
     // as plumbing. A failed forge call has no card - its result is the reason,
     // and the reason draws as every failure does - so its subject comes from
     // the input, and never from the tool it was.
-    title: forge?.title ?? forgeFailureTitle(name, input) ?? titleOf(name, input),
+    title:
+      forge?.title ??
+      forgeRowTitle(
+        name,
+        input,
+        settled === 'failed' || settled === 'killed' ? 'failed' : 'running',
+      ) ??
+      titleOf(name, input),
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
