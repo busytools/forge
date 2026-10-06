@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Chevron from '../components/Chevron.svelte';
   import type { Decision } from './decisions';
   import { renderInlineProse } from './prose';
   import { joinedLine } from './text';
@@ -11,6 +12,10 @@
    * The verdict line draws only what the result carries. What the session
    * then did with the answer - applied it, escalated it - is not on the wire,
    * so nothing here states it.
+   *
+   * A structured value draws its own words where it has them, and the value
+   * in full behind a disclosure under its row (Ved, 2026-10-06): the block
+   * never drops what a call carried.
    */
   let { decision }: { decision: Decision } = $props();
 
@@ -32,6 +37,23 @@
   /** The width a bar fills, as a percentage at the same grain; none, none. */
   function width(value: number | null): string {
     return value === null ? '0%' : `${Math.round(value * 10_000) / 100}%`;
+  }
+
+  /** The words a disclosure leads with, by what the value holds. */
+  function disclosureWords(raw: unknown, what: string): string {
+    if (Array.isArray(raw)) {
+      return `${what} - ${raw.length} ${raw.length === 1 ? 'item' : 'items'}`;
+    }
+    if (typeof raw === 'object' && raw !== null) {
+      const fields = Object.keys(raw).length;
+      return `${what} - ${fields} ${fields === 1 ? 'field' : 'fields'}`;
+    }
+    return what;
+  }
+
+  /** A value in full, as its disclosure draws it. */
+  function pretty(raw: unknown): string {
+    return JSON.stringify(raw, null, 2) ?? String(raw);
   }
 
   /** How sure a noul is: the winning side's share, whichever side won. */
@@ -61,26 +83,46 @@
   /** And whether it draws as a coin flip. */
   const unsure = $derived(noulConfidence !== null && noulConfidence <= UNSURE);
 
+  /** One drawn row: its name and value, its mark, its words, its own value. */
+  interface Drawn {
+    name: string;
+    value: number | null;
+    win: boolean;
+    /** The description line under the row, or null where the call gave none. */
+    crit: string | null;
+    /** The value in full where it was not a string, for the disclosure. */
+    raw: unknown;
+  }
+
   /**
    * The distribution's rows: a name, its value, and whether the answer marks
    * it. A score level the result left without a probability keeps its row
    * with an empty track - the verdict above still names it, and skipping it
    * made the two disagree.
    */
-  const rows = $derived.by((): { name: string; value: number | null; win: boolean }[] => {
+  const rows = $derived.by((): Drawn[] => {
     const answer = decision.answer;
+    /** What the criteria map holds for one row's name, where it holds any. */
+    const said = (name: string): { crit: string | null; raw: unknown } => ({
+      crit: decision.criteria[name]?.text ?? null,
+      raw: decision.criteria[name]?.raw ?? null,
+    });
     if (answer.kind === 'noul') {
       const yes = answer.noul >= YES;
       // The no side is derived: the result returns one probability, and the
       // two sides of a yes/no are complements.
       return [
-        { name: 'yes', value: answer.noul, win: yes },
-        { name: 'no', value: 1 - answer.noul, win: !yes },
+        { name: 'yes', value: answer.noul, win: yes, ...said('yes') },
+        { name: 'no', value: 1 - answer.noul, win: !yes, ...said('no') },
       ];
     }
     if (answer.kind === 'choice') {
       if (answer.probabilities === null) return [];
-      return answer.probabilities.map((held) => ({ ...held, win: held.name === answer.choice }));
+      return answer.probabilities.map((held) => ({
+        ...held,
+        win: held.name === answer.choice,
+        ...said(held.name),
+      }));
     }
     if (answer.levels === null) return [];
     // The two levels the score sits between carry the mark; a score landing
@@ -91,6 +133,8 @@
       name: held.name,
       value: held.value,
       win: at === floor || at === ceil,
+      crit: null,
+      raw: held.raw,
     }));
   });
 
@@ -116,8 +160,16 @@
       <!-- Rendered from escaped input: the same renderer the row's own line
            and a thought's row use. -->
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      {@html renderInlineProse(joinedLine(decision.question))}
+      {@html renderInlineProse(joinedLine(decision.question.text))}
     </div>
+    {#if decision.question.raw !== null}
+      <details class="raw">
+        <summary
+          ><Chevron />{disclosureWords(decision.question.raw, 'structured instructions')}</summary
+        >
+        <pre>{pretty(decision.question.raw)}</pre>
+      </details>
+    {/if}
   {/if}
   <div class="verdict">
     {#if noulValue !== null}
@@ -146,8 +198,14 @@
             >
             <span class="p">{row.value === null ? '' : num(row.value)}</span>
           </div>
-          {#if decision.criteria[row.name] !== undefined}
-            <div class="crit">{decision.criteria[row.name]}</div>
+          {#if row.crit !== null}
+            <div class="crit">{row.crit}</div>
+          {/if}
+          {#if row.raw !== null}
+            <details class="raw">
+              <summary><Chevron />{disclosureWords(row.raw, 'structured value')}</summary>
+              <pre>{pretty(row.raw)}</pre>
+            </details>
           {/if}
         </div>
       {/each}
