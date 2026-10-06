@@ -44,6 +44,61 @@
   }
 
   html, body { height: 100%; }
+  /* ---------- one scrollbar skin for every scroller on the page ----------
+     The root viewport (the home page scrolls the document), the rail, the
+     chat, the autocomplete, the segment list, the dictation popover and both
+     text fields. One rule set, so a new scroller inherits it; the parts do
+     not take the element's own cursor, and the thumb brightens on hover and
+     again while dragged. */
+  html::-webkit-scrollbar,
+  .rail .scroll::-webkit-scrollbar,
+  .conv::-webkit-scrollbar,
+  .ac .rows::-webkit-scrollbar,
+  .sg-list::-webkit-scrollbar,
+  .pop::-webkit-scrollbar,
+  .box textarea::-webkit-scrollbar,
+  .dock .notes::-webkit-scrollbar { width: 8px; cursor: pointer; }
+  html::-webkit-scrollbar-track,
+  .rail .scroll::-webkit-scrollbar-track,
+  .conv::-webkit-scrollbar-track,
+  .ac .rows::-webkit-scrollbar-track,
+  .sg-list::-webkit-scrollbar-track,
+  .pop::-webkit-scrollbar-track,
+  .box textarea::-webkit-scrollbar-track,
+  .dock .notes::-webkit-scrollbar-track { background: transparent; cursor: pointer; }
+  html::-webkit-scrollbar-corner,
+  .rail .scroll::-webkit-scrollbar-corner,
+  .conv::-webkit-scrollbar-corner,
+  .ac .rows::-webkit-scrollbar-corner,
+  .sg-list::-webkit-scrollbar-corner,
+  .pop::-webkit-scrollbar-corner,
+  .box textarea::-webkit-scrollbar-corner,
+  .dock .notes::-webkit-scrollbar-corner { background: transparent; cursor: pointer; }
+  html::-webkit-scrollbar-thumb,
+  .rail .scroll::-webkit-scrollbar-thumb,
+  .conv::-webkit-scrollbar-thumb,
+  .ac .rows::-webkit-scrollbar-thumb,
+  .sg-list::-webkit-scrollbar-thumb,
+  .pop::-webkit-scrollbar-thumb,
+  .box textarea::-webkit-scrollbar-thumb,
+  .dock .notes::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px;
+    cursor: pointer; }
+  html::-webkit-scrollbar-thumb:hover,
+  .rail .scroll::-webkit-scrollbar-thumb:hover,
+  .conv::-webkit-scrollbar-thumb:hover,
+  .ac .rows::-webkit-scrollbar-thumb:hover,
+  .sg-list::-webkit-scrollbar-thumb:hover,
+  .pop::-webkit-scrollbar-thumb:hover,
+  .box textarea::-webkit-scrollbar-thumb:hover,
+  .dock .notes::-webkit-scrollbar-thumb:hover { background: var(--line); }
+  html::-webkit-scrollbar-thumb:active,
+  .rail .scroll::-webkit-scrollbar-thumb:active,
+  .conv::-webkit-scrollbar-thumb:active,
+  .ac .rows::-webkit-scrollbar-thumb:active,
+  .sg-list::-webkit-scrollbar-thumb:active,
+  .pop::-webkit-scrollbar-thumb:active,
+  .box textarea::-webkit-scrollbar-thumb:active,
+  .dock .notes::-webkit-scrollbar-thumb:active { background: var(--muted); }
   body {
     background:
       radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
