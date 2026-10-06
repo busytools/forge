@@ -137,11 +137,9 @@ class UpdatePlugin(private val activity: Activity) : Plugin(activity) {
   /** The file for `version`, downloaded once: a verified one is reused. */
   private fun download(version: String, url: String): File {
     val file = File(activity.cacheDir, "forge-$version.apk")
-    if (file.exists()) {
-      return file
-    }
     // Only the release being offered is worth keeping: one that moved on
-    // leaves every earlier download unused.
+    // leaves every earlier download unused. Pruned before the reuse check
+    // too, or a cached offer leaves the earlier files behind for good.
     activity.cacheDir
       .listFiles { candidate -> candidate.name.startsWith("forge-") && candidate.name.endsWith(".apk") }
       ?.forEach { stale ->
@@ -149,6 +147,9 @@ class UpdatePlugin(private val activity: Activity) : Plugin(activity) {
           stale.delete()
         }
       }
+    if (file.exists()) {
+      return file
+    }
     val connection = URL(url).openConnection() as HttpURLConnection
     connection.connectTimeout = CONNECT_TIMEOUT_MS
     connection.readTimeout = READ_TIMEOUT_MS
