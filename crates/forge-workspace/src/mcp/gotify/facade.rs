@@ -470,6 +470,12 @@ client_token = "Ctest"
             .expect("subscribe without filters");
 
         assert!(outcome.names_resolve, "a match-any filter needs no names, so it always resolves");
+        assert!(outcome.applications.is_empty(), "a match-any filter names no applications");
+        assert_eq!(
+            outcome.min_priority,
+            Some(5),
+            "the outcome carries the priority floor that was stored",
+        );
         assert_eq!(
             stub.application_fetches(),
             0,

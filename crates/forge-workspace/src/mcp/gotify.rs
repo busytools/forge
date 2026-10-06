@@ -50,9 +50,10 @@ fn tool_error(text: String) -> ToolOutput {
 }
 
 /// Readable JSON for one subscription (the tool-output shape the LLM
-/// sees). No `team_role`: `gotify__list` only ever returns the caller's
-/// own, so the field could carry just one value, and `cron_to_json`
-/// omits it for the same reason.
+/// sees), shared by the `gotify__list` rows and the `gotify__unsubscribe`
+/// echo. No `team_role`: both show only the caller's own, so the field
+/// could carry just one value, and `cron_to_json` omits it for the same
+/// reason.
 fn sub_to_json(sub: &GotifySubscription) -> serde_json::Value {
     serde_json::json!({
         "id": sub.id.to_string(),
@@ -404,8 +405,7 @@ mod tests {
     }
 
     /// The result is one structured row carrying the filter that was
-    /// actually registered, so a reader can draw it; the old prose line
-    /// named only the id.
+    /// actually registered, so a reader can draw the filter it created.
     #[tokio::test]
     async fn subscribe_returns_the_effective_filter() {
         let id = Uuid::from_u128(0x42);
@@ -459,7 +459,10 @@ mod tests {
             serde_json::from_str(&out.blocks[0].text).expect("the result is the structured row");
         assert_eq!(json["id"], id.to_string(), "the id still comes back");
         assert_eq!(json["applications"], serde_json::json!(["phone-agent"]));
-        assert_eq!(json["min_priority"], serde_json::Value::Null, "no floor stays null");
+        assert!(
+            json.get("min_priority").is_some_and(serde_json::Value::is_null),
+            "the key is present and null, not dropped: {json}",
+        );
         assert_eq!(json["names_resolve"], false, "the unresolved filter is a field: {json}");
     }
 
@@ -495,24 +498,28 @@ mod tests {
         );
     }
 
-    /// An unsubscribe echoes the row it removed, so a reader can name
-    /// what stopped; `unsubscribed <uuid>` named nothing a human can
+    /// An unsubscribe echoes the removed row whole, so a reader can name
+    /// the filter that stopped; a bare uuid names nothing a human can
     /// place.
     #[tokio::test]
     async fn unsubscribe_echoes_the_removed_row() {
         let id = Uuid::from_u128(0xc1);
+        let removed = sample_sub(id, "p");
         let mock = Arc::new(MockGotifyFacade::new());
-        *mock.unsubscribe_result.lock() = Some(sample_sub(id, "p"));
+        *mock.unsubscribe_result.lock() = Some(removed.clone());
         let tool = Unsubscribe { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "id": id.to_string() }))).await;
         assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
+        assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
             serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
-        assert_eq!(json["removed"]["id"], id.to_string());
-        assert_eq!(json["removed"]["applications"], serde_json::json!(["alerts"]));
-        assert_eq!(json["removed"]["min_priority"], 5);
+        assert_eq!(
+            json["removed"],
+            sub_to_json(&removed),
+            "the echo is the whole row, not a hand-picked subset: {json}",
+        );
         assert_eq!(mock.unsubscribe_calls.lock()[0].1, id);
     }
 
