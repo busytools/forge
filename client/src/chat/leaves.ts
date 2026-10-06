@@ -394,7 +394,7 @@ function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[]
     const kind = mark === '-' ? 'del' : mark === '+' ? 'add' : 'ctx';
     out.push({
       kind,
-      text: kind === 'ctx' ? line : line.slice(1),
+      text: line.slice(1),
       old: kind === 'add' ? null : old,
       new: kind === 'del' ? null : next,
     });

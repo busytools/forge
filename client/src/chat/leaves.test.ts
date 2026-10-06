@@ -49,7 +49,9 @@ describe('what a call body draws', () => {
       hunk.lines.map((line) => line.kind),
       'each line read by its mark',
     ).toEqual(['ctx', 'del', 'add', 'ctx']);
-    expect(hunk.lines[0]?.text, 'context keeps its own indentation').toBe(' display: flex;');
+    expect(hunk.lines[0]?.text, 'a context line loses its prefix like every other kind').toBe(
+      'display: flex;',
+    );
     expect(hunk.lines[1]?.text, 'and a change loses its mark, which the row draws itself').toBe(
       '  flex: none;',
     );
@@ -457,7 +459,7 @@ describe('what one hunk line costs to read', () => {
     ).toEqual([
       ['add', long.length],
       ['del', long.length],
-      ['ctx', long.length + 1],
+      ['ctx', long.length],
     ]);
     expect(hunk.lines[0]?.text, 'and a change loses its mark, which the row draws itself').toBe(
       long,
