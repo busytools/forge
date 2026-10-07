@@ -335,6 +335,34 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * The service status the core watches for the whole install arrives keyless,
+   * so it rides every seat's stream and each open conversation draws it as the
+   * terminal pushes it (#1638) - once per report.
+   */
+  it('draws a service-status report, once per report', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    server.update({
+      service_status: { severity: 'warning', message: 'Elevated error rates on the Anthropic API' },
+    });
+    expect(drawn(), 'the report is drawn').toContain('Elevated error rates on the Anthropic API');
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'an error report draws as an error').toContain('"severity":"error"');
+    expect(drawn()).toContain('The API is down');
+
+    const once = drawn();
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'the same report twice is one row').toBe(once);
+  });
+
+  /**
    * The plan-limit next steps ride the turn's own failure (#1638): the
    * terminal's words and steps, with the core's own message where the
    * terminal's summary rides - it is not drawn a line above when a
