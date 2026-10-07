@@ -1039,34 +1039,6 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
 
-/* The takeover: the whole window is the browser, and the bar is the only
-   forge on it. The stage draws the shell's frames on a canvas, sized to the
-   browser's own viewport - the page IS the stage, and the bar sits above it. */
-.takeover { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column;
-  background: var(--bg); }
-.takeover .bar { display: flex; align-items: center; gap: 12px; padding: 0 10px; flex: none;
-  height: 44px; background: var(--s1); border-bottom: 1px solid var(--line); }
-.takeover .back { display: flex; align-items: center; gap: 8px; background: none;
-  border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; color: var(--text);
-  font: inherit; font-size: var(--fs-label); cursor: pointer; }
-.takeover .back .arw { color: var(--accent); }
-.takeover .reload { background: none; border: 1px solid var(--line); border-radius: 8px;
-  padding: 4px 10px; color: var(--text); font: inherit; font-size: var(--fs-label);
-  cursor: pointer; }
-.takeover .addr { color: var(--dim); font-size: var(--fs-label); min-width: 0;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.takeover .done { margin-left: auto; background: var(--accent); color: #1a1000; border: 0;
-  border-radius: 8px; padding: 4px 12px; font: inherit; font-size: var(--fs-label);
-  font-weight: 600; cursor: pointer; }
-.takeover .stage { flex: 1; display: flex; align-items: center; justify-content: center;
-  background: var(--bg); overflow: hidden; }
-/* The canvas fills the stage: the browser's viewport is told to be exactly
-   this box (at the display's scale), so the page lands 1:1 in the backing
-   store and the drawn box and the input mapping are the same rectangle. */
-.takeover .stage canvas { width: 100%; height: 100%; outline: none; }
-.takeover .stage canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-@media (pointer: coarse) { .takeover .back, .takeover .done { min-height: 44px; } }
-
 /* A narrow window compacts the panel: the same rows, tighter, and never
    taller than what the window can give it. */
 @media (max-width: 560px) {
