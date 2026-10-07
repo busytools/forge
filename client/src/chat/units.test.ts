@@ -2718,3 +2718,89 @@ describe("the CLI's retry line", () => {
     ).toBe('retrying in 250ms');
   });
 });
+
+describe('the rate-limit windows', () => {
+  /**
+   * One `rate_limit_event` frame, as the wire shapes it. The reset sits long
+   * past, so the countdown those words end on is "now" forever - the pins
+   * below stay exact without a faked clock.
+   */
+  const windowed = (info: Record<string, unknown>): unknown => ({
+    type: 'rate_limit_event',
+    rate_limit_info: { resetsAt: 1_741_280_000, rateLimitType: 'five_hour', ...info },
+    uuid: 'r-limit',
+    session_id: 's-1',
+  });
+
+  const noticed = (units: Unit[]) => units.filter((unit) => unit.kind === 'notice');
+
+  it("draws a window closing as a warning line, in the terminal's words", () => {
+    const units = fold([windowed({ status: 'allowed_warning', utilization: 0.91 })]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a closing window is a warning').toBe('warning');
+    expect(notice?.text, "the terminal's own words, so the two views agree").toBe(
+      "Approaching rate limit, you've used 91% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('upgrades the same window to an error in place, rather than stacking', () => {
+    // The key is the window, not the status: a window that escalates from
+    // warning to rejected rewrites the line it already drew.
+    const units = fold([
+      windowed({ status: 'allowed_warning' }),
+      windowed({ status: 'rejected', utilization: 0.99 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a rejected window is an error').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('keeps the loudest line when the same window walks back', () => {
+    // The terminal's no-downgrade guard (`upsert_turn_notice` refuses a lower
+    // stage): a window that flips from rejected back to a warning keeps the
+    // line it already drew, where a fresh warning would soften "Rate limit
+    // reached" to "Approaching".
+    const units = fold([
+      windowed({ status: 'rejected', utilization: 0.99 }),
+      windowed({ status: 'allowed_warning', utilization: 0.8 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'the loudest stage holds').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('opens a fresh line when the window resets', () => {
+    const units = fold([
+      windowed({ status: 'rejected' }),
+      windowed({ status: 'allowed_warning', resetsAt: 1_741_280_000 + 18_000 }),
+    ]);
+
+    expect(noticed(units), 'a new window is a new incident').toHaveLength(2);
+  });
+
+  it('draws nothing for a window that is allowed or unknown to this build', () => {
+    // The terminal routes both to no notice, and this fold matches rather
+    // than draws a line the other view does not have.
+    const units = fold([
+      said([text('working')]),
+      windowed({ status: 'allowed' }),
+      windowed({ status: 'something_new' }),
+    ]);
+
+    expect(noticed(units)).toHaveLength(0);
+    expect(kinds(units)).toEqual(['text']);
+  });
+});
