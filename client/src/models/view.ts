@@ -24,6 +24,7 @@ import type {
   InUseModel,
   ModelRole,
   ModelUpdate,
+  ReadAloudRecording,
   UpdateVerdict,
 } from '../wire/models';
 import type { DictateModelState } from '../wire/types';
@@ -609,6 +610,18 @@ export function updateWhy(): string {
  */
 export function inUseLicense(inUse: InUseModel[], role: ModelRole): string {
   return inUse.find((model) => model.role === role)?.facts.license ?? 'no licence on the feed';
+}
+
+/** A recording's length, as its own row reads it: `m:ss`. */
+export function recordingLength(recording: ReadAloudRecording): string {
+  const seconds = Math.round(recording.duration_ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/** When a recording was made, as its own row reads it. */
+export function recordingWhen(recording: ReadAloudRecording): string | null {
+  const at = clock(recording.at);
+  return at === null ? null : `recorded ${at}`;
 }
 
 /** When one result ran, as the row's own line. */

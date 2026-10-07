@@ -1,7 +1,13 @@
 <script lang="ts">
   import type { Command } from '../protocol';
   import type { Connection } from '../socket';
-  import type { BenchResult, BenchTarget, BenchTier, ModelRole } from '../wire/models';
+  import type {
+    BenchResult,
+    BenchTarget,
+    BenchTier,
+    ModelRole,
+    ReadAloudRecording,
+  } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
   import { SetRecorder } from './recorder.svelte';
@@ -188,6 +194,10 @@
     running?.stop(keep);
   }
 
+  function recordDelete(recording: ReadAloudRecording): void {
+    act({ dictate_read_aloud_delete: { id: recording.id } });
+  }
+
   function benchDelete(result: BenchResult): void {
     act({
       dictate_bench_delete: {
@@ -218,6 +228,7 @@
     onbenchstop={benchStop}
     onrecord={record}
     onrecordstop={recordStop}
+    onrecorddelete={recordDelete}
     {recorder}
     {recordingLine}
     onbenchdelete={benchDelete}

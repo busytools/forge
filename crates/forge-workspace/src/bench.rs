@@ -68,16 +68,62 @@ pub struct BenchResult {
 /// How many saved results the page reads.
 const RESULTS_SHOWN: usize = 50;
 
-/// The read-aloud set as the page reads it: whether this machine has one,
-/// whether one is being recorded right now, the passage it is read from, and
-/// the last recording's failure when there is one - a write that failed after
-/// the stop has no dispatch left to answer, so the read carries it.
+/// One recording of the read-aloud passage, as the page lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReadAloudRecording {
+    /// The take's own directory name, which is what the page deletes by.
+    pub id: String,
+    pub duration_ms: u64,
+    /// RFC 3339, off the stamp the recording is named by.
+    pub at: String,
+}
+
+/// The read-aloud set as the page reads it: the recordings this machine has,
+/// whether one is being recorded right now, the passage they are read from,
+/// and the last recording's failure when there is one - a write that failed
+/// after the stop has no dispatch left to answer, so the read carries it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadAloudState {
-    pub recorded: bool,
+    /// Oldest first, so a page that appends draws a list that grows down.
+    pub recordings: Vec<ReadAloudRecording>,
     pub recording: bool,
     pub error: Option<String>,
     pub passage: String,
+}
+
+/// The set directory's recordings, oldest first, read off the take
+/// directories themselves: the name carries the stamp, and `meta.json` the
+/// length the recorder wrote. A directory without its meta is one the store
+/// was interrupted writing, and is skipped rather than listed as a clip the
+/// bench would then skip too.
+fn read_aloud_recordings(dir: &Path) -> Vec<ReadAloudRecording> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            name.strip_prefix("take-").is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+        .collect();
+    names.sort();
+
+    names
+        .into_iter()
+        .filter_map(|id| {
+            let millis = id.strip_prefix("take-")?.parse::<i64>().ok()?;
+            let meta = std::fs::read_to_string(dir.join(&id).join("meta.json")).ok()?;
+            let meta: serde_json::Value = serde_json::from_str(&meta).ok()?;
+            let at = time::OffsetDateTime::from_unix_timestamp(millis.checked_div(1000)?)
+                .ok()?
+                .format(&time::format_description::well_known::Rfc3339)
+                .ok()?;
+            Some(ReadAloudRecording { id, duration_ms: meta.get("duration_ms")?.as_u64()?, at })
+        })
+        .collect()
 }
 
 /// The config one target runs under: the base with the target's file in
@@ -132,17 +178,45 @@ impl Workspace {
         forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-read-aloud"))
     }
 
-    /// The read-aloud set, as the page draws it: whether one exists here,
-    /// whether one is being recorded right now, the passage it is read from,
-    /// and the last write's failure when there was one.
+    /// The read-aloud set, as the page draws it: the recordings this machine
+    /// has, whether one is being recorded right now, the passage they are
+    /// read from, and the last write's failure when there was one.
     pub fn read_aloud_state(&self) -> ReadAloudState {
         let dir = self.read_aloud_dir();
         ReadAloudState {
-            recorded: dir.as_ref().is_some_and(|dir| dir.join("passage.txt").is_file()),
+            recordings: dir.as_deref().map(read_aloud_recordings).unwrap_or_default(),
             recording: self.dictate_runtime.lock().set_recording.is_some(),
             error: self.read_aloud_error.lock().clone(),
             passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned(),
         }
+    }
+
+    /// Drop one recording from the read-aloud set, by the id the page read.
+    ///
+    /// The id is a directory name this server wrote, and it is checked
+    /// against that shape before anything is removed: a page-supplied path
+    /// must never name a directory outside the set.
+    pub(crate) fn delete_read_aloud(&self, id: &str) -> Result<(), DispatchError> {
+        let Some(dir) = self.read_aloud_dir() else {
+            return Err(DispatchError::ReadAloudUnavailable {
+                reason: "no app-support directory resolves".to_owned(),
+            });
+        };
+        let keep_pattern =
+            |rest: &str| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit());
+        if !id.strip_prefix("take-").is_some_and(keep_pattern) {
+            return Err(DispatchError::ReadAloudUnavailable {
+                reason: format!("{id} is not a recording this set holds"),
+            });
+        }
+        let path = dir.join(id);
+        if let Err(error) = std::fs::remove_dir_all(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, id, "read-aloud: the recording was not deleted");
+            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        }
+        Ok(())
     }
 
     /// Begin recording the read-aloud set: the page's own microphone feeds
@@ -691,7 +765,7 @@ mod tests {
             loop {
                 match updates.recv().await {
                     Some(crate::SessionUpdate::DictateModelsChanged { models }) => {
-                        if models.read_aloud.recorded {
+                        if !models.read_aloud.recordings.is_empty() {
                             break models;
                         }
                     }
@@ -721,11 +795,10 @@ mod tests {
             .unwrap();
 
         let models = await_recorded(&mut updates).await;
-        assert!(models.read_aloud.recorded, "the read says the set is here");
-        let clip = forge_dictate::bench::read_aloud(dir.path())
-            .expect("the set reads")
-            .expect("a passage and a take are there");
-        assert_eq!(clip.audio.len(), 1_600, "the frames the page fed");
+        assert_eq!(models.read_aloud.recordings.len(), 1, "the read says the set is here");
+        let clips = forge_dictate::bench::read_aloud(dir.path()).expect("the set reads");
+        assert_eq!(clips.len(), 1, "a passage and a take are there");
+        assert_eq!(clips[0].audio.len(), 1_600, "the frames the page fed");
 
         // A second recording, dropped rather than kept: nothing replaces the
         // set that stands.
@@ -733,8 +806,42 @@ mod tests {
         assert!(ws.read_aloud_push(&vec![0.5_f32; 800], Some(1)));
         ws.dispatch(crate::Command::DictateReadAloudStop { keep: false, initiator: Some(1) })
             .unwrap();
-        let clip = forge_dictate::bench::read_aloud(dir.path()).unwrap().unwrap();
-        assert_eq!(clip.audio.len(), 1_600, "a dropped recording leaves the set alone");
+        let clips = forge_dictate::bench::read_aloud(dir.path()).unwrap();
+        assert_eq!(clips.len(), 1, "a dropped recording leaves the set alone");
+        assert_eq!(clips[0].audio.len(), 1_600);
+    }
+
+    /// **A recording is deleted by the id the page read, and nothing else
+    /// is.** The id is a directory name this server wrote, and a page-supplied
+    /// path must never name a directory outside the set.
+    #[tokio::test]
+    async fn a_recording_is_deleted_by_its_id_and_a_foreign_one_is_refused() {
+        let (ws, mut updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
+        let dir = tempfile::tempdir().unwrap();
+        *ws.test_read_aloud_dir.lock() = Some(dir.path().to_path_buf());
+
+        ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) }).unwrap();
+        assert!(ws.read_aloud_push(&vec![0.25_f32; 1_600], Some(1)));
+        ws.dispatch(crate::Command::DictateReadAloudStop { keep: true, initiator: Some(1) })
+            .unwrap();
+        let models = await_recorded(&mut updates).await;
+        let id = models.read_aloud.recordings[0].id.clone();
+        assert_eq!(models.read_aloud.recordings[0].duration_ms, 100, "a tenth of a second");
+
+        // A path that is not one of this set's own directory names is refused
+        // rather than removed.
+        let outside = dir.path().join("neighbour");
+        std::fs::create_dir_all(&outside).unwrap();
+        for id in ["../neighbour", "neighbour", "take-x", "take-"] {
+            let err = ws.dispatch(crate::Command::DictateReadAloudDelete { id: id.to_owned() });
+            assert!(err.is_err(), "accepted {id:?}");
+        }
+        assert!(outside.is_dir(), "a foreign directory must survive");
+
+        ws.dispatch(crate::Command::DictateReadAloudDelete { id: id.clone() }).unwrap();
+        let models = drained_models(&mut updates).expect("the delete pushes the read");
+        assert!(models.read_aloud.recordings.is_empty(), "the recording left the set");
+        assert!(!dir.path().join(&id).exists(), "and its directory went with it");
     }
 
     /// One capture at a time: a take that is live refuses a recording by

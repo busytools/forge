@@ -101,6 +101,7 @@ describe('the band card', () => {
           onbenchstop: () => {},
           onrecord: () => {},
           onrecordstop: () => {},
+          onrecorddelete: () => {},
           onbenchdelete: () => {},
           onupdate: () => {},
         },

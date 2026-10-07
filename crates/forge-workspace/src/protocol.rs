@@ -409,13 +409,17 @@ pub enum Command {
         #[serde(skip)]
         initiator: Option<u64>,
     },
-    /// Stop the read-aloud recording. `keep` writes it as the set; a stop
+    /// Stop the read-aloud recording. `keep` writes it into the set; a stop
     /// that does not keeps nothing, which is the page's cancel.
     DictateReadAloudStop {
         keep: bool,
         /// Stamped like [`Command::DictateReadAloudStart`]'s.
         #[serde(skip)]
         initiator: Option<u64>,
+    },
+    /// Drop one recording from the read-aloud set, by the id the page read.
+    DictateReadAloudDelete {
+        id: String,
     },
     /// Drop one saved bench result, named by its own key: the target, the
     /// tier, and the corpus it ran over.
@@ -755,6 +759,7 @@ impl Command {
             | Self::DictateBenchStop
             | Self::DictateReadAloudStart { .. }
             | Self::DictateReadAloudStop { .. }
+            | Self::DictateReadAloudDelete { .. }
             | Self::DictateBenchDelete { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
@@ -913,6 +918,9 @@ impl std::fmt::Debug for Command {
             Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
             Self::DictateReadAloudStop { keep, .. } => {
                 f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
+            }
+            Self::DictateReadAloudDelete { id } => {
+                f.debug_struct("DictateReadAloudDelete").field("id", id).finish()
             }
             Self::DictateBenchDelete { target, tier, corpus } => f
                 .debug_struct("DictateBenchDelete")
@@ -2236,6 +2244,9 @@ pub enum DispatchError {
     /// only the connection that started one can stop it.
     #[error("no read-aloud recording is running here")]
     ReadAloudNotRecording,
+    /// The read-aloud set would not take the change, in the core's own words.
+    #[error("the read-aloud set could not be changed: {reason}")]
+    ReadAloudUnavailable { reason: String },
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

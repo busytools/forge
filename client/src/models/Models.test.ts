@@ -11,6 +11,7 @@ import type {
   BenchTier,
   DictateModelsWire,
   ModelRole,
+  ReadAloudRecording,
 } from '../wire/models';
 import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
@@ -52,6 +53,7 @@ function open(
     onbenchstop: () => void;
     onrecord: () => void;
     onrecordstop: (keep: boolean) => void;
+    onrecorddelete: (recording: ReadAloudRecording) => void;
     recorder: Pick<SetRecorder, 'wire'> | null;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
@@ -74,6 +76,7 @@ function open(
       onbenchstop: handlers.onbenchstop ?? (() => {}),
       onrecord: handlers.onrecord ?? (() => {}),
       onrecordstop: handlers.onrecordstop ?? (() => {}),
+      onrecorddelete: handlers.onrecorddelete ?? (() => {}),
       recorder: handlers.recorder ?? null,
       onbenchdelete: handlers.onbenchdelete ?? (() => {}),
       onupdate: handlers.onupdate ?? (() => {}),
@@ -660,6 +663,50 @@ describe('the models page as it draws', () => {
     cancel?.click();
     flushSync();
     expect(stops).toEqual([true, false]);
+  });
+
+  /**
+   * **Recorded is a list, not a prompt.** Once a recording stands, the page
+   * shows what is there - its length and when it was made - with a delete
+   * per row and a way to add another, and the passage is not drawn again: a
+   * reader who has read it does not need it under every state.
+   */
+  it('lists the recordings, each with its own delete and a way to add one', () => {
+    const deleted: ReadAloudRecording[] = [];
+    const host = open(
+      {
+        ...modelsWire,
+        read_aloud: {
+          ...modelsWire.read_aloud,
+          recordings: [
+            { id: 'take-1791363000000', duration_ms: 31_400, at: '2026-10-07T09:30:00Z' },
+            { id: 'take-1791363600000', duration_ms: 18_000, at: '2026-10-07T09:40:00Z' },
+          ],
+        },
+      },
+      { onrecorddelete: (recording) => deleted.push(recording) },
+    );
+
+    expect(host.textContent).toContain('the read-aloud set');
+    expect(host.textContent).not.toContain('the read-aloud set is not recorded yet');
+    expect(host.textContent).not.toContain('I want the forge session to pick up where it left off');
+    expect(host.textContent, 'the lengths are the rows').toContain('0:31');
+    expect(host.textContent).toContain('0:18');
+    expect(host.textContent).toContain('recorded');
+    expect(host.textContent, 'a list is not a prompt').not.toContain('record the passage');
+
+    const deletes = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((button) =>
+      button.textContent?.includes('delete'),
+    );
+    expect(deletes).toHaveLength(2);
+    deletes[0]?.click();
+    flushSync();
+    expect(deleted.map((recording) => recording.id)).toEqual(['take-1791363000000']);
+
+    const another = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+      button.textContent?.includes('record another'),
+    );
+    expect(another, 'a recorded set must offer one more').not.toBeUndefined();
   });
 
   /** A write that failed after the stop is drawn in the core's own words. */

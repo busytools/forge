@@ -71,7 +71,7 @@ pub struct Corpus {
 pub fn corpus(tier: Tier, takes_dir: &Path, read_aloud_dir: &Path) -> Result<Corpus, Error> {
     let clips = match tier {
         Tier::Consensus => takes(takes_dir)?,
-        Tier::ReadAloud => read_aloud(read_aloud_dir)?.into_iter().collect(),
+        Tier::ReadAloud => read_aloud(read_aloud_dir)?,
     };
     let id = corpus_id(&clips);
     Ok(Corpus { clips, id })
@@ -118,45 +118,37 @@ pub fn takes(dir: &Path) -> Result<Vec<Clip>, Error> {
     Ok(clips)
 }
 
-/// The read-aloud set, when this machine has recorded one.
+/// The read-aloud set: the passage, and every recording of it this machine
+/// has kept - each scored against the passage as its truth.
 ///
-/// The set is a passage beside the take that read it: `passage.txt` is the
-/// truth, and the newest take under the same directory is the audio - kept
-/// whole, so a re-run scores the same bytes.
-pub fn read_aloud(dir: &Path) -> Result<Option<Clip>, Error> {
+/// Empty when nothing is recorded, and empty rather than an error when the
+/// passage stands without a finished recording under it.
+pub fn read_aloud(dir: &Path) -> Result<Vec<Clip>, Error> {
     let passage = dir.join("passage.txt");
     if !passage.is_file() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let truth = std::fs::read_to_string(&passage)
         .map_err(|source| Error::Io { path: passage.clone(), source })?;
 
     let framed: Vec<Clip> = takes(dir)?;
-    let Some(clip) = framed.into_iter().last() else {
-        // A passage with no take under it is a recording that never finished;
-        // the caller sees no set rather than a silent clip.
-        return Ok(None);
-    };
-    Ok(Some(Clip { source: ClipSource::ReadAloud, truth: Some(truth), ..clip }))
+    Ok(framed
+        .into_iter()
+        .map(|clip| Clip { source: ClipSource::ReadAloud, truth: Some(truth.clone()), ..clip })
+        .collect())
 }
 
-/// Write one recording as the read-aloud set: the passage read, the take the
-/// words were recorded in, and a manifest naming the wav's own sha256.
+/// Write one recording into the read-aloud set: the passage read, the take
+/// the words were recorded in, and a manifest naming the wav's own sha256.
 ///
-/// The set REPLACES whatever stood there - the previous take goes first, so
-/// a half-written replacement never leaves two takes under one passage - and
-/// the take's `meta.json` lands last, which is what makes it complete to
-/// [`read_aloud`]: an interrupted write reads as no set rather than as a
-/// partial one. The outcome is the caller's to report, because the recording
-/// is a press somebody is watching.
+/// Every recording is KEPT: the set is a list, a later recording adds to it
+/// rather than replacing it, and the page drops one by name when its reader
+/// asks. The take's `meta.json` lands last, which is what makes it complete
+/// to [`read_aloud`] - an interrupted write reads as no recording rather
+/// than as a partial one. The outcome is the caller's to report, because the
+/// recording is a press somebody is watching.
 pub fn store_read_aloud(dir: &Path, samples: &[f32]) -> Result<(), Error> {
     std::fs::create_dir_all(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("take-") {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
 
     let take = format!("take-{:013}", crate::diagnostics::take_stamp());
     let take_dir = dir.join(&take);
@@ -606,16 +598,16 @@ mod tests {
     /// take leaves with the previous recording rather than stacking under
     /// one passage.
     #[test]
-    fn a_recording_becomes_the_set_and_a_later_one_replaces_it() {
+    fn recordings_join_the_set_and_a_later_one_adds_to_it() {
         let dir = tempfile::tempdir().unwrap();
         let audio = vec![0.25_f32; 1_600];
 
         store_read_aloud(dir.path(), &audio).expect("the set writes");
-        let clip =
-            read_aloud(dir.path()).expect("the set reads").expect("a passage and a take are there");
-        assert_eq!(clip.source, ClipSource::ReadAloud);
-        assert_eq!(clip.truth.as_deref(), Some(READ_ALOUD_PASSAGE));
-        assert_eq!(clip.audio.len(), audio.len(), "the samples the recording carried");
+        let clips = read_aloud(dir.path()).expect("the set reads");
+        assert_eq!(clips.len(), 1, "the first recording is the whole set");
+        assert_eq!(clips[0].source, ClipSource::ReadAloud);
+        assert_eq!(clips[0].truth.as_deref(), Some(READ_ALOUD_PASSAGE));
+        assert_eq!(clips[0].audio.len(), audio.len(), "the samples the recording carried");
         let first = std::fs::read_dir(dir.path())
             .unwrap()
             .flatten()
@@ -631,19 +623,15 @@ mod tests {
             "the manifest names the wav's own sha, got {manifest}"
         );
 
-        store_read_aloud(dir.path(), &audio[..800]).expect("a re-recording writes");
-        let takes: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("take-"))
-            .collect();
-        assert_eq!(takes.len(), 1, "a re-recording replaces the set, got {takes:?}");
-        assert!(!dir.path().join(&first).exists(), "the previous take left with it");
-        assert_eq!(
-            read_aloud(dir.path()).unwrap().unwrap().audio.len(),
-            800,
-            "the set reads back as the newest recording"
+        store_read_aloud(dir.path(), &audio[..800]).expect("a second recording writes");
+        let clips = read_aloud(dir.path()).unwrap();
+        assert_eq!(clips.len(), 2, "a later recording adds to the set");
+        assert!(dir.path().join(&first).exists(), "the first recording stays");
+        assert_eq!(clips[0].audio.len(), audio.len(), "oldest first");
+        assert_eq!(clips[1].audio.len(), 800, "the newest recording is the last clip");
+        assert!(
+            clips.iter().all(|clip| clip.truth.as_deref() == Some(READ_ALOUD_PASSAGE)),
+            "every recording is scored against the one passage"
         );
     }
 

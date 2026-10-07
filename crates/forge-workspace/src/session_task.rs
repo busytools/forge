@@ -1573,6 +1573,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateBenchStop
         | Command::DictateReadAloudStart { .. }
         | Command::DictateReadAloudStop { .. }
+        | Command::DictateReadAloudDelete { .. }
         | Command::DictateBenchDelete { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }

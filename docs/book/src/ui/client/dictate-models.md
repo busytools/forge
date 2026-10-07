@@ -102,10 +102,14 @@ passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,
 because the passage's words are already known - and the card draws its clock,
-its frames and its levels while it runs, with stop and save and cancel. A run
-names its target, its own progress, and a stop that discards a partial corpus
-rather than saving one. Each saved result draws its figures, what it means
-against the model in use on the same corpus, and a delete.
+its frames and its levels while it runs, with stop and save and cancel. Every
+recording is KEPT: with one standing, the section draws the recordings
+themselves (each one's length, when it was made, and a delete) with a control
+to add another, and the passage is not drawn again - a reader who has read it
+does not need it under every state. A run names its target, its own progress,
+and a stop that discards a partial corpus rather than saving one. Each saved
+result draws its figures, what it means against the model in use on the same
+corpus, and a delete.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no button to press and nothing

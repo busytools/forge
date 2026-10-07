@@ -122,7 +122,7 @@ export const modelsWire: DictateModelsWire = modelsFrom({
   bench: { state: 'idle' },
   results: [],
   read_aloud: {
-    recorded: false,
+    recordings: [],
     recording: false,
     error: null,
     passage: 'I want the forge session to pick up where it left off.',

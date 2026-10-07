@@ -287,7 +287,7 @@ mod tests {
                 bench: forge_workspace::bench::BenchState::Idle,
                 results: Vec::new(),
                 read_aloud: forge_workspace::bench::ReadAloudState {
-                    recorded: false,
+                    recordings: Vec::new(),
                     recording: false,
                     error: None,
                     passage: String::new(),

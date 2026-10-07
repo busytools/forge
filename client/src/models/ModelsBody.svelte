@@ -9,6 +9,7 @@
     CatalogueRow,
     DictateModelsWire,
     ModelRole,
+    ReadAloudRecording,
   } from '../wire/models';
   import {
     activateLine,
@@ -25,6 +26,8 @@
     installLine,
     modelChip,
     recommendation,
+    recordingLength,
+    recordingWhen,
     resultFacts,
     resultVerdict,
     resultWhen,
@@ -58,6 +61,7 @@
     onbenchstop,
     onrecord,
     onrecordstop,
+    onrecorddelete,
     recorder = null,
     recordingLine = null,
     onbenchdelete,
@@ -77,6 +81,8 @@
     onrecord: () => void;
     /** End it: `keep` saves the recording as the set. */
     onrecordstop: (keep: boolean) => void;
+    /** Drop one recording from the set. */
+    onrecorddelete: (recording: ReadAloudRecording) => void;
     /** This side's capture, while one runs; `null` when none is. The card
      * reads its frames and its levels and nothing else. */
     recorder?: Pick<SetRecorder, 'wire'> | null;
@@ -478,7 +484,7 @@
                   disabled={busy}
                   onclick={() => onbench(row.target, 'consensus')}>bench it</button
                 >
-                {#if wire.read_aloud.recorded}
+                {#if wire.read_aloud.recordings.length > 0}
                   <button
                     class="chip"
                     type="button"
@@ -527,27 +533,51 @@
           <span class="detail passage">{wire.read_aloud.passage}</span>
           {#if recordingLine !== null}<span class="detail bad">{recordingLine}</span>{/if}
         </div>
-      {:else}
+      {:else if wire.read_aloud.recordings.length === 0}
         <div class="empty">
-          <p class="t">
-            {wire.read_aloud.recorded
-              ? 'the read-aloud set is recorded'
-              : 'the read-aloud set is not recorded yet'}
-          </p>
+          <p class="t">the read-aloud set is not recorded yet</p>
           <p class="d">
-            A bench over the takes compares two models' words; this is the one corpus whose words
-            are known, so it is the one that can score accuracy outright. Read the passage below
-            aloud once and save the recording:
+            Read the passage below aloud once and save the recording &middot; a bench over the takes
+            compares two models' words, and this is the one corpus a bench can score on words that
+            are known:
           </p>
           <p class="d passage">{wire.read_aloud.passage}</p>
           <button class="chip" type="button" disabled={busy} onclick={onrecord}
-            >{wire.read_aloud.recorded ? 'record it again' : 'record the passage'}</button
+            >record the passage</button
           >
           {#if wire.read_aloud.error !== null}
             <p class="d bad">{wire.read_aloud.error}</p>
           {/if}
           {#if recordingLine !== null}<p class="d bad">{recordingLine}</p>{/if}
         </div>
+      {:else}
+        <p class="note">
+          the read-aloud set &middot; every recording is scored against the one passage
+        </p>
+        <ul class="list" aria-label="Read-aloud recordings">
+          {#each wire.read_aloud.recordings as recording (recording.id)}
+            <li>
+              <span class="bench-row">
+                <span class="nm">{recordingLength(recording)}</span>
+                {#if recordingWhen(recording) !== null}
+                  <span class="col">{recordingWhen(recording)}</span>
+                {/if}
+              </span>
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() => onrecorddelete(recording)}>delete</button
+              >
+            </li>
+          {/each}
+        </ul>
+        <button class="chip" type="button" disabled={busy} onclick={onrecord}>record another</button
+        >
+        {#if wire.read_aloud.error !== null}
+          <p class="note bad">{wire.read_aloud.error}</p>
+        {/if}
+        {#if recordingLine !== null}<p class="note bad">{recordingLine}</p>{/if}
       {/if}
 
       {#each wire.results as result (`${result.target.role}/${result.target.file}/${result.tier}/${result.corpus.sha256}`)}
