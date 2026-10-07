@@ -566,7 +566,7 @@ describe('the app grid', () => {
     const body = draw();
     expect(body, 'the default was not the column').toContain('rail-static');
     expect(body, 'the pin floats the rail').toContain('float the rail on hover');
-    expect(body, 'and the close is beside it').toContain('close the projects rail');
+    expect(body, 'the rail grew a close again').not.toContain('close the projects rail');
   });
 
   /**

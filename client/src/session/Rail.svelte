@@ -32,7 +32,6 @@
     connection,
     notice = null,
     mode = 'static',
-    onclose,
     onpin = null,
     onenter = null,
     onleave = null,
@@ -48,8 +47,6 @@
     notice?: string | null;
     /** The rail's presence, which the pin's own word follows. */
     mode?: RailMode;
-    /** Closes it: the rail goes away and the chip is the door back. */
-    onclose: () => void;
     /** Flips the column and the peek: pinned open, or floating on hover.
      *  Absent, the pin is not drawn - a harness that reads the list alone. */
     onpin?: (() => void) | null;
@@ -95,8 +92,9 @@
     <span class="t">projects</span>
     <span class="n ml">{fleetCount(home)}</span>
     <!-- The pin says where the rail is next: pinned open is the column,
-         floating is the hover-summoned peek. The close puts it away, and
-         the chip is the door back. -->
+         floating is the hover-summoned peek. There is no close - the rail
+         is always one of the two, and the overlay closes by Esc, a click
+         outside or Back. -->
     {#if onpin !== null}
       <button
         class="pin"
@@ -108,15 +106,6 @@
         <Icon name={mode === 'static' ? 'out' : 'in'} />
       </button>
     {/if}
-    <button
-      class="close"
-      type="button"
-      title="close"
-      aria-label="close the projects rail"
-      onclick={onclose}
-    >
-      <Icon name="x" />
-    </button>
   </div>
   <div class="scroll">
     <!-- One project's block, drawn the same in a folded group and an open

@@ -570,9 +570,6 @@ details[open] > summary .arw { transform: rotate(90deg); }
 .banner .pin { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px;
   background: none; border: 0; display: flex; align-items: center; }
 .banner .pin:hover { color: var(--text); }
-.banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px;
-  background: none; border: 0; display: flex; align-items: center; }
-.banner .close:hover { color: var(--text); }
 
 /* The rail's footer: the account, what it is costing and the two builds.
    `flex: none` because the list is the thing that gives - a footer that
@@ -702,8 +699,7 @@ details.gfold[open] > summary .arw { color: var(--accent); }
    not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
    would otherwise land on a chip nobody can see; the row's hover restores it
    (the chip cannot restore it itself, `none` means it never hovers), as does
-   focus, and a touch-primary screen keeps it shown. `.banner .close` is
-   deliberately not one of these: it is the way out of a covering rail. */
+   focus, and a touch-primary screen keeps it shown. */
 .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
   pointer-events: auto; }
 .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
@@ -1439,12 +1435,6 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   /* The row's close chip is a live control, and its own box is ~26px wide, so
      it takes the height the rule above gives it and a width to match. */
   .pr .x, .wk .x { min-width: 44px; }
-  /* The banner's is the exception, and it is the one control that must stay a
-     target: it is the way out of a covering rail, the header's handle is
-     underneath it at this width, and it is drawn ~23px wide by its padding -
-     under the 24px floor as well as the house bar. So it takes the height the
-     rule above gives it and a width to match. */
-  .banner .close { min-width: 44px; }
 }
 
 /* The same reach, keyed on the POINTER rather than the width: the step above
@@ -1454,7 +1444,6 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 @media (pointer: coarse) {
   button, input, select, textarea, details > summary { min-height: 44px; }
   .rail-tog { width: 44px; height: 44px; }
-  .banner .close { min-width: 44px; }
   /* A row's own link is the finger's target: its box carries the 44, and the
      row grows with it. The rail's rows also stretch the link over the whole
      row - the way the home rows' own rule already stretches theirs - so the

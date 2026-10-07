@@ -13,12 +13,16 @@ describe('the rail preference', () => {
     expect(rememberedRailMode(), 'the default was not the column').toBe('static');
   });
 
-  it('round-trips a chosen mode and forgets junk', () => {
+  it('round-trips a chosen mode and forgets the rest', () => {
     rememberRailMode('hover');
     expect(rememberedRailMode()).toBe('hover');
-    rememberRailMode('closed');
-    expect(rememberedRailMode()).toBe('closed');
+    rememberRailMode('static');
+    expect(rememberedRailMode()).toBe('static');
 
+    // Junk, and a `closed` from before the close went, both read as the
+    // default rather than pinning a rail nothing can put away.
+    localStorage.setItem('forge.rail', 'closed');
+    expect(rememberedRailMode(), 'a stale closed read as a mode').toBe('static');
     localStorage.setItem('forge.rail', 'sideways');
     expect(rememberedRailMode(), 'junk read as a mode').toBe('static');
   });

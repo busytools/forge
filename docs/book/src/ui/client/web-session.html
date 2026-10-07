@@ -199,8 +199,7 @@
   .banner .n.ml { margin-left: auto; }
   /* A pane that covered the page carries its own way out: the header handle
      that opened it is underneath. */
-  .banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
-  .banner .close:hover { color: var(--text); }
+  .banner .pin:hover { color: var(--text); }
   /* The rail's footer: the account, what it is costing and the two builds.
      `flex: none` because the list is the thing that gives. */
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
@@ -257,8 +256,7 @@
      not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
      would otherwise land on a chip nobody can see; the row's hover restores it
      (the chip cannot restore it itself, `none` means it never hovers), as does
-     focus, and a touch-primary screen keeps it shown. `.banner .close` is
-     deliberately not one of these: it is the way out of a covering rail. */
+     focus, and a touch-primary screen keeps it shown. */
   .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
     pointer-events: auto; }
   .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
@@ -1141,11 +1139,9 @@
      take more than their own box. The app's sheet carries the same rules. */
   @media (pointer: coarse) {
     button, input, select, textarea, details > summary { min-height: 44px; }
-    .banner .close { min-width: 44px; }
     /* The row's chip is a live control, so it keeps the height the rule
        above gives it and takes a width to match. */
-    .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
-    .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+    .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; } .needchip { min-height: 44px; padding: 0 12px; }
     .sess > .more > summary { min-width: 44px; }
   }
 
@@ -1309,7 +1305,6 @@
       <span class="t">projects</span>
       <span class="n ml">10 live / 16</span>
       <span class="pin" title="float the rail on hover">&#8592;</span>
-      <span class="close" title="close">&#215;</span>
     </div>
     <div class="scroll">
 

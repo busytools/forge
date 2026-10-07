@@ -339,7 +339,6 @@
   function closeRail() {
     leftChosen = false;
     summoned = false;
-    setRail('closed');
     if (railOnTop(history.state) === 'left') {
       history.back();
       return;
@@ -482,7 +481,6 @@
     {connection}
     {notice}
     mode={railMode}
-    onclose={() => closeRail()}
     onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}
     onenter={summon}
     onleave={unsummon}
