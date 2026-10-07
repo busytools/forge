@@ -492,7 +492,7 @@
     {connection}
     sessionId={facts?.sessionId ?? null}
     onclose={() => closePalette()}
-    onpeek={() => openRail()}
+    onpeek={columned ? null : () => openRail()}
   />
 
   <main class="chat">

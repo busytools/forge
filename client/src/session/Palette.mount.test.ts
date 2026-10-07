@@ -33,7 +33,7 @@ function draw(
   over: {
     connection?: Connection;
     onclose?: () => void;
-    onpeek?: () => void;
+    onpeek?: (() => void) | null;
   } = {},
 ) {
   const closed = vi.fn();
@@ -47,7 +47,7 @@ function draw(
       connection: over.connection ?? stub().connection,
       sessionId: 'd4f70669-1f2a-4c88',
       onclose: over.onclose ?? closed,
-      onpeek: over.onpeek ?? peeked,
+      onpeek: over.onpeek !== undefined ? over.onpeek : peeked,
     },
   });
   flushSync();
@@ -137,5 +137,28 @@ describe('the command palette', () => {
     type('peek at the fleet');
     press('Enter');
     expect(second.peeked, 'the peek doing did not open the rail').toHaveBeenCalled();
+  });
+
+  /**
+   * **A columned rail offers no peek**: the doing would have nothing to
+   * open, and a row that silently does nothing is worse than no row.
+   */
+  it('drops the peek doing while the rail is the column', () => {
+    draw({ onpeek: null });
+    type('peek at the fleet');
+    expect(rows(), 'a peek row survived with nothing to open').toHaveLength(0);
+  });
+
+  /**
+   * **A command reads once**: the label carries its own slash, so the row's
+   * mark is the same run glyph every action wears rather than a second
+   * slash ahead of it.
+   */
+  it('marks a command row with the run glyph, not a second slash', () => {
+    draw();
+    type('compact');
+    const row = rows()[0];
+    expect(row?.querySelector('.gl')?.textContent, 'the row drew a second slash').toBe('›');
+    expect(row?.querySelector('.nm')?.textContent?.trim()).toBe('/compact');
   });
 });

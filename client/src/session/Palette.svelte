@@ -35,8 +35,9 @@
     /** The shown seat's occupant id, which the copy doing carries. */
     sessionId: string | null;
     onclose: () => void;
-    /** Open the projects rail, over this page. */
-    onpeek: () => void;
+    /** Open the projects rail, over this page. Null while the rail is the
+     *  column already - there would be nothing to peek at. */
+    onpeek: (() => void) | null;
   } = $props();
 
   let needle = $state('');
@@ -46,7 +47,8 @@
   const shown = $derived.by(() => {
     const q = needle.trim().toLowerCase();
     const match = (row: PaletteRow) =>
-      q === '' || `${row.label} ${row.detail}`.toLowerCase().includes(q);
+      (onpeek !== null || row.doing !== 'peek') &&
+      (q === '' || `${row.label} ${row.detail}`.toLowerCase().includes(q));
     return paletteRows(wire, slot)
       .map((section) => ({ title: section.title, rows: section.rows.filter(match) }))
       .filter((section) => section.rows.length > 0);
@@ -64,6 +66,14 @@
       cursor = at === -1 ? 0 : at;
       field?.focus();
     });
+  });
+
+  // The walk follows the eye: the walked row is kept in view as the arrows
+  // move. jsdom carries no `scrollIntoView`, so the call is optional.
+  $effect(() => {
+    const row = flat[cursor];
+    if (!open || row === undefined) return;
+    document.getElementById(`pal-row-${row.id}`)?.scrollIntoView?.({ block: 'nearest' });
   });
 
   function onkey(event: KeyboardEvent): void {
@@ -112,6 +122,7 @@
       return;
     }
     if (row.doing === 'peek') {
+      if (onpeek === null) return;
       onclose();
       onpeek();
       return;
@@ -185,7 +196,9 @@
                 {#if row.kind === 'seat'}
                   <span class="dot {row.mark ?? 'idle'}"></span>
                 {:else}
-                  <span class="gl">{row.kind === 'command' ? '/' : '\u{203a}'}</span>
+                  <!-- One mark for both running something and doing
+                       something: the label carries its own slash. -->
+                  <span class="gl">{'\u{203a}'}</span>
                 {/if}
                 <span class="nm"
                   >{row.label}{#if row.lead}<span class="kbd">current</span>{/if}</span
