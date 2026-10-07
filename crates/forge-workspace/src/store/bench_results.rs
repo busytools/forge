@@ -17,10 +17,18 @@ const RESULTS: TableDefinition<&str, &[u8]> = TableDefinition::new("bench_result
 
 /// The key one result is filed under.
 pub fn key(result: &BenchResult) -> String {
-    format!(
-        "{:?}|{}|{:?}|{}",
-        result.target.role, result.target.file, result.tier, result.corpus.sha256
-    )
+    key_parts(result.target.role, &result.target.file, result.tier, &result.corpus.sha256)
+}
+
+/// The key's own spelling, for a caller that holds the parts rather than
+/// the row - the page's delete names them and nothing else.
+pub fn key_parts(
+    role: crate::bench::BenchRole,
+    file: &str,
+    tier: forge_dictate::bench::Tier,
+    corpus: &str,
+) -> String {
+    format!("{role:?}|{file}|{tier:?}|{corpus}")
 }
 
 /// Every saved result, newest first.
@@ -38,6 +46,22 @@ pub fn results(db: &Db) -> anyhow::Result<Vec<BenchResult>> {
     }
     rows.sort_by(|a: &BenchResult, b: &BenchResult| b.at.cmp(&a.at));
     Ok(rows)
+}
+
+/// Drop one result by its key. A key with no row is not an error: the row
+/// the page asked to delete is already gone.
+pub fn remove(db: &Db, key: &str) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = match txn.open_table(RESULTS) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        table.remove(key)?;
+    }
+    txn.commit()?;
+    Ok(())
 }
 
 /// Save one result, replacing any row for the same (role, file, tier,

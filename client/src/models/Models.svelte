@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Command } from '../protocol';
   import type { Connection } from '../socket';
-  import type { BenchTarget, BenchTier, ModelRole } from '../wire/models';
+  import type { BenchResult, BenchTarget, BenchTier, ModelRole } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
 
@@ -157,6 +157,20 @@
   function arm(): void {
     act('dictate_read_aloud_arm');
   }
+
+  function disarm(): void {
+    act('dictate_read_aloud_disarm');
+  }
+
+  function benchDelete(result: BenchResult): void {
+    act({
+      dictate_bench_delete: {
+        target: result.target,
+        tier: result.tier,
+        corpus: result.corpus.sha256,
+      },
+    });
+  }
 </script>
 
 {#if read.refused !== null}
@@ -177,6 +191,8 @@
     onbench={bench}
     onbenchstop={benchStop}
     onarm={arm}
+    ondisarm={disarm}
+    onbenchdelete={benchDelete}
     onupdate={updateTo}
     {updated}
     {refusal}

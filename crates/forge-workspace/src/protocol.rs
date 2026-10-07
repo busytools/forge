@@ -402,6 +402,15 @@ pub enum Command {
     /// set already there. App-level; the set's own state rides the models
     /// read.
     DictateReadAloudArm,
+    /// Cancel an arming: the next take stays an ordinary take.
+    DictateReadAloudDisarm,
+    /// Drop one saved bench result, named by its own key: the target, the
+    /// tier, and the corpus it ran over.
+    DictateBenchDelete {
+        target: crate::bench::BenchTarget,
+        tier: forge_dictate::bench::Tier,
+        corpus: String,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -732,6 +741,8 @@ impl Command {
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
             | Self::DictateReadAloudArm
+            | Self::DictateReadAloudDisarm
+            | Self::DictateBenchDelete { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -887,6 +898,13 @@ impl std::fmt::Debug for Command {
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
             Self::DictateReadAloudArm => f.write_str("DictateReadAloudArm"),
+            Self::DictateReadAloudDisarm => f.write_str("DictateReadAloudDisarm"),
+            Self::DictateBenchDelete { target, tier, corpus } => f
+                .debug_struct("DictateBenchDelete")
+                .field("target", target)
+                .field("tier", tier)
+                .field("corpus", corpus)
+                .finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()

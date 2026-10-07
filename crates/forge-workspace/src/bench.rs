@@ -214,6 +214,51 @@ impl Workspace {
         Ok(())
     }
 
+    /// Disarm the read-aloud set: the next take stays an ordinary take.
+    ///
+    /// A no-op when nothing was armed - the page's cancel is answered by
+    /// the state it asked for, not by an error.
+    pub(crate) fn disarm_read_aloud(&self) -> Result<(), DispatchError> {
+        if !self.config.dictate.enabled {
+            return Err(DispatchError::DictateOff);
+        }
+        let Some(dir) = read_aloud_dir() else {
+            return Err(DispatchError::ReadAloudUnavailable {
+                reason: "no app-support directory resolves".to_owned(),
+            });
+        };
+        let marker = dir.join("armed.txt");
+        if let Err(error) = std::fs::remove_file(&marker)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, path = %marker.display(), "read-aloud: the arming was not cleared");
+            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        }
+        Ok(())
+    }
+
+    /// Drop one saved result: the row the page asked to delete, by its key.
+    pub(crate) fn delete_bench_result(
+        &self,
+        target: &BenchTarget,
+        tier: forge_dictate::bench::Tier,
+        corpus: &str,
+    ) -> Result<(), DispatchError> {
+        let db = self.db.lock();
+        if let Some(db) = db.as_ref() {
+            let key =
+                crate::store::bench_results::key_parts(target.role, &target.file, tier, corpus);
+            if let Err(error) = crate::store::bench_results::remove(db, &key) {
+                tracing::warn!(
+                    event_name = "dictate_bench_delete_failed",
+                    %error,
+                    "the saved result was not deleted"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Stop the run in flight. What it measured so far is discarded rather
     /// than saved: a partial corpus is not a result.
     pub(crate) fn stop_bench(&self) -> Result<(), DispatchError> {

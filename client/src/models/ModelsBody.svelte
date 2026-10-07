@@ -1,6 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import type {
+    BenchResult,
     BenchTarget,
     BenchTier,
     CatalogueRow,
@@ -53,6 +54,8 @@
     onbench,
     onbenchstop,
     onarm,
+    ondisarm,
+    onbenchdelete,
     onupdate,
     updated = null,
     refusal = null,
@@ -66,6 +69,8 @@
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
     onarm: () => void;
+    ondisarm: () => void;
+    onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated?: string | null;
     refusal?: string | null;
@@ -423,9 +428,13 @@
       {#if wire.read_aloud.armed}
         <div class="status" role="status">
           <span class="dot live"></span>
-          <span class="t">armed: the next take you dictate becomes the read-aloud set</span>
+          <span class="t">this machine is armed for the read-aloud set</span>
           <span class="spacer"></span>
-          <span class="when">read the passage below aloud, then stop the take</span>
+          <button class="chip" type="button" onclick={ondisarm}>cancel</button>
+          <span class="detail">
+            The next take you dictate gets stored as the bench's read-aloud set - record it in any
+            session, reading this passage aloud, then stop the take. Nothing else changes.
+          </span>
           <span class="detail passage">{wire.read_aloud.passage}</span>
         </div>
       {:else if !wire.read_aloud.recorded}
@@ -449,6 +458,9 @@
           <span class="when">{tierWord(result.tier)}</span>
           <span class="spacer"></span>
           {#if resultWhen(result) !== null}<span class="when">{resultWhen(result)}</span>{/if}
+          <button class="chip" type="button" disabled={busy} onclick={() => onbenchdelete(result)}
+            >delete</button
+          >
           <span class="detail">{@render facts(resultFacts(result))}</span>
           <span class="detail">{resultVerdict(result, wire.in_use, wire.results)}</span>
         </div>

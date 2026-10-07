@@ -424,6 +424,8 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        ondisarm: () => {},
+        onbenchdelete: () => {},
         onupdate: () => {},
       },
     }).body;
@@ -454,6 +456,8 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        ondisarm: () => {},
+        onbenchdelete: () => {},
         onupdate: () => {},
       },
     }).body;
@@ -483,6 +487,8 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        ondisarm: () => {},
+        onbenchdelete: () => {},
         onupdate: () => {},
       },
     }).body;

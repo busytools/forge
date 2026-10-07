@@ -5,7 +5,13 @@ import { JSDOM } from 'jsdom';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { BenchTarget, BenchTier, DictateModelsWire, ModelRole } from '../wire/models';
+import type {
+  BenchResult,
+  BenchTarget,
+  BenchTier,
+  DictateModelsWire,
+  ModelRole,
+} from '../wire/models';
 import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
 import { fakeConnection, MODELS, modelsWire } from './testing';
@@ -44,6 +50,8 @@ function open(
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
     onarm: () => void;
+    ondisarm: () => void;
+    onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated: string | null;
     refusal: string | null;
@@ -63,6 +71,8 @@ function open(
       onbench: handlers.onbench ?? (() => {}),
       onbenchstop: handlers.onbenchstop ?? (() => {}),
       onarm: handlers.onarm ?? (() => {}),
+      ondisarm: handlers.ondisarm ?? (() => {}),
+      onbenchdelete: handlers.onbenchdelete ?? (() => {}),
       onupdate: handlers.onupdate ?? (() => {}),
       updated: handlers.updated ?? null,
       refusal: handlers.refusal ?? null,
@@ -588,17 +598,29 @@ describe('the models page as it draws', () => {
     expect(arms).toBe(1);
   });
 
-  /** An armed set says so, with the passage, instead of the prompt. */
-  it('draws the armed read-aloud set', () => {
-    const host = open({
-      ...modelsWire,
-      read_aloud: { ...modelsWire.read_aloud, armed: true },
-    });
-
-    expect(host.textContent).toContain(
-      'armed: the next take you dictate becomes the read-aloud set',
+  /**
+   * An armed set says what it is and where the recording happens, with the
+   * passage, instead of the prompt - **and it can be cancelled**: an arming
+   * is a standing state that outlives a reload, so a way out is the control
+   * that makes it safe to have pressed in the first place.
+   */
+  it('draws the armed read-aloud set, with a cancel', () => {
+    let cancels = 0;
+    const host = open(
+      { ...modelsWire, read_aloud: { ...modelsWire.read_aloud, armed: true } },
+      { ondisarm: () => (cancels += 1) },
     );
+
+    expect(host.textContent).toContain('this machine is armed for the read-aloud set');
+    expect(host.textContent).toContain('The next take you dictate gets stored');
     expect(host.textContent).not.toContain('the read-aloud set is not recorded yet');
+    const cancel = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('cancel'),
+    );
+    expect(cancel, 'an armed set offers no way out').not.toBeUndefined();
+    cancel?.click();
+    flushSync();
+    expect(cancels).toBe(1);
   });
 
   /** A refused action is drawn in the core's own words, at the page's top. */

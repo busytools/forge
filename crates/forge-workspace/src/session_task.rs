@@ -1572,6 +1572,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateBench { .. }
         | Command::DictateBenchStop
         | Command::DictateReadAloudArm
+        | Command::DictateReadAloudDisarm
+        | Command::DictateBenchDelete { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

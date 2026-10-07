@@ -4499,6 +4499,14 @@ impl Workspace {
                 Command::DictateReadAloudArm => {
                     return self.arm_read_aloud();
                 }
+                Command::DictateReadAloudDisarm => {
+                    return self.disarm_read_aloud();
+                }
+                Command::DictateBenchDelete { target, tier, corpus } => {
+                    let outcome = self.delete_bench_result(&target, tier, &corpus);
+                    self.push_models();
+                    return outcome;
+                }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);
                     tokio::spawn(async move {
