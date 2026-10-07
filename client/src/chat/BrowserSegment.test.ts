@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { browserUsed, closeContext, listContexts } from '../browser/host';
+import { browserUsed, closeContext, listContexts, openTakeover } from '../browser/host';
+import { takeover } from '../browser/takeover.svelte';
 import BrowserSegment from './BrowserSegment.svelte';
+
+afterEach(() => {
+  vi.mocked(openTakeover).mockClear();
+  takeover.active = false;
+  takeover.asking = null;
+  takeover.native = false;
+});
 
 /**
  * The client's own host, mocked so the READ has states a test can drive: the
@@ -19,6 +27,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     listContexts: vi.fn(() => Promise.resolve([])),
     closeContext: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
+    openTakeover: vi.fn(() => Promise.resolve()),
   };
 });
 
@@ -155,6 +164,37 @@ describe('the browser segment', () => {
     });
     used.stop();
     vi.mocked(browserUsed).mockResolvedValue(false);
+  });
+
+  /** Ved, live round 2026-10-07: hovering the row must offer the way to SEE
+   *  the browser - the in-app view, with no session answering anything. */
+  it('opens the in-app view from the shared row', async () => {
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+
+    const door = shown.target.querySelector('.bz-show');
+    expect(door, 'the shared row carries the way to look').not.toBeNull();
+    click(door);
+
+    await vi.waitFor(() => {
+      expect(takeover.active, 'the screen is the browser while it is up').toBe(true);
+    });
+    expect(openTakeover, 'the view the door asks for').toHaveBeenCalledTimes(1);
+    shown.stop();
+  });
+
+  it('keeps the panel and says why when the view cannot open', async () => {
+    vi.mocked(openTakeover).mockRejectedValueOnce(new Error('no engine'));
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    click(shown.target.querySelector('.bz-show'));
+
+    await vi.waitFor(() => {
+      expect(shown.target.textContent).toContain('no engine');
+    });
+    expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
+    shown.stop();
+    vi.mocked(openTakeover).mockResolvedValue(undefined);
   });
 
   it('says the read failed rather than claiming there are no contexts', async () => {

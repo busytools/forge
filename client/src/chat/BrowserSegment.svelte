@@ -8,6 +8,7 @@
     whyText,
     type ContextRow,
   } from '../browser/host';
+  import { takeover } from '../browser/takeover.svelte';
   import type { Connection } from '../socket';
 
   /**
@@ -227,6 +228,18 @@
     open = false;
   }
 
+  /**
+   * The person's own look: the in-app browser view, over the screen, with
+   * the way back. No session is answering a question here - it is the door
+   * Ved asked for (2026-10-07), and coming back out disturbs nothing.
+   */
+  function show(): void {
+    void takeover.open().catch((error: unknown) => {
+      read = 'failed';
+      why = whyText(error);
+    });
+  }
+
   /** The person's close: saves, frees the name, and the row falls away. */
   function close(row: ContextRow): void {
     void closeContext(row.name).then(
@@ -308,6 +321,17 @@
         {/if}
         <span class="nm">shared</span>
         <span class="tx">every session · the browser's own context</span>
+        {#if capable}
+          <button
+            type="button"
+            class="bz-take bz-show"
+            aria-label="show the browser in this app"
+            onclick={show}
+            onkeydown={esc}
+          >
+            show
+          </button>
+        {/if}
       </div>
 
       {#each contexts as row (row.name)}
