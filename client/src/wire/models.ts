@@ -186,18 +186,23 @@ export interface ReadAloudRecording {
   /** The take's directory name, which the page deletes by. */
   id: string;
   duration_ms: number;
+  /** The wav's own byte length. */
+  bytes: number;
+  /** The wav's sha256, lowercase hex. */
+  sha256: string;
   /** RFC 3339. */
   at: string;
 }
 
 /** The read-aloud set: the recordings this machine has, whether one is being
- * recorded right now, the passage they are read from, and the last write's
- * failure when there was one. */
+ * recorded right now, the passage they are read from, the terms a run scores
+ * them on, and the last write's failure when there was one. */
 export interface ReadAloudState {
   recordings: ReadAloudRecording[];
   recording: boolean;
   error: string | null;
   passage: string;
+  terms: string[];
 }
 
 /** One catalogue entry, as the candidate rows draw it. */
@@ -352,7 +357,13 @@ function targetFrom(target: BenchTarget | undefined): BenchTarget {
  * "reading" with nothing saying why.
  */
 function readAloudFrom(value: ReadAloudState | undefined): ReadAloudState {
-  const empty: ReadAloudState = { recordings: [], recording: false, error: null, passage: '' };
+  const empty: ReadAloudState = {
+    recordings: [],
+    recording: false,
+    error: null,
+    passage: '',
+    terms: [],
+  };
   if (value === undefined || !Array.isArray(value.recordings)) return empty;
   return {
     recordings: value.recordings.filter(
@@ -361,6 +372,7 @@ function readAloudFrom(value: ReadAloudState | undefined): ReadAloudState {
     recording: value.recording === true,
     error: typeof value.error === 'string' ? value.error : null,
     passage: typeof value.passage === 'string' ? value.passage : '',
+    terms: Array.isArray(value.terms) ? value.terms.filter((t) => typeof t === 'string') : [],
   };
 }
 

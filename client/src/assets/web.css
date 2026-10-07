@@ -2317,6 +2317,22 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* A line this side's own failure - a refused microphone, a keep that never
    reached the socket - or the core's, drawn in the error tone. */
 .models .status .detail.bad, .models .empty .d.bad { color: var(--bad); }
+/* The passage is prose somebody reads aloud, so its lines read left to
+   right - a centred paragraph is a poem, not a script. The block keeps the
+   empty box's own centring; only the text inside it moves. */
+.models .empty .d.passage { text-align: left; max-width: 62ch; }
+
+/* One recording's row: the length as its own column, the facts beside it
+   left-aligned rather than pushed to the far edge - a two-word row stretched
+   across the card reads as a table nobody claimed. */
+.models .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
+  flex: 1 1 auto; min-width: 0; }
+.models .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  flex: 0 0 42px; }
+.models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  flex: 1 1 auto; min-width: 0; }
+.models .rec .facts b { color: var(--muted); font-weight: 500; }
+
 /* The recording's meter: the same readings the take card's graph draws, at
    this card's own pitch - one bar per past reading, newest last, held at a
    fixed length so the pitch stays still while the heights move. Capped at the

@@ -26,8 +26,8 @@
     installLine,
     modelChip,
     recommendation,
+    recordingFacts,
     recordingLength,
-    recordingWhen,
     resultFacts,
     resultVerdict,
     resultWhen,
@@ -552,16 +552,16 @@
         </div>
       {:else}
         <p class="note">
-          the read-aloud set &middot; every recording is scored against the one passage
+          the read-aloud set &middot; every recording is scored against the one passage on
+          {wire.read_aloud.terms.length} known terms &middot; a run over them reads term accuracy and
+          word error, where the takes read agreement
         </p>
         <ul class="list" aria-label="Read-aloud recordings">
           {#each wire.read_aloud.recordings as recording (recording.id)}
             <li>
-              <span class="bench-row">
+              <span class="rec">
                 <span class="nm">{recordingLength(recording)}</span>
-                {#if recordingWhen(recording) !== null}
-                  <span class="col">{recordingWhen(recording)}</span>
-                {/if}
+                <span class="facts">{@render facts(recordingFacts(recording))}</span>
               </span>
               <button
                 class="chip"

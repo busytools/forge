@@ -679,8 +679,20 @@ describe('the models page as it draws', () => {
         read_aloud: {
           ...modelsWire.read_aloud,
           recordings: [
-            { id: 'take-1791363000000', duration_ms: 31_400, at: '2026-10-07T09:30:00Z' },
-            { id: 'take-1791363600000', duration_ms: 18_000, at: '2026-10-07T09:40:00Z' },
+            {
+              id: 'take-1791363000000',
+              duration_ms: 31_400,
+              bytes: 1_004_800,
+              sha256: '8f9a2c41deadbeef',
+              at: '2026-10-07T09:30:00Z',
+            },
+            {
+              id: 'take-1791363600000',
+              duration_ms: 18_000,
+              bytes: 576_000,
+              sha256: '11aa22bb33cc44dd',
+              at: '2026-10-07T09:40:00Z',
+            },
           ],
         },
       },
@@ -693,6 +705,8 @@ describe('the models page as it draws', () => {
     expect(host.textContent, 'the lengths are the rows').toContain('0:31');
     expect(host.textContent).toContain('0:18');
     expect(host.textContent).toContain('recorded');
+    expect(host.textContent, 'a row carries more than its length').toContain('1 MB');
+    expect(host.textContent, 'and what identifies those samples').toContain('sha 8f9a2c41');
     expect(host.textContent, 'a list is not a prompt').not.toContain('record the passage');
 
     const deletes = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((button) =>

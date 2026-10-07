@@ -29,9 +29,14 @@ import type {
 } from '../wire/models';
 import type { DictateModelState } from '../wire/types';
 
-/** A download size in the units the catalogue quotes its own figures in. */
+/**
+ * A size in the units the number is read in: the catalogue quotes models in
+ * megabytes, and a read-aloud recording is seconds long, where a whole
+ * megabyte rounds a real recording down to `0 MB`.
+ */
 export function sizeLabel(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
@@ -618,10 +623,29 @@ export function recordingLength(recording: ReadAloudRecording): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-/** When a recording was made, as its own row reads it. */
+/**
+ * When a recording was made, as its own row reads it - to the second, because
+ * two recordings of the passage are a minute apart at most and the row is
+ * what tells one from the other.
+ */
 export function recordingWhen(recording: ReadAloudRecording): string | null {
-  const at = clock(recording.at);
-  return at === null ? null : `recorded ${at}`;
+  const at = new Date(recording.at);
+  if (Number.isNaN(at.getTime())) return null;
+  const two = (part: number) => String(part).padStart(2, '0');
+  return `recorded ${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
+}
+
+/**
+ * One recording's facts, as its row draws them beside the length: what it
+ * costs on disk, the digest that identifies those exact samples - the same
+ * shorthand the in-use rows print - and when it was made.
+ */
+export function recordingFacts(recording: ReadAloudRecording): FactPart[] {
+  const parts: FactPart[] = [{ text: sizeLabel(recording.bytes) }];
+  if (recording.sha256 !== '') parts.push({ text: `sha ${recording.sha256.slice(0, 8)}` });
+  const when = recordingWhen(recording);
+  if (when !== null) parts.push({ text: when });
+  return parts;
 }
 
 /** When one result ran, as the row's own line. */

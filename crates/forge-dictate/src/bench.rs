@@ -157,8 +157,11 @@ pub fn store_read_aloud(dir: &Path, samples: &[f32]) -> Result<(), Error> {
     let wav = take_dir.join("output.wav");
     crate::diagnostics::write_wav(&wav, samples)
         .map_err(|message| Error::Bench { message: format!("{}: {message}", wav.display()) })?;
+    // The digest is written here, once, rather than hashed again on every
+    // read: a recording's identity is worth a row, not a per-read cost.
     let meta = serde_json::json!({
         "duration_ms": u64::try_from(samples.len()).unwrap_or(u64::MAX) / 16,
+        "sha256": crate::diagnostics::sha256_file(&wav),
     });
     let bytes = serde_json::to_vec_pretty(&meta)
         .map_err(|error| Error::Bench { message: format!("the set's meta: {error}") })?;

@@ -57,6 +57,9 @@ describe('the numbers the rows draw', () => {
     expect(sizeLabel(1_509_347_232)).toBe('1.51 GB');
     expect(sizeLabel(279_000_000)).toBe('279 MB');
     expect(sizeLabel(477_000_000)).toBe('477 MB');
+    // A recording is seconds long: megabytes would round it down to `0 MB`.
+    expect(sizeLabel(64_044)).toBe('64 KB');
+    expect(sizeLabel(1_004_800)).toBe('1 MB');
   });
 
   /**

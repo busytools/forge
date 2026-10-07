@@ -68,20 +68,27 @@ pub struct BenchResult {
 /// How many saved results the page reads.
 const RESULTS_SHOWN: usize = 50;
 
-/// One recording of the read-aloud passage, as the page lists it.
+/// One recording of the read-aloud passage, as the page lists it: what the
+/// row draws and what the bench scores, one row per clip.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadAloudRecording {
     /// The take's own directory name, which is what the page deletes by.
     pub id: String,
     pub duration_ms: u64,
+    /// The wav's own byte length, which is what the recording costs on disk.
+    pub bytes: u64,
+    /// The wav's sha256, lowercase hex: the recording's identity, and what
+    /// two recordings of the same reading share.
+    pub sha256: String,
     /// RFC 3339, off the stamp the recording is named by.
     pub at: String,
 }
 
 /// The read-aloud set as the page reads it: the recordings this machine has,
 /// whether one is being recorded right now, the passage they are read from,
-/// and the last recording's failure when there is one - a write that failed
-/// after the stop has no dispatch left to answer, so the read carries it.
+/// the terms a run scores them on, and the last recording's failure when
+/// there is one - a write that failed after the stop has no dispatch left to
+/// answer, so the read carries it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadAloudState {
     /// Oldest first, so a page that appends draws a list that grows down.
@@ -89,13 +96,16 @@ pub struct ReadAloudState {
     pub recording: bool,
     pub error: Option<String>,
     pub passage: String,
+    /// The words of the passage a run scores term accuracy on - the figure
+    /// only this corpus can produce.
+    pub terms: Vec<String>,
 }
 
 /// The set directory's recordings, oldest first, read off the take
-/// directories themselves: the name carries the stamp, and `meta.json` the
-/// length the recorder wrote. A directory without its meta is one the store
-/// was interrupted writing, and is skipped rather than listed as a clip the
-/// bench would then skip too.
+/// directories themselves: the name carries the stamp, `meta.json` the
+/// length the recorder wrote, and the wav its size and its own sha. A
+/// directory without its meta is one the store was interrupted writing, and
+/// is skipped rather than listed as a clip the bench would then skip too.
 fn read_aloud_recordings(dir: &Path) -> Vec<ReadAloudRecording> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -115,13 +125,21 @@ fn read_aloud_recordings(dir: &Path) -> Vec<ReadAloudRecording> {
         .into_iter()
         .filter_map(|id| {
             let millis = id.strip_prefix("take-")?.parse::<i64>().ok()?;
-            let meta = std::fs::read_to_string(dir.join(&id).join("meta.json")).ok()?;
+            let take = dir.join(&id);
+            let meta = std::fs::read_to_string(take.join("meta.json")).ok()?;
             let meta: serde_json::Value = serde_json::from_str(&meta).ok()?;
+            let wav = take.join("output.wav");
             let at = time::OffsetDateTime::from_unix_timestamp(millis.checked_div(1000)?)
                 .ok()?
                 .format(&time::format_description::well_known::Rfc3339)
                 .ok()?;
-            Some(ReadAloudRecording { id, duration_ms: meta.get("duration_ms")?.as_u64()?, at })
+            Some(ReadAloudRecording {
+                id,
+                duration_ms: meta.get("duration_ms")?.as_u64()?,
+                bytes: std::fs::metadata(&wav).ok()?.len(),
+                sha256: meta.get("sha256")?.as_str()?.to_owned(),
+                at,
+            })
         })
         .collect()
 }
@@ -183,11 +201,13 @@ impl Workspace {
     /// read from, and the last write's failure when there was one.
     pub fn read_aloud_state(&self) -> ReadAloudState {
         let dir = self.read_aloud_dir();
+        let passage = forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned();
         ReadAloudState {
             recordings: dir.as_deref().map(read_aloud_recordings).unwrap_or_default(),
             recording: self.dictate_runtime.lock().set_recording.is_some(),
             error: self.read_aloud_error.lock().clone(),
-            passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned(),
+            terms: forge_dictate::bench::terms(&passage),
+            passage,
         }
     }
 

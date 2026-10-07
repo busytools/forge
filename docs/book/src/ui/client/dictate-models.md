@@ -104,9 +104,12 @@ recording is not a take - no session owns it and nothing is transcribed,
 because the passage's words are already known - and the card draws its clock,
 its frames and its levels while it runs, with stop and save and cancel. Every
 recording is KEPT: with one standing, the section draws the recordings
-themselves (each one's length, when it was made, and a delete) with a control
-to add another, and the passage is not drawn again - a reader who has read it
-does not need it under every state. A run names its target, its own progress,
+themselves - each one's length, what it costs on disk, the digest of its own
+samples and when it was made, with a delete on the row - and a control to add
+another. The passage is not drawn again, because a reader who has read it
+does not need it under every state, and the note says what a run over them
+reads: term accuracy on the passage's known terms and word error, where the
+takes read agreement. A run names its target, its own progress,
 and a stop that discards a partial corpus rather than saving one. Each saved
 result draws its figures, what it means against the model in use on the same
 corpus, and a delete.

@@ -291,6 +291,7 @@ mod tests {
                     recording: false,
                     error: None,
                     passage: String::new(),
+                    terms: Vec::new(),
                 },
             },
         };
