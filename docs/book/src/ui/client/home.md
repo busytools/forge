@@ -17,6 +17,7 @@ nothing to draw, and the client never falls back to bundled data.
 
 | Region | Shows | Read from |
 |---|---|---|
+| Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
 | Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
@@ -84,6 +85,11 @@ failed`, and its mark goes the moment the seat is opened.
 ## The states the page can be in
 
 - **A fleet**, which is the ordinary case.
+- **A stopped forge**: the core's last fatal draws above everything, in the
+  terminal's own words. It reaches this page from the snapshot's recorded
+  fatal, so the attach that sees it is one landing inside the wind-down
+  window before the process goes; the live announcement is the fatal's own
+  frame, drawn in the chat.
 - **A fleet mid-change**: a row can move between any of the states above, and
   the page redraws from the stream without the reader losing their place.
 - **Nothing configured**: no projects at all draws the empty state, naming
