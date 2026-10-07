@@ -508,8 +508,8 @@
    * useless; one template string says it once.
    */
   const handOffTitle = $derived(
-    ask.kind === 'browser_hand_off' && ask.request.context !== null
-      ? `browser hand-off · ${ask.request.context}`
+    ask.kind === 'browser_hand_off' && ask.request.profile !== null
+      ? `browser hand-off · ${ask.request.profile}`
       : 'browser hand-off',
   );
   /** Which hand-off's view Open was asked for and did not open, by its id. */

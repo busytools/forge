@@ -744,7 +744,7 @@ describe('applyUpdate', () => {
           request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
         },
       });
-      const handoff = { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' };
+      const handoff = { id: 'h1', reason: 'solve the CAPTCHA', profile: 'job-hunt' };
       const parked = applyUpdate(asked, { browser_hand_off_pending: { key: SLOT, handoff } });
 
       expect(kinds(parked), 'the hand-off leads the question that was already waiting').toEqual([
