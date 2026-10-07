@@ -3287,7 +3287,7 @@ mod tests {
             "the CLI's own errors are the reason, in the order it reported them",
         );
         let failed_at = domain.failed_turn_at.expect("the rail's mark is set with it");
-        assert!(pending.due_at > failed_at, "the nudge is not immediate - it waits for a reader",);
+        assert!(pending.due_at > failed_at, "the nudge is not immediate - it waits for a reader");
         assert_eq!(
             pending.due_at,
             failed_at + super::AUTO_CONTINUE_DELAY,

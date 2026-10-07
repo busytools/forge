@@ -9325,6 +9325,10 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         let (ws, key, _rx) = nudge_seat(&dir, "watching");
         ws.hold_seat(&key).await;
+        // The hold predates the failure, so only the held check can refuse
+        // this one - the shown-since stamp is older than the mark.
+        ws.domain_session_for(&key).expect("session").lock().shown_at =
+            Some(SystemTime::now() - Duration::from_secs(60));
 
         fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
         sweep_after_the_delay(&ws);
