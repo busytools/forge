@@ -507,6 +507,24 @@ describe('one turn, as the page draws it', () => {
     expect(leaf).toContain('<span class="ring"></span>');
   });
 
+  it('draws a closed turn unanswered call failed, never the ring', () => {
+    // The wiring this fix carries (#1836): a turn the seat has SETTLED
+    // tells its fold so, and the call the frames never answered draws the
+    // failure mark - the restart's row. Dropping that fourth argument at the
+    // mount puts the ring back and leaves the spinner standing.
+    const body = draw(said([use('c1', 'Bash', { command: 'just check' })]));
+
+    const leaf = body.slice(body.indexOf('<details class="leaf"'));
+    expect(leaf, 'the call is on the page').not.toBe('');
+    expect(leaf, 'the call the turn never answered still spins').not.toContain(
+      '<span class="ring"></span>',
+    );
+    expect(leaf, 'the failure mark is the family glyph in the error tone').toContain(
+      '<svg class="ic gl err">',
+    );
+    expect(leaf, 'and the empty body says so in words, not colour alone').toContain('no result');
+  });
+
   it('tags the org by the seat the page is drawing, not by the row alone', () => {
     // Whether the tag appears is a comparison against THIS reader's org, so
     // the row cannot decide it: the seat has to reach the fold. A turn drawn
