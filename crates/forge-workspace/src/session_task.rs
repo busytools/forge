@@ -1763,6 +1763,11 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         ..
     } = event
     {
+        // Content means the turn went on, so a retry it recovered past is not
+        // the classification of its failure. The terminal drops its own copy
+        // on the same content; left standing here, a stale server_error would
+        // exempt a later failure of a different kind from the nudge.
+        domain.last_api_retry = None;
         for block in &message.content {
             let forge_primitives::ContentBlock::ToolUse { id, input, .. } = block else {
                 continue;
@@ -3161,6 +3166,23 @@ mod tests {
         .expect("parse result message")
     }
 
+    /// An assistant frame: content the turn produced. The CLI sends one
+    /// after a retry it recovered past, which is what makes the retry's
+    /// classification stale.
+    fn assistant_message() -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "session_id": "worker",
+            "message": {
+                "id": "msg-1",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": "carrying on"}],
+            },
+        }))
+        .expect("parse assistant message")
+    }
+
     /// A wire `api_retry` frame, the only place the CLI says what went
     /// wrong on a retried request.
     fn api_retry_message(error: &str, status: Option<u16>) -> forge_primitives::Message {
@@ -3339,6 +3361,35 @@ mod tests {
             domain.auto_continue.is_none(),
             "the terminal continues this one; the core must not fire beside it",
         );
+    }
+
+    /// A retry the turn RECOVERED past is not a classification of its
+    /// failure: the content that follows the retry is the turn going on. The
+    /// terminal drops its own copy there, and left standing here the stale
+    /// `server_error` would exempt a later failure of a different kind - the
+    /// seat would then get nothing from either path.
+    #[test]
+    fn a_retry_the_turn_recovered_past_does_not_exempt_a_later_failure() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("recovered-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "recovered-rail".to_owned(),
+            msg: api_retry_message("server_error", Some(529)),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "recovered-rail".to_owned(),
+            msg: assistant_message(),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "recovered-rail".to_owned(),
+            msg: result_message_with_errors(&["API Error: 400 ..."]),
+        });
+
+        let domain = task.domain.lock();
+        assert_eq!(domain.last_api_retry, None, "the recovered retry is not this failure");
+        assert!(domain.auto_continue.is_some(), "so a failure of another kind is nudged");
     }
 
     /// A turn that finished ends the episode: the spend is dropped and so
