@@ -12,7 +12,15 @@
 
 import { languageOf } from './code';
 import { decisionOf, decisionWord, type Decision } from './decisions';
-import { isEdit, mcpParts, type CallStatus, type KindRow, rowOf } from './families';
+import {
+  browserVerb,
+  isBrowserTool,
+  isEdit,
+  mcpParts,
+  type CallStatus,
+  type KindRow,
+  rowOf,
+} from './families';
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
 import { firstLine, headline, stripEscapes, toolName } from './text';
 
@@ -537,6 +545,15 @@ export function titleOf(name: string, input: unknown): string {
   }
   const said = headline(name, input);
   const named = said === name ? toolName(name) : said;
+  // **A browser call says `browser`, not the driver's server name.** These
+  // come over the wire under `playwright`, which is plumbing: the browser is
+  // the client's own. The URL a navigate carries is its own headline; a call
+  // with nothing on it falls back to the verb, so a snapshot reads
+  // `browser: snapshot` rather than repeating the tool's raw name.
+  if (isBrowserTool(name)) {
+    const verb = browserVerb(name);
+    return `browser: ${said === name ? verb : said}`;
+  }
   // **A server's row says which server**: the lane whose label carried it is
   // gone, and `list` from two servers is one word for two things.
   const mcp = mcpParts(name);

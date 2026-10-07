@@ -370,17 +370,30 @@ describe('a server-side call on its row', () => {
     // #1733's read: the flatten deleted the lane whose label was the server
     // (the old `labelOf` named mcp rows by it), so a bare tool name left two
     // servers' calls drawn as the same word.
-    const bare = leafOf('t1', 'mcp__playwright__browser_navigate', {}, undefined);
-    expect(bare.title, 'the server leads the title').toBe('playwright: browser_navigate');
+    const bare = leafOf('t1', 'mcp__other__list', {}, undefined);
+    expect(bare.title, 'the server leads the title').toBe('other: list');
 
-    const subject = leafOf(
+    const subject = leafOf('t1', 'mcp__other__fetch', { url: 'https://example.org' }, undefined);
+    expect(subject.title, 'and rides a call named by its subject').toBe(
+      'other: https://example.org',
+    );
+  });
+
+  /** **A browser call says `browser`, not `playwright`.** The sessions drive
+   *  the client's own browser; the driver's server name is plumbing, and the
+   *  verb names the call where nothing else does. */
+  it('names a browser call for what it drives, not the server that carried it', () => {
+    const bare = leafOf('t1', 'mcp__playwright__browser_snapshot', {}, undefined);
+    expect(bare.title, 'the verb names a call with no subject').toBe('browser: snapshot');
+
+    const navigate = leafOf(
       't1',
       'mcp__playwright__browser_navigate',
       { url: 'https://example.org' },
       undefined,
     );
-    expect(subject.title, 'and rides a call named by its subject').toBe(
-      'playwright: https://example.org',
+    expect(navigate.title, 'and the URL is the subject where there is one').toBe(
+      'browser: https://example.org',
     );
   });
 });

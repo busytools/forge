@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use crate::envelope::{PeerInboundKind, detect_inbound};
-use crate::family::{ToolFamily, tool_family, tool_label};
+use crate::family::{ToolFamily, is_browser_tool, tool_family, tool_label};
 use crate::model::MessageBlock;
 use crate::model::ToolCallInfo;
 use crate::model::tool_call_info::is_ask_question_tool_name;
@@ -228,6 +228,12 @@ impl KindSummary {
 /// the read family. A view reading a transcript needs this wire-level half
 /// precisely because it has no rendered call to resolve a row from.
 pub(crate) fn wire_row(sdk_tool_name: &str) -> (KindRow, String) {
+    // **A browser call keys as the browser, not as the driver's server.**
+    // It arrives under `playwright`, which is plumbing: the sessions drive
+    // the client's own browser, and both views read the same word for it.
+    if is_browser_tool(sdk_tool_name) {
+        return (KindRow::Family(ToolFamily::Own("Browser")), "Browser".to_owned());
+    }
     if let Some((server, _)) = mcp_parts(sdk_tool_name) {
         return (KindRow::Mcp, server.to_owned());
     }
@@ -315,6 +321,11 @@ impl<'a> CallParts<'a> {
 /// local tools → their family's extractor, falling back to the title
 /// with the kind-label prefix stripped.
 pub fn family_target(parts: CallParts<'_>) -> Option<String> {
+    // A browser call is told by what it drove, not by the driver's server
+    // name: the URL where it has one, the call's own title otherwise.
+    if is_browser_tool(parts.name) {
+        return browser_target(parts).or_else(|| strip_title_prefix(parts));
+    }
     if let Some((_, tool)) = mcp_parts(parts.name)
         && !tool.is_empty()
     {
@@ -379,6 +390,17 @@ fn search_target(parts: CallParts<'_>) -> Option<String> {
 /// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
 /// WebSearch its query. The full value reaches the render, which clips
 /// it per row.
+/// Browser target: the URL a navigating call carries, scheme stripped like
+/// the web family's. A call with no URL falls through to its title.
+fn browser_target(parts: CallParts<'_>) -> Option<String> {
+    let raw = parts.input.and_then(|v| v.as_object())?;
+    raw.get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| strip_scheme(s).to_owned())
+}
+
 fn web_target(parts: CallParts<'_>) -> Option<String> {
     let raw = parts.input.and_then(|v| v.as_object())?;
     let value = match parts.name {
@@ -1158,9 +1180,11 @@ mod tests {
     }
 
     /// Glyph-family grouping: Grep/Glob/LS collapse to one `search`
-    /// line, WebFetch/WebSearch to one `web`, LSP to `lsp`, and each
-    /// `mcp__<server>__*` to a per-server line - no opaque `calls`
-    /// grab-bag. LS moving out of the old catch-all is the headline fix.
+    /// line, WebFetch/WebSearch to one `web`, LSP to `lsp`, each
+    /// `mcp__<server>__*` to a per-server line, and every browser tool to
+    /// one `Browser` line rather than the driver's server - no opaque
+    /// `calls` grab-bag. LS moving out of the old catch-all is the
+    /// headline fix.
     #[test]
     fn tally_groups_by_glyph_family_and_mcp_by_server() {
         let mut k = KindSummary::default();
@@ -1185,7 +1209,7 @@ mod tests {
         assert_eq!(count_of(&k, "bash"), 1);
         assert_eq!(count_of(&k, "lsp"), 1);
         assert_eq!(count_of(&k, "context7"), 2, "same server merges");
-        assert_eq!(count_of(&k, "playwright"), 1);
+        assert_eq!(count_of(&k, "Browser"), 1, "the browser keys as itself, not as playwright");
         assert!(kind_line(&k, "calls").is_none(), "no generic calls grab-bag");
         assert_eq!(kind_line(&k, "context7").unwrap().row, KindRow::Mcp);
     }
@@ -1196,6 +1220,24 @@ mod tests {
         tally_block(&mut k, &tool_call_block("a", "mcp__context7__query-docs"));
         let line = kind_line(&k, "context7").expect("context7 line");
         assert_eq!(line.targets, vec!["query-docs".to_owned()]);
+    }
+
+    /// A browser call's target is what it drove, not the driver's server: the
+    /// URL with the scheme stripped, like the web family's.
+    #[test]
+    fn tally_browser_target_is_the_url_it_drove() {
+        let mut k = KindSummary::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b1",
+                "mcp__playwright__browser_navigate",
+                "browser: https://example.org",
+                Some(serde_json::json!({"url": "https://example.org"})),
+            ),
+        );
+        let line = kind_line(&k, "Browser").expect("a Browser line");
+        assert_eq!(line.targets, vec!["example.org".to_owned()]);
     }
 
     /// A Skill call's child row carries the invoked skill name (+ args

@@ -1586,7 +1586,7 @@ mod tests {
     #[test]
     fn each_mcp_server_is_its_own_family_row() {
         let messages = [
-            tool_call_named("mcp__playwright__browser_click"),
+            tool_call_named("mcp__context7__query-docs"),
             tool_call_named("mcp__forge__agents__list"),
         ];
         let units = render_units(&messages);
@@ -1594,7 +1594,7 @@ mod tests {
             panic!("a tool group");
         };
         let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
-        assert_eq!(named, ["playwright", "forge"], "one row per server, in first-appearance order");
+        assert_eq!(named, ["context7", "forge"], "one row per server, in first-appearance order");
         let classes: Vec<KindRow> = families.iter().map(|row| row.row).collect();
         assert_eq!(
             classes,
@@ -1602,6 +1602,21 @@ mod tests {
             "and each says it is a server rather than a family, so a view tells them from a \
              family row that happens to share the word",
         );
+    }
+
+    /// **The browser keys as `Browser`**, however the driver's server was
+    /// named: the sessions drive the client's own browser, and `playwright`
+    /// is plumbing. The row is a family like any other, so a view draws the
+    /// same word the client's chat does.
+    #[test]
+    fn the_browser_tools_key_as_the_browser() {
+        let messages = [tool_call_named("mcp__playwright__browser_click")];
+        let units = render_units(&messages);
+        let ChatUnit::ToolGroup { families, .. } = &units[0] else {
+            panic!("a tool group");
+        };
+        assert_eq!(families[0].label, "Browser");
+        assert_eq!(families[0].row, KindRow::Family(crate::family::ToolFamily::Own("Browser")),);
     }
 
     /// An envelope that is not agent traffic is not the user's own turn: a

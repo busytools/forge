@@ -64,10 +64,31 @@ export function forgeFamilyOf(name: string): ForgeFamily | null {
 export type KindRow =
   | { kind: 'family'; family: Family }
   | { kind: 'forge'; family: ForgeFamily }
+  | { kind: 'browser' }
   | { kind: 'mcp' }
   | { kind: 'systemone' }
   | { kind: 'inbound' }
   | { kind: 'outbound' };
+
+/**
+ * Whether a call drives the sessions' browser.
+ *
+ * **Its own kind, not the driver's.** These come over the wire under the
+ * `playwright` server name, which is plumbing: the browser is the client's
+ * own, and a row that says `playwright:` names the wrong thing. A name is a
+ * browser call whatever server carried it - `mcp__playwright__browser_click`
+ * and `mcp__forge__browser_navigate` alike.
+ */
+export function isBrowserTool(name: string): boolean {
+  const tool = mcpParts(name)?.tool ?? name;
+  return tool.startsWith('browser_');
+}
+
+/** The verb a browser tool carries: `browser_navigate` is `navigate`. */
+export function browserVerb(name: string): string {
+  const tool = mcpParts(name)?.tool ?? name;
+  return tool.slice('browser_'.length);
+}
 
 /** A call's status, as the wire writes it. */
 export type CallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
@@ -138,6 +159,7 @@ export function familyOf(name: string): Family {
 /** The row a call is summarised under. */
 export function rowOf(name: string): KindRow {
   if (isDecisionTool(name)) return { kind: 'systemone' };
+  if (isBrowserTool(name)) return { kind: 'browser' };
   const family = forgeFamilyOf(name);
   if (family !== null) return { kind: 'forge', family };
   if (mcpParts(name) !== null) return { kind: 'mcp' };
@@ -186,6 +208,8 @@ export function iconOf(row: KindRow): string {
   switch (row.kind) {
     case 'forge':
       return FORGE_GLYPH[row.family];
+    case 'browser':
+      return 'web';
     case 'mcp':
       return 'mcp';
     case 'systemone':
