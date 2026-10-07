@@ -510,11 +510,16 @@ export interface BenchRow {
  * A model in use that has not loaded is left out - the bench loads its own
  * engine from the file, and a control over a file that is not there yet
  * would fail where the page could have pointed at the progress instead.
+ *
+ * **An installed record's role comes off the feed row it joined**: the
+ * record itself carries no kind, and a normalizer benched as transcribing
+ * would load into the wrong slot.
  */
 export function benchTargets(
   inUse: InUseModel[],
   installed: InstalledModel[],
   updates: ModelUpdate[],
+  feed: CatalogueRow[] = [],
 ): BenchRow[] {
   const rows: BenchRow[] = inUse
     .filter((model) => model.state === 'ready')
@@ -530,8 +535,13 @@ export function benchTargets(
     }));
   for (const record of installed) {
     if (rows.some((row) => row.target.file === record.file)) continue;
+    const entry = feed.find((row) => row.variant === record.variant);
     rows.push({
-      target: { file: record.file, role: 'transcribing', pinned: false },
+      target: {
+        file: record.file,
+        role: entry?.kind === 'normalizer' ? 'cleanup' : 'transcribing',
+        pinned: false,
+      },
       variant: record.variant,
       current: false,
       recommended: false,
@@ -545,6 +555,82 @@ export function benchTargets(
     );
   }
   return rows;
+}
+
+/** One cleanup candidate as its row draws: the feed's row, this machine's
+ * record of it, and what the bench has measured on it. */
+export interface CleanupCandidate {
+  row: CatalogueRow;
+  installed: InstalledModel | null;
+  results: BenchResult[];
+}
+
+/** The cleanup role's candidates: the feed's normalizer rows, each joined to
+ * this machine's record of it and to that record's own bench results. */
+export function cleanupCandidates(
+  rows: CatalogueRow[],
+  installed: InstalledModel[],
+  results: BenchResult[],
+): CleanupCandidate[] {
+  return rows
+    .filter((row) => row.kind === 'normalizer')
+    .map((row) => {
+      const record = installed.find((model) => model.variant === row.variant) ?? null;
+      return {
+        row,
+        installed: record,
+        results:
+          record === null
+            ? []
+            : results.filter(
+                (result) => result.target.role === 'cleanup' && result.target.file === record.file,
+              ),
+      };
+    });
+}
+
+/**
+ * The cleanup role's own proposal: the candidate the bench measured best.
+ *
+ * **The feed cannot rank this role** - it publishes no speed and no error
+ * for a normalizer - so the bench does. Two runs are only compared on one
+ * tier and one corpus, so the pick comes from the corpus this role has the
+ * most results on, and only when at least two of them are there: one run is
+ * a number, not a comparison, and the page says so rather than proposing
+ * the only thing it has.
+ */
+export function cleanupPick(
+  candidates: CleanupCandidate[],
+): { candidate: CleanupCandidate; result: BenchResult } | null {
+  const groups = new Map<string, { candidate: CleanupCandidate; result: BenchResult }[]>();
+  for (const candidate of candidates) {
+    for (const result of candidate.results) {
+      const key = `${result.tier}/${result.corpus.sha256}`;
+      groups.set(key, [...(groups.get(key) ?? []), { candidate, result }]);
+    }
+  }
+  const widest = [...groups.values()].sort((a, b) => b.length - a.length)[0];
+  if (widest === undefined || widest.length < 2) return null;
+  return widest.reduce((best, entry) => (readsBetter(entry.result, best.result) ? entry : best));
+}
+
+/**
+ * Whether one run reads better than another **on the same corpus**: the
+ * lower word error first, then the higher term accuracy, then the faster -
+ * the order a person comparing two of their own runs reads them in.
+ */
+function readsBetter(a: BenchResult, b: BenchResult): boolean {
+  if (a.metrics.wer !== null && b.metrics.wer !== null && a.metrics.wer !== b.metrics.wer) {
+    return a.metrics.wer < b.metrics.wer;
+  }
+  if (
+    a.metrics.term_accuracy !== null &&
+    b.metrics.term_accuracy !== null &&
+    a.metrics.term_accuracy !== b.metrics.term_accuracy
+  ) {
+    return a.metrics.term_accuracy > b.metrics.term_accuracy;
+  }
+  return a.metrics.xrt_wall > b.metrics.xrt_wall;
 }
 
 /** The bench's line: what is running, or what stopped it. */

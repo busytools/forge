@@ -9,6 +9,7 @@ import type {
   BenchResult,
   BenchTarget,
   BenchTier,
+  CatalogueRow,
   DictateModelsWire,
   ModelRole,
   ReadAloudRecording,
@@ -610,13 +611,91 @@ describe('the models page as it draws', () => {
 
     cleanup?.click();
     flushSync();
-    expect(host.textContent).toContain('nothing to compare for the cleanup role');
+    expect(host.textContent, 'the cleanup role draws its own view').toContain(
+      'the bench decides this role',
+    );
     expect(host.textContent).not.toContain('read against the transcribing model in use');
 
     transcribing?.click();
     flushSync();
     expect(host.textContent).toContain('read against the transcribing model in use');
-    expect(host.textContent).not.toContain('nothing to compare for the cleanup role');
+    expect(host.textContent).not.toContain('the bench decides this role');
+  });
+
+  /**
+   * **The cleanup role's candidates are the Hub's rows, and the bench decides
+   * them.** Each candidate carries this machine's own runs where it has any,
+   * the control installs or loads it into the cleanup slot, and the pick
+   * names the best run only when two of them share a corpus - one run is a
+   * number, not a comparison.
+   */
+  it('draws the cleanup candidates, their runs, and the pick the bench makes', () => {
+    const cleanupRow: CatalogueRow = {
+      variant: 'mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF',
+      display_name: 'mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF',
+      family: 'mradermacher',
+      params: 600_000_000,
+      license: 'MIT',
+      languages: ['en'],
+      streaming: false,
+      speed: null,
+      wer: null,
+      download: { quant: 'Q4_K_M', size_bytes: 396_000_000 },
+      kind: 'normalizer',
+      url: 'https://huggingface.co/mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF',
+    };
+    const record = {
+      variant: cleanupRow.variant,
+      file: 'CeluneNorm-0.6B-v2.0-ctx2048-Q4_K_M.gguf',
+      url: 'https://huggingface.co/mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF/resolve/main/x.gguf',
+      size: 396_000_000,
+      facts: { quant: 'Q4_K_M', params: 600_000_000, license: 'MIT', runtime: 'llama.cpp' },
+      at: '2026-10-07T02:00:00Z',
+    };
+    const run = (wer: number, speed: number) => ({
+      target: { file: record.file, role: 'cleanup' as const, pinned: false },
+      tier: 'consensus' as const,
+      metrics: {
+        clips: 10,
+        audio_seconds: 250,
+        wall_seconds: 4,
+        xrt_wall: speed,
+        term_accuracy: null,
+        wer,
+        matched: [5, 10] as [number, number],
+        stages_ms: {
+          model_load_ms: 100,
+          resample_ms: 1,
+          mel_ms: 1,
+          encode_ms: 1,
+          decode_ms: 1,
+          normalize_ms: 1,
+        },
+      },
+      at: '2026-10-07T03:00:00Z',
+      corpus: { clips: 10, audio_seconds: 250, sha256: 'a414db2a' },
+    });
+    const host = open({
+      ...modelsWire,
+      rows: [cleanupRow],
+      installed: [record],
+      results: [run(0.04, 60)],
+    });
+    const cleanup = [...host.querySelectorAll<HTMLButtonElement>('button.role')].find((button) =>
+      button.textContent?.includes('cleanup'),
+    );
+    cleanup?.click();
+    flushSync();
+
+    expect(host.textContent).toContain('mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF');
+    expect(host.textContent).toContain('396 MB');
+    expect(host.textContent, 'the candidate is installable or loadable').toContain(
+      'use for cleanup',
+    );
+    expect(host.textContent, 'its own run is on its row').toContain('WER 4.0%');
+    expect(host.textContent, 'one run is a number, not a comparison').toContain(
+      'nothing is benched twice over one corpus yet',
+    );
   });
 
   /** The read-aloud set: not recorded draws the passage and the record press. */

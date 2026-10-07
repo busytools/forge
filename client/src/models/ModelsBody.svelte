@@ -19,6 +19,8 @@
     benchTargets,
     candidateFacts,
     checkLine,
+    cleanupCandidates,
+    cleanupPick as cleanupPickOf,
     comparison,
     entryUrl,
     inUseLicense,
@@ -120,7 +122,7 @@
   const building = $derived(activateLine(wire.activate));
   const benchState = $derived(wire.bench);
   const bench = $derived(benchLine(wire.bench));
-  const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates));
+  const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates, wire.rows));
 
   /**
    * The role whose proposal the Updates section draws. The rows in use are
@@ -131,6 +133,10 @@
   let selected = $state<ModelRole | null>(null);
   const shownRole = $derived(selected ?? wire.updates[0]?.role ?? 'transcribing');
   const shown = $derived(wire.updates.filter((update) => update.role === shownRole));
+
+  /** The cleanup role's candidates, and the best of the runs on them. */
+  const cleanupRows = $derived(cleanupCandidates(wire.rows, wire.installed, wire.results));
+  const cleanupPick = $derived(cleanupPickOf(cleanupRows));
 
   /** How many level readings the recording card draws. */
   const REC_CELLS = 40;
@@ -307,80 +313,142 @@
       {#if line.detail !== null}<span class="detail">{line.detail}</span>{/if}
     </div>
 
-    {#each shown as update (`${update.role}/${update.file}`)}
-      <div class="cmp-head">
-        <span class="t">read against the {roleWord(update.role)} model in use</span>
-        <span class="when">
-          {speedLabel(update.current.speed_x)} and {update.current.fleurs_en_wer}% word error, on
-          the feed's own FLEURS-en and m4-max rows
-        </span>
-      </div>
-      {#if update.candidates.length === 0}
+    {#if shownRole === 'normalization'}
+      <!-- The cleanup role's own view: no feed publishes speed or error for
+           a normalizer, so the bench decides. The candidates are the Hub's
+           rows, each carrying this machine's own runs. -->
+      <p class="note">
+        the feed publishes no speed or error for a normalizer &middot; the bench decides this role:
+        the pick is the best of your own runs on one corpus, and a candidate with no run yet offers
+        the bench
+      </p>
+      {#if cleanupPick !== null}
+        <div class="status">
+          <span class="dot ok"></span>
+          <span class="t">{cleanupPick.candidate.row.variant}</span>
+          <span class="when">measured best on {tierWord(cleanupPick.result.tier)}</span>
+          <span class="detail">{@render facts(resultFacts(cleanupPick.result))}</span>
+        </div>
+      {:else if cleanupRows.length > 0}
         <p class="note">
-          no other English model in the feed is measured on both axes &middot; there is nothing to
-          compare against
+          nothing is benched twice over one corpus yet &middot; run a candidate and the numbers land
+          on its row
         </p>
       {/if}
-      <div class="cmp-wrap">
-        <table class="cmp">
-          <caption>{updateWhy()}</caption>
-          <thead>
-            <tr>
-              <th scope="col">model</th>
-              <th scope="col">speed</th>
-              <th scope="col">error</th>
-              <th scope="col">licence</th>
-              <th scope="col">the rule</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr class="base">
-              <th scope="row">{update.file}</th>
-              <td>{speedLabel(update.current.speed_x)}</td>
-              <td>{update.current.fleurs_en_wer}%</td>
-              <td>{inUseLicense(wire.in_use, update.role)}</td>
-              <td>this is what is running now</td>
-            </tr>
-            {#each comparison(update) as row (row.variant)}
-              <tr class:pick={row.recommended}>
-                <th scope="row">{row.display_name}</th>
-                <td>{row.speed ?? 'not measured'}</td>
-                <td>{row.error ?? 'not measured'}</td>
-                <td>{row.license ?? 'no licence on the feed'}</td>
-                <td class="rule">
-                  {row.verdict}
-                  {#if row.recommended}
-                    {#if update.role === 'transcribing' && pinnedTranscribing}
-                      <!-- A pinned role refuses the load by name, so the row
-                         keeps the download and drops the update control. -->
-                      {@render control(row.source)}
-                    {:else}
-                      <button
-                        class="chip"
-                        type="button"
-                        disabled={busy}
-                        onclick={() => onupdate(row.variant)}
-                        title="download it if needed, then load it as the {roleWord(
-                          update.role,
-                        )} model">Update to this model</button
-                      >
-                    {/if}
-                  {/if}
-                </td>
-              </tr>
+      {#if cleanupRows.length === 0}
+        <p class="note">
+          the cleanup feed listed nothing this machine would run &middot; its candidates are English
+          normalizers with a quant llama.cpp loads and a fetched count behind them
+        </p>
+      {:else}
+        <ul class="list" aria-label="Cleanup candidates">
+          {#each cleanupRows as candidate (candidate.row.variant)}
+            <li>
+              <a
+                class="cand"
+                href={entryUrl(candidate.row)}
+                target="_blank"
+                rel="noreferrer"
+                title="the catalog entry, on hugging face"
+              >
+                <span class="nm">{candidate.row.variant}</span>
+                <span class="col">{@render facts(candidateFacts(candidate.row).spec)}</span>
+                <span class="go" aria-hidden="true">&#8599;</span>
+              </a>
+              {@render control(candidate.row)}
+            </li>
+            {#each candidate.results as result (`${result.tier}/${result.corpus.sha256}`)}
+              <li>
+                <span class="rec">
+                  <span class="facts">
+                    {@render facts(resultFacts(result))} &middot; {resultVerdict(
+                      result,
+                      wire.in_use,
+                      wire.results,
+                    )}
+                  </span>
+                </span>
+              </li>
             {/each}
-          </tbody>
-        </table>
-      </div>
-    {/each}
-    {#if shown.length === 0}
-      <!-- The role has no entry at all: nothing in the feed joins the model
+          {/each}
+        </ul>
+      {/if}
+    {:else}
+      {#each shown as update (`${update.role}/${update.file}`)}
+        <div class="cmp-head">
+          <span class="t">read against the {roleWord(update.role)} model in use</span>
+          <span class="when">
+            {speedLabel(update.current.speed_x)} and {update.current.fleurs_en_wer}% word error, on
+            the feed's own FLEURS-en and m4-max rows
+          </span>
+        </div>
+        {#if update.candidates.length === 0}
+          <p class="note">
+            no other English model in the feed is measured on both axes &middot; there is nothing to
+            compare against
+          </p>
+        {/if}
+        <div class="cmp-wrap">
+          <table class="cmp">
+            <caption>{updateWhy()}</caption>
+            <thead>
+              <tr>
+                <th scope="col">model</th>
+                <th scope="col">speed</th>
+                <th scope="col">error</th>
+                <th scope="col">licence</th>
+                <th scope="col">the rule</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="base">
+                <th scope="row">{update.file}</th>
+                <td>{speedLabel(update.current.speed_x)}</td>
+                <td>{update.current.fleurs_en_wer}%</td>
+                <td>{inUseLicense(wire.in_use, update.role)}</td>
+                <td>this is what is running now</td>
+              </tr>
+              {#each comparison(update) as row (row.variant)}
+                <tr class:pick={row.recommended}>
+                  <th scope="row">{row.display_name}</th>
+                  <td>{row.speed ?? 'not measured'}</td>
+                  <td>{row.error ?? 'not measured'}</td>
+                  <td>{row.license ?? 'no licence on the feed'}</td>
+                  <td class="rule">
+                    {row.verdict}
+                    {#if row.recommended}
+                      {#if update.role === 'transcribing' && pinnedTranscribing}
+                        <!-- A pinned role refuses the load by name, so the row
+                         keeps the download and drops the update control. -->
+                        {@render control(row.source)}
+                      {:else}
+                        <button
+                          class="chip"
+                          type="button"
+                          disabled={busy}
+                          onclick={() => onupdate(row.variant)}
+                          title="download it if needed, then load it as the {roleWord(
+                            update.role,
+                          )} model">Update to this model</button
+                        >
+                      {/if}
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/each}
+      {#if shown.length === 0}
+        <!-- The role has no entry at all: nothing in the feed joins the model
            it runs, so there is nothing this page could compare. The row's own
            source line says `not in the feed` for that model already. -->
-      <p class="note">
-        nothing to compare for the {roleWord(shownRole)} role &middot; the model in use has no measured
-        rows in the feed
-      </p>
+        <p class="note">
+          nothing to compare for the {roleWord(shownRole)} role &middot; the model in use has no measured
+          rows in the feed
+        </p>
+      {/if}
     {/if}
   </section>
 
