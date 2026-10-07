@@ -9385,6 +9385,27 @@ provider = "anthropic"
         );
     }
 
+    /// And the other half of that boundary: a classification that is NOT a
+    /// transient server error does not exempt the failure. The terminal
+    /// continues server errors only, so a billing or auth death is exactly
+    /// the one this nudge exists for - starving it here would leave the seat
+    /// sitting, the bug #1841 is about.
+    #[test]
+    fn a_classification_the_terminal_does_not_continue_still_nudges() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "billing");
+        fold_event(&ws, &key, &retried_with("billing_error", 402));
+        fold_event(&ws, &key, &failed_result(&["billing_error"]));
+
+        sweep_after_the_delay(&ws);
+
+        assert_eq!(
+            dispatched_prompts(&ws),
+            ["The previous turn failed: billing_error. Continue from where you left off."],
+            "a failure the terminal leaves alone is nudged",
+        );
+    }
+
     /// The no-double-fire boundary: a transient server error is the
     /// terminal's own dead-turn path. The sweep must not nudge beside it,
     /// and steps the clock all it likes.
