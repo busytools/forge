@@ -204,6 +204,7 @@
   /** A span of seconds as the card reads it. */
   function duration(seconds: number): string {
     const whole = Math.round(seconds);
+    if (whole < 1) return '<1s';
     const minutes = Math.floor(whole / 60);
     return minutes > 0 ? `${minutes}m ${whole % 60}s` : `${whole}s`;
   }

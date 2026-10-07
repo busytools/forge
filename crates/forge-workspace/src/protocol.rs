@@ -2258,7 +2258,7 @@ pub enum DispatchError {
     ReadAloudUnavailable { reason: String },
     /// The model is what a role runs right now, and the engine holds it
     /// loaded: the role has to be moved off it first.
-    #[error("this model is what the {role} runs; switch it first", role = role.label())]
+    #[error("the {role} runs this file; switch it first", role = role.label())]
     ModelInUse { role: crate::dictate::DictateRole },
     /// The model could not be removed, in the core's own words.
     #[error("the model could not be removed: {reason}")]
