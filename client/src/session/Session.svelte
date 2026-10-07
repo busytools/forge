@@ -161,7 +161,7 @@
     git.sync(record === null ? null : gitStrip(record, slot));
   });
   $effect(() => {
-    tasks.sync(taskRows(project?.tasks ?? []));
+    tasks.sync(taskRows(project?.tasks ?? [], slot));
   });
   $effect(() => {
     monitors.sync(record === null ? null : monitorRows(record.monitors, now));

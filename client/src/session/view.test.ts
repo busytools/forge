@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
-import type { AgentRow, CronEntry, HomeWire, ProjectWire } from '../wire/home';
+import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
@@ -685,37 +685,79 @@ describe('the schedule countdown', () => {
 });
 
 describe('the tasks the strip draws', () => {
-  it('reads in-progress first, and keys each row by its own id', () => {
-    const rows = taskRows([
+  it("scopes the rows to the seat, the way the terminal's own section does", () => {
+    const base = {
+      project_name: 'proj',
+      active_form: null,
+      detail: null,
+      parent: null,
+      artifact: null,
+      estimate: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const tasks: Task[] = [
+      { ...base, id: 'top', subject: 'the campaign', status: 'in_progress', owner: null },
       {
-        id: 't1',
-        project_name: 'proj',
-        subject: 'done already',
-        active_form: null,
-        detail: null,
-        status: 'completed',
-        owner: null,
-        parent: null,
-        artifact: null,
-        estimate: null,
-        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-      },
-      {
-        id: 't2',
-        project_name: 'proj',
-        subject: 'still going',
-        active_form: null,
-        detail: null,
+        ...base,
+        id: 'mine',
+        subject: 'my row',
         status: 'in_progress',
-        owner: LEAD,
-        parent: null,
-        artifact: 'https://example.test/pull/1204',
-        estimate: '2h',
-        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        owner: { org: 'TestOrg', project: 'proj', label: 'builder' },
+        parent: 'top',
       },
-    ]);
+      { ...base, id: 'child', subject: 'a child row', status: 'pending', parent: 'top' },
+    ];
+
+    // A lead draws its campaign board: top-level rows only, so the child of
+    // one is not among them.
+    const board = taskRows(tasks, LEAD);
+    expect(
+      board.map((row) => row.id),
+      'the lead drew a row that is not top-level',
+    ).toEqual(['top']);
+    // A worker draws only what it owns.
+    const own = taskRows(tasks, { org: 'TestOrg', project: 'proj', label: 'builder' });
+    expect(
+      own.map((row) => row.id),
+      'a worker drew a row that is not its own',
+    ).toEqual(['mine']);
+  });
+
+  it('reads in-progress first, and keys each row by its own id', () => {
+    const rows = taskRows(
+      [
+        {
+          id: 't1',
+          project_name: 'proj',
+          subject: 'done already',
+          active_form: null,
+          detail: null,
+          status: 'completed',
+          owner: null,
+          parent: null,
+          artifact: null,
+          estimate: null,
+          created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+          updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        },
+        {
+          id: 't2',
+          project_name: 'proj',
+          subject: 'still going',
+          active_form: null,
+          detail: null,
+          status: 'in_progress',
+          owner: LEAD,
+          parent: null,
+          artifact: 'https://example.test/pull/1204',
+          estimate: '2h',
+          created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+          updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        },
+      ],
+      LEAD,
+    );
     expect(rows[0]?.subject).toBe('still going');
     expect(rows[0]?.status, 'in progress leads, and the row draws its own mark').toBe(
       'in_progress',

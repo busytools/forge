@@ -895,9 +895,16 @@ function money(amount: unknown): string {
  * The project's tasks, as the strip's row draws them: in the order a person
  * reads them rather than the order the store returns them.
  */
-export function taskRows(tasks: Task[]): TaskStripRow[] {
+export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
+  // The seat's own slice, scoped the way the terminal scopes its TASKS
+  // section: a lead takes the top-level rows - its campaign board - and a
+  // worker only the rows it owns. The whole set stays the home's read.
+  const mine =
+    slot.label === 'lead'
+      ? tasks.filter((task) => task.parent === null)
+      : tasks.filter((task) => task.owner?.label === slot.label);
   const rank: Record<string, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
-  const ordered = [...tasks].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+  const ordered = [...mine].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
   return ordered.map((task) => ({
     id: task.id,
     status: task.status,
