@@ -349,9 +349,23 @@ impl BrowserHost {
     pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
-            Some(name) => paths.profiles.join(name),
+            Some(name) => {
+                // **The same refusal show makes.** A name that cannot be a
+                // profile resolves to no directory at all, and without this a
+                // `profile: "../user-data"` would close the SHARED browser
+                // while the answer claimed the named one came down.
+                if let Some(refusal) = profiles::name_refusal(name) {
+                    return Err(refusal);
+                }
+                paths.profiles.join(name)
+            }
             None => paths.user_data,
         };
+        // **The same launch lock show takes.** A relaunch keeps the port file
+        // absent for up to the launch bound, and a hide racing it would
+        // no-op against a browser not yet up - Open then Done would leave the
+        // window raised after the answer crossed.
+        let _launching = self.launch.lock().await;
         chromium::hide(&dir).await;
         Ok(())
     }
@@ -570,6 +584,22 @@ mod tests {
             Err("the browser stack was never vendored".to_owned()),
             "the start says why rather than panicking at the app's boot",
         );
+    }
+
+    /// **A name that cannot be a profile is refused before any directory is
+    /// touched.** Without the refusal a traversing name resolves inside the
+    /// data root, and a Done claiming the named profile could close the
+    /// SHARED browser instead.
+    #[tokio::test]
+    async fn hide_refuses_a_name_that_cannot_be_a_profile() {
+        let resource = tempfile::tempdir().expect("a temp dir");
+        let data = tempfile::tempdir().expect("a temp dir");
+        let host = BrowserHost::new(StackPaths::from_dirs(resource.path(), data.path()));
+        let refused = host.hide(Some("../user-data")).await;
+        let Err(why) = refused else {
+            panic!("a traversing name is refused");
+        };
+        assert!(why.contains("1 to 64"), "{why}");
     }
 
     /// A host nothing has named holds no profiles, and answers the strip with

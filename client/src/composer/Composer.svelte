@@ -3,6 +3,7 @@
 
   import { echoes } from '../chat/echoes.svelte';
   import { runningAt } from '../chat/conversation';
+  import { hideBrowser } from '../browser/host';
   import Icon from '../components/Icon.svelte';
   import { slotOf } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -297,6 +298,7 @@
     const held = ask;
     if (held !== null && held.kind === 'browser_hand_off') {
       box.shownHandOff = held.request.id;
+      box.shownHandOffProfile = held.request.profile;
       box.ended = null;
     }
   });
@@ -350,6 +352,11 @@
       // The reader's own answer: the ending would only repeat the click.
       if (held.answered === id) return;
       held.ended = handOffEndingLine(payload['ending']);
+      // **A window another view's answer leaves raised comes down here.** The
+      // local Done lowers its own window; an answer from the TUI (or another
+      // page) never touches this shell, and the next agent call would attach
+      // to a browser left headed. Hide is idempotent when nothing is raised.
+      void hideBrowser(held.shownHandOffProfile);
     });
   });
 

@@ -4190,6 +4190,28 @@ describe('the dock', () => {
     );
   });
 
+  /** **An answer from another view lowers the window here.** The local Done
+   *  takes its own window down; a Done from the terminal never touches this
+   *  shell, and without this the browser stays headed for the next agent call
+   *  to attach to while the answer says the person finished. */
+  it('lowers the window when another view answers the hand-off', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    expect(hideBrowser, 'nothing is lowered while the hand-off waits').not.toHaveBeenCalled();
+
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          ending: { type: 'done' },
+        },
+      },
+    });
+
+    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt');
+  });
+
   it('declines the hand-off with Not now, which is the same release', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 

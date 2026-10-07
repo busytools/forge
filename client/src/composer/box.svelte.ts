@@ -69,6 +69,12 @@ export class Box {
    * terms: what tells a stand-down for THIS hand-off from one for the next.
    */
   shownHandOff: string | null = null;
+  /**
+   * The profile that hand-off named, kept beside its id so an answer from
+   * ANOTHER view can lower the window this view raised: the resolved update
+   * carries the id and the ending, never the profile.
+   */
+  shownHandOffProfile: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**
