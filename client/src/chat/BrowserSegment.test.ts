@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { closeContext, listContexts } from '../browser/host';
+import { browserUsed, closeContext, listContexts } from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
 
 /**
@@ -18,6 +18,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     canHost: () => true,
     listContexts: vi.fn(() => Promise.resolve([])),
     closeContext: vi.fn(() => Promise.resolve(undefined)),
+    browserUsed: vi.fn(() => Promise.resolve(false)),
   };
 });
 
@@ -131,6 +132,29 @@ describe('the browser segment', () => {
     ).not.toContain('no named contexts yet');
     shown.stop();
     vi.mocked(listContexts).mockImplementation(() => Promise.resolve([]));
+  });
+
+  /** Ved, live round 2026-10-07: the row should say whether the browser has
+   *  been actively used - a flat disc beside the glyph when it has. */
+  it('marks the row once the browser has been used, and not before', async () => {
+    const resting = show(false, true);
+    await vi.waitFor(() => expect(browserUsed).toHaveBeenCalled());
+    expect(
+      resting.target.querySelector('.bz-tog .dot.idle'),
+      'a browser nobody has driven carries no mark',
+    ).toBeNull();
+    resting.stop();
+
+    vi.mocked(browserUsed).mockResolvedValueOnce(true);
+    const used = show(false, true);
+    await vi.waitFor(() => {
+      expect(
+        used.target.querySelector('.bz-tog .dot.idle'),
+        'a driven browser says so on the resting row',
+      ).not.toBeNull();
+    });
+    used.stop();
+    vi.mocked(browserUsed).mockResolvedValue(false);
   });
 
   it('says the read failed rather than claiming there are no contexts', async () => {

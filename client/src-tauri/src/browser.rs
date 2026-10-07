@@ -136,6 +136,9 @@ pub struct BrowserHost {
     /// start (or one that is not needed) must not decide whether a reloaded
     /// window draws the takeover.
     takeover_up: std::sync::atomic::AtomicBool,
+    /// Whether any session has driven this client's browser since it came up,
+    /// which the strip's row marks (Ved, 2026-10-07).
+    used: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserHost {
@@ -148,6 +151,7 @@ impl BrowserHost {
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
             takeover_up: std::sync::atomic::AtomicBool::new(false),
+            used: std::sync::atomic::AtomicBool::new(false),
             last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -164,6 +168,7 @@ impl BrowserHost {
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
             takeover_up: std::sync::atomic::AtomicBool::new(false),
+            used: std::sync::atomic::AtomicBool::new(false),
             last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -194,6 +199,9 @@ impl BrowserHost {
         }
         let paths = self.paths.clone()?;
         let active = self.active_browser(&paths).await?;
+        // **The browser has been driven**, which the strip's row draws: a
+        // session's call is the only way this client's browser is used.
+        self.used.store(true, std::sync::atomic::Ordering::Release);
         let endpoint = format!("http://127.0.0.1:{}", active.port);
         let node = driver::node_path(&paths.stack);
         let cli = driver::cli_path(&paths.stack);
@@ -419,6 +427,12 @@ impl BrowserHost {
         })
     }
 
+    /// Whether a session has driven this client's browser since it came up.
+    pub async fn used(&self) -> Result<bool, String> {
+        self.paths.clone()?;
+        Ok(self.used.load(std::sync::atomic::Ordering::Acquire))
+    }
+
     /// The page the browser is showing, for the takeover's bar.
     pub async fn takeover_url(&self) -> Result<Option<String>, String> {
         let paths = self.paths.clone()?;
@@ -609,6 +623,12 @@ pub async fn browser_takeover_url(
     host: tauri::State<'_, Arc<BrowserHost>>,
 ) -> Result<Option<String>, String> {
     host.takeover_url().await
+}
+
+/// Whether a session has driven this client's browser, for the strip's mark.
+#[tauri::command]
+pub async fn browser_used(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
+    host.used().await
 }
 
 /// One named context, as the client's own browser strip draws it.

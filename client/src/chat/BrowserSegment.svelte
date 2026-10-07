@@ -1,6 +1,13 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { canHost, closeContext, listContexts, whyText, type ContextRow } from '../browser/host';
+  import {
+    browserUsed,
+    canHost,
+    closeContext,
+    listContexts,
+    whyText,
+    type ContextRow,
+  } from '../browser/host';
   import type { Connection } from '../socket';
 
   /**
@@ -32,6 +39,8 @@
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
   let contexts = $state<ContextRow[]>([]);
+  /** Whether the browser has been driven this session up - Ved's activity mark. */
+  let used = $state(false);
   /**
    * What the last read answered. "No contexts yet" is a claim about this
    * client's own state, and a read that never answered has no state to claim,
@@ -61,6 +70,11 @@
       read = 'failed';
       why = whyText(error);
     }
+    // The use mark reads on the same beat, and its own failure keeps the
+    // last truth rather than claiming either state.
+    void browserUsed()
+      .then((now) => (used = now))
+      .catch(() => undefined);
   }
 
   $effect(() => {
@@ -244,6 +258,11 @@
     onkeydown={esc}
   >
     <Icon name="web" />
+    {#if used}
+      <!-- The system band's flat idle disc: the browser has been driven,
+           which is a state and not motion. -->
+      <span class="dot idle" title="the browser has been used"></span>
+    {/if}
     browser
     <span class="n">{count}</span>
   </button>

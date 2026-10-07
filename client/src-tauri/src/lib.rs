@@ -58,8 +58,8 @@ pub fn run() {
             browser::browser_takeover_open,
             browser::browser_takeover_close,
             browser::browser_takeover_state,
-        browser::browser_takeover_url,
             browser::browser_takeover_url,
+            browser::browser_used,
             browser::browser_takeover_input,
             browser::browser_takeover_frame,
             check_update,
@@ -76,6 +76,7 @@ pub fn run() {
         browser::browser_takeover_close,
         browser::browser_takeover_state,
         browser::browser_takeover_url,
+        browser::browser_used,
         browser::browser_takeover_input,
         browser::browser_takeover_frame
     ]);
@@ -95,6 +96,7 @@ pub fn run() {
         browser::browser_takeover_close,
         browser::browser_takeover_state,
         browser::browser_takeover_url,
+        browser::browser_used,
         browser::browser_takeover_input,
         browser::browser_takeover_frame,
         check_update,

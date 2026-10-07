@@ -179,6 +179,17 @@ export async function takeoverState(): Promise<TakeoverState> {
   }
 }
 
+/** Whether a session has driven this client's browser since it came up. */
+export async function browserUsed(): Promise<boolean> {
+  if (!canHost()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('browser_used');
+  } catch {
+    return false;
+  }
+}
+
 /** The page the browser is showing, for the takeover's bar. */
 export async function takeoverUrl(): Promise<string | null> {
   if (!canHost()) return null;
