@@ -42,7 +42,8 @@ use tokio::sync::Mutex;
 /// owns.
 #[derive(Clone, Debug)]
 pub struct StackPaths {
-    /// The vendored tree: node, the driver, the Chromium.
+    /// The vendored tree: node and the driver. The browser itself is the
+    /// machine's own, never vendored.
     pub stack: PathBuf,
     /// The browser's own data directory - the `--user-data-dir` a launch is
     /// given: logins, cookies, the HTTP cache, and the `DevToolsActivePort`
@@ -299,7 +300,8 @@ impl BrowserHost {
         // playwright parity wins over the native view (see `chromium::show`
         // for how the person sees it).
         let _launching = self.launch.lock().await;
-        chromium::ensure(&chromium::browser_binary(&paths.stack), &paths.user_data).await
+        let binary = chromium::browser_binary()?;
+        chromium::ensure(&binary, &paths.user_data).await
     }
 
     /// The named profiles this host holds, oldest name first, for its own
@@ -330,7 +332,8 @@ impl BrowserHost {
     pub async fn show(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         let _launching = self.launch.lock().await;
-        chromium::show(&chromium::browser_binary(&paths.stack), &paths.user_data).await
+        let binary = chromium::browser_binary()?;
+        chromium::show(&binary, &paths.user_data).await
     }
 
     /// Take the window back down: the browser closes, and the next agent

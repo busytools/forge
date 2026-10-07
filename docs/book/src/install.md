@@ -96,12 +96,14 @@ punctuation gate, which CI runs too, and the client's Prettier step do.
 run before handing over a change there.
 
 A client that BUNDLES takes one step of its own first: `just
-vendor-browser-stack` fetches and verifies the browser the client hosts -
-node, `@playwright/mcp` and Chrome for Testing, about half a gigabyte into
-the client's gitignored `browser-stack/` directory - and
-`client-tauri-bundle` and `client-release` run it themselves, so a release
-cannot ship without it. It needs network access the first time and nothing
-after that; the three pins it verified are printed on every run.
+vendor-browser-stack` fetches and verifies the driver the client hosts -
+node and `@playwright/mcp`, about 140 MB into the client's gitignored
+`browser-stack/` directory - and `client-tauri-bundle` and `client-release`
+run it themselves, so a release cannot ship without it. It needs network
+access the first time and nothing after that; the pins it verified are
+printed on every run. The browser itself is not vendored: the client drives
+the browser already on the machine - Brave, else Google Chrome - so install
+one of those for the browser tools to answer.
 
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,

@@ -9,25 +9,21 @@
 //! bound, and the browser target's own path, are in it.
 //!
 //! **The port is the browser's own choice, read back from that file, and
-//! this is measured rather than assumed.** Chrome for Testing 155 writes
-//! `DevToolsActivePort` when it is asked for `--remote-debugging-port=0` and
-//! NOT when it is given a port number: asked for 9333 by hand it listened on
-//! 9333 and wrote no file at all. A fixed number would therefore have been a
-//! host that could never find its browser again, and it would also collide
-//! with whichever browser-automation tooling already holds the conventional
-//! ports (the user's own Brave is on 9222).
+//! this is measured rather than assumed.** Measured on Chrome for Testing
+//! 155, and true of the Brave and Chrome builds this drives: the browser
+//! writes `DevToolsActivePort` when it is asked for
+//! `--remote-debugging-port=0` and NOT when it is given a port number -
+//! asked for 9333 by hand it listened on 9333 and wrote no file at all. A
+//! fixed number would therefore have been a host that could never find its
+//! browser again, and it would also collide with whichever
+//! browser-automation tooling already holds the conventional ports (the
+//! user's own Brave is on 9222).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long a launch is given to write its port file and answer.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Where the stack's Chromium is, inside the vendored tree.
-pub fn chrome_binary(stack: &Path) -> PathBuf {
-    stack
-        .join("browser/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-}
 
 /// The argument list one launch runs with.
 ///
@@ -57,11 +53,10 @@ pub fn launch_args(profile: &Path, headed: bool) -> Vec<String> {
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
         // nothing worth a keychain entry, while reaching for one raises a
-        // system dialog - "Google Chrome for Testing wants to use your
-        // confidential information stored in Chromium Safe Storage", once per
-        // ask - that nobody is sitting in front of a headless browser to
-        // answer, and that spams whoever is at the machine. The mock store
-        // keeps the same shape with a key that goes nowhere.
+        // system dialog naming the browser's own Safe Storage - once per ask
+        // - that nobody is sitting in front of a headless browser to answer,
+        // and that spams whoever is at the machine. The mock store keeps the
+        // same shape with a key that goes nowhere.
         "--use-mock-keychain".to_owned(),
         "--password-store=basic".to_owned(),
         // A first-run flow is a dialog nothing can see and nothing answers.
@@ -193,8 +188,8 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 /// binary, bounded so a chatty failure cannot grow without end.
 const STDERR_TAIL: usize = 4096;
 
-/// Launch the vendored Chromium against `profile`, and answer once it is
-/// answering on its port.
+/// Launch the browser against `profile`, and answer once it is answering on
+/// its port.
 ///
 /// Detached on purpose: the child is left running when this drops - its
 /// stdout goes nowhere a client reads, and its lifetime is the machine's, not
@@ -212,10 +207,7 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
 /// brought up by [`show`].
 async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<ActivePort, String> {
     if !binary.is_file() {
-        return Err(format!(
-            "the vendored browser is not there at {} - run `just vendor-browser-stack`",
-            binary.display(),
-        ));
+        return Err(format!("the browser is not there at {} any more", binary.display()));
     }
     std::fs::create_dir_all(profile)
         .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
@@ -236,7 +228,7 @@ async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<Acti
         // reader can act on.
         .stderr(std::process::Stdio::piped());
     let mut child =
-        command.spawn().map_err(|why| format!("the vendored browser would not start: {why}"))?;
+        command.spawn().map_err(|why| format!("the browser would not start: {why}"))?;
     // The id before the handle goes: the browser is meant to outlive this
     // call, and this process reaps nothing it did not spawn as its own work -
     // but a caller that must reap it needs the id, and the handle is what
@@ -315,7 +307,7 @@ pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String>
 /// The launch this profile names, when the port really answers AS that
 /// launch: the probe's own `/devtools/browser/<uuid>` compared against the
 /// port file's. A port another program took over answers without that path,
-/// which is what keeps "never his Brave" from resting on file freshness.
+/// which is what keeps a port file from being taken for a live browser.
 async fn verified(profile: &Path) -> Option<ActivePort> {
     let active = read_active_port(profile)?;
     answers_as(profile, active.port).await.then_some(active)
@@ -336,19 +328,32 @@ fn pid_file(profile: &Path) -> PathBuf {
     profile.join("browser.pid")
 }
 
-/// The person's installed Brave, when it is there: **the browser forge
-/// drives, headless and headed alike** (Ved, 2026-10-07) - a real browser
-/// rather than the automation-branded bundle, and the vendored Chromium
-/// stays only as the fallback for a machine without one.
-pub fn brave_binary() -> Option<PathBuf> {
-    let path = PathBuf::from("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser");
-    path.is_file().then_some(path)
+/// The browsers a machine can offer, in the order they are picked.
+const INSTALLED: [&str; 2] = [
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
+
+/// The binary every launch drives: **the person's own installed browser,
+/// headless and headed alike** (Ved, 2026-10-07) - a real browser rather
+/// than an automation-branded bundle, and nothing vendored: the app ships
+/// the driver, the machine ships the browser.
+pub fn browser_binary() -> Result<PathBuf, String> {
+    browser_binary_from(&INSTALLED)
 }
 
-/// The binary every launch uses: the installed Brave first, the vendored
-/// Chromium when there is none.
-pub fn browser_binary(stack: &Path) -> PathBuf {
-    brave_binary().unwrap_or_else(|| chrome_binary(stack))
+/// The choice itself, apart from the standard paths: the first candidate
+/// that is really there, else the refusal.
+fn browser_binary_from(candidates: &[&str]) -> Result<PathBuf, String> {
+    for candidate in candidates {
+        let path = PathBuf::from(candidate);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err("no browser to drive: this client drives the browser already on the machine - \
+         install Brave or Google Chrome"
+        .to_owned())
 }
 
 /// The marker a headed launch leaves in the profile: the port file says
@@ -364,7 +369,7 @@ pub fn launched_windowed(profile: &Path) -> bool {
 }
 
 /// Bring the browser up VISIBLY, for a hand-off's Open: the person's own
-/// browser when one is installed, the vendored binary otherwise.
+/// installed browser, over the same profile the agents drive.
 ///
 /// **A window is a launch flag, not something a running browser can be
 /// told**, so the running headless launch is closed and the same profile is
@@ -372,7 +377,7 @@ pub fn launched_windowed(profile: &Path) -> bool {
 /// transports die with the old browser and rebuild on the next call, and the
 /// current page reloads - the profile keeps logins and cookies. A window
 /// already up is answered as it is; nothing here can reach the OS focus.
-pub async fn show(vendored: &Path, profile: &Path) -> Result<ActivePort, String> {
+pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     if launched_windowed(profile)
         && let Some(active) = verified(profile).await
     {
@@ -381,8 +386,7 @@ pub async fn show(vendored: &Path, profile: &Path) -> Result<ActivePort, String>
     if let Some(port) = read_active_port(profile).map(|active| active.port) {
         close(profile, port).await;
     }
-    let binary = brave_binary().unwrap_or_else(|| vendored.to_owned());
-    launch_with(&binary, profile, true).await
+    launch_with(binary, profile, true).await
 }
 
 /// Take the window back down: the browser is closed, and the next agent call
@@ -528,8 +532,8 @@ mod tests {
     }
 
     /// The launch asks the browser to choose its own port - handed a number,
-    /// Chrome for Testing 155 writes no port file and nothing can find the
-    /// launch again - carries the profile that keeps logins, opens a page
+    /// the browser writes no port file and nothing can find the launch again
+    /// - carries the profile that keeps logins, opens a page
     /// (because a browser with no tab makes the first navigation depend on
     /// the driver inventing one), runs **headless** (nothing appears on the
     /// person's screen until a hand-off's Open raises the window), and
@@ -595,15 +599,24 @@ mod tests {
         assert_eq!(whole_body_len(b"HTTP/1.1 200 OK\r\n\r\nhello"), None, "no length named");
     }
 
-    /// The stack's browser is where the vendoring puts it: a path that moved
-    /// is a host that cannot start, so it is pinned by name.
+    /// The browser choice: the first candidate that is really there, in the
+    /// order given, and a refusal that names what to install when none is.
     #[test]
-    fn the_chromium_is_the_bundle_the_vendoring_unpacks() {
-        assert_eq!(
-            chrome_binary(Path::new("/stack")),
-            Path::new(
-                "/stack/browser/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-            ),
-        );
+    fn the_browser_is_the_first_installed_candidate_or_a_refusal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let there = dir.path().join("there");
+        std::fs::write(&there, b"").expect("a candidate that exists");
+        let missing = dir.path().join("missing");
+
+        let found = browser_binary_from(&[
+            missing.to_str().expect("a path"),
+            there.to_str().expect("a path"),
+        ])
+        .expect("the second candidate is there");
+        assert_eq!(found, there, "the first candidate that exists wins");
+
+        let refused = browser_binary_from(&[missing.to_str().expect("a path")])
+            .expect_err("nothing there to drive");
+        assert!(refused.contains("Brave"), "the refusal names what to install: {refused}");
     }
 }
