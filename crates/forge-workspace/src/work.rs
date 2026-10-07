@@ -239,6 +239,11 @@ impl HeldSeats {
         (scanning, Some(stopped))
     }
 
+    /// Whether a view is showing `slot` right now.
+    pub(crate) fn is_held(&self, slot: &SessionSlot) -> bool {
+        self.lock().contains_key(slot)
+    }
+
     /// Give a hold back.
     fn release(&self, slot: &SessionSlot) {
         let mut held = self.lock();

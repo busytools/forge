@@ -90,6 +90,15 @@ const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// the cohort, vs ~1 s pre-#259 with most kicks rejected.
 const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
+/// How often the auto-continue sweep looks for a nudge whose delay has run
+/// out. The delay is what a reader races; this only rounds it.
+const AUTO_CONTINUE_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The words a nudged seat's model receives, fixed by the issue.
+fn auto_continue_prompt(reason: &str) -> String {
+    format!("The previous turn failed: {reason}. Continue from where you left off.")
+}
+
 /// Delegation block appended to a Lead session's system prompt.
 ///
 /// Lead-only: `agents__spawn` refuses a worker caller, so a worker
@@ -393,6 +402,9 @@ pub struct Workspace {
     /// `usage_poller_started`). Started once at boot from the binary.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) cron_scheduler_started: std::sync::atomic::AtomicBool,
+    /// Guards against double-spawning the auto-continue sweep (mirrors
+    /// `cron_scheduler_started`). Started once at boot from the binary.
+    auto_continue_sweep_started: std::sync::atomic::AtomicBool,
     /// Sender half of the worker-kick channel (#259). Cloned via
     /// [`Self::enqueue_kick`] by `maybe_kick_worker_on_connected`
     /// (and any future kick site). The matching receiver lives in
@@ -1545,6 +1557,7 @@ impl Workspace {
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
@@ -3798,6 +3811,95 @@ impl Workspace {
         result
     }
 
+    /// Send the continuation prompt for every seat whose failed turn is
+    /// still unwatched and whose delay has run out (#1841).
+    ///
+    /// `now` is injected the way [`Self::fire_due_crons`] injects it, so a
+    /// test steps the clock instead of waiting on one. Firing is one prompt
+    /// per unopened failure: the delay is not a retry ladder, and a failure
+    /// that keeps failing is nudged once rather than in a loop.
+    pub fn fire_due_auto_continues(self: &Arc<Self>, now: SystemTime) {
+        let keys: Vec<SessionSlot> = self.domain_handles.lock().keys().cloned().collect();
+        for key in keys {
+            let due = self.domain_session_for(&key).is_some_and(|domain| {
+                domain.lock().auto_continue.as_ref().is_some_and(|pending| pending.due_at <= now)
+            });
+            if due {
+                self.fire_auto_continue(&key);
+            }
+        }
+    }
+
+    /// One seat's nudge, refused when the failure is the reader's to see
+    /// first. The decision is taken under the lock; the dispatch is not.
+    fn fire_auto_continue(self: &Arc<Self>, key: &SessionSlot) {
+        // The hold is read before the session lock, which is the order
+        // `hold_seat` takes them in.
+        let held = self.held_work_seats.is_held(key);
+        let Some(domain) = self.domain_session_for(key) else {
+            return;
+        };
+        let reason = {
+            let mut guard = domain.lock();
+            // Spent either way: the decision for this failure is made here,
+            // so a burst of sweeps cannot send the same nudge twice.
+            let Some(pending) = guard.auto_continue.take() else {
+                return;
+            };
+            let Some(failed_at) = guard.failed_turn_at else {
+                return;
+            };
+            // #1612's boundary, one rule: a seat a view is holding is being
+            // watched, and one shown since the failure has already been
+            // looked at.
+            if held || guard.shown_at.is_some_and(|shown| shown >= failed_at) {
+                return;
+            }
+            guard.auto_continue_spent = true;
+            pending.reason
+        };
+        let text = auto_continue_prompt(&reason);
+        if let Err(error) = self.dispatch_forged_prompt(key, text) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "auto_continue_dispatch_failed",
+                slot = %key.display(),
+                %error,
+                "the continuation prompt for a failed turn could not be dispatched",
+            );
+            return;
+        }
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "auto_continued_failed_turn",
+            slot = %key.display(),
+            "nudged a failed turn nobody had looked at",
+        );
+    }
+
+    /// Watch for a seat whose failed turn nobody has looked at and nudge it
+    /// once its delay has run out. Idempotent, started once at boot beside
+    /// the other core tasks.
+    pub fn start_auto_continue_sweep(self: &Arc<Self>) {
+        if self.auto_continue_sweep_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("auto_continue_sweep");
+        tokio::spawn(
+            async move {
+                loop {
+                    tokio::time::sleep(AUTO_CONTINUE_SWEEP_INTERVAL).await;
+                    let Some(workspace) = weak.upgrade() else {
+                        return;
+                    };
+                    workspace.fire_due_auto_continues(SystemTime::now());
+                }
+            }
+            .instrument(span),
+        );
+    }
+
     /// Dispatch a workspace-originated prompt whose words no view has drawn:
     /// a worker kick, an auto-continue. [`Self::dispatch_workspace_prompt`]
     /// exactly, plus the frame - nothing else carries these words, where a
@@ -4292,6 +4394,12 @@ impl Workspace {
                     }
                     guard.turn_pending = true;
                     guard.failed_turn_at = None;
+                    // A new turn is the newest turn, so a pending nudge for
+                    // the old one has nothing left to answer - and the
+                    // classification it might have been excluded on was the
+                    // last turn's, so it goes too.
+                    guard.auto_continue = None;
+                    guard.last_api_retry = None;
                 }
                 // Arm the cancel stamp on the routed path, so the turn's
                 // own failed `Result` can tell a reader's interrupt from a
@@ -9054,6 +9162,244 @@ provider = "anthropic"
         );
     }
 
+    /// A seat with a live domain session whose dispatch is captured rather
+    /// than routed, plus the workspace's update stream. The caller folds the
+    /// failure it wants - the arming under test - and steps the sweep.
+    fn nudge_seat(
+        dir: &tempfile::TempDir,
+        label: &str,
+    ) -> (Arc<Workspace>, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>) {
+        let (ws, rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let key = SessionSlot::from_str_for_test(label);
+        ws.mark_session_connected_for_test(&key, label);
+        ws.enable_test_dispatch_intercept();
+        (ws, key, rx)
+    }
+
+    /// Fold one agent event into `key`'s domain the way a session task
+    /// would, so these tests drive the real arming rather than hand-set it.
+    fn fold_event(ws: &Arc<Workspace>, key: &SessionSlot, event: &forge_agent::client::AgentEvent) {
+        let domain = ws.domain_session_for(key).expect("the seat's session");
+        let mut guard = domain.lock();
+        crate::session_task::apply_event_to_domain(&mut guard, event);
+    }
+
+    /// An errored `Result` carrying the CLI's own errors.
+    fn failed_result(errors: &[&str]) -> forge_agent::client::AgentEvent {
+        forge_agent::client::AgentEvent::SdkMessage {
+            session_id: "nudge".to_owned(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "result",
+                "subtype": "error_during_execution",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": true,
+                "num_turns": 1,
+                "session_id": "nudge",
+                "errors": errors,
+            }))
+            .expect("parse result message"),
+        }
+    }
+
+    /// The wire `api_retry` frame, where a classification reaches the core.
+    fn retried_with(error: &str, status: u16) -> forge_agent::client::AgentEvent {
+        forge_agent::client::AgentEvent::SdkMessage {
+            session_id: "nudge".to_owned(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "api_retry",
+                "session_id": "nudge",
+                "attempt": 1,
+                "max_retries": 4,
+                "retry_delay_ms": 500,
+                "error_status": status,
+                "error": error,
+            }))
+            .expect("parse api_retry message"),
+        }
+    }
+
+    /// The prompts `ws` captured, in order.
+    fn dispatched_prompts(ws: &Arc<Workspace>) -> Vec<String> {
+        ws.drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                Command::PromptUnder { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Step the clock past the seat's delay and sweep, the way the
+    /// scheduler's next tick would - `now` is injected so these tests stay
+    /// deterministic rather than waiting on a clock.
+    fn sweep_after_the_delay(ws: &Arc<Workspace>) {
+        ws.fire_due_auto_continues(SystemTime::now() + Duration::from_secs(60));
+    }
+
+    /// The want #1841 is about: a failed turn nobody is watching gets one
+    /// prompt of forge's own - the issue's exact words, through the
+    /// dispatched-prompt path - and the frame draws in every view.
+    #[test]
+    fn a_failed_unwatched_turn_is_nudged_after_its_delay() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, mut rx) = nudge_seat(&dir, "nudge");
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+
+        sweep_after_the_delay(&ws);
+
+        assert_eq!(
+            dispatched_prompts(&ws),
+            ["The previous turn failed: API Error: 400 .... Continue from where you left off."],
+            "one prompt, in the words the issue fixed",
+        );
+        let drawn = drain_updates(&mut rx);
+        assert!(
+            drawn.iter().any(|u| matches!(
+                u,
+                SessionUpdate::ChatAppended { msg: Message::User { .. }, .. }
+            )),
+            "the nudge draws as the turn the model received: {drawn:?}",
+        );
+    }
+
+    /// Condition (a): a turn the reader cancelled is the reader's own act.
+    /// It arms nothing, so nothing fires however far the clock is stepped.
+    #[test]
+    fn a_cancelled_turn_never_fires() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "cancelled");
+        ws.domain_session_for(&key).expect("session").lock().pending_cancel = true;
+
+        fold_event(&ws, &key, &failed_result(&["aborted_streaming"]));
+        assert!(
+            ws.domain_session_for(&key).expect("session").lock().auto_continue.is_none(),
+            "the fold refuses to arm a cancelled turn",
+        );
+        ws.domain_session_for(&key).expect("session").lock().failed_turn_at =
+            Some(SystemTime::now() - Duration::from_secs(60));
+        sweep_after_the_delay(&ws);
+
+        assert!(
+            dispatched_prompts(&ws).is_empty(),
+            "a mark with no armed nudge is not something the sweep fires",
+        );
+    }
+
+    /// The reader still has the delay to look. Nothing goes out early.
+    #[test]
+    fn nothing_fires_before_the_delay_elapses() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "early");
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+
+        // The sweep runs now, which is inside the delay the arming set.
+        ws.fire_due_auto_continues(SystemTime::now());
+
+        assert!(dispatched_prompts(&ws).is_empty(), "the delay has not run out yet");
+    }
+
+    /// Condition (b), #1612's own boundary: a seat the reader opened since
+    /// the failure is not nudged - they have seen what failed.
+    #[tokio::test]
+    async fn a_seat_shown_since_the_failure_never_fires() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "opened");
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+
+        ws.hold_seat(&key).await;
+        ws.release_seat(&key);
+        sweep_after_the_delay(&ws);
+
+        assert!(
+            dispatched_prompts(&ws).is_empty(),
+            "the reader opened the seat and saw the failure; forge does not prompt over them",
+        );
+    }
+
+    /// A view holding the seat as it fails is watching the failure happen,
+    /// so there is nothing to send it.
+    #[tokio::test]
+    async fn a_seat_a_view_is_holding_never_fires() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "watching");
+        ws.hold_seat(&key).await;
+
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+        sweep_after_the_delay(&ws);
+
+        assert!(
+            dispatched_prompts(&ws).is_empty(),
+            "the reader is watching the failure; nothing is sent to the seat under them",
+        );
+    }
+
+    /// The repeat case, settled: once per unopened failure episode. The
+    /// nudge's own continuation failing must not become a prompt loop.
+    #[test]
+    fn a_second_failure_after_a_fire_does_not_fire_again() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "repeat");
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+        sweep_after_the_delay(&ws);
+        assert_eq!(dispatched_prompts(&ws).len(), 1, "precondition: the failure was nudged");
+
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+        assert!(
+            ws.domain_session_for(&key).expect("session").lock().auto_continue.is_none(),
+            "the episode has had its nudge; a second failure arms nothing",
+        );
+        sweep_after_the_delay(&ws);
+
+        assert!(
+            dispatched_prompts(&ws).is_empty(),
+            "and the sweep sends nothing more for the same unopened failure",
+        );
+    }
+
+    /// The episode ends when the reader looks: a later failure is a new one
+    /// and gets its own nudge.
+    #[tokio::test]
+    async fn an_opened_seat_reopens_the_nudge_for_a_later_failure() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "reopened");
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+        sweep_after_the_delay(&ws);
+        assert_eq!(dispatched_prompts(&ws).len(), 1, "precondition: the first failure was nudged");
+
+        ws.hold_seat(&key).await;
+        ws.release_seat(&key);
+        fold_event(&ws, &key, &failed_result(&["API Error: 400 ..."]));
+        sweep_after_the_delay(&ws);
+
+        assert_eq!(
+            dispatched_prompts(&ws).len(),
+            1,
+            "the reader looked, so the next failure is a new episode and is nudged",
+        );
+    }
+
+    /// The no-double-fire boundary: a transient server error is the
+    /// terminal's own dead-turn path. The sweep must not nudge beside it,
+    /// and steps the clock all it likes.
+    #[test]
+    fn a_transient_server_failure_is_left_to_the_terminal() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, key, _rx) = nudge_seat(&dir, "transient");
+        fold_event(&ws, &key, &retried_with("server_error", 529));
+        fold_event(&ws, &key, &failed_result(&["server_error"]));
+        ws.domain_session_for(&key).expect("session").lock().failed_turn_at =
+            Some(SystemTime::now() - Duration::from_secs(60));
+
+        sweep_after_the_delay(&ws);
+
+        assert!(
+            dispatched_prompts(&ws).is_empty(),
+            "the terminal continues this one; the core must not fire beside it",
+        );
+    }
+
     /// The cron delivery path rides the helper: a cron fired into a
     /// mid-turn lead signals `PromptQueuedWhileBusy` on top of the
     /// `CronPromptAppended` echo; an idle fire stays silent.
@@ -10560,6 +10906,45 @@ provider = "anthropic"
         assert!(
             !domain.lock().pending_cancel,
             "a prompt committed with no turn in flight expires the stamp",
+        );
+    }
+
+    /// A committed prompt is the newest turn, so it spends the pending nudge
+    /// left by the failure before it - and the classification that nudge was
+    /// read against, which left standing would exempt the new turn's own
+    /// failure from the arming.
+    #[test]
+    fn routing_drops_the_pending_nudge_and_its_classification_on_a_prompt() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("routing-nudge");
+        workspace.register_domain_session(key.clone(), None);
+        // Registers the sender, so dispatch takes the routed path rather
+        // than the test-only synchronous fallback.
+        workspace.mark_test_session_live(&key);
+        let domain = workspace.domain_session_for(&key).expect("registered domain");
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(key.display()));
+        domain.lock().last_api_retry =
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
+        domain.lock().auto_continue = Some(crate::domain_session::PendingAutoContinue {
+            due_at: std::time::SystemTime::now() + Duration::from_secs(5),
+            reason: "server_error".to_owned(),
+        });
+
+        workspace
+            .dispatch(Command::Prompt {
+                key: key.clone(),
+                text: "go".to_owned(),
+                attachments: Vec::new(),
+            })
+            .expect("dispatch");
+
+        assert!(
+            domain.lock().auto_continue.is_none(),
+            "a committed prompt is the newest turn, so the nudge for the old one goes",
+        );
+        assert!(
+            domain.lock().last_api_retry.is_none(),
+            "and the old turn's classification cannot exempt the new turn's failure",
         );
     }
 
