@@ -312,6 +312,9 @@ pub struct Workspace {
     /// builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_catalogue_source: Mutex<Option<forge_dictate::catalogue::CatalogueSource>>,
+    /// A test's own cleanup source, on the same terms.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_cleanup_source: Mutex<Option<forge_dictate::cleanup::CleanupSource>>,
     /// A test's own catalogue directory, so a check never writes to the
     /// real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
@@ -1524,6 +1527,8 @@ impl Workspace {
             read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_cleanup_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]

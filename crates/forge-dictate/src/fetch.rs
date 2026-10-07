@@ -699,6 +699,7 @@ mod tests_cached_verification {
                 "candidate.gguf",
                 "http://127.0.0.1:1/unreachable",
                 body.len() as u64,
+                None,
                 ModelFacts::default(),
             ))
             .normalizer(None)
@@ -738,6 +739,7 @@ mod tests_cached_verification {
                 "candidate.gguf",
                 "http://127.0.0.1:1/unreachable",
                 6,
+                None,
                 ModelFacts::default(),
             ))
             .normalizer(None)

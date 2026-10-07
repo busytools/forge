@@ -41,6 +41,7 @@ mod audio;
 pub mod bench;
 mod capture;
 pub mod catalogue;
+pub mod cleanup;
 mod config;
 mod diagnostics;
 mod engine;

@@ -138,6 +138,12 @@ pub struct CatalogueRow {
     /// The comparison axis: FLEURS English where the entry carries it,
     /// else its own headline benchmark.
     pub wer: Option<WerFact>,
+    /// What the entry is for: which role's candidates it belongs in.
+    pub kind: forge_dictate::catalogue::EntryKind,
+    /// Where a reader can read about it, when the feed names its own page.
+    /// The Hub's entries do; the speech feed's leave this `None` and the
+    /// page opens the entry's document instead.
+    pub url: Option<String>,
 }
 
 /// One downloadable quantisation's size.
@@ -219,6 +225,15 @@ pub(crate) fn row_for(entry: &CatalogueEntry) -> CatalogueRow {
         download: download_fact(entry),
         speed: speed_fact(entry),
         wer: wer_fact(entry),
+        kind: entry.kind,
+        // Only the Hub's entries name a page of their own; a speech entry's
+        // row keeps the document the page already opens for it.
+        url: match entry.kind {
+            forge_dictate::catalogue::EntryKind::Normalizer => {
+                entry.published_repo.as_ref().map(|repo| format!("https://huggingface.co/{repo}"))
+            }
+            forge_dictate::catalogue::EntryKind::Asr => None,
+        },
     }
 }
 
@@ -560,12 +575,54 @@ impl crate::Workspace {
         &self,
     ) -> Result<forge_dictate::catalogue::Catalogue, forge_dictate::Error> {
         let source = self.catalogue_source();
-        let fetched =
-            tokio::task::spawn_blocking(move || forge_dictate::catalogue::fetch_catalogue(&source))
-                .await;
-        let outcome = fetched.unwrap_or_else(|join| {
-            Err(forge_dictate::Error::Catalogue { message: join.to_string() })
-        });
+        let cleanup = self.cleanup_source();
+        let fetched = tokio::task::spawn_blocking(move || {
+            let mut catalogue = forge_dictate::catalogue::fetch_catalogue(&source)?;
+            // **The cleanup feed is a second source, and its failure is its
+            // own.** The speech feed landing is the check; a cleanup fetch
+            // that could not be read costs its rows, not the check, and the
+            // candidates the last fetch left stand.
+            match forge_dictate::cleanup::fetch_cleanup(&cleanup) {
+                Ok(mut entries) => {
+                    catalogue.entries.append(&mut entries);
+                    Ok::<_, forge_dictate::Error>((catalogue, true))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "dictate_cleanup_feed_failed",
+                        %error,
+                        "the cleanup feed could not be read; the candidates the last fetch left stand"
+                    );
+                    Ok((catalogue, false))
+                }
+            }
+        })
+        .await;
+        let outcome = fetched
+            .unwrap_or_else(|join| {
+                Err(forge_dictate::Error::Catalogue { message: join.to_string() })
+            })
+            .map(|(mut catalogue, cleanup_ok)| {
+                if !cleanup_ok {
+                    let previous: Vec<forge_dictate::catalogue::CatalogueEntry> = self
+                        .dictate_catalogue
+                        .lock()
+                        .catalogue
+                        .as_ref()
+                        .map(|held| {
+                            held.entries
+                                .iter()
+                                .filter(|entry| {
+                                    entry.kind == forge_dictate::catalogue::EntryKind::Normalizer
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    catalogue.entries.splice(0..0, previous);
+                }
+                catalogue
+            });
 
         match outcome {
             Ok(catalogue) => {
@@ -612,6 +669,25 @@ impl crate::Workspace {
             return source;
         }
         forge_dictate::catalogue::CatalogueSource::default()
+    }
+
+    /// Where the cleanup feed is fetched from, on the same terms - and a test
+    /// serving the speech feed serves this one from the same loopback, so a
+    /// check in a test reads one server rather than reaching the Hub.
+    pub(crate) fn cleanup_source(&self) -> forge_dictate::cleanup::CleanupSource {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(source) = self.test_cleanup_source.lock().clone() {
+            return source;
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(base) = self.test_catalogue_source.lock().clone() {
+            return forge_dictate::cleanup::CleanupSource {
+                listing: format!("{}cleanup", base.entry_base),
+                blobs_base: format!("{}blobs/", base.entry_base),
+                files_base: format!("{}files/", base.entry_base),
+            };
+        }
+        forge_dictate::cleanup::CleanupSource::default()
     }
 
     /// Where the fetched feed is cached: forge's machine-local state

@@ -73,7 +73,7 @@
     wire: DictateModelsWire;
     oncheck: () => void;
     oninstall: (variant: string) => void;
-    onactivate: (file: string) => void;
+    onactivate: (file: string, role: ModelRole) => void;
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
@@ -182,14 +182,17 @@
 {/snippet}
 
 {#snippet control(entry: CatalogueRow)}
-  {@const action = rowAction(entry, wire.installed, transcribing)}
+  {@const action = rowAction(entry, wire.installed, wire.in_use)}
   {#if action.do === 'install'}
     <button class="chip" type="button" disabled={busy} onclick={() => oninstall(entry.variant)}
       >{action.label}</button
     >
   {:else if action.do === 'activate'}
-    <button class="chip" type="button" disabled={busy} onclick={() => onactivate(action.file)}
-      >{action.label}</button
+    <button
+      class="chip"
+      type="button"
+      disabled={busy}
+      onclick={() => onactivate(action.file, action.role)}>{action.label}</button
     >
   {:else if action.do === 'off'}
     <span class="chip">{action.label}</span>
@@ -426,7 +429,7 @@
               <li>
                 <a
                   class="cand"
-                  href={entryUrl(entry.variant)}
+                  href={entryUrl(entry)}
                   target="_blank"
                   rel="noreferrer"
                   title="the catalogue entry, on github"

@@ -205,6 +205,12 @@ export interface ReadAloudState {
   terms: string[];
 }
 
+/**
+ * What a catalogue entry is for: which role's candidates it belongs in. The
+ * fourth arm is this client's own, for a kind a server newer than it sends.
+ */
+export type CatalogueKind = 'asr' | 'normalizer' | 'other';
+
 /** One catalogue entry, as the candidate rows draw it. */
 export interface CatalogueRow {
   variant: string;
@@ -217,6 +223,9 @@ export interface CatalogueRow {
   download: DownloadFact | null;
   speed: SpeedFact | null;
   wer: WerFact | null;
+  kind: CatalogueKind;
+  /** The entry's own page, where the feed names one. */
+  url: string | null;
 }
 
 /** Why a candidate is, or is not, the one the page proposes. */
@@ -300,6 +309,9 @@ const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
 /** The bench tiers the core names; the last is this client's own. */
 const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['consensus', 'read_aloud'];
 
+/** The entry kinds the core names; the last is this client's own. */
+const KINDS: Exclude<CatalogueKind, 'other'>[] = ['asr', 'normalizer'];
+
 /** The bench roles the core names; the fourth is this client's own. */
 const BENCH_ROLES: Exclude<BenchRole, 'other'>[] = ['transcribing', 'cleanup'];
 
@@ -316,6 +328,7 @@ const BENCH_ROLES: Exclude<BenchRole, 'other'>[] = ['transcribing', 'cleanup'];
 export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
   return {
     ...data,
+    rows: (data.rows ?? []).map((row) => rowFrom(row)),
     in_use: data.in_use.map((model) => ({
       ...model,
       role: narrow(model.role, ROLES, 'other'),
@@ -340,6 +353,15 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       tier: narrow(result.tier, BENCH_TIERS, 'other'),
     })),
     read_aloud: readAloudFrom(data.read_aloud),
+  };
+}
+
+/** One catalogue row, with the kind narrowed the way the wire's roles are. */
+function rowFrom(row: CatalogueRow): CatalogueRow {
+  return {
+    ...row,
+    kind: narrow(row.kind, KINDS, 'other'),
+    url: typeof row.url === 'string' ? row.url : null,
   };
 }
 

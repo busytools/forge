@@ -1,0 +1,104 @@
+{
+ "id": "superwhisper/s1-mini-GGUF",
+ "cardData": {
+  "license": "other",
+  "license_name": "s1-mini-license",
+  "license_link": "LICENSE",
+  "base_model": "superwhisper/s1-mini",
+  "base_model_relation": "quantized",
+  "library_name": "gguf",
+  "pipeline_tag": "text-generation",
+  "language": [
+   "en"
+  ],
+  "tags": [
+   "asr",
+   "automatic-speech-recognition",
+   "text-normalization",
+   "inverse-text-normalization",
+   "punctuation",
+   "truecasing",
+   "speech-to-text",
+   "dictation",
+   "post-processing",
+   "qwen3",
+   "llama.cpp"
+  ]
+ },
+ "downloads": 287954,
+ "tags": [
+  "gguf",
+  "asr",
+  "automatic-speech-recognition",
+  "text-normalization",
+  "inverse-text-normalization",
+  "punctuation",
+  "truecasing",
+  "speech-to-text",
+  "dictation",
+  "post-processing",
+  "qwen3",
+  "llama.cpp",
+  "text-generation",
+  "en",
+  "arxiv:2505.09388",
+  "base_model:superwhisper/s1-mini",
+  "base_model:quantized:superwhisper/s1-mini",
+  "license:other",
+  "endpoints_compatible",
+  "region:us",
+  "conversational"
+ ],
+ "siblings": [
+  {
+   "rfilename": ".gitattributes",
+   "blobId": "d5c14e14dd25c4bb92ffdc24fad3e051b6f2a68c",
+   "size": 1604
+  },
+  {
+   "rfilename": "LICENSE",
+   "blobId": "ec0371e837c48cb3f02116a32f2d5821c3e86485",
+   "size": 12033
+  },
+  {
+   "rfilename": "NOTICE",
+   "blobId": "493d92b08a0cbe5078f75a095176545e73c22f79",
+   "size": 507
+  },
+  {
+   "rfilename": "README.md",
+   "blobId": "720d8c9ace30bf7c00c10ac23703ba0873cf914a",
+   "size": 14306
+  },
+  {
+   "rfilename": "banner.jpg",
+   "blobId": "392214bac622d7a459b44c0662e244b5c304c7d4",
+   "size": 154019,
+   "lfs": {
+    "sha256": "c17fc850506c928b2213cac6becec3b315fb96c0064b97a25de9be71964c5fbb",
+    "size": 154019,
+    "pointerSize": 131
+   }
+  },
+  {
+   "rfilename": "s1-mini-f16.gguf",
+   "blobId": "7545964cf4392f7477c372b4361f273075680b3c",
+   "size": 1509347232,
+   "lfs": {
+    "sha256": "0370da4f1bae19e3150bcafa33c5d396c15f97bf25519540a3e013db5cc00af4",
+    "size": 1509347232,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "s1-mini-q4_k_m.gguf",
+   "blobId": "59126c109b31821bb5abf8264c7720f195450cab",
+   "size": 484219808,
+   "lfs": {
+    "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
+    "size": 484219808,
+    "pointerSize": 134
+   }
+  }
+ ]
+}

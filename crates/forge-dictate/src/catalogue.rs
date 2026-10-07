@@ -55,6 +55,11 @@ pub struct CatalogueEntry {
     pub speed_benchmarks: Vec<SpeedRow>,
     #[serde(default)]
     pub accuracy_benchmarks: Vec<AccuracyRow>,
+    /// What this entry is for. The speech feed's documents never spell it -
+    /// they are all speech models - and the Hub's feed sets it for every
+    /// entry it builds.
+    #[serde(default)]
+    pub kind: EntryKind,
 }
 
 impl CatalogueEntry {
@@ -150,6 +155,19 @@ pub struct HeadlineBenchmark {
     pub metric: String,
 }
 
+/// What one catalogue entry is FOR: the slot it can fill. **Exhaustive on
+/// purpose** - a consumer that ignores it does not compile, so the two feeds'
+/// entries can never be mixed up by an assumption.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    /// A speech model: what transcribes.
+    #[default]
+    Asr,
+    /// A normalizer: what cleans a transcript up. The Hub's feed.
+    Normalizer,
+}
+
 /// One downloadable quantisation of the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Download {
@@ -159,6 +177,17 @@ pub struct Download {
     pub filename: String,
     #[serde(default)]
     pub size_bytes: u64,
+    /// The file's own digest, where its host publishes one: the Hub's blobs
+    /// carry a sha256 per file, and the speech feed's documents carry none -
+    /// which is the difference the install records as a fact.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// The file itself, when the feed names it directly rather than through
+    /// a document's link table. The Hub's blobs carry no URL, so this is the
+    /// resolve path its own convention spells; a speech feed's row leaves
+    /// this `None` and the install reads the doc's table by file name.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// One measured speed row. Many fields cross that nothing reads; the
@@ -223,7 +252,7 @@ pub fn parse_entry(raw: &str) -> Result<CatalogueEntry, Error> {
 /// Bytes any single catalogue response may carry before the fetch
 /// refuses to buffer more. The feed's documents are about 13 KiB; the
 /// cap is what keeps a broken mirror from growing this process.
-const MAX_RESPONSE_BYTES: u64 = 4 << 20;
+pub(crate) const MAX_RESPONSE_BYTES: u64 = 4 << 20;
 
 /// How many entry documents are fetched at once. The feed is roughly 75
 /// small files, so this is what turns a ten-second serial walk into one
@@ -510,7 +539,7 @@ pub fn download_links(
 
 /// The client every feed request goes through: the timeouts, and the
 /// User-Agent api.github.com refuses a request without.
-fn feed_client(for_url: &str) -> Result<reqwest::blocking::Client, Error> {
+pub(crate) fn feed_client(for_url: &str) -> Result<reqwest::blocking::Client, Error> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60))
@@ -521,7 +550,7 @@ fn feed_client(for_url: &str) -> Result<reqwest::blocking::Client, Error> {
 
 /// GET one response, bounded: a status that is not success is its own
 /// error, and a body past `cap` is refused rather than buffered.
-fn get_bounded_text(
+pub(crate) fn get_bounded_text(
     client: &reqwest::blocking::Client,
     url: &str,
     cap: u64,

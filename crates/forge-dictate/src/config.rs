@@ -29,10 +29,17 @@ pub struct ModelSpec {
     pub facts: ModelFacts,
 }
 
-/// A spec for a file the feed documents: the doc table's URL, the entry's
-/// own byte length, and no digest, because none is published.
-pub fn spec_for_download(file: &str, url: &str, size: u64, facts: ModelFacts) -> ModelSpec {
-    ModelSpec { file: file.to_owned(), url: url.to_owned(), size, sha256: None, facts }
+/// A spec for a file a feed names: its URL, the entry's own byte length, and
+/// the digest where the host publishes one - the Hub's blobs carry a sha256
+/// per file, and the speech feed's documents carry none.
+pub fn spec_for_download(
+    file: &str,
+    url: &str,
+    size: u64,
+    sha256: Option<String>,
+    facts: ModelFacts,
+) -> ModelSpec {
+    ModelSpec { file: file.to_owned(), url: url.to_owned(), size, sha256, facts }
 }
 
 /// Facts the pin declares about its checkpoint.

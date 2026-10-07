@@ -359,6 +359,8 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
+            test_cleanup_source: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_read_aloud_dir: Mutex::new(None),

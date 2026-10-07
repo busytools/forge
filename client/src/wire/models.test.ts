@@ -152,6 +152,8 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
       download: { quant: 'Q4_K_M', size_bytes: 279_000_000 },
       speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 388.8 },
       wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.61 },
+      kind: 'asr',
+      url: null,
     };
     const wire = modelsFrom(
       payload({

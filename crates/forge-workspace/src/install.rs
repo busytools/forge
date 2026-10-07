@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download};
+use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, EntryKind};
 use forge_dictate::{ModelFacts, ModelSpec, Progress};
 use serde::{Deserialize, Serialize};
 
@@ -295,34 +295,56 @@ async fn build_engine(cfg: forge_dictate::Config) -> Result<Arc<forge_dictate::E
     .map_err(|error| error.to_string())
 }
 
-/// The spec one feed entry's documents describe for the quant a row draws:
-/// the document's own URL for the file, the entry's own byte length, and
-/// the facts both carry.
+/// The spec one feed entry describes for the quant a row draws: where the
+/// file is, the entry's own byte length, the digest where its host publishes
+/// one, and the facts both carry.
+///
+/// The Hub's entries carry the URL and the digest themselves; the speech
+/// feed's carry neither, so its documents are read for the link - which is
+/// also where that feed's files' only verification (the byte length) comes
+/// from.
 async fn spec_for_entry(
     source: CatalogueSource,
     entry: &CatalogueEntry,
     download: &Download,
 ) -> Result<ModelSpec, String> {
-    let variant = entry.variant.clone();
-    let repo = entry.published_repo.clone();
-    let links = tokio::task::spawn_blocking(move || {
-        forge_dictate::catalogue::download_links(&source, &variant, repo.as_deref())
-    })
-    .await
-    .map_err(|join| join.to_string())?
-    .map_err(|error| error.to_string())?;
-    let Some((_, url)) = links.into_iter().find(|(file, _)| file == &download.filename) else {
-        return Err(format!("the feed's documents carry no download for {}", download.filename));
+    let url = if let Some(url) = download.url.clone() {
+        url
+    } else {
+        let variant = entry.variant.clone();
+        let repo = entry.published_repo.clone();
+        let links = tokio::task::spawn_blocking(move || {
+            forge_dictate::catalogue::download_links(&source, &variant, repo.as_deref())
+        })
+        .await
+        .map_err(|join| join.to_string())?
+        .map_err(|error| error.to_string())?;
+        match links.into_iter().find(|(file, _)| file == &download.filename) {
+            Some((_, url)) => url,
+            None => {
+                return Err(format!(
+                    "the feed's documents carry no download for {}",
+                    download.filename
+                ));
+            }
+        }
     };
     Ok(forge_dictate::spec_for_download(
         &download.filename,
         &url,
         download.size_bytes,
+        download.sha256.clone(),
         ModelFacts {
             quant: Some(download.quant.clone()),
             params: Some(entry.params),
             license: entry.license.as_ref().map(|license| license.display.clone()),
-            runtime: Some("transcribe.cpp".to_owned()),
+            // What loads the file: the speech models run on transcribe.cpp
+            // and a normalizer is llama.cpp's, which is the entry's own kind
+            // saying so rather than a guess about the feed.
+            runtime: Some(match entry.kind {
+                EntryKind::Asr => "transcribe.cpp".to_owned(),
+                EntryKind::Normalizer => "llama.cpp".to_owned(),
+            }),
         },
     ))
 }
@@ -958,6 +980,7 @@ mod tests_install {
                     "granite-Q4_K_M.gguf",
                     "https://weights.invalid/granite-Q4_K_M.gguf",
                     6,
+                    None,
                     ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
                 ),
                 from: ActiveFrom::Config {

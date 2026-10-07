@@ -42,6 +42,8 @@ function row(over: Partial<CatalogueRow> = {}): CatalogueRow {
     download: { quant: 'Q4_K_M', size_bytes: 279_000_000 },
     speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 388.8 },
     wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.61 },
+    kind: 'asr',
+    url: null,
     ...over,
   };
 }
@@ -276,15 +278,21 @@ describe('finding a model', () => {
    * nothing behind.
    */
   it('points a row at its catalogue entry, wherever it is clicked from', () => {
-    expect(entryUrl('granite-speech-5.0-470m-turboctc')).toBe(
+    expect(entryUrl(row())).toBe(
       'https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/granite-speech-5.0-470m-turboctc.json',
     );
     // The page serves whatever the feed names: a variant is an address
     // segment, so a name carrying a slash or a space is escaped rather than
     // silently pointing at another document.
-    expect(entryUrl('a/b c')).toBe(
+    expect(entryUrl(row({ variant: 'a/b c' }))).toBe(
       'https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/a%2Fb%20c.json',
     );
+    // A Hub entry names its own page, which is where a reader reads it.
+    expect(
+      entryUrl(
+        row({ kind: 'normalizer', url: 'https://huggingface.co/superwhisper/s1-mini-GGUF' }),
+      ),
+    ).toBe('https://huggingface.co/superwhisper/s1-mini-GGUF');
   });
 
   const rows = [
@@ -451,15 +459,16 @@ function installed(over: Partial<InstalledModel> = {}): InstalledModel {
 describe('what a catalogue row offers', () => {
   /** A model not on this machine: the control is the download. */
   it('offers the download for a variant this machine does not have', () => {
-    expect(rowAction(row(), [], inUse())).toEqual({ do: 'install', label: 'install Q4_K_M' });
+    expect(rowAction(row(), [], [inUse()])).toEqual({ do: 'install', label: 'install Q4_K_M' });
   });
 
   /** Installed and not active: the control is the activation, naming its file. */
   it('offers the activation once the variant is installed', () => {
-    expect(rowAction(row(), [installed()], inUse())).toEqual({
+    expect(rowAction(row(), [installed()], [inUse()])).toEqual({
       do: 'activate',
       label: 'use for transcribing',
       file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+      role: 'transcribing',
     });
   });
 
@@ -467,7 +476,7 @@ describe('what a catalogue row offers', () => {
   it('draws the active model as a state rather than a control', () => {
     const active = inUse({ file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf' });
 
-    expect(rowAction(row(), [installed()], active)).toEqual({ do: 'off', label: 'active' });
+    expect(rowAction(row(), [installed()], [active])).toEqual({ do: 'off', label: 'active' });
   });
 
   /**
@@ -481,8 +490,8 @@ describe('what a catalogue row offers', () => {
       from: { from: 'config', key: 'transcribe_model', variant: 'cohere-transcribe-03-2026' },
     });
 
-    expect(rowAction(row(), [installed()], pinned)).toEqual({ do: 'off', label: 'installed' });
-    expect(rowAction(row({ variant: 'other' }), [], pinned)).toEqual({
+    expect(rowAction(row(), [installed()], [pinned])).toEqual({ do: 'off', label: 'installed' });
+    expect(rowAction(row({ variant: 'other' }), [], [pinned])).toEqual({
       do: 'install',
       label: 'install Q4_K_M',
     });
@@ -490,7 +499,7 @@ describe('what a catalogue row offers', () => {
 
   /** An entry with no download this machine would run offers nothing. */
   it('offers nothing for an entry with no download', () => {
-    expect(rowAction(row({ download: null }), [], inUse())).toEqual({ do: 'none' });
+    expect(rowAction(row({ download: null }), [], [inUse()])).toEqual({ do: 'none' });
   });
 });
 

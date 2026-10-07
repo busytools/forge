@@ -303,8 +303,14 @@ export function recommendation(update: ModelUpdate): CandidateRow | null {
  * open to see one. The client asks for no read for it, and the link is the
  * entry's own document rather than a search.
  */
-export function entryUrl(variant: string): string {
-  return `https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/${encodeURIComponent(variant)}.json`;
+export function entryUrl(row: CatalogueRow): string {
+  // The Hub's entries name their own page; the speech feed's are documents
+  // in its catalogue tree, which is where the server fetches the same file
+  // from.
+  return (
+    row.url ??
+    `https://github.com/handy-computer/transcribe.cpp/blob/main/catalog/${encodeURIComponent(row.variant)}.json`
+  );
 }
 
 /** Find a model: the whole feed is already here, so the search is this side's. */
@@ -343,24 +349,30 @@ export function activeSource(from: ActiveFrom): string {
  * active, except while `forge.toml` pins the role - a pin cannot be moved at
  * runtime, so the row says `installed` rather than drawing a control that
  * would be refused. A feed entry with no download this machine would run
- * offers nothing.
+ * offers nothing. **The row's kind names the role its control loads**: a
+ * normalizer's candidate activates the cleanup role, a speech row's
+ * transcribing.
  */
 export type RowAction =
   | { do: 'install'; label: string }
-  | { do: 'activate'; label: string; file: string }
+  | { do: 'activate'; label: string; file: string; role: ModelRole }
   | { do: 'off'; label: string }
   | { do: 'none' };
 
 export function rowAction(
   row: CatalogueRow,
   installed: InstalledModel[],
-  transcribing: InUseModel | null,
+  inUse: InUseModel[],
 ): RowAction {
+  // A row's own kind says which role it fills: a normalizer's control loads
+  // the cleanup role, and a speech row's loads transcribing.
+  const role: ModelRole = row.kind === 'normalizer' ? 'normalization' : 'transcribing';
+  const active = inUse.find((model) => model.role === role) ?? null;
   const record = installed.find((model) => model.variant === row.variant);
   if (record !== undefined) {
-    if (transcribing?.file === record.file) return { do: 'off', label: 'active' };
-    if (transcribing?.from.from === 'config') return { do: 'off', label: 'installed' };
-    return { do: 'activate', label: 'use for transcribing', file: record.file };
+    if (active?.file === record.file) return { do: 'off', label: 'active' };
+    if (active?.from.from === 'config') return { do: 'off', label: 'installed' };
+    return { do: 'activate', label: `use for ${roleWord(role)}`, file: record.file, role };
   }
   if (row.download === null) return { do: 'none' };
   return { do: 'install', label: `install ${row.download.quant}` };

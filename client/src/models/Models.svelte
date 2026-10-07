@@ -78,8 +78,8 @@
     act({ dictate_install: { variant } });
   }
 
-  function activate(file: string): void {
-    act({ dictate_activate: { role: 'transcribing', file } });
+  function activate(file: string, role: ModelRole): void {
+    act({ dictate_activate: { role, file } });
   }
 
   function deactivate(role: ModelRole): void {
