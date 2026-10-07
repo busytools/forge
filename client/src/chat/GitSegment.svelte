@@ -160,7 +160,18 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits}>
+      <div
+        class="sg-list"
+        bind:this={listEl}
+        style={limits}
+        role="presentation"
+        onpointerenter={(event) => {
+          if (hovering(event)) hold();
+        }}
+        onpointerleave={(event) => {
+          if (hovering(event)) release();
+        }}
+      >
         <!-- What the tree IS leads: a fleet's reader needs to know whose
              worktree this is before reading what is in it. -->
         <div class="sg-head">{strip.head}</div>

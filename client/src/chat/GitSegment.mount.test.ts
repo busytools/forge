@@ -324,6 +324,54 @@ describe("the tree row's interaction state machine", () => {
     expect(revealed(), 'the focus walks the reveal back').toBe('client/src/lib.rs');
   });
 
+  /** A rename wears the terminal's own R when a row draws it. */
+  it('draws a renamed file with the R mark', () => {
+    draw({
+      label: 'feat/x',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: {
+        files: [{ path: 'src/new.rs', added: 1, removed: 1, status: 'renamed' }],
+        totalFiles: 1,
+        totalAdded: 1,
+        totalRemoved: 1,
+      },
+      pr: null,
+      gate: null,
+    });
+    toggle()?.click();
+    flushSync();
+
+    expect(rows()[0]?.querySelector('.fm')?.textContent?.trim(), 'a rename wears R').toBe('R');
+    expect(
+      rows()[0]?.querySelector('.fm')?.classList.contains('mark'),
+      'in the same tone the terminal draws it',
+    ).toBe(true);
+  });
+
+  /**
+   * **The panel itself carries the leave, not only its rows.** Its section
+   * lines are divs with no listeners of their own, and the pointer walks out
+   * over one wherever a section ends: with the handlers only on rows, a
+   * leave through a section line never armed the close, and the panel stuck
+   * open behind the pointer.
+   */
+  it('closes when the pointer leaves through a section line', () => {
+    draw();
+    toggle()?.dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    expect(list(), 'hover opened it').not.toBeNull();
+
+    // The exit the rows do not cover: a leave fired on the list itself, as a
+    // pointer walking out over a head line delivers it.
+    list()?.dispatchEvent(pointer('pointerleave', 'mouse'));
+    flushSync();
+    expect(list(), 'still open inside the grace').not.toBeNull();
+    vi.advanceTimersByTime(150);
+    flushSync();
+    expect(list(), 'the panel ignored a leave through its section line').toBeNull();
+  });
+
   /**
    * **A tree that could not be read says why.** Every other fixture here
    * carries `gate: null`, so without this one a seat whose git could not be
