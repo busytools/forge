@@ -207,7 +207,14 @@
   .rfoot .vers { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px;
     display: flex; flex-direction: column; gap: 2px;
     font-family: var(--mono); font-size: var(--fs-data); }
-  .rfoot .vers .v { color: var(--muted); }
+  /* One lane per side: the build half elides - a stamped build is long - and
+     the socket half never does, because the pair is what the line is for. */
+  .rfoot .vers .v { color: var(--muted); display: flex; gap: 5px; }
+  .rfoot .vers .vt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rfoot .vers .vs { flex: none; }
+  /* A mismatched pair: both sides carry the amber, because either number may
+     be the stale one - and the notice above says which to fix. */
+  .rfoot .vers .v.skewed { color: var(--warn); }
   .rfoot .vers .up { color: var(--warn); }
 
   /* ---------- projects ---------- */
@@ -785,10 +792,11 @@
   .turninfo > summary .st.err { color: var(--bad); }
   .turninfo > summary .arw { color: var(--dim); }
   .turninfo[open] > summary .arw { color: var(--accent); }
-  /* The strip pinned above the box while a turn runs: its own row, sharing the
-     composer's edges and outside its ring. Its fields are the settled row's
-     own - the row moved to the pin is the same one - so its element is the flex
-     row they wrap in and it draws no box of its own. */
+  /* The strip pinned above the box: its own row, sharing the composer's edges
+     and outside its ring. Its fields are the settled row's own - the row moved
+     to the pin is the same one - so its element is the flex row they wrap in
+     and it draws no box of its own. It can also stand with no turn row at all,
+     which is what an idle seat with rows to show draws. */
   .strip { flex: none; padding: 8px 13px 9px;
     border: 1px solid var(--line); border-radius: 10px; background: var(--s1); }
   .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
@@ -1075,6 +1083,10 @@
     .rail.left { display: none; }
     #l:checked ~ .app .rail.left { display: flex; }
     #l:checked ~ .app { --rail-l: 0px; }
+    /* The diff page folds too: one column, its file rail away. */
+    .pbody { grid-template-columns: minmax(0,1fr); }
+    .prail { display: none; }
+    .pmain { grid-column: 1; }
   }
   /* The reach a finger needs, keyed on the pointer rather than the width:
      the brand is a way home and the more disclosure is a chevron, so both
@@ -1385,9 +1397,17 @@
       </div>
       <div class="vers">
         <!-- The socket protocol the client and server must agree on, shown
-             with the two builds it binds. -->
-        <div class="v">server v1.0.105 &#183; socket v6</div>
-        <div class="v">client v1.0.108 &#183; socket v6</div>
+             with the two builds it binds - each its own lane, so a stamped
+             build elides before the socket figure gives way. Both lines
+             take `.skewed` (amber) when the protocols disagree. -->
+        <div class="v">
+          <span class="vt">server v1.0.116+4fc4b3873</span>
+          <span class="vs">&#183; socket v6</span>
+        </div>
+        <div class="v">
+          <span class="vt">client v1.0.116+65c8a7695</span>
+          <span class="vs">&#183; socket v6</span>
+        </div>
         <div class="v">claude v2.1.280 <span class="up">&#8594; v2.1.286</span></div>
       </div>
     </div>
@@ -2330,7 +2350,9 @@ branch main, nothing to commit</div>
       <!-- The strip pinned above the box: the running turn's row, outside the
            scroll, so a reader who has scrolled up can still see whether the
            turn is working. Its own row, sharing the composer's edges and
-           outside its ring, for exactly as long as the turn is incomplete.
+           outside its ring, standing for as long as it has anything to say -
+           an idle seat's tree, tasks and watchers included, not only a
+           running turn.
 
            One row of a turn, never two: while the row is pinned the turn above
            draws none of it, and when the turn ends the finished row holds here
