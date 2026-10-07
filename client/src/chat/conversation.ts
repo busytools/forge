@@ -1260,6 +1260,19 @@ export class Chat {
       this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
       return;
     }
+    // A worker's review turn ended and the core batched the tally onto this
+    // session's line, which the terminal draws as an info line on the
+    // reviewer's own chat; the same line here, for the same reason - no
+    // transcript row holds it (#1776). The tally itself (which the terminal
+    // also parks for its badge) has no client surface to draw on.
+    if (variant === 'review_activity_notice') {
+      const notice = (update as { review_activity_notice?: { message?: unknown } })
+        .review_activity_notice;
+      const text = notice?.message;
+      if (typeof text !== 'string' || text === '') return;
+      this.append({ type: 'system', subtype: 'forge_notice', severity: 'info', text });
+      return;
+    }
     // A mode or a model the CLI refused. It answers through no frame of its
     // own either, so it is the same line: what was asked for, and the CLI's own
     // words for the refusal.
