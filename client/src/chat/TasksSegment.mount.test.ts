@@ -287,6 +287,7 @@ describe("the tasks row's interaction state machine", () => {
       {
         id: 't1',
         status: 'in_progress',
+        display: 'the same words',
         subject: 'the same words',
         owner: 'a',
         meta: 'in progress',
@@ -294,6 +295,7 @@ describe("the tasks row's interaction state machine", () => {
       {
         id: 't2',
         status: 'pending',
+        display: 'the same words',
         subject: 'the same words',
         owner: 'b',
         meta: 'pending',

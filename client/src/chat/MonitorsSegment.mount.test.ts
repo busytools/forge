@@ -232,7 +232,14 @@ describe("the monitors row's interaction state machine", () => {
    */
   it('draws a failed ending, not a check, for stopped and timed-out watches', () => {
     draw([
-      { id: 's1', running: false, completed: false, name: 'stopped', label: 'stopped 1m', command: 'a' },
+      {
+        id: 's1',
+        running: false,
+        completed: false,
+        name: 'stopped',
+        label: 'stopped 1m',
+        command: 'a',
+      },
       {
         id: 't1',
         running: false,
@@ -241,15 +248,28 @@ describe("the monitors row's interaction state machine", () => {
         label: 'timed out 1m',
         command: 'b',
       },
-      { id: 'c1', running: false, completed: true, name: 'completed', label: 'completed 1m', command: 'c' },
+      {
+        id: 'c1',
+        running: false,
+        completed: true,
+        name: 'completed',
+        label: 'completed 1m',
+        command: 'c',
+      },
     ]);
     toggle()?.click();
     flushSync();
 
-    expect(rows()[0]?.querySelector('.ic.bad'), 'a stopped watch wears the failed mark').not.toBeNull();
+    expect(
+      rows()[0]?.querySelector('.ic.bad'),
+      'a stopped watch wears the failed mark',
+    ).not.toBeNull();
     expect(rows()[0]?.querySelector('.ic.ok'), 'never the green check').toBeNull();
     expect(rows()[1]?.querySelector('.ic.bad'), 'so does a timed-out one').not.toBeNull();
-    expect(rows()[2]?.querySelector('.ic.ok'), 'only a completed one wears the check').not.toBeNull();
+    expect(
+      rows()[2]?.querySelector('.ic.ok'),
+      'only a completed one wears the check',
+    ).not.toBeNull();
   });
 
   it('holds when the pointer enters the panel over a sub-line, not a row', () => {

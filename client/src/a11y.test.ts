@@ -577,6 +577,7 @@ function seedStrip(on: boolean): void {
           {
             id: 't1',
             status: 'in_progress',
+            display: 'doing a task',
             subject: 'a task',
             owner: 'lead',
             meta: 'in progress \u{b7} 2h',
@@ -590,6 +591,7 @@ function seedStrip(on: boolean): void {
           {
             id: 'm1',
             running: true,
+            completed: false,
             name: 'ci-watch',
             label: 'persistent',
             command: 'gh run watch 18234567',

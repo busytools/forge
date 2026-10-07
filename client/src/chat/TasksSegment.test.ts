@@ -12,6 +12,7 @@ const TASKS = [
   {
     id: 't1',
     status: 'in_progress' as const,
+    display: 'Landing the schedules row',
     subject: 'Land the schedules row',
     owner: 'lead',
     meta: 'in progress \u{b7} 2h',
@@ -19,6 +20,7 @@ const TASKS = [
   {
     id: 't2',
     status: 'completed' as const,
+    display: 'Port the cmdline rule',
     subject: 'Port the cmdline rule',
     owner: null,
     meta: 'completed',

@@ -11,8 +11,22 @@ afterEach(() => {
 describe('the monitors segment', () => {
   it('carries the monitors glyph and the running count', () => {
     monitors.sync([
-      { id: 'm1', running: true, name: 'ci-watch', label: 'persistent', command: 'gh run watch' },
-      { id: 'm2', running: false, name: 'log-tail', label: 'stopped', command: 'tail -f f.log' },
+      {
+        id: 'm1',
+        running: true,
+        completed: false,
+        name: 'ci-watch',
+        label: 'persistent',
+        command: 'gh run watch',
+      },
+      {
+        id: 'm2',
+        running: false,
+        completed: false,
+        name: 'log-tail',
+        label: 'stopped',
+        command: 'tail -f f.log',
+      },
     ]);
     const body = render(MonitorsSegment, {}).body;
 
