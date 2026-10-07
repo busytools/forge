@@ -315,6 +315,33 @@ describe("the tree row's interaction state machine", () => {
   });
 
   /**
+   * **A tree that could not be read says why.** Every other fixture here
+   * carries `gate: null`, so without this one a seat whose git could not be
+   * read would silently lose the only line that says so.
+   */
+  it('draws the gate line when the tree could not be read', () => {
+    draw({
+      label: 'no branch',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: null,
+      pr: null,
+      gate: 'its working directory is not there',
+    });
+    toggle()?.click();
+    flushSync();
+
+    expect(
+      rows().at(-1)?.querySelector('.nm')?.textContent?.trim(),
+      "the gate line is the panel's last word",
+    ).toBe('its working directory is not there');
+    expect(
+      [...document.querySelectorAll('.sg-head')].map((line) => line.textContent?.trim()),
+      'and the tree is not claimed clean beside it',
+    ).toEqual(["the project's tree"]);
+  });
+
+  /**
    * A tree with nothing else to state still opens onto its head: whose
    * tree this is is itself a fact, and a toggle holding a door onto
    * nothing would be the one case the panel has no use for.

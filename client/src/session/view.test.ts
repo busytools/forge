@@ -565,6 +565,21 @@ describe('the tree the strip draws', () => {
     );
     expect(clone, 'a clone on main with a clean tree drew a row').toBeNull();
 
+    // A clean default branch holding an open pull request still draws: the
+    // PR is state the row exists for.
+    const withPr = gitStrip(
+      withGit(
+        {},
+        {
+          work: { branch: 'main', changed: 0, gate: 'in_repo' },
+          pr: { number: 1203, url: 'https://example.test/pull/1203', draft: false },
+          closes: [],
+        },
+      ),
+      LEAD,
+    );
+    expect(withPr, 'a default branch holding a PR drew no row').not.toBeNull();
+
     const dirty = gitStrip(
       withGit(
         {
