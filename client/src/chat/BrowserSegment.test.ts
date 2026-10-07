@@ -91,13 +91,13 @@ describe('the browser segment', () => {
       ).toBe('0 contexts');
     });
     expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
-      'drives the browser',
+      'browser connected',
     );
 
     click(shown.target.querySelector('.bz-tog'));
 
     expect(shown.target.textContent, 'a capable client that is not hosting is told so').toContain(
-      'another client drives the browser',
+      'browser not connected',
     );
     await vi.waitFor(() => {
       expect(
@@ -311,27 +311,30 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
-  it('offers Take over only where a click can honestly serve it, and sends it', () => {
+  it('offers the override only where a click can honestly serve it, and sends it', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
     const take = shown.target.querySelector('.bz-takeover');
-    expect(take, 'capable and not hosting: the take is the door').not.toBeNull();
+    expect(take, 'capable and not hosting: the override is the door').not.toBeNull();
     click(take);
     expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
     shown.stop();
   });
 
-  it('draws no take where this client cannot drive anything', () => {
+  it('draws no override where this client cannot drive anything', () => {
     const shown = show(false, false);
     click(shown.target.querySelector('.bz-tog'));
 
-    expect(shown.target.textContent).toContain('this client cannot drive the browser');
-    expect(shown.target.querySelector('.bz-takeover'), 'nothing to take with no host').toBeNull();
+    expect(shown.target.textContent).toContain('browser not connected');
+    expect(
+      shown.target.querySelector('.bz-takeover'),
+      'nothing to override with no host',
+    ).toBeNull();
     shown.stop();
   });
 
-  it('flips on the role frame: holding it drops the take and says so', () => {
+  it('flips on the role frame: holding it drops the override and says so', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     expect(shown.target.querySelector('.bz-takeover')).not.toBeNull();
@@ -340,9 +343,9 @@ describe('the browser segment', () => {
     flushSync();
 
     expect(shown.target.textContent, 'the role frame is what the line reads').toContain(
-      'this client drives the browser',
+      'browser connected',
     );
-    expect(shown.target.querySelector('.bz-takeover'), 'a holder offers no take').toBeNull();
+    expect(shown.target.querySelector('.bz-takeover'), 'a holder offers no override').toBeNull();
     shown.stop();
   });
 });

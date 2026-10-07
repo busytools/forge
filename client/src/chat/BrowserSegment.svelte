@@ -263,20 +263,17 @@
     >
       <div class="bz-role">
         <span class="tx">
-          {hosting
-            ? 'this client drives the browser'
-            : capable
-              ? 'another client drives the browser'
-              : 'this client cannot drive the browser'}
+          {hosting ? 'browser connected' : 'browser not connected'}
         </span>
         {#if capable && !hosting}
           <button
             type="button"
             class="bz-take bz-takeover"
+            aria-label="override the browser to this client"
             onclick={() => connection.takeBrowserRole()}
             onkeydown={esc}
           >
-            Take over
+            override
           </button>
         {/if}
       </div>

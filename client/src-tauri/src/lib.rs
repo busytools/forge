@@ -152,9 +152,22 @@ pub fn run() {
         }
     };
 
-    // **CEF's work rides this loop.** Tauri fires `MainEventsCleared` every
-    // turn, and CEF is pumped there - the one place the client's own loop
-    // and Chromium's meet. A resize keeps the view under the bar.
+    // **CEF's work ticks at a steady beat.** The run loop alone pumps only
+    // when something else wakes it, and CEF's input and paint work then
+    // BATCHES between events - which reads as typing that sticks and pastes
+    // itself together. A timer posts the pump every 8ms, so keys land as
+    // they are typed; the loop's own MainEventsCleared pump stays for the
+    // instant case. A resize keeps the view under the bar.
+    #[cfg(all(desktop, target_os = "macos"))]
+    {
+        let ticker = app.handle().clone();
+        std::thread::spawn(move || {
+            while ticker.run_on_main_thread(browser::cef::pump).is_ok() {
+                std::thread::sleep(Duration::from_millis(8));
+            }
+        });
+    }
+
     let handle = app.handle().clone();
     app.run(move |_handle, event| {
         #[cfg(all(desktop, target_os = "macos"))]
