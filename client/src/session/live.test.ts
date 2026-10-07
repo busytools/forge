@@ -386,6 +386,77 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **The palette driven from the page itself.** Nothing else in the suite
+   * presses the real key or reads history, which is how a stranded entry
+   * survived a round: Cmd+K opens it, the walk starts on THIS org's lead (a
+   * namesake in another org must not take it), the arrows move, and one Back
+   * closes what it opened.
+   */
+  it('opens the palette from the page, walks it, and gives one Back', async () => {
+    const base = homeWire.agents[0];
+    if (base === undefined) throw new Error('the fixture holds no agent');
+    await open(sessionFixture, {
+      ...homeWire,
+      agents: [base, { ...base, slot: { ...base.slot, org: 'Other' } }],
+    });
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    expect(document.querySelector('.pal'), 'Cmd+K drew no palette').not.toBeNull();
+    expect(document.querySelector('.it.sel')?.id, 'the walk started on the wrong org lead').toBe(
+      'pal-row-TestOrg/proj/lead',
+    );
+
+    document
+      .querySelector('.pal input')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.it.sel')?.id, 'ArrowDown did not walk').toBe(
+      'pal-row-Other/proj/lead',
+    );
+
+    history.back();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(document.querySelector('.pal'), 'Back left the palette up').toBeNull();
+  });
+
+  /**
+   * **The peek's entry becomes the rail's** - the round's finding: one Back
+   * closes the rail, rather than the peek stranding a forward entry under a
+   * pushed one and the next Back leaving the page.
+   */
+  it("hands the palette's peek entry to the rail, so one Back closes", async () => {
+    matchMediaTo(true);
+    await open(sessionFixture);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.pal input');
+    if (field === null) throw new Error('the palette drew no input');
+    field.value = 'peek at the fleet';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.pal'), 'the peek left the palette up').toBeNull();
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the peek did not open the rail',
+    ).toContain('rail-open');
+    const state = history.state as { forgeRail?: string } | null;
+    expect(state?.forgeRail, "the entry on top is not the rail's").toBe('left');
+
+    history.back();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'one Back did not close the rail',
+    ).not.toContain('rail-open');
+  });
+
+  /**
    * **The answering role is declared when, and only when, the page can
    * answer.** The dock that answers a prompt lives in the composer, so a page
    * without one must subscribe as an observer: a client counted as able to
