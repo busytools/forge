@@ -444,6 +444,19 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
                         // case where commit_count == 0 but stats
                         // showed files, producing a "0 commits vs
                         // main" subtitle that read oddly to the user.
+                        // One more read of the same range for the glyphs
+                        // the counts cannot carry, exactly as the worktree
+                        // layer corrects its own; a failed pass leaves
+                        // every file `Modified` rather than failing the
+                        // layer.
+                        let mut stats = stats;
+                        if let Some(marks) = name_statuses(cwd, &range).await {
+                            for file in &mut stats.files {
+                                if let Some(status) = marks.get(&file.path) {
+                                    file.status = *status;
+                                }
+                            }
+                        }
                         // The chain itself, for the view that draws what
                         // the branch is working on rather than only how
                         // far it runs.
@@ -1547,6 +1560,11 @@ mod tests {
         assert_eq!(ahead.commit_count, 1);
         assert_eq!(ahead.stats.total_files, 1);
         assert_eq!(ahead.stats.files[0].path, "feat.rs");
+        assert_eq!(
+            ahead.stats.files[0].status,
+            forge_primitives::git::FileStatus::Added,
+            "the range's added file wears Added, not the numstat default"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
