@@ -278,6 +278,19 @@
         {/if}
       </div>
 
+      <!-- **The shared context is always there**, and it is the one most
+           sessions drive - listing only named ones read as "no context"
+           while a session was plainly using the browser. -->
+      <div class="bz-it">
+        {#if capable}
+          <span class="ring"></span>
+        {:else}
+          <Icon name="x" class="bad" />
+        {/if}
+        <span class="nm">shared</span>
+        <span class="tx">every session · the browser's own context</span>
+      </div>
+
       {#each contexts as row (row.name)}
         <div class="bz-it">
           {#if row.running}
@@ -303,7 +316,7 @@
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
       {:else if contexts.length === 0}
-        <div class="bz-it"><span class="tx">no contexts yet</span></div>
+        <div class="bz-it"><span class="tx">no named contexts yet</span></div>
       {/if}
     </div>
   {/if}

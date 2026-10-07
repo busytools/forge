@@ -99,11 +99,15 @@ describe('the browser segment', () => {
     expect(shown.target.textContent, 'a capable client that is not hosting is told so').toContain(
       'browser not connected',
     );
+    expect(
+      shown.target.textContent,
+      'the shared context is always listed: most sessions drive it',
+    ).toContain('shared');
     await vi.waitFor(() => {
       expect(
         shown.target.textContent,
-        'with no contexts yet said plainly, once the read has answered',
-      ).toContain('no contexts yet');
+        'with no NAMED contexts said plainly, once the read has answered',
+      ).toContain('no named contexts yet');
     });
     shown.stop();
   });
@@ -124,7 +128,7 @@ describe('the browser segment', () => {
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no contexts yet');
+    ).not.toContain('no named contexts yet');
     shown.stop();
     vi.mocked(listContexts).mockImplementation(() => Promise.resolve([]));
   });
@@ -142,7 +146,7 @@ describe('the browser segment', () => {
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no contexts yet');
+    ).not.toContain('no named contexts yet');
     shown.stop();
   });
 

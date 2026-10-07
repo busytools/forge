@@ -752,9 +752,10 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             "Name of the browser context to raise for the person. Omit to raise the shared \
              browser context."
         } else {
-            "Name of the browser context to drive. A context is owned by \
-                the session that first names it, and another session naming it is refused \
-                until it is released; omit it to use the shared browser context."
+            "Name of the browser context to drive. **Omit it to use the shared browser \
+                context**, which is the right choice unless the work genuinely needs its own \
+                logins or a separate profile; a named context is owned by the session that \
+                first names it, and another session naming it is refused until it is released."
         };
         properties
             .insert("context".to_owned(), json!({ "type": "string", "description": description }));
