@@ -585,12 +585,12 @@
            card's own.** What a server wrote arrives as markdown - headings,
            lists, fences - and drew raw as itself until this branch (Ved,
            live round 2026-10-07); forced line breaks stayed until the next
-           one, where he asked the browser's body to read like peer messaging
-           (Ved, same round: the browser body "should follow the same styles
-           like peer messaging does"). Soft breaks flow; a fence is where
-           literal lines live. A local command's OUTPUT is not prose and
-           stays the terminal box below. -->
-      <Prose text={piece.text} />
+           one, where he asked the browser's body to follow peer messaging
+           (Ved: the peer pattern is "showing the style when it is expanded" -
+           the lane a peer message's body sits in). Soft breaks flow; a fence
+           is where literal lines live. A local command's OUTPUT is not prose
+           and stays the terminal box below. -->
+      <div class="pbody"><Prose text={piece.text} /></div>
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />
     {:else}
