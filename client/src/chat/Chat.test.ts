@@ -207,6 +207,46 @@ describe('the chat column as it draws', () => {
     ).not.toBe(0);
   });
 
+  /**
+   * **The strip stands in every conversation state, not only under the
+   * list.** A seat coming up, refused, not yet read or empty holds the same
+   * tree, tasks and watchers as one mid-turn - and the rows are the whole
+   * way into them, so nesting the strip back inside any one state's arm is
+   * the regression this pins.
+   */
+  it('draws the strip on seats with no list at all', async () => {
+    const server = stub();
+    git.sync({
+      label: 'feat/x',
+      head: "the project's tree",
+      ahead: null,
+      files: [],
+      pr: null,
+      gate: null,
+    });
+    const redraw = async (props: Record<string, unknown>): Promise<void> => {
+      if (app !== null) await unmount(app);
+      document.body.innerHTML = '';
+      draw(props, server);
+    };
+
+    await redraw({ waking: true });
+    expect(document.querySelector('.strip'), 'no strip on a seat coming up').not.toBeNull();
+
+    await redraw({});
+    expect(document.querySelector('.strip'), 'no strip before the first read').not.toBeNull();
+
+    server.send({ kind: 'error', what: 'more', why: 'the conversation is not held yet' });
+    expect(
+      document.querySelector('.strip'),
+      'no strip on a refused seat with nothing under it',
+    ).not.toBeNull();
+
+    await redraw({});
+    server.answer([]);
+    expect(document.querySelector('.strip'), 'no strip on an empty seat').not.toBeNull();
+  });
+
   it('asks for the newest page before it draws anything', () => {
     const server = stub();
     draw({}, server);

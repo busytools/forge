@@ -1136,16 +1136,6 @@
       </div>
     {/snippet}
   </VList>
-  <!-- The waiting prompts, above the pinned row and under the turns: what
-       is queued reads against what is running, and the strip keeps its place
-       right above the box. -->
-  {#if queue !== undefined}{@render queue()}{/if}
-  <!-- Outside the list rather than in it, which is what makes the row pinned:
-       the turns scroll under it, and the answer to whether the turn is still
-       being written stops depending on where the reader is looking. It is a
-       sibling of the scroller rather than a row of the grid, so the composer
-       and the dock - both drawn under this column - never have to know it. -->
-  <Pinned info={pinned?.info ?? null} {connection} />
   <!-- The way back to the foot, shown ONLY while the reader is away from it:
        following means the newest row is on screen, so its presence is the
        state read at a glance and its click is the whole way back - at the
@@ -1165,3 +1155,15 @@
     </button>
   {/if}
 {/if}
+<!-- The waiting prompts and the strip stand in EVERY conversation state,
+     not only under the list: a seat coming up, refused, not yet read or
+     empty holds the same tree, tasks and watchers as one mid-turn, and the
+     rows are the whole way into them. Last in the column, so the strip
+     keeps its place right above the box. -->
+{#if queue !== undefined}{@render queue()}{/if}
+<!-- Outside the list rather than in it, which is what makes the row pinned:
+     the turns scroll under it, and the answer to whether the turn is still
+     being written stops depending on where the reader is looking. It is a
+     sibling of the scroller rather than a row of the grid, so the composer
+     and the dock - both drawn under this column - never have to know it. -->
+<Pinned info={pinned?.info ?? null} {connection} />
