@@ -14,6 +14,7 @@ import type {
 } from '../wire/models';
 import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
+import type { SetRecorder } from './recorder.svelte';
 import { fakeConnection, MODELS, modelsWire } from './testing';
 
 const drawn: ReturnType<typeof mount>[] = [];
@@ -49,8 +50,9 @@ function open(
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
-    onarm: () => void;
-    ondisarm: () => void;
+    onrecord: () => void;
+    onrecordstop: (keep: boolean) => void;
+    recorder: Pick<SetRecorder, 'wire'> | null;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated: string | null;
@@ -70,8 +72,9 @@ function open(
       ondeactivate: handlers.ondeactivate ?? (() => {}),
       onbench: handlers.onbench ?? (() => {}),
       onbenchstop: handlers.onbenchstop ?? (() => {}),
-      onarm: handlers.onarm ?? (() => {}),
-      ondisarm: handlers.ondisarm ?? (() => {}),
+      onrecord: handlers.onrecord ?? (() => {}),
+      onrecordstop: handlers.onrecordstop ?? (() => {}),
+      recorder: handlers.recorder ?? null,
       onbenchdelete: handlers.onbenchdelete ?? (() => {}),
       onupdate: handlers.onupdate ?? (() => {}),
       updated: handlers.updated ?? null,
@@ -582,45 +585,60 @@ describe('the models page as it draws', () => {
     );
   });
 
-  /** The read-aloud set: not recorded draws the passage and the arming. */
+  /** The read-aloud set: not recorded draws the passage and the record press. */
   it('offers the read-aloud set once and its passage', () => {
-    let arms = 0;
-    const host = open(modelsWire, { onarm: () => (arms += 1) });
+    let records = 0;
+    const host = open(modelsWire, { onrecord: () => (records += 1) });
 
     expect(host.textContent).toContain('the read-aloud set is not recorded yet');
     expect(host.textContent).toContain('I want the forge session to pick up where it left off.');
-    const arm = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
-      c.textContent?.includes('record the passage next time I dictate'),
+    const record = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('record the passage'),
     );
-    expect(arm, 'the arming control did not draw').not.toBeUndefined();
-    arm?.click();
+    expect(record, 'the record control did not draw').not.toBeUndefined();
+    record?.click();
     flushSync();
-    expect(arms).toBe(1);
+    expect(records).toBe(1);
   });
 
   /**
-   * An armed set says what it is and where the recording happens, with the
-   * passage, instead of the prompt - **and it can be cancelled**: an arming
-   * is a standing state that outlives a reload, so a way out is the control
-   * that makes it safe to have pressed in the first place.
+   * **A recording draws what it is and how to end it, both ways.** The card
+   * is the page's own state while the microphone is open - stop and save
+   * writes the set, cancel throws the audio away - and a failure the core
+   * could not answer is drawn here.
    */
-  it('draws the armed read-aloud set, with a cancel', () => {
-    let cancels = 0;
+  it('draws the recording with its two ways out', () => {
+    const stops: boolean[] = [];
     const host = open(
-      { ...modelsWire, read_aloud: { ...modelsWire.read_aloud, armed: true } },
-      { ondisarm: () => (cancels += 1) },
+      { ...modelsWire, read_aloud: { ...modelsWire.read_aloud, recording: true } },
+      {
+        onrecordstop: (keep) => stops.push(keep),
+        recorder: { wire: { frames: 40, bytes: 2_560, rate: 51_200, dbfs: [], elapsedMs: 800 } },
+      },
     );
 
-    expect(host.textContent).toContain('armed: your next take becomes the read-aloud set');
-    expect(host.textContent).toContain('Read the passage below aloud in any session');
+    expect(host.textContent).toContain('recording the passage');
+    expect(host.textContent).toContain('I want the forge session to pick up where it left off.');
     expect(host.textContent).not.toContain('the read-aloud set is not recorded yet');
-    const cancel = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
-      c.textContent?.includes('cancel'),
-    );
-    expect(cancel, 'an armed set offers no way out').not.toBeUndefined();
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('button')];
+    const save = buttons.find((c) => c.textContent?.includes('stop and save'));
+    const cancel = buttons.find((c) => c.textContent?.includes('cancel'));
+    expect(save, 'a recording must offer to save').not.toBeUndefined();
+    expect(cancel, 'a recording must offer to cancel').not.toBeUndefined();
+    save?.click();
     cancel?.click();
     flushSync();
-    expect(cancels).toBe(1);
+    expect(stops).toEqual([true, false]);
+  });
+
+  /** A write that failed after the stop is drawn in the core's own words. */
+  it('draws the read-aloud write failure the read carried', () => {
+    const host = open({
+      ...modelsWire,
+      read_aloud: { ...modelsWire.read_aloud, error: 'the set directory is not writable' },
+    });
+
+    expect(host.textContent).toContain('the set directory is not writable');
   });
 
   /** A refused action is drawn in the core's own words, at the page's top. */

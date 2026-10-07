@@ -133,11 +133,58 @@ pub fn read_aloud(dir: &Path) -> Result<Option<Clip>, Error> {
 
     let framed: Vec<Clip> = takes(dir)?;
     let Some(clip) = framed.into_iter().last() else {
-        // A passage with no take under it is an arming that never got its
-        // recording; the caller sees no set rather than a silent clip.
+        // A passage with no take under it is a recording that never finished;
+        // the caller sees no set rather than a silent clip.
         return Ok(None);
     };
     Ok(Some(Clip { source: ClipSource::ReadAloud, truth: Some(truth), ..clip }))
+}
+
+/// Write one recording as the read-aloud set: the passage read, the take the
+/// words were recorded in, and a manifest naming the wav's own sha256.
+///
+/// The set REPLACES whatever stood there - the previous take goes first, so
+/// a half-written replacement never leaves two takes under one passage - and
+/// the take's `meta.json` lands last, which is what makes it complete to
+/// [`read_aloud`]: an interrupted write reads as no set rather than as a
+/// partial one. The outcome is the caller's to report, because the recording
+/// is a press somebody is watching.
+pub fn store_read_aloud(dir: &Path, samples: &[f32]) -> Result<(), Error> {
+    std::fs::create_dir_all(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("take-") {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+
+    let take = format!("take-{:013}", crate::diagnostics::take_stamp());
+    let take_dir = dir.join(&take);
+    std::fs::create_dir_all(&take_dir)
+        .map_err(|source| Error::Io { path: take_dir.clone(), source })?;
+    let wav = take_dir.join("output.wav");
+    crate::diagnostics::write_wav(&wav, samples)
+        .map_err(|message| Error::Bench { message: format!("{}: {message}", wav.display()) })?;
+    let meta = serde_json::json!({
+        "duration_ms": u64::try_from(samples.len()).unwrap_or(u64::MAX) / 16,
+    });
+    let bytes = serde_json::to_vec_pretty(&meta)
+        .map_err(|error| Error::Bench { message: format!("the set's meta: {error}") })?;
+    let meta_path = take_dir.join("meta.json");
+    std::fs::write(&meta_path, bytes).map_err(|source| Error::Io { path: meta_path, source })?;
+
+    let passage = dir.join("passage.txt");
+    std::fs::write(&passage, READ_ALOUD_PASSAGE)
+        .map_err(|source| Error::Io { path: passage, source })?;
+    let manifest = serde_json::json!({
+        "sha256": crate::diagnostics::sha256_file(&wav),
+        "take": take,
+    });
+    let bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| Error::Bench { message: format!("the set's manifest: {error}") })?;
+    let manifest_path = dir.join("manifest.json");
+    std::fs::write(&manifest_path, bytes)
+        .map_err(|source| Error::Io { path: manifest_path, source })
 }
 
 /// The identity two runs are comparable by: the clip count, the seconds of
@@ -551,6 +598,53 @@ mod tests {
 
         let gold = corpus(Tier::ReadAloud, empty.path(), empty.path()).unwrap();
         assert!(gold.clips.is_empty(), "no passage recorded, no read-aloud tier");
+    }
+
+    /// **A recording becomes the set, and a later one replaces it.** The
+    /// take carries the wav and its meta - what the reader needs to see it
+    /// as complete - the manifest names the wav's own sha, and the previous
+    /// take leaves with the previous recording rather than stacking under
+    /// one passage.
+    #[test]
+    fn a_recording_becomes_the_set_and_a_later_one_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.25_f32; 1_600];
+
+        store_read_aloud(dir.path(), &audio).expect("the set writes");
+        let clip =
+            read_aloud(dir.path()).expect("the set reads").expect("a passage and a take are there");
+        assert_eq!(clip.source, ClipSource::ReadAloud);
+        assert_eq!(clip.truth.as_deref(), Some(READ_ALOUD_PASSAGE));
+        assert_eq!(clip.audio.len(), audio.len(), "the samples the recording carried");
+        let first = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| name.starts_with("take-"))
+            .expect("the take is beside the passage");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            manifest["sha256"].as_str().is_some_and(|sha| sha.len() == 64),
+            "the manifest names the wav's own sha, got {manifest}"
+        );
+
+        store_read_aloud(dir.path(), &audio[..800]).expect("a re-recording writes");
+        let takes: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("take-"))
+            .collect();
+        assert_eq!(takes.len(), 1, "a re-recording replaces the set, got {takes:?}");
+        assert!(!dir.path().join(&first).exists(), "the previous take left with it");
+        assert_eq!(
+            read_aloud(dir.path()).unwrap().unwrap().audio.len(),
+            800,
+            "the set reads back as the newest recording"
+        );
     }
 
     /// **Term accuracy counts the passage's terms that survived.** A miss

@@ -2308,6 +2308,21 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    platform draws it rather than as a div sized by a style attribute. */
 .models .status progress { flex: none; width: 140px; height: 7px;
   accent-color: var(--accent); }
+/* A line this side's own failure - a refused microphone, a keep that never
+   reached the socket - or the core's, drawn in the error tone. */
+.models .status .detail.bad, .models .empty .d.bad { color: var(--bad); }
+/* The recording's meter: the same readings the take card's graph draws, at
+   this card's own pitch - one bar per past reading, newest last, held at a
+   fixed length so the pitch stays still while the heights move. Capped at the
+   take card's own order of width, so it reads as a meter rather than as a
+   progress bar running under the words. */
+.models .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
+   height: 16px; flex: 0 0 200px; }
+.models .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
+  min-height: 2px; background: linear-gradient(180deg, var(--hot), var(--accent));
+  transition: height 90ms linear; }
+.models .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+.models .status .bars.meter i.hot { background: var(--hot); }
 
 /* the search the page does on this side: the feed is already here, and the
    box filters as it is typed - a button over data this side already holds

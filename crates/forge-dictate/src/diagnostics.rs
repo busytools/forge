@@ -70,24 +70,10 @@ pub(crate) fn take_stamp() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
-/// The file a host arms the read-aloud set with: its contents are the
-/// passage, and the NEXT finished take consumes it.
-const READ_ALOUD_ARMED: &str = "armed.txt";
-
 /// Write one take into `dir/take-<take_id>/` and prune the store to
 /// [`RETAINED_TAKES`]. Nothing here can fail the caller: every step
 /// logs its own failure and stops that take's capture.
-///
-/// `read_aloud` is the set directory when this host has one configured:
-/// while that directory carries the armed marker, THIS take - the one
-/// being captured, never a neighbour's - is also stored as the set, and
-/// the marker goes with it so exactly one take answers one arming.
-pub(crate) fn capture_take(
-    dir: &Path,
-    take_id: u128,
-    take: &TakeRecord<'_>,
-    read_aloud: Option<&Path>,
-) {
+pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     let take_dir = dir.join(format!("take-{take_id:013}"));
     // meta.json is written LAST, which is what makes a take directory
     // without it incomplete: an early return above leaves a partial
@@ -154,93 +140,11 @@ pub(crate) fn capture_take(
         }
     }
 
-    // The set copy comes after the meta: a set take the store cannot read
-    // as complete (meta lands last, and the copy needs it) is a gold set
-    // the bench would skip.
-    if let Some(set_dir) = read_aloud {
-        store_read_aloud(set_dir, &take_dir, take);
-    }
-
     prune(dir);
 }
 
-/// Store one finished take as the read-aloud set, when the set directory
-/// carries the armed marker.
-///
-/// The set REPLACES whatever stood there: the previous passage, the
-/// previous take, and one entry naming the wav's own sha256 so the corpus
-/// a result was measured on can be named later. Best-effort like the rest
-/// of this module - a failure here must never touch the take itself.
-fn store_read_aloud(set_dir: &Path, take_dir: &Path, take: &TakeRecord<'_>) {
-    let marker = set_dir.join(READ_ALOUD_ARMED);
-    let Ok(passage) = std::fs::read_to_string(&marker) else {
-        return;
-    };
-    if let Err(error) = std::fs::create_dir_all(set_dir) {
-        tracing::warn!(%error, dir = %set_dir.display(), "read-aloud: set directory not writable");
-        return;
-    }
-    // The old set goes first, so a half-written replacement never leaves
-    // two takes under one passage.
-    for entry in std::fs::read_dir(set_dir).into_iter().flatten().flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("take-") {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-
-    let stored = set_dir.join(take_dir.file_name().unwrap_or_default());
-    if let Err(error) = copy_dir(take_dir, &stored) {
-        tracing::warn!(%error, from = %take_dir.display(), "read-aloud: the take could not be copied");
-        return;
-    }
-    if let Err(error) = std::fs::write(set_dir.join("passage.txt"), &passage) {
-        tracing::warn!(%error, dir = %set_dir.display(), "read-aloud: the passage was not written");
-        return;
-    }
-    let digest = sha256_file(&stored.join("output.wav"));
-    let manifest = json!({
-        "sha256": digest,
-        "take": take_dir.file_name().map(|name| name.to_string_lossy().into_owned()),
-        "outcome": take.outcome,
-    });
-    match serde_json::to_vec_pretty(&manifest) {
-        Ok(bytes) => {
-            if let Err(error) = std::fs::write(set_dir.join("manifest.json"), bytes) {
-                tracing::warn!(%error, dir = %set_dir.display(), "read-aloud: the manifest was not written");
-                return;
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "read-aloud: the manifest is not serializable");
-            return;
-        }
-    }
-    // Consumed: exactly one take answers one arming.
-    if let Err(error) = std::fs::remove_file(&marker) {
-        tracing::warn!(%error, path = %marker.display(), "read-aloud: the arming marker was not cleared");
-    }
-}
-
-/// Copy one take directory whole - the wav, the texts, the meta - so the
-/// set holds the same bytes the store does.
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let path = entry.path();
-        let target = to.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir(&path, &target)?;
-        } else {
-            std::fs::copy(&path, &target)?;
-        }
-    }
-    Ok(())
-}
-
 /// A file's sha256, lowercase hex; empty when it cannot be read.
-fn sha256_file(path: &Path) -> String {
+pub(crate) fn sha256_file(path: &Path) -> String {
     use sha2::Digest as _;
     let Ok(bytes) = std::fs::read(path) else {
         return String::new();
@@ -250,7 +154,7 @@ fn sha256_file(path: &Path) -> String {
 
 /// Encode `audio` as a canonical 16-bit PCM wav at the one rate every
 /// model here reads.
-fn write_wav(path: &Path, audio: &[f32]) -> Result<(), String> {
+pub(crate) fn write_wav(path: &Path, audio: &[f32]) -> Result<(), String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: SAMPLE_RATE,
@@ -345,7 +249,6 @@ mod tests {
                 "First take, second take.",
                 &stages,
             ),
-            None,
         );
 
         let take = dir.path().join("take-0000000000042");
@@ -409,7 +312,7 @@ mod tests {
         let mut record = take_record(&audio, &windows, "first", "", &stages);
         record.outcome = "recognition_error";
         record.recognition_error = Some((1, "decode failed: bad input".into()));
-        capture_take(dir.path(), 7, &record, None);
+        capture_take(dir.path(), 7, &record);
 
         let meta: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("take-0000000000007/meta.json")).unwrap(),
@@ -420,75 +323,6 @@ mod tests {
         assert_eq!(
             meta["recognition_error"]["error"], "decode failed: bad input",
             "the recognition failure text"
-        );
-    }
-
-    /// **The read-aloud set.** While the set directory is armed, the next
-    /// take stored is copied beside the passage as the set - and it is
-    /// THIS take that answers the arming, however many were stored before
-    /// it. A second arming replaces the set rather than stacking one.
-    #[test]
-    fn an_armed_set_takes_the_next_take_and_a_later_arming_replaces_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let set = tempfile::tempdir().unwrap();
-        let audio = vec![0.5; 16];
-        let stages = Stages::default();
-        let windows = vec![];
-
-        // Not armed: the take lands in the store and nowhere else.
-        capture_take(
-            dir.path(),
-            1,
-            &take_record(&audio, &windows, "one", "one", &stages),
-            Some(set.path()),
-        );
-        assert!(!set.path().join("passage.txt").exists(), "nothing was armed");
-
-        // Armed: the next take is the set, and the arming is consumed.
-        std::fs::write(set.path().join("armed.txt"), "read this").unwrap();
-        capture_take(
-            dir.path(),
-            2,
-            &take_record(&audio, &windows, "two", "two", &stages),
-            Some(set.path()),
-        );
-        assert_eq!(std::fs::read_to_string(set.path().join("passage.txt")).unwrap(), "read this");
-        let kept = set.path().join("take-0000000000002");
-        assert!(kept.join("output.wav").is_file(), "the take that answered the arming");
-        assert!(
-            kept.join("meta.json").is_file(),
-            "complete, because the bench's read skips a take without its meta"
-        );
-        assert!(!set.path().join("armed.txt").exists(), "one take answers one arming");
-
-        // Read back the way the bench reads it.
-        let clip = crate::bench::read_aloud(set.path())
-            .expect("the set reads")
-            .expect("a passage and a take are there");
-        assert_eq!(clip.truth.as_deref(), Some("read this"));
-        assert_eq!(clip.audio.len(), audio.len());
-
-        // Armed again: the set REPLACES, it does not stack.
-        std::fs::write(set.path().join("armed.txt"), "read this too").unwrap();
-        capture_take(
-            dir.path(),
-            3,
-            &take_record(&audio, &windows, "three", "three", &stages),
-            Some(set.path()),
-        );
-        assert_eq!(
-            std::fs::read_to_string(set.path().join("passage.txt")).unwrap(),
-            "read this too"
-        );
-        assert!(!kept.exists(), "the previous take leaves with the previous set");
-        assert!(set.path().join("take-0000000000003").is_dir());
-        let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(set.path().join("manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            manifest["sha256"].as_str().is_some_and(|sha| sha.len() == 64),
-            "the manifest names the wav's own sha, got {manifest}"
         );
     }
 
@@ -505,7 +339,7 @@ mod tests {
         let audio = vec![0.5; 16];
         let windows = vec![];
         for id in 1..=RETAINED_TAKES as u128 + 1 {
-            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages), None);
+            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
         }
         assert!(foreign.is_dir(), "a user directory sharing the take- prefix must survive pruning");
         let takes: Vec<_> = std::fs::read_dir(dir.path())
@@ -533,7 +367,7 @@ mod tests {
         let windows = vec![];
         let newest = RETAINED_TAKES as u128 + 2;
         for id in 1..=newest {
-            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages), None);
+            capture_take(dir.path(), id, &take_record(&audio, &windows, "", "", &stages));
         }
         let takes: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -565,12 +399,7 @@ mod tests {
         let audio = vec![0.5; 16];
         let stages = Stages::default();
         let windows = vec![];
-        capture_take(
-            &blocker.join("under"),
-            1,
-            &take_record(&audio, &windows, "", "", &stages),
-            None,
-        );
+        capture_take(&blocker.join("under"), 1, &take_record(&audio, &windows, "", "", &stages));
         assert!(!blocker.is_dir(), "the unwritable location must not have been turned into one");
     }
 }

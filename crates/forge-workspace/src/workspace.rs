@@ -303,6 +303,10 @@ pub struct Workspace {
     /// the models page through `dictate_bench` and `bench_results`.
     pub(crate) dictate_bench: Mutex<crate::bench::BenchState>,
     pub(crate) dictate_bench_cancel: std::sync::atomic::AtomicBool,
+    /// The last read-aloud write's failure, when there was one: a stop
+    /// whose write fails has no dispatch left to answer, so the page reads
+    /// it here instead. Cleared when the next recording starts.
+    pub(crate) read_aloud_error: Mutex<Option<String>>,
     /// A test's own catalogue source, so a check can run against a
     /// loopback server instead of GitHub. Not present in production
     /// builds.
@@ -1517,6 +1521,7 @@ impl Workspace {
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             dictate_bench: Mutex::new(crate::bench::BenchState::default()),
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -4502,13 +4507,13 @@ impl Workspace {
                 Command::DictateBenchStop => {
                     return self.stop_bench();
                 }
-                Command::DictateReadAloudArm => {
-                    let outcome = self.arm_read_aloud();
+                Command::DictateReadAloudStart { initiator } => {
+                    let outcome = self.start_read_aloud(initiator);
                     self.push_models();
                     return outcome;
                 }
-                Command::DictateReadAloudDisarm => {
-                    let outcome = self.disarm_read_aloud();
+                Command::DictateReadAloudStop { keep, initiator } => {
+                    let outcome = self.finish_read_aloud(keep, initiator);
                     self.push_models();
                     return outcome;
                 }

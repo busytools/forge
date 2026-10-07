@@ -181,11 +181,13 @@ export type BenchState =
   | { state: 'failed'; target: BenchTarget; reason: string }
   | { state: 'unknown' };
 
-/** The read-aloud set: whether this machine has one, whether one is armed
- * for the next take, and its passage. */
+/** The read-aloud set: whether this machine has one, whether one is being
+ * recorded right now, the passage it is read from, and the last write's
+ * failure when there was one. */
 export interface ReadAloudState {
   recorded: boolean;
-  armed: boolean;
+  recording: boolean;
+  error: string | null;
   passage: string;
 }
 
@@ -323,7 +325,7 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       target: targetFrom(result.target),
       tier: narrow(result.tier, BENCH_TIERS, 'other'),
     })),
-    read_aloud: data.read_aloud ?? { recorded: false, armed: false, passage: '' },
+    read_aloud: data.read_aloud ?? { recorded: false, recording: false, error: null, passage: '' },
   };
 }
 

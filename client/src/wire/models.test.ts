@@ -47,7 +47,7 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
     installed: [],
     bench: { state: 'idle' },
     results: [],
-    read_aloud: { recorded: false, armed: false, passage: '' },
+    read_aloud: { recorded: false, recording: false, error: null, passage: '' },
     ...over,
   } as unknown as DictateModelsWire;
 }

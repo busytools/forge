@@ -4,6 +4,7 @@
   import type { BenchResult, BenchTarget, BenchTier, ModelRole } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
+  import { SetRecorder } from './recorder.svelte';
 
   /**
    * The models page's route: the subject it watches, what the page draws
@@ -154,12 +155,37 @@
     act('dictate_bench_stop');
   }
 
-  function arm(): void {
-    act('dictate_read_aloud_arm');
+  /**
+   * The read-aloud recording, while it runs: the controller owns the
+   * microphone and the frames, the core owns the artifact, and the page
+   * learns the outcome from the read rather than from this side.
+   */
+  let recorder = $state<SetRecorder | null>(null);
+  /** A line for the card: this side's own failure - a refused microphone, a
+   * keep that never reached the socket. */
+  let recordingLine = $state<string | null>(null);
+
+  async function startRecording(): Promise<void> {
+    const open = connection;
+    if (open === null || recorder !== null) return;
+    refusal = null;
+    recordingLine = null;
+    recorder = await SetRecorder.begin({
+      connection: open,
+      onLine: (line) => (recordingLine = line),
+      onEnded: () => (recorder = null),
+    });
+    if (recorder !== null) open.refresh('dictate_models');
   }
 
-  function disarm(): void {
-    act('dictate_read_aloud_disarm');
+  function record(): void {
+    void startRecording();
+  }
+
+  function recordStop(keep: boolean): void {
+    const running = recorder;
+    recorder = null;
+    running?.stop(keep);
   }
 
   function benchDelete(result: BenchResult): void {
@@ -190,8 +216,10 @@
     ondeactivate={deactivate}
     onbench={bench}
     onbenchstop={benchStop}
-    onarm={arm}
-    ondisarm={disarm}
+    onrecord={record}
+    onrecordstop={recordStop}
+    {recorder}
+    {recordingLine}
     onbenchdelete={benchDelete}
     onupdate={updateTo}
     {updated}

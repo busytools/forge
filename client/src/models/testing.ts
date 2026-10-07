@@ -123,6 +123,8 @@ export const modelsWire: DictateModelsWire = modelsFrom({
   results: [],
   read_aloud: {
     recorded: false,
+    recording: false,
+    error: null,
     passage: 'I want the forge session to pick up where it left off.',
   },
   check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },

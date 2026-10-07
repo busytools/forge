@@ -398,12 +398,25 @@ pub enum Command {
     /// Stop the bench in flight. What ran so far is discarded: a partial
     /// corpus is not a result.
     DictateBenchStop,
-    /// Store the NEXT finished take as the read-aloud set, replacing any
-    /// set already there. App-level; the set's own state rides the models
-    /// read.
-    DictateReadAloudArm,
-    /// Cancel an arming: the next take stays an ordinary take.
-    DictateReadAloudDisarm,
+    /// Begin recording the read-aloud set: the connection that sent this
+    /// feeds the audio as binary frames, like a take a client captures, and
+    /// no session owns it. App-level; the recording's own state rides the
+    /// models read.
+    DictateReadAloudStart {
+        /// The connection that sent this, stamped by the transport that
+        /// received it, as [`Command::DictateStream`]'s is: only that
+        /// connection can feed or stop the recording.
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
+    /// Stop the read-aloud recording. `keep` writes it as the set; a stop
+    /// that does not keeps nothing, which is the page's cancel.
+    DictateReadAloudStop {
+        keep: bool,
+        /// Stamped like [`Command::DictateReadAloudStart`]'s.
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
     /// Drop one saved bench result, named by its own key: the target, the
     /// tier, and the corpus it ran over.
     DictateBenchDelete {
@@ -740,8 +753,8 @@ impl Command {
             | Self::DictateDeactivate { .. }
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
-            | Self::DictateReadAloudArm
-            | Self::DictateReadAloudDisarm
+            | Self::DictateReadAloudStart { .. }
+            | Self::DictateReadAloudStop { .. }
             | Self::DictateBenchDelete { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
@@ -897,8 +910,10 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
-            Self::DictateReadAloudArm => f.write_str("DictateReadAloudArm"),
-            Self::DictateReadAloudDisarm => f.write_str("DictateReadAloudDisarm"),
+            Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
+            Self::DictateReadAloudStop { keep, .. } => {
+                f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
+            }
             Self::DictateBenchDelete { target, tier, corpus } => f
                 .debug_struct("DictateBenchDelete")
                 .field("target", target)
@@ -2217,9 +2232,10 @@ pub enum DispatchError {
     /// A stop arrived and nothing was running to stop.
     #[error("no bench is running")]
     BenchNotRunning,
-    /// The read-aloud set could not be armed, in the core's own words.
-    #[error("the read-aloud set could not be armed: {reason}")]
-    ReadAloudUnavailable { reason: String },
+    /// No read-aloud recording is running, or it is another connection's:
+    /// only the connection that started one can stop it.
+    #[error("no read-aloud recording is running here")]
+    ReadAloudNotRecording,
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

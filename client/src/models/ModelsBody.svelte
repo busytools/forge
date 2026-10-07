@@ -1,5 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
+  import { FALLBACK_FLOOR_DB, fractionOf, meterWindow } from '../composer/meter';
+  import type { SetRecorder } from './recorder.svelte';
   import type {
     BenchResult,
     BenchTarget,
@@ -54,8 +56,10 @@
     ondeactivate,
     onbench,
     onbenchstop,
-    onarm,
-    ondisarm,
+    onrecord,
+    onrecordstop,
+    recorder = null,
+    recordingLine = null,
     onbenchdelete,
     onupdate,
     updated = null,
@@ -69,8 +73,16 @@
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
-    onarm: () => void;
-    ondisarm: () => void;
+    /** Begin recording the read-aloud passage. */
+    onrecord: () => void;
+    /** End it: `keep` saves the recording as the set. */
+    onrecordstop: (keep: boolean) => void;
+    /** This side's capture, while one runs; `null` when none is. The card
+     * reads its frames and its levels and nothing else. */
+    recorder?: Pick<SetRecorder, 'wire'> | null;
+    /** This side's own line about the recording - a refused microphone, a
+     * keep that never reached the socket. */
+    recordingLine?: string | null;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated?: string | null;
@@ -103,6 +115,30 @@
   const benchState = $derived(wire.bench);
   const bench = $derived(benchLine(wire.bench));
   const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates));
+
+  /** How many level readings the recording card draws. */
+  const REC_CELLS = 40;
+
+  /**
+   * The recording's own clock, off the frames it has produced - the ring's
+   * counters are the signals, so the card repaints as the recording moves.
+   * Fifty frames is one second at the 20 ms cadence.
+   */
+  const recClock = $derived.by(() => {
+    const seconds = Math.floor((recorder?.wire.frames ?? 0) / 50);
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  });
+
+  /** The recording's newest levels, at the card's own pitch. */
+  const recCells = $derived.by(() => {
+    // The frame count is the tick: `dbfs` is read off the ring rather than
+    // held as a signal, so this recomputes with the count.
+    void recorder?.wire.frames;
+    const levels = (recorder?.wire.dbfs ?? []).map((peakDb) =>
+      fractionOf(peakDb, FALLBACK_FLOOR_DB),
+    );
+    return meterWindow(levels, REC_CELLS);
+  });
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -425,31 +461,56 @@
         </p>
       {/if}
 
-      {#if wire.read_aloud.armed}
+      {#if recorder !== null || wire.read_aloud.recording}
         <div class="status" role="status">
-          <span class="dot off"></span>
-          <span class="t">armed: your next take becomes the read-aloud set</span>
+          <span class="dot live"></span>
+          <span class="t">
+            {recorder !== null ? 'recording the passage' : 'the read-aloud set is being recorded'}
+          </span>
+          {#if recorder !== null}
+            <span class="when">{recClock} &middot; {recorder.wire.frames} frames</span>
+          {/if}
           <span class="spacer"></span>
-          <button class="chip" type="button" onclick={ondisarm}>cancel</button>
+          {#if recorder !== null}
+            <button class="chip" type="button" onclick={() => onrecordstop(true)}
+              >stop and save</button
+            >
+            <button class="chip" type="button" onclick={() => onrecordstop(false)}>cancel</button>
+            <span class="bars meter" aria-hidden="true">
+              {#each recCells as cell, at (at)}
+                <i class={cell.tone} style={`height:${String(cell.height)}%`}></i>
+              {/each}
+            </span>
+          {:else}
+            <span class="detail">Another client is recording it.</span>
+          {/if}
           <span class="detail">
-            Read the passage below aloud in any session and stop the take - that recording becomes
-            the read-aloud set, the one corpus a bench can score on words that are known. Nothing
-            else about dictation changes.
+            Read the passage below aloud - the recording becomes the read-aloud set, the one corpus
+            a bench can score on words that are known.
           </span>
           <span class="detail passage">{wire.read_aloud.passage}</span>
+          {#if recordingLine !== null}<span class="detail bad">{recordingLine}</span>{/if}
         </div>
-      {:else if !wire.read_aloud.recorded}
+      {:else}
         <div class="empty">
-          <p class="t">the read-aloud set is not recorded yet</p>
+          <p class="t">
+            {wire.read_aloud.recorded
+              ? 'the read-aloud set is recorded'
+              : 'the read-aloud set is not recorded yet'}
+          </p>
           <p class="d">
-            Read the passage below aloud once, with the bench armed - a bench over the takes
-            compares two models' words, and this is the one corpus whose words are known, so it is
-            the one that can score accuracy outright:
+            A bench over the takes compares two models' words; this is the one corpus whose words
+            are known, so it is the one that can score accuracy outright. Read the passage below
+            aloud once and save the recording:
           </p>
           <p class="d passage">{wire.read_aloud.passage}</p>
-          <button class="chip" type="button" disabled={busy} onclick={onarm}
-            >record the passage next time I dictate</button
+          <button class="chip" type="button" disabled={busy} onclick={onrecord}
+            >{wire.read_aloud.recorded ? 'record it again' : 'record the passage'}</button
           >
+          {#if wire.read_aloud.error !== null}
+            <p class="d bad">{wire.read_aloud.error}</p>
+          {/if}
+          {#if recordingLine !== null}<p class="d bad">{recordingLine}</p>{/if}
         </div>
       {/if}
 

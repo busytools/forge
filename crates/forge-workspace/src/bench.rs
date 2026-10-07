@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 
 use forge_dictate::ModelSpec;
 
+use crate::dictate::SetRecording;
 use crate::{DispatchError, Workspace};
 
 /// Which slot a bench target runs in, in the names the wire uses.
@@ -68,14 +69,14 @@ pub struct BenchResult {
 const RESULTS_SHOWN: usize = 50;
 
 /// The read-aloud set as the page reads it: whether this machine has one,
-/// whether one is ARMED for the next take, and the passage it was read from.
+/// whether one is being recorded right now, the passage it is read from, and
+/// the last recording's failure when there is one - a write that failed after
+/// the stop has no dispatch left to answer, so the read carries it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadAloudState {
     pub recorded: bool,
-    /// A take is owed to an arming: the next finished take becomes the set.
-    /// Carried so the press that armed it draws something - a control whose
-    /// only effect is a file the page cannot see reads as broken.
-    pub armed: bool,
+    pub recording: bool,
+    pub error: Option<String>,
     pub passage: String,
 }
 
@@ -105,10 +106,8 @@ pub fn config_for(
     let mut cfg = base.clone();
     // **A bench run is not the user's dictation.** Its clips would otherwise
     // land in the per-take diagnostics store - filling the shelf the bench
-    // itself scores against, so every run grew its own corpus - and a clip
-    // finishing while a read-aloud set was armed would answer the arming.
+    // itself scores against, so every run grew its own corpus.
     cfg.diagnostics_dir = None;
-    cfg.read_aloud_dir = None;
     match target.role {
         BenchRole::Transcribing => cfg.asr_model = spec,
         BenchRole::Cleanup => cfg.normalizer = Some(spec),
@@ -134,41 +133,114 @@ impl Workspace {
     }
 
     /// The read-aloud set, as the page draws it: whether one exists here,
-    /// whether one is armed for the next take, and the passage it was read
-    /// from.
+    /// whether one is being recorded right now, the passage it is read from,
+    /// and the last write's failure when there was one.
     pub fn read_aloud_state(&self) -> ReadAloudState {
         let dir = self.read_aloud_dir();
         ReadAloudState {
             recorded: dir.as_ref().is_some_and(|dir| dir.join("passage.txt").is_file()),
-            armed: dir.is_some_and(|dir| dir.join("armed.txt").is_file()),
+            recording: self.dictate_runtime.lock().set_recording.is_some(),
+            error: self.read_aloud_error.lock().clone(),
             passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned(),
         }
     }
 
-    /// Arm the read-aloud set: the NEXT finished take is stored as the
-    /// passage's own reading, and a later arming replaces it.
+    /// Begin recording the read-aloud set: the page's own microphone feeds
+    /// the frames, and no engine and no transcript are involved - the
+    /// passage's words are known, so recording transcribes nothing.
     ///
-    /// The marker is the passage itself, written where the engine's take
-    /// path looks for it - so the take that answers an arming is the very
-    /// take being captured, never a neighbour's.
-    pub(crate) fn arm_read_aloud(&self) -> Result<(), DispatchError> {
+    /// One capture at a time, like every other: refused while a take is
+    /// live, and while a recording is already running - the refusal names
+    /// whatever holds it.
+    pub(crate) fn start_read_aloud(&self, initiator: Option<u64>) -> Result<(), DispatchError> {
         if !self.config.dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        let Some(dir) = self.read_aloud_dir() else {
-            return Err(DispatchError::ReadAloudUnavailable {
-                reason: "no app-support directory resolves".to_owned(),
-            });
+        let mut runtime = self.dictate_runtime.lock();
+        if let Some(holder) = runtime.live_holder() {
+            return Err(DispatchError::TakeLive { holder });
+        }
+        *self.read_aloud_error.lock() = None;
+        runtime.set_recording = Some(SetRecording { initiator, samples: Vec::new() });
+        Ok(())
+    }
+
+    /// Feed a client's frames into the running recording, when that
+    /// connection is the one that started it.
+    ///
+    /// The audio is capped at the same span a take holds, so a recording
+    /// nobody stops cannot grow without bound; the frames past the cap are
+    /// dropped rather than silently stored as a shorter reading.
+    pub fn read_aloud_push(&self, samples: &[f32], initiator: Option<u64>) -> bool {
+        let mut runtime = self.dictate_runtime.lock();
+        let Some(recording) = runtime.set_recording.as_mut() else {
+            return false;
         };
-        if let Err(error) = std::fs::create_dir_all(&dir) {
-            tracing::warn!(%error, dir = %dir.display(), "read-aloud: the set directory is not writable");
-            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        if recording.initiator != initiator {
+            return false;
         }
-        let marker = dir.join("armed.txt");
-        if let Err(error) = std::fs::write(&marker, forge_dictate::bench::READ_ALOUD_PASSAGE) {
-            tracing::warn!(%error, path = %marker.display(), "read-aloud: the arming was not written");
-            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
+        let cap = usize::try_from(self.config.dictate.max_capture_minutes)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(60)
+            .saturating_mul(usize::try_from(forge_dictate::SAMPLE_RATE).unwrap_or(16_000));
+        let room = cap.saturating_sub(recording.samples.len());
+        let take = room.min(samples.len());
+        recording.samples.extend_from_slice(&samples[..take]);
+        take > 0
+    }
+
+    /// Stop the recording: `keep` writes it as the set, and a stop that does
+    /// not keeps nothing. The write runs off the runtime thread, and its
+    /// failure lands in the read rather than in this answer - the dispatch
+    /// has already gone by the time the bytes hit the disk.
+    pub(crate) fn finish_read_aloud(
+        self: &Arc<Self>,
+        keep: bool,
+        initiator: Option<u64>,
+    ) -> Result<(), DispatchError> {
+        let samples = {
+            let mut runtime = self.dictate_runtime.lock();
+            let started_by_this_connection = runtime
+                .set_recording
+                .as_ref()
+                .is_some_and(|recording| recording.initiator == initiator);
+            if !started_by_this_connection {
+                return Err(DispatchError::ReadAloudNotRecording);
+            }
+            let Some(recording) = runtime.set_recording.take() else {
+                return Err(DispatchError::ReadAloudNotRecording);
+            };
+            recording.samples
+        };
+        if !keep {
+            return Ok(());
         }
+        let Some(dir) = self.read_aloud_dir() else {
+            *self.read_aloud_error.lock() = Some("no app-support directory resolves".to_owned());
+            return Ok(());
+        };
+        if samples.is_empty() {
+            *self.read_aloud_error.lock() = Some("nothing was captured".to_owned());
+            return Ok(());
+        }
+
+        let this = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let outcome = forge_dictate::bench::store_read_aloud(&dir, &samples);
+            match outcome {
+                Ok(()) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "read_aloud_write_failed",
+                        %error,
+                        dir = %dir.display(),
+                        "the read-aloud set was not written"
+                    );
+                    *this.read_aloud_error.lock() = Some(error.to_string());
+                }
+            }
+            this.push_models();
+        });
         Ok(())
     }
 
@@ -218,29 +290,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Disarm the read-aloud set: the next take stays an ordinary take.
-    ///
-    /// A no-op when nothing was armed - the page's cancel is answered by
-    /// the state it asked for, not by an error.
-    pub(crate) fn disarm_read_aloud(&self) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
-            return Err(DispatchError::DictateOff);
-        }
-        let Some(dir) = self.read_aloud_dir() else {
-            return Err(DispatchError::ReadAloudUnavailable {
-                reason: "no app-support directory resolves".to_owned(),
-            });
-        };
-        let marker = dir.join("armed.txt");
-        if let Err(error) = std::fs::remove_file(&marker)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(%error, path = %marker.display(), "read-aloud: the arming was not cleared");
-            return Err(DispatchError::ReadAloudUnavailable { reason: error.to_string() });
-        }
-        Ok(())
-    }
-
     /// Drop one saved result: the row the page asked to delete, by its key.
     pub(crate) fn delete_bench_result(
         &self,
@@ -287,7 +336,7 @@ impl Workspace {
             return self.fail_bench(target, "no models directory is configured".to_owned());
         };
         let takes_dir = cfg.diagnostics_dir.clone();
-        let read_aloud_dir = cfg.read_aloud_dir.clone();
+        let read_aloud_dir = self.read_aloud_dir();
         // The closure takes its own copy: the caller keeps the target for
         // the failure paths below.
         let ran = target.clone();
@@ -446,9 +495,8 @@ mod tests {
         assert!(for_it.asr_model.sha256.is_none(), "no digest is published for one");
         assert_eq!(for_it.asr_model.size, 7, "the size is the bytes on disk");
         assert!(
-            for_it.diagnostics_dir.is_none() && for_it.read_aloud_dir.is_none(),
-            "a bench run must not write takes into the store it scores against, nor answer a \
-             read-aloud arming"
+            for_it.diagnostics_dir.is_none(),
+            "a bench run must not write takes into the store it scores against"
         );
         assert_eq!(
             for_it.normalizer.as_ref().map(|spec| spec.file.clone()),
@@ -612,21 +660,119 @@ mod tests {
         found
     }
 
-    /// **Arming and cancelling both push the read.** The armed box is drawn
-    /// from a frame like every other fact on the page, so a command that
-    /// moves the arming without a frame leaves the press looking dead.
+    /// **Starting and stopping a recording both push the read.** The card is
+    /// drawn from a frame like every other fact on the page, so a command
+    /// that moves the recording without a frame leaves the press looking
+    /// dead.
     #[test]
-    fn arming_and_cancelling_push_the_models_read() {
+    fn starting_and_stopping_a_recording_push_the_models_read() {
         let (ws, mut updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
         let dir = tempfile::tempdir().unwrap();
         *ws.test_read_aloud_dir.lock() = Some(dir.path().to_path_buf());
 
-        ws.dispatch(crate::Command::DictateReadAloudArm).expect("the test dir is writable");
-        let models = drained_models(&mut updates).expect("arming pushes the read");
-        assert!(models.read_aloud.armed, "the frame carries the armed set");
+        ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) })
+            .expect("nothing else is capturing");
+        let models = drained_models(&mut updates).expect("starting pushes the read");
+        assert!(models.read_aloud.recording, "the frame carries the recording");
 
-        ws.dispatch(crate::Command::DictateReadAloudDisarm).expect("the arming is there to cancel");
-        let models = drained_models(&mut updates).expect("cancelling pushes the read");
-        assert!(!models.read_aloud.armed, "the frame carries the arming cleared");
+        ws.dispatch(crate::Command::DictateReadAloudStop { keep: false, initiator: Some(1) })
+            .expect("the recording is this connection's");
+        let models = drained_models(&mut updates).expect("stopping pushes the read");
+        assert!(!models.read_aloud.recording, "the frame carries it stopped");
+    }
+
+    /// The next frame that carries a written set, inside a test's patience:
+    /// the write runs off the runtime thread, so the stop's own frame lands
+    /// before it and this is the one that says the bytes are on disk.
+    async fn await_recorded(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>,
+    ) -> crate::catalogue::DictateModelsSnapshot {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                match updates.recv().await {
+                    Some(crate::SessionUpdate::DictateModelsChanged { models }) => {
+                        if models.read_aloud.recorded {
+                            break models;
+                        }
+                    }
+                    Some(_) => {}
+                    None => panic!("the subscription must stay attached"),
+                }
+            }
+        })
+        .await
+        .expect("the set must land inside fifteen seconds")
+    }
+
+    /// **A kept recording becomes the set.** The frames the page fed land as
+    /// the passage's own take - and only the recording connection's frames
+    /// do: another connection's are not the recording's to feed. A stop that
+    /// does not keep writes nothing.
+    #[tokio::test]
+    async fn a_kept_recording_becomes_the_set_and_a_dropped_one_writes_nothing() {
+        let (ws, mut updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
+        let dir = tempfile::tempdir().unwrap();
+        *ws.test_read_aloud_dir.lock() = Some(dir.path().to_path_buf());
+
+        ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) }).unwrap();
+        assert!(ws.read_aloud_push(&vec![0.25_f32; 1_600], Some(1)), "its own frames land");
+        assert!(!ws.read_aloud_push(&[0.0_f32; 8], Some(2)), "another connection's do not");
+        ws.dispatch(crate::Command::DictateReadAloudStop { keep: true, initiator: Some(1) })
+            .unwrap();
+
+        let models = await_recorded(&mut updates).await;
+        assert!(models.read_aloud.recorded, "the read says the set is here");
+        let clip = forge_dictate::bench::read_aloud(dir.path())
+            .expect("the set reads")
+            .expect("a passage and a take are there");
+        assert_eq!(clip.audio.len(), 1_600, "the frames the page fed");
+
+        // A second recording, dropped rather than kept: nothing replaces the
+        // set that stands.
+        ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) }).unwrap();
+        assert!(ws.read_aloud_push(&vec![0.5_f32; 800], Some(1)));
+        ws.dispatch(crate::Command::DictateReadAloudStop { keep: false, initiator: Some(1) })
+            .unwrap();
+        let clip = forge_dictate::bench::read_aloud(dir.path()).unwrap().unwrap();
+        assert_eq!(clip.audio.len(), 1_600, "a dropped recording leaves the set alone");
+    }
+
+    /// One capture at a time: a take that is live refuses a recording by
+    /// name, and a recording counts as live for the guards that wait on
+    /// captures.
+    #[test]
+    fn a_recording_and_a_take_refuse_each_other() {
+        let (ws, _updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
+        let dir = tempfile::tempdir().unwrap();
+        *ws.test_read_aloud_dir.lock() = Some(dir.path().to_path_buf());
+
+        ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) }).unwrap();
+        assert_eq!(
+            ws.dictate_runtime.lock().live_holder().as_deref(),
+            Some("the read-aloud recording"),
+            "a recording is a live capture"
+        );
+        let err = ws
+            .dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) })
+            .expect_err("one recording at a time");
+        assert!(
+            matches!(err, crate::DispatchError::TakeLive { ref holder } if holder == "the read-aloud recording"),
+            "got: {err:?}"
+        );
+
+        let (stop, _stop_rx) = tokio::sync::mpsc::channel(1);
+        ws.dictate_runtime.lock().recordings.insert(
+            crate::SessionSlot::new("Busytools", "forge", "worker"),
+            crate::dictate::LiveRecording { stop, sink: None, initiator: None },
+        );
+        ws.dispatch(crate::Command::DictateReadAloudStop { keep: false, initiator: Some(1) })
+            .unwrap();
+        let err = ws
+            .dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) })
+            .expect_err("a take holds the capture");
+        assert!(
+            matches!(&err, crate::DispatchError::TakeLive { holder } if holder == "Busytools/forge/worker"),
+            "the refusal names the seat whose take is live, got: {err:?}"
+        );
     }
 }

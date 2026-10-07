@@ -88,10 +88,12 @@ against the words the model in use recorded beside each one - speed and
 agreement, and agreement is a signal rather than an error, because the other
 side is another model's output. The read-aloud tier is the one passage
 somebody read aloud on purpose: its words are known, so it is the only corpus
-that can score term accuracy and word error rate. The section draws the
-passage and the arming control when this machine has no set, and says what an
-arming means - the next take dictated anywhere is stored as the set, and
-nothing else about dictation changes - with a cancel while it waits. A run
+that can score term accuracy and word error rate. **The page records that
+passage itself**: the section draws the passage and the record control, and a
+press opens this client's microphone through the composer's own capture. The
+recording is not a take - no session owns it and nothing is transcribed,
+because the passage's words are already known - and the card draws its clock,
+its frames and its levels while it runs, with stop and save and cancel. A run
 names its target, its own progress, and a stop that discards a partial corpus
 rather than saving one. Each saved result draws its figures, what it means
 against the model in use on the same corpus, and a delete.

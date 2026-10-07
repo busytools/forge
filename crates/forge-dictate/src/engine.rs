@@ -351,9 +351,6 @@ pub struct Engine {
     /// anywhere. Held here because the worker consumes the config, and
     /// the per-take segmenter writes the record at finish.
     diagnostics_dir: Option<PathBuf>,
-    /// Where the read-aloud set lands, when this host keeps one: the
-    /// segmenter stores the next take under it while it is armed.
-    read_aloud_dir: Option<PathBuf>,
     /// Set before teardown. The worker checks it between jobs, so a
     /// backlog is DISCARDED rather than drained: shutdown should not wait
     /// out work whose callers are going away with it.
@@ -422,7 +419,6 @@ impl Engine {
         let normalize_options = cfg.normalize_options;
         let silence_floor = cfg.silence_floor;
         let diagnostics_dir = cfg.diagnostics_dir.clone();
-        let read_aloud_dir = cfg.read_aloud_dir.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let in_flight: Arc<Mutex<Option<CancelToken>>> = Arc::new(Mutex::new(None));
         let readiness = Arc::new(Readiness::default());
@@ -445,7 +441,6 @@ impl Engine {
             normalize_options,
             silence_floor,
             diagnostics_dir,
-            read_aloud_dir,
             stopping,
             in_flight,
             jobs: Some(jobs),
@@ -660,7 +655,6 @@ impl Engine {
                     jobs,
                     silence_floor: self.silence_floor,
                     diagnostics_dir: self.diagnostics_dir.clone(),
-                    read_aloud_dir: self.read_aloud_dir.clone(),
                     take,
                     last_cut: 0,
                     cuts: Vec::new(),
@@ -1281,7 +1275,6 @@ fn worker(
             && job.diagnose
             && !stopping.load(Ordering::Relaxed)
         {
-            let read_aloud = cfg.read_aloud_dir.as_deref();
             let record = diagnostics::TakeRecord {
                 audio: &job.pcm,
                 windows: &window_records,
@@ -1294,7 +1287,7 @@ fn worker(
                 outcome,
                 recognition_error,
             };
-            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record, read_aloud);
+            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
         }
     }
 }
@@ -1442,7 +1435,6 @@ struct TakeSegmenter {
     jobs: Sender<Job>,
     silence_floor: f32,
     diagnostics_dir: Option<PathBuf>,
-    read_aloud_dir: Option<PathBuf>,
     take: TakeShared,
     /// First sample not yet handed to a segment.
     last_cut: usize,
@@ -1668,7 +1660,6 @@ impl TakeSegmenter {
         if let (Some(dir), Some((outcome, text))) = (&self.diagnostics_dir, diag)
             && !teardown
         {
-            let read_aloud = self.read_aloud_dir.as_deref();
             let ms_of = |samples: usize| {
                 u64::try_from(audio_duration(samples).as_millis()).unwrap_or(u64::MAX)
             };
@@ -1702,7 +1693,7 @@ impl TakeSegmenter {
                 outcome,
                 recognition_error: self.failed,
             };
-            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record, read_aloud);
+            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
         }
     }
 

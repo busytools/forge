@@ -613,7 +613,6 @@ pub(crate) fn preflight_config(
         Ok(dir) => {
             cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
             cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
-            cfg.read_aloud_dir = Some(dir.join("dictate-read-aloud"));
         }
         Err(error) => tracing::warn!(
             event_name = "dictate_state_dir_unresolved",
@@ -844,6 +843,19 @@ pub(crate) struct FinishingTake {
     pub(crate) initiator: Option<u64>,
 }
 
+/// The read-aloud set being recorded, when one is: the audio a client's
+/// own frames have fed so far, held until the stop that keeps or drops
+/// it. It belongs to no session - the words are known, so nothing is
+/// transcribed and nothing is routed - but it is a live capture like any
+/// other, and the guards that wait on captures count it.
+///
+/// The connection that started it is the only one that can feed or stop
+/// it, the same rule every framed take follows.
+pub(crate) struct SetRecording {
+    pub(crate) initiator: Option<u64>,
+    pub(crate) samples: Vec<f32>,
+}
+
 /// Dictation state across every session. A device take holds the one
 /// microphone, but takes fed by a client's own frames hold no device, so
 /// several seats can dictate at once; several takes can also be
@@ -852,6 +864,7 @@ pub(crate) struct FinishingTake {
 pub(crate) struct DictateRuntime {
     pub(crate) recordings: HashMap<SessionSlot, LiveRecording>,
     pub(crate) finishing: Vec<FinishingTake>,
+    pub(crate) set_recording: Option<SetRecording>,
     /// Handed out with every take's `DictateStarted` and echoed on its
     /// `DictateEnded`, so a resolver arriving after a newer take on the
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
@@ -878,6 +891,7 @@ impl Default for DictateRuntime {
         Self {
             recordings: HashMap::new(),
             finishing: Vec::new(),
+            set_recording: None,
             next_generation: 1,
             stop_pending: None,
         }
@@ -904,16 +918,18 @@ impl DictateRuntime {
             .map(|take| take.stop.clone())
     }
 
-    /// The seat holding a live take, when one is: a recording still
-    /// capturing, or a submitted take still transcribing. A model swap is
-    /// refused while one is, and the refusal names this holder.
+    /// The seat holding a live capture, when one is: a recording still
+    /// capturing, a submitted take still transcribing, or the read-aloud
+    /// set being recorded. A model swap and a bench are refused while one
+    /// is, and the refusal names this holder.
     pub(crate) fn live_holder(&self) -> Option<String> {
-        let slot = self
-            .recordings
-            .keys()
-            .next()
-            .or_else(|| self.finishing.first().map(|take| &take.key))?;
-        Some(slot.display())
+        let slot =
+            self.recordings.keys().next().or_else(|| self.finishing.first().map(|take| &take.key));
+        match slot {
+            Some(slot) => Some(slot.display()),
+            None if self.set_recording.is_some() => Some("the read-aloud recording".to_owned()),
+            None => None,
+        }
     }
 
     /// The live take a socket's frame belongs to, if `key` has one that is
