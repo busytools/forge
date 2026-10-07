@@ -36,8 +36,7 @@ use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::conversation::Held;
 use crate::transport::envelope::Subject;
-use crate::work::{WorkState, work_from_scan};
-use forge_primitives::git_diff::LayerState;
+use crate::work::{WorkState, git_work_view, work_from_scan};
 
 /// The seat the fixture surface is populated for.
 ///
@@ -1177,23 +1176,10 @@ async fn session(
     // does not name.
     let held = surface.work(slot, cwd).await;
     let work = work_from_scan(&held.diff, &held.cwd);
-    // The two layers a row's depth draws, from the same held scan: files
-    // with their marks, and the chain of commits ahead. `Clean` and
-    // `ScanFailed` both read as nothing to state, which is what the layer
-    // means - the row above still carries the gate that says which.
-    let worktree = match &held.diff.worktree {
-        LayerState::Populated(uncommitted) => Some(uncommitted.clone()),
-        LayerState::Clean | LayerState::ScanFailed => None,
-    };
-    let ahead = match &held.diff.branch_ahead {
-        LayerState::Populated(chain) => Some(chain.clone()),
-        LayerState::Clean | LayerState::ScanFailed => None,
-    };
-    let git = forge_primitives::git_diff::GitWorkView {
-        default_branch: held.diff.default_branch.clone(),
-        worktree,
-        ahead,
-    };
+    // The tree behind the row's depth, from the same held scan and through
+    // the same constructor the pushed frame goes through - one derivation,
+    // so a client that applies the update lands on the record's own answer.
+    let git = git_work_view(&held.diff);
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
@@ -2422,6 +2408,11 @@ mod tests {
             encoded["closes"],
             serde_json::to_value(&held.diff.closes).expect("encode"),
             "and the issues it closes",
+        );
+        assert_eq!(
+            encoded["git"],
+            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff)).expect("encode"),
+            "and the tree behind the row's depth",
         );
     }
 
