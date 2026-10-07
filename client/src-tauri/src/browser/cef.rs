@@ -58,23 +58,26 @@ wrap_app! {
 /// subprocess's whole life is that call. The browser process carries on to
 /// claim NSApplication and `initialize`.
 pub fn bootstrap() {
+    // **The framework comes first.** Every CEF wrapper below calls into it -
+    // `Args` and the command line included - and before `load` + `api_hash`
+    // those calls land on null pointers.
+    let Ok(executable) = std::env::current_exe() else {
+        eprintln!("forge client: the executable path is unavailable; CEF stays off");
+        return;
+    };
+    let loader = library_loader::LibraryLoader::new(&executable, false);
+    if !loader.load() {
+        eprintln!("forge client: the CEF framework did not load; CEF stays off");
+        return;
+    }
+    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+
     let args = args::Args::new();
     let Some(cmd_line) = args.as_cmd_line() else {
         eprintln!("forge client: the command line could not be read; CEF stays off");
         return;
     };
     let is_browser_process = cmd_line.has_switch(Some(&CefString::from("type"))) != 1;
-
-    let Ok(executable) = std::env::current_exe() else {
-        eprintln!("forge client: the executable path is unavailable; CEF stays off");
-        return;
-    };
-    let loader = library_loader::LibraryLoader::new(&executable, !is_browser_process);
-    if !loader.load() {
-        eprintln!("forge client: the CEF framework did not load; CEF stays off");
-        return;
-    }
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
 
     let ret = execute_process(Some(args.as_main_args()), None, std::ptr::null_mut());
     if !is_browser_process {

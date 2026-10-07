@@ -4,6 +4,9 @@ version = "1.0.116"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
+# Two binaries exist (the app and CEF's helper); the bundler needs to be told
+# which one the app is.
+default-run = "forge-client"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
 # shell links the whole webview stack, which is minutes of compile the
@@ -15,6 +18,12 @@ rust-version = "1.90"
 # The Android target links the app as a native library; a binary-only crate
 # gives `tauri android build` no library target to build.
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# CEF's subprocesses are these, laid out by `scripts/bundle-cef.sh` as the
+# `forge-client Helper*.app` bundles CEF looks for.
+[[bin]]
+name = "forge_client_helper"
+path = "src/bin/forge_client_helper.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
