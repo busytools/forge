@@ -642,7 +642,14 @@ async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError
         GitOutput::Failed => return Err(NumstatError::Subprocess),
         GitOutput::Oversize => return Err(NumstatError::Oversize),
     };
-    let mut files = parse_numstat(&raw);
+    Ok(stats_of(parse_numstat(&raw)))
+}
+
+/// One file list as a stats block: the full totals, then the
+/// top-`TOP_FILE_COUNT` files by churn (alpha tie-break) - the count above
+/// the list tells the truth either way. The shape a layer's stats and each
+/// commit's own stats both take.
+fn stats_of(mut files: Vec<GitDiffFile>) -> GitDiffStats {
     let total_files = files.len();
     let total_added: u32 = files.iter().fold(0u32, |acc, f| acc.saturating_add(f.added));
     let total_removed: u32 = files.iter().fold(0u32, |acc, f| acc.saturating_add(f.removed));
@@ -652,7 +659,7 @@ async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError
         b_total.cmp(&a_total).then_with(|| a.path.cmp(&b.path))
     });
     files.truncate(TOP_FILE_COUNT);
-    Ok(GitDiffStats { files, total_files, total_added, total_removed })
+    GitDiffStats { files, total_files, total_added, total_removed }
 }
 
 /// Parse `<added>\t<removed>\t<path>` lines. Skips binary entries
@@ -663,25 +670,27 @@ async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError
 /// and [`name_statuses`] corrects what it can afterwards: a file the
 /// merge never reaches keeps the least-alarming class.
 fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
-    raw.lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(3, '\t');
-            let added = parts.next()?;
-            let removed = parts.next()?;
-            let path = parts.next()?;
-            if added == "-" || removed == "-" {
-                return None;
-            }
-            let added = added.parse::<u32>().ok()?;
-            let removed = removed.parse::<u32>().ok()?;
-            Some(GitDiffFile {
-                path: rename_target(path),
-                added,
-                removed,
-                status: forge_primitives::git::FileStatus::Modified,
-            })
-        })
-        .collect()
+    raw.lines().filter_map(parse_numstat_line).collect()
+}
+
+/// One `<added>\t<removed>\t<path>` line, or `None` for anything else - a
+/// binary entry (counts as `-`) and a format line among them.
+fn parse_numstat_line(line: &str) -> Option<GitDiffFile> {
+    let mut parts = line.splitn(3, '\t');
+    let added = parts.next()?;
+    let removed = parts.next()?;
+    let path = parts.next()?;
+    if added == "-" || removed == "-" {
+        return None;
+    }
+    let added = added.parse::<u32>().ok()?;
+    let removed = removed.parse::<u32>().ok()?;
+    Some(GitDiffFile {
+        path: rename_target(path),
+        added,
+        removed,
+        status: forge_primitives::git::FileStatus::Modified,
+    })
 }
 
 /// A `--numstat` path resolved to the file's new name: a rename crosses as
@@ -719,8 +728,11 @@ async fn name_statuses(cwd: &Path, target: &str) -> Option<HashMap<String, FileS
 
 /// The branch's commit chain ahead of `base`, newest first, capped at
 /// [`COMMITS_WALK_CAP`]: the count says how many there are, these say
-/// what they are. `%h` is the short sha, `%s` the subject; the unit
-/// separator cannot occur in either, so one line splits cleanly.
+/// what they are, and each carries the files it changed. Two walks of the
+/// same range - `--numstat` for the counts, `--name-status` for the marks,
+/// which git will not emit together. `%h` is the short sha, `%s` the
+/// subject; the unit separator cannot occur in either, so one line splits
+/// cleanly.
 async fn commits_in_range(
     cwd: &Path,
     base: &str,
@@ -728,21 +740,77 @@ async fn commits_in_range(
 ) -> Option<Vec<forge_primitives::git::GitCommit>> {
     let range = format!("{base}..{head}");
     let cap = format!("--max-count={COMMITS_WALK_CAP}");
-    match run_git(cwd, &["log", &cap, "--format=%h%x1f%s", &range]).await {
-        GitOutput::Ok(raw) => Some(
-            raw.lines()
-                .filter_map(|line| {
-                    let (sha, subject) = line.split_once('\u{1f}')?;
-                    Some(forge_primitives::git::GitCommit {
-                        sha: sha.to_owned(),
-                        subject: subject.to_owned(),
-                    })
-                })
-                .collect(),
-        ),
-        GitOutput::Empty => Some(Vec::new()),
-        GitOutput::Failed | GitOutput::Oversize => None,
+    let listed = match run_git(cwd, &["log", &cap, "--numstat", "--format=%h%x1f%s", &range]).await
+    {
+        GitOutput::Ok(raw) => raw,
+        GitOutput::Empty => return Some(Vec::new()),
+        GitOutput::Failed | GitOutput::Oversize => return None,
+    };
+    // Best-effort: a failed marks walk leaves every file `Modified`
+    // rather than failing the chain.
+    let marks =
+        match run_git(cwd, &["log", &cap, "--name-status", "--format=%h%x1f", &range]).await {
+            GitOutput::Ok(raw) => parse_commit_marks(&raw),
+            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => HashMap::new(),
+        };
+
+    let mut commits = Vec::new();
+    let mut open: Option<(String, String)> = None;
+    let mut files: Vec<GitDiffFile> = Vec::new();
+    for line in listed.lines() {
+        if let Some((sha, subject)) = line.split_once('\u{1f}') {
+            // The format line opens a commit; the numstat lines under it
+            // are that commit's own files.
+            if let Some((sha, subject)) = open.take() {
+                commits.push(forge_primitives::git::GitCommit {
+                    sha,
+                    subject,
+                    stats: stats_of(std::mem::take(&mut files)),
+                });
+            }
+            open = Some((sha.to_owned(), subject.to_owned()));
+        } else if let Some(file) = parse_numstat_line(line) {
+            files.push(file);
+        }
     }
+    if let Some((sha, subject)) = open.take() {
+        commits.push(forge_primitives::git::GitCommit { sha, subject, stats: stats_of(files) });
+    }
+    for commit in &mut commits {
+        if let Some(by_path) = marks.get(&commit.sha) {
+            for file in &mut commit.stats.files {
+                if let Some(status) = by_path.get(&file.path) {
+                    file.status = *status;
+                }
+            }
+        }
+    }
+    Some(commits)
+}
+
+/// Marks per commit from a `--name-status` walk of the same chain: the
+/// status lines carry no sha of their own, so each block belongs to the
+/// format line that opened it.
+fn parse_commit_marks(raw: &str) -> HashMap<String, HashMap<String, FileStatus>> {
+    let mut marks: HashMap<String, HashMap<String, FileStatus>> = HashMap::new();
+    let mut open: Option<String> = None;
+    for line in raw.lines() {
+        if let Some((sha, _)) = line.split_once('\u{1f}') {
+            open = Some(sha.to_owned());
+            continue;
+        }
+        let Some(sha) = open.as_deref() else { continue };
+        // "M\tpath" and "R100\told\tnew" - the new path is the last field.
+        let mut parts = line.split('\t');
+        let (Some(code), Some(path)) = (parts.next(), parts.next_back()) else {
+            continue;
+        };
+        let Some(status) = code.chars().next().and_then(hunks::status_of) else {
+            continue;
+        };
+        marks.entry(sha.to_owned()).or_default().insert(path.to_owned(), status);
+    }
+    marks
 }
 
 /// How many commits the chain walk reads. Past it the count above the
@@ -1565,6 +1633,15 @@ mod tests {
             forge_primitives::git::FileStatus::Added,
             "the range's added file wears Added, not the numstat default"
         );
+        // And the chain carries each commit's own files, marked the same way.
+        assert_eq!(ahead.commits.len(), 1, "the chain is the one feature commit");
+        assert_eq!(ahead.commits[0].stats.files[0].path, "feat.rs", "the commit's own file");
+        assert_eq!(
+            ahead.commits[0].stats.files[0].status,
+            forge_primitives::git::FileStatus::Added,
+            "with the commit's own mark"
+        );
+        assert_eq!(ahead.commits[0].stats.files[0].added, 1, "and the commit's own count");
     }
 
     #[tokio::test(flavor = "current_thread")]

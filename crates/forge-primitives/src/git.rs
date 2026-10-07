@@ -43,11 +43,14 @@ pub enum FileStatus {
 }
 
 /// One commit of a branch's chain ahead of its default branch, as the
-/// chain draws it: the short sha and the subject line.
+/// chain draws it: the short sha, the subject line, and the files the
+/// commit itself changed - the same shape a layer's stats take, bounded
+/// the same way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCommit {
     pub sha: String,
     pub subject: String,
+    pub stats: crate::git_diff::GitDiffStats,
 }
 
 /// Open pull request associated with the current branch. Populated

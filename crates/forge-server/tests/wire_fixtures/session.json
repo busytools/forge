@@ -303,7 +303,7 @@
             "path": "branch.txt",
             "added": 1,
             "removed": 0,
-            "status": "modified"
+            "status": "added"
           }
         ],
         "total_files": 1,
@@ -313,7 +313,20 @@
       "commits": [
         {
           "sha": "31ac1b5",
-          "subject": "branch"
+          "subject": "branch",
+          "stats": {
+            "files": [
+              {
+                "path": "branch.txt",
+                "added": 1,
+                "removed": 0,
+                "status": "added"
+              }
+            ],
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0
+          }
         }
       ]
     }
