@@ -3392,6 +3392,54 @@ mod tests {
         assert!(domain.auto_continue.is_some(), "so a failure of another kind is nudged");
     }
 
+    /// A result the CLI sent no errors for is named by its subtype in the
+    /// nudge - the book's contract for the words - and an empty list names
+    /// nothing either.
+    #[test]
+    fn a_result_without_errors_is_named_by_its_subtype_in_the_nudge() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("subtype-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "subtype-rail".to_owned(),
+            msg: result_message("error_max_turns", true),
+        });
+        let reason = task.domain.lock().auto_continue.clone().expect("armed").reason;
+        assert_eq!(reason, "error_max_turns", "no errors reported, so the subtype names it");
+
+        task.domain.lock().auto_continue = None;
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "subtype-rail".to_owned(),
+            msg: result_message_with_errors(&[]),
+        });
+        let reason = task.domain.lock().auto_continue.clone().expect("armed").reason;
+        assert_eq!(reason, "error_during_execution", "an empty list names nothing either");
+    }
+
+    /// The words of the reason, branch by branch: the CLI's errors win when
+    /// it reported any, then the result's subtype, and a plain wording when
+    /// neither names anything.
+    #[test]
+    fn the_failures_reason_prefers_the_cli_errors_then_the_subtype() {
+        assert_eq!(
+            super::failure_reason(Some(&["API Error: 400 ...".to_owned()]), "error_max_turns"),
+            "API Error: 400 ...",
+            "the CLI's own errors are the reason",
+        );
+        assert_eq!(
+            super::failure_reason(None, "error_max_turns"),
+            "error_max_turns",
+            "a result with no errors is named by its subtype",
+        );
+        assert_eq!(
+            super::failure_reason(None, "success"),
+            "an error",
+            "a subtype that names nothing falls back to plain wording",
+        );
+        assert_eq!(super::failure_reason(None, ""), "an error", "and so does an empty subtype");
+    }
+
     /// A turn that finished ends the episode: the spend is dropped and so
     /// is the classification it was read against, so a later unrelated
     /// failure is nudged on its own terms.
