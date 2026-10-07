@@ -470,10 +470,10 @@ details[open] > summary .arw { transform: rotate(90deg); }
   gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
-/* The projects rail is SUMMONED: off-canvas at every width over a scrim, so
-   it costs the conversation nothing while it is away. The chip opens it by
-   hover (the peek - no scrim under a mouse that only crossed the chip);
-   Cmd+Left and the palette open it to stay (scrim, history, Esc). */
+/* The SUMMONED rail: off-canvas over a scrim, so a hover-mode or closed rail
+   costs the conversation nothing while it is away. The chip opens it by hover
+   in the hover mode (the peek - no scrim under a mouse that only crossed the
+   chip); Cmd+Left and the palette open it to stay (scrim, history, Esc). */
 .app .rail.left {
   position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
   transform: translateX(calc(-100% - 24px)); visibility: hidden;
@@ -482,6 +482,17 @@ details[open] > summary .arw { transform: rotate(90deg); }
 .app.rail-open .rail.left {
   transform: translateX(0); visibility: visible; transition: transform .2s ease;
 }
+/* A STATIC rail is the column, which is the default: the app grid carries it
+   and the overlay rules above stand down. The width folds it to the overlay
+   on its own, whatever the preference says. */
+.app.rail-static { grid-template-columns: 312px minmax(0,1fr); }
+.app.rail-static .rail.left {
+  position: static; inset: auto; width: auto; z-index: auto;
+  transform: none; visibility: visible; transition: none;
+  grid-column: 1; grid-row: 1 / -1;
+}
+.app.rail-static main.chat { grid-column: 2; }
+.app.rail-static .composer { grid-column: 2; }
 .scrim { position: fixed; inset: 0; z-index: 50; background: rgba(4,5,10,.55);
   backdrop-filter: blur(2px); opacity: 0; pointer-events: none;
   transition: opacity .18s ease; }
@@ -556,6 +567,9 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* A rail that covered the page carries its own way out: the header handle
    that opened it is underneath. The chip is a button with a sprite in it
    rather than a glyph sized to a monospace line box. */
+.banner .pin { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px;
+  background: none; border: 0; display: flex; align-items: center; }
+.banner .pin:hover { color: var(--text); }
 .banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px;
   background: none; border: 0; display: flex; align-items: center; }
 .banner .close:hover { color: var(--text); }

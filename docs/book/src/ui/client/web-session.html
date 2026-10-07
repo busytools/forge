@@ -141,18 +141,27 @@
   .app { display: grid; grid-template-columns: minmax(0,1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
-  /* The rail is summoned: parked off-canvas and slid in when the chip opens
-     it. In this drawing the #l checkbox is the chip's stand-in. The two
-     `.app` rules mirror web.css rule for rule. */
+  /* The rail's two non-default modes are the summoned rail: parked
+     off-canvas and slid in over a scrim. The drawing shows the DEFAULT,
+     `.rail-static`, below; these two `.app` rules mirror web.css rule for
+     rule. */
   .app .rail.left {
     position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
     transform: translateX(calc(-100% - 24px)); visibility: hidden;
     transition: transform .2s ease, visibility 0s .2s;
   }
-  #l:checked ~ .app .rail.left { transform: translateX(0); visibility: visible; }
   .app.rail-open .rail.left {
     transform: translateX(0); visibility: visible; transition: transform .2s ease;
   }
+  /* The default: the column, which the app grid carries. Mirrors web.css. */
+  .app.rail-static { grid-template-columns: 312px minmax(0,1fr); }
+  .app.rail-static .rail.left {
+    position: static; inset: auto; width: auto; z-index: auto;
+    transform: none; visibility: visible; transition: none;
+    grid-column: 1; grid-row: 1 / -1;
+  }
+  .app.rail-static main.chat { grid-column: 2; }
+  .app.rail-static .composer { grid-column: 2; }
 
   .dot { width: 11px; height: 11px; flex: 0 0 11px; }
   .dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
@@ -1286,21 +1295,21 @@
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
 </svg>
 
-<input type="checkbox" id="l" hidden>
 <input type="checkbox" id="diff" hidden>
 <!-- The diff page keeps its specimen and this opener even though the
      inspector's file list, which used to open it, is gone: the page is a
      design-phase drawing with no client surface behind it yet, and removing
      it - or re-homing its opener - is its own call. -->
 
-<div class="app">
+<div class="app rail-static">
 
   <!-- ============ PROJECTS ============ -->
   <aside class="rail left">
     <div class="banner">
       <span class="t">projects</span>
       <span class="n ml">10 live / 16</span>
-      <label class="close" for="l" title="close">&#215;</label>
+      <span class="pin" title="float the rail on hover">&#8592;</span>
+      <span class="close" title="close">&#215;</span>
     </div>
     <div class="scroll">
 
@@ -1458,15 +1467,15 @@
       <!-- The chip: the brand's own mark as the face of the one projects
            control, with the seats that want a person beside it. Its click is
            smart - exactly one goes to that seat, several or a failure go
-           home to pick - and it is the rail's own door: hovering summons the
-           peek, Cmd+Left and the palette keep it. Drawn here in its loud
-           state and standing in as the rail's #l switch; the calm state is a
+           home to pick - and it is the rail's own door in its other modes:
+           hovering summons the peek in the hover mode, Cmd+Left and the
+           palette keep it. Drawn here in its loud state; the calm state is a
            quiet `projects` word, no count. -->
-      <label class="needchip" for="l" title="2 seats need you">
+      <span class="needchip" title="2 seats need you">
         <span class="ch-mk"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
         <span class="dot needs ch-tri" aria-hidden="true"></span>
         <span>2</span>
-      </label>
+      </span>
       <span class="dot live"></span>
       <span class="nm">forge</span>
       <!-- The line draws the name alone (#1707); the org joins it only where

@@ -286,6 +286,7 @@ describe('the header brand as both sheets draw it', () => {
       '.needchip.calm',
       '.app .rail.left',
       '.app.rail-open .rail.left',
+      '.app.rail-static .rail.left',
     ]) {
       const app = ruleText(sheet, selector);
       // The denominator: a scan that reaches no rule reports both sheets
@@ -537,19 +538,35 @@ describe('the rail footer as the sheet lays it out', () => {
 
 describe('the app grid', () => {
   /**
-   * **The rail is summoned, so the grid carries one column.** Parked
-   * off-canvas at every width and slid in over a scrim, it costs the
-   * conversation nothing while it is away; the chat owns the only column.
+   * **The default rail is the column, and the other two modes are the
+   * summoned overlay.** A column rides the app grid; a hover-mode or closed
+   * rail parks off-canvas and slides in over a scrim, so it costs the
+   * conversation nothing while it is away.
    */
-  it('keeps the rail off-canvas until it is summoned', () => {
-    expect(body('.app .rail.left'), 'the rail is fixed').toContain('position: fixed');
+  it('draws the column by default and the parked rail for the other modes', () => {
+    expect(body('.app.rail-static .rail.left'), 'the static rail is the column').toContain(
+      'position: static',
+    );
+    expect(body('.app .rail.left'), 'the summoned rail is fixed').toContain('position: fixed');
     expect(body('.app .rail.left'), 'and parked off-canvas').toContain(
       'translateX(calc(-100% - 24px))',
     );
     expect(body('.app.rail-open .rail.left'), 'sliding in when summoned').toContain(
       'translateX(0)',
     );
-    expect(body('.app main.chat'), 'the chat owns the only column').toContain('grid-column: 1');
+    expect(body('.app main.chat'), 'the chat owns the first column').toContain('grid-column: 1');
+  });
+
+  /**
+   * **The pin says where the rail is next, and the close puts it away.**
+   * The server render has no DOM, so it takes the column default; the pin's
+   * word is the action rather than the state.
+   */
+  it('draws the rail as the column, pinned, with its own two controls', () => {
+    const body = draw();
+    expect(body, 'the default was not the column').toContain('rail-static');
+    expect(body, 'the pin floats the rail').toContain('float the rail on hover');
+    expect(body, 'and the close is beside it').toContain('close the projects rail');
   });
 
   /**

@@ -14,6 +14,7 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
   import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
@@ -251,19 +252,47 @@
    * only crossed the chip dims nothing); Cmd+Left and the palette open it to
    * stay (`leftChosen`, scrim, history entry, Esc).
    */
-  const hasDom = typeof window !== 'undefined';
+  // jsdom carries no `matchMedia`, so the capability is part of having a DOM
+  // at all here - without the check every mount under vitest throws.
+  const hasDom = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
 
-  // `null` and `false` are both "closed": the rail opens by its own doors,
-  // and a reader has not chosen it on arriving.
+  /** The rail's presence, which is a per-device preference (rail-mode.ts). */
+  let railMode = $state<RailMode>(hasDom ? rememberedRailMode() : 'static');
+
+  /** The width a static column folds to the overlay at, whatever the mode. */
+  const BELOW_980 = '(max-width: 980px)';
+  let narrow = $state(hasDom && window.matchMedia(BELOW_980).matches);
+  $effect(() => {
+    if (!hasDom) return;
+    const mq = window.matchMedia(BELOW_980);
+    const sync = () => (narrow = mq.matches);
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  });
+
+  const columned = $derived(railMode === 'static' && !narrow);
+
+  // `null` and `false` are both "closed": the overlay opens by its own
+  // doors, and a reader has not chosen it on arriving.
   let leftChosen = $state<boolean | null>(null);
   let summoned = $state(false);
-  const leftShown = $derived(leftChosen === true || summoned);
-  const peekOnly = $derived(summoned && leftChosen !== true);
+  const overlaid = $derived(leftChosen === true || summoned);
+  const leftShown = $derived(columned || overlaid);
+  const peekOnly = $derived(!columned && summoned && leftChosen !== true);
+
+  /** Set the preference: the pin and the rail's own close both land here. */
+  function setRail(mode: RailMode) {
+    railMode = mode;
+    rememberRailMode(mode);
+  }
 
   /** A shadow of the strip panels' grace: crossing the chip-to-rail gap lands. */
   let graced: ReturnType<typeof setTimeout> | null = null;
 
   function summon() {
+    // Only the hover mode summons; a static rail is already there, and a
+    // closed one opens by Cmd+Left or the palette, not by a pointer crossing.
+    if (railMode !== 'hover') return;
     if (graced !== null) clearTimeout(graced);
     graced = null;
     summoned = true;
@@ -294,6 +323,8 @@
 
   /** The projects rail, opened to STAY: Cmd+Left or the palette's own verb. */
   function openRail() {
+    // A static rail is already over the page; there is nothing to open.
+    if (columned) return;
     summoned = false;
     // One entry covers the open state: a second opening joins it rather
     // than stacking a step of its own.
@@ -308,6 +339,7 @@
   function closeRail() {
     leftChosen = false;
     summoned = false;
+    setRail('closed');
     if (railOnTop(history.state) === 'left') {
       history.back();
       return;
@@ -400,8 +432,10 @@
       }
       if (event.key !== 'ArrowLeft' || !(event.metaKey || event.ctrlKey)) return;
       if (typing) return;
+      // The column is already shown; there is nothing to toggle over it.
+      if (columned) return;
       event.preventDefault();
-      if (leftShown) closeRail();
+      if (overlaid) closeRail();
       else openRail();
     };
     window.addEventListener('keydown', onkey);
@@ -431,7 +465,12 @@
   });
 </script>
 
-<div class="app" class:rail-open={leftShown} class:rail-peek={peekOnly}>
+<div
+  class="app"
+  class:rail-static={columned}
+  class:rail-open={overlaid && !columned}
+  class:rail-peek={peekOnly}
+>
   <!-- The scrim a summoned rail closes on. It is a click-catcher rather than
        a control: Escape is its keyboard door and the rail's own close chip
        is the visible one, so presentation is the honest role. -->
@@ -442,7 +481,9 @@
     {now}
     {connection}
     {notice}
+    mode={railMode}
     onclose={() => closeRail()}
+    onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}
     onenter={summon}
     onleave={unsummon}
   />

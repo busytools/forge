@@ -364,8 +364,25 @@ describe('the session page over a socket', () => {
 
     const app = document.querySelector('.app')?.className ?? '';
     expect(app, 'the rail claimed a column on a narrow page').not.toContain('rail-open');
+    expect(app, 'the width did not fold the column').not.toContain('rail-static');
     expect(document.querySelector('.rail.left'), 'the rail is drawn, to summon').not.toBeNull();
     expect(document.querySelector('.rail-tog.tog-r'), 'the inspector handle is gone').toBeNull();
+  });
+
+  /**
+   * **The default is the column**: a wide page carries the rail statically,
+   * with the pin to float it. The drawer's own content - the working rows,
+   * the spend and the versions - is on the left from arrival.
+   */
+  it('keeps the projects rail as the column by default', async () => {
+    // The stub is global once installed by the fold test above, so the wide
+    // reading is asked for explicitly rather than assumed.
+    matchMediaTo(false);
+    await open(sessionFixture);
+
+    const app = document.querySelector('.app')?.className ?? '';
+    expect(app, 'the default did not pin the rail').toContain('rail-static');
+    expect(document.querySelector('.banner .pin'), 'the pin is the way to float it').not.toBeNull();
   });
 
   /**

@@ -6,6 +6,7 @@
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
   import { closeSeat, closingSeat } from './close';
+  import type { RailMode } from './rail-mode';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import {
@@ -30,7 +31,9 @@
     now,
     connection,
     notice = null,
+    mode = 'static',
     onclose,
+    onpin = null,
     onenter = null,
     onleave = null,
   }: {
@@ -43,8 +46,13 @@
     /** The connection's own line - a protocol skew or a reconnect - drawn
      *  over the versions, where the build facts live. */
     notice?: string | null;
-    /** Brings the header's handle back, which the collapsed rail has covered. */
+    /** The rail's presence, which the pin's own word follows. */
+    mode?: RailMode;
+    /** Closes it: the rail goes away and the chip is the door back. */
     onclose: () => void;
+    /** Flips the column and the peek: pinned open, or floating on hover.
+     *  Absent, the pin is not drawn - a harness that reads the list alone. */
+    onpin?: (() => void) | null;
     /** The pointer arriving here holds a hover-summoned peek open. */
     onenter?: (() => void) | null;
     /** And leaving arms its close, the chip's own grace again. */
@@ -86,8 +94,20 @@
   <div class="banner">
     <span class="t">projects</span>
     <span class="n ml">{fleetCount(home)}</span>
-    <!-- A rail covering the page carries its own way out: the header handle
-         that opened it is underneath. -->
+    <!-- The pin says where the rail is next: pinned open is the column,
+         floating is the hover-summoned peek. The close puts it away, and
+         the chip is the door back. -->
+    {#if onpin !== null}
+      <button
+        class="pin"
+        type="button"
+        title={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        aria-label={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        onclick={onpin}
+      >
+        <Icon name={mode === 'static' ? 'out' : 'in'} />
+      </button>
+    {/if}
     <button
       class="close"
       type="button"
