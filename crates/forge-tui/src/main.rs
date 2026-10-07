@@ -127,6 +127,10 @@ fn run() -> anyhow::Result<()> {
         // crons as they come due, advancing/removing each.
         workspace.start_cron_scheduler();
 
+        // Start the auto-continue sweep: a failed turn nobody has looked at
+        // gets one prompt of forge's own once its delay has run out.
+        workspace.start_auto_continue_sweep();
+
         // Start the Gotify subsystem when configured with at least one
         // durable subscription loaded at boot; no-op otherwise.
         workspace.start_gotify_subsystem();
