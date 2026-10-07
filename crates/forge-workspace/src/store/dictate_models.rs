@@ -56,6 +56,22 @@ pub fn record_installed(db: &Db, model: &InstalledModel) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Drop one installed record, by the file it was filed under. A file with no
+/// row is not an error: the record the caller wanted gone is already gone.
+pub fn remove_installed(db: &Db, file: &str) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = match txn.open_table(INSTALLED) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        table.remove(file)?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 /// The runtime pick recorded for one role, when there is one.
 pub fn active(db: &Db, role: DictateRole) -> anyhow::Result<Option<ActiveChoice>> {
     let txn = db.database().begin_read()?;

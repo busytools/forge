@@ -4527,6 +4527,11 @@ impl Workspace {
                     self.push_models();
                     return outcome;
                 }
+                Command::DictateUninstall { file } => {
+                    let outcome = self.uninstall_model(&file);
+                    self.push_models();
+                    return outcome;
+                }
                 Command::DictateBenchDelete { target, tier, corpus } => {
                     let outcome = self.delete_bench_result(&target, tier, &corpus);
                     self.push_models();

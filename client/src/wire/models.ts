@@ -226,6 +226,9 @@ export interface CatalogueRow {
   kind: CatalogueKind;
   /** The entry's own page, where the feed names one. */
   url: string | null;
+  /** How many times the Hub has served it - the only pre-run signal a
+   * cleanup candidate carries. The speech feed leaves this `null`. */
+  download_count: number | null;
 }
 
 /** Why a candidate is, or is not, the one the page proposes. */
@@ -362,6 +365,7 @@ function rowFrom(row: CatalogueRow): CatalogueRow {
     ...row,
     kind: narrow(row.kind, KINDS, 'other'),
     url: typeof row.url === 'string' ? row.url : null,
+    download_count: typeof row.download_count === 'number' ? row.download_count : null,
   };
 }
 

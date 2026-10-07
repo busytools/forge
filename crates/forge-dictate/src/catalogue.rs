@@ -60,6 +60,12 @@ pub struct CatalogueEntry {
     /// entry it builds.
     #[serde(default)]
     pub kind: EntryKind,
+    /// How many times the Hub has served the repo. **The only pre-run signal
+    /// a cleanup candidate has** - the feed publishes no speed and no error
+    /// for a normalizer - so it is what orders a sweep. The speech feed
+    /// carries no count and leaves this `None`.
+    #[serde(default)]
+    pub download_count: Option<u64>,
 }
 
 impl CatalogueEntry {

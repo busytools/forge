@@ -104,6 +104,9 @@ describe('the band card', () => {
           onrecorddelete: () => {},
           onbenchdelete: () => {},
           onupdate: () => {},
+          onsweep: () => {},
+          onsweepcancel: () => {},
+          onadopt: () => {},
         },
       }),
     );

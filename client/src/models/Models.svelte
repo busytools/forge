@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Command } from '../protocol';
   import type { Connection } from '../socket';
+  import { SvelteSet } from 'svelte/reactivity';
   import type {
     BenchResult,
     BenchTarget,
@@ -10,6 +11,7 @@
   } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
+  import { sweepPlan, sweepVerdicts, type SweepPlan, type SweepRun } from './view';
   import { SetRecorder } from './recorder.svelte';
 
   /**
@@ -95,22 +97,28 @@
    * move: the progress line while bytes move, the loading line while the
    * engine builds, and a line saying so when the model is in use.
    */
-  let updating = $state<{ variant: string; file: string | null } | null>(null);
-  let updated = $state<string | null>(null);
+  let updating = $state<{ variant: string; role: ModelRole; file: string | null } | null>(null);
+  let updated = $state<{ file: string; role: ModelRole } | null>(null);
 
-  function updateTo(variant: string): void {
+  /** Take a variant into a role: download it when it is not here, then load
+   * it. The verdict's own "switch" is this with the role it read best in. */
+  function adoptTo(variant: string, role: ModelRole): void {
     const wire = read.wire;
     updated = null;
     refusal = null;
     const record = wire?.installed.find((model) => model.variant === variant);
     if (record !== undefined) {
-      // Already on this machine: the update is the activation itself.
-      updating = { variant, file: record.file };
-      act({ dictate_activate: { role: 'transcribing', file: record.file } });
+      // Already on this machine: the adopt is the activation itself.
+      updating = { variant, role, file: record.file };
+      act({ dictate_activate: { role, file: record.file } });
       return;
     }
-    updating = { variant, file: null };
+    updating = { variant, role, file: null };
     act({ dictate_install: { variant } });
+  }
+
+  function updateTo(variant: string): void {
+    adoptTo(variant, 'transcribing');
   }
 
   // The chain moves on the core's own pushes: a download that finished makes
@@ -132,12 +140,12 @@
       // No record yet: the push carrying it has not landed.
       if (record === undefined) return;
       if (wire.in_use.some((model) => model.file === record.file)) {
-        updated = record.file;
+        updated = { file: record.file, role: chain.role };
         updating = null;
         return;
       }
-      updating = { variant: chain.variant, file: record.file };
-      act({ dictate_activate: { role: 'transcribing', file: record.file } });
+      updating = { variant: chain.variant, role: chain.role, file: record.file };
+      act({ dictate_activate: { role: chain.role, file: record.file } });
       return;
     }
     if (wire.activate.state === 'failed') {
@@ -146,9 +154,9 @@
     }
     if (wire.activate.state !== 'idle') return;
     // Idle, and the role runs the file: the swap landed.
-    const current = wire.in_use.find((model) => model.role === 'transcribing');
+    const current = wire.in_use.find((model) => model.role === chain.role);
     if (current?.file === chain.file) {
-      updated = chain.file;
+      updated = { file: chain.file, role: chain.role };
       updating = null;
     }
   });
@@ -156,6 +164,140 @@
   function bench(target: BenchTarget, tier: BenchTier): void {
     act({ dictate_bench: { target, tier } });
   }
+
+  /**
+   * The sweep: one press that scores the picks on this machine and leaves a
+   * verdict.
+   *
+   * The plan is drawn from the read before anything moves, so the card can
+   * say which candidates, how many bytes and which corpus BEFORE the press
+   * spends them. The runs then chain over the core's own one-at-a-time
+   * actions - install, then bench - the way the update control chains its
+   * own two, and the core stays the thing that serializes.
+   */
+  let sweep = $state<SweepPlan | null>(null);
+  /** The plan of the last sweep that ran to the end: the verdict stands on
+   * the page after the chain clears, and keeps standing until the next one. */
+  let lastPlan = $state<SweepPlan | null>(null);
+  let sweepLine = $state<string | null>(null);
+  /** The newest result stamp this read carried at the press, and the corpus
+   * the sweep's own first run lands on - see the chain below for why the
+   * second is not read off the results that were already here. */
+  let sweepStamp = $state<string | null>(null);
+  let sweepCorpus = $state<string | null>(null);
+  const verdicts = $derived(
+    lastPlan === null || read.wire === null ? [] : sweepVerdicts(read.wire, lastPlan),
+  );
+  /** The installs this sweep has already asked for, so a push that lands
+   * mid-flight cannot ask twice. Nothing draws from it; the reactive set is
+   * what the sheet's lint takes for a mutable one, and it costs nothing. */
+  const sweepAsked = new SvelteSet<string>();
+
+  function sweepRun(): void {
+    const wire = read.wire;
+    if (wire === null || sweep !== null) return;
+    const plan = sweepPlan(wire);
+    if (plan.runs.length === 0) return;
+    sweepLine = null;
+    sweepAsked.clear();
+    sweepStamp = wire.results[0]?.at ?? null;
+    sweepCorpus = null;
+    sweep = plan;
+    // The feeds are read fresh at the press: the sweep installs what the
+    // newest read named, not what a cache held.
+    act('dictate_catalogue_check');
+  }
+
+  function sweepCancel(): void {
+    // The sweep's own bench keeps running in the core unless it is stopped
+    // with the chain: a cancel that only cleared the card would leave a model
+    // loading and scoring for a press nobody is waiting on any more.
+    if (read.wire?.bench.state === 'running') act('dictate_bench_stop');
+    sweep = null;
+    sweepLine = 'the sweep was stopped; what it measured is on the rows below';
+  }
+
+  // One chain over the read's own pushes: install each run that is not here,
+  // bench each run without a result on the corpus this sweep compares on,
+  // then hand the verdict to the page and take the litter back.
+  $effect(() => {
+    const plan = sweep;
+    const wire = read.wire;
+    if (plan === null || wire === null) return;
+    const results = (run: SweepRun) =>
+      run.file === null
+        ? []
+        : wire.results.filter(
+            (result) => result.target.file === run.file && result.tier === plan.tier,
+          );
+    // **One corpus is one comparison, and it is the one the sweep's own
+    // first run lands on.** Anchoring on a result that was already here
+    // would be cheaper but not safe: the takes can have moved since it was
+    // measured, so it names a corpus today's runs will never produce - the
+    // sweep would bench every run, score none, and bench them again. A
+    // result from BEFORE the press on the corpus that run confirms counts,
+    // because it is then the same comparison.
+    if (sweepCorpus === null) {
+      const stamp = sweepStamp === null ? 0 : Date.parse(sweepStamp);
+      const fresh = plan.runs.flatMap(results).find((result) => Date.parse(result.at) > stamp);
+      if (fresh !== undefined) sweepCorpus = fresh.corpus.sha256;
+    }
+    const corpus = sweepCorpus;
+    const scored = (run: SweepRun) =>
+      corpus !== null && results(run).some((result) => result.corpus.sha256 === corpus);
+
+    const missing = plan.runs.find((run) => run.file === null);
+    if (missing !== undefined) {
+      if (wire.install.state === 'failed') {
+        sweepLine = `${wire.install.file}: ${wire.install.reason}`;
+        sweep = null;
+        return;
+      }
+      if (wire.install.state !== 'idle') return;
+      const record = wire.installed.find((model) => model.variant === missing.variant);
+      if (record === undefined) {
+        if (!sweepAsked.has(missing.variant)) {
+          sweepAsked.add(missing.variant);
+          sweepLine = `fetching ${missing.variant}`;
+          act({ dictate_install: { variant: missing.variant } });
+        }
+        return;
+      }
+      missing.file = record.file;
+      return;
+    }
+
+    if (wire.bench.state === 'failed') {
+      sweepLine = `${wire.bench.target.file}: ${wire.bench.reason}`;
+      sweep = null;
+      return;
+    }
+    if (wire.bench.state !== 'idle') return;
+
+    const next = plan.runs.find((run) => run.file !== null && !scored(run));
+    if (next !== undefined && next.file !== null) {
+      sweepLine = `scoring ${next.file}`;
+      act({
+        dictate_bench: {
+          target: { file: next.file, role: next.role, pinned: false },
+          tier: plan.tier,
+        },
+      });
+      return;
+    }
+
+    // Every run scored: the verdict stands on the page, and the files the
+    // sweep fetched for candidates it did not adopt go back where they came
+    // from. An adopted one stays because it is what a role runs.
+    lastPlan = plan;
+    for (const run of plan.runs) {
+      if (run.installed || run.file === null) continue;
+      if (wire.in_use.some((model) => model.file === run.file)) continue;
+      act({ dictate_uninstall: { file: run.file } });
+    }
+    sweepLine = null;
+    sweep = null;
+  });
 
   function benchStop(): void {
     act('dictate_bench_stop');
@@ -236,5 +378,11 @@
     {updated}
     {refusal}
     {mark}
+    {sweep}
+    {sweepLine}
+    {verdicts}
+    onsweep={sweepRun}
+    onsweepcancel={sweepCancel}
+    onadopt={adoptTo}
   />
 {/if}

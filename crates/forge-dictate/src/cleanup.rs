@@ -343,6 +343,7 @@ fn entry_for(repo: &Repo, downloads: Vec<Download>, languages: Vec<String>) -> C
         speed_benchmarks: Vec::new(),
         accuracy_benchmarks: Vec::new(),
         kind: EntryKind::Normalizer,
+        download_count: Some(repo.downloads),
     }
 }
 

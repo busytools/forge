@@ -154,6 +154,7 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
       wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.61 },
       kind: 'asr',
       url: null,
+      download_count: null,
     };
     const wire = modelsFrom(
       payload({

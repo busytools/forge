@@ -7,7 +7,14 @@ import { describe, expect, it } from 'vitest';
 // assignment is read by `Date` from the next construction on.
 process.env.TZ = 'Asia/Kolkata';
 
-import type { CatalogueRow, InstalledModel, InUseModel } from '../wire/models';
+import type {
+  BenchResult,
+  CatalogueRow,
+  DictateModelsWire,
+  InstalledModel,
+  InUseModel,
+} from '../wire/models';
+import { modelsWire } from './testing';
 import {
   activateLine,
   activeSource,
@@ -27,6 +34,10 @@ import {
   sizeLabel,
   speedLabel,
   comparison,
+  sweepHeadline,
+  sweepPlan,
+  sweepScope,
+  sweepVerdicts,
 } from './view';
 
 /** A catalogue row with every fact the candidate list draws. */
@@ -44,6 +55,7 @@ function row(over: Partial<CatalogueRow> = {}): CatalogueRow {
     wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.61 },
     kind: 'asr',
     url: null,
+    download_count: null,
     ...over,
   };
 }
@@ -566,5 +578,240 @@ describe('the operation lines', () => {
 
     expect(line?.detail).toContain('the file is not a model');
     expect(line?.detail).toContain('the current model is still running');
+  });
+});
+
+describe('the sweep', () => {
+  /** One cleanup candidate as the feed lists it: popularity and a size. */
+  function normalizer(variant: string, downloads: number, size = 300_000_000): CatalogueRow {
+    return row({
+      variant,
+      display_name: variant,
+      kind: 'normalizer',
+      download_count: downloads,
+      download: { quant: 'Q4_K_M', size_bytes: size },
+    });
+  }
+
+  function benchResult(
+    file: string,
+    role: 'transcribing' | 'cleanup',
+    corpus: string,
+    metrics: Partial<BenchResult['metrics']> = {},
+  ): BenchResult {
+    return {
+      target: { file, role, pinned: false },
+      tier: 'consensus',
+      metrics: {
+        clips: 12,
+        audio_seconds: 320,
+        wall_seconds: 210,
+        xrt_wall: 30,
+        term_accuracy: null,
+        wer: null,
+        matched: null,
+        stages_ms: {
+          model_load_ms: 1200,
+          resample_ms: 10,
+          mel_ms: 20,
+          encode_ms: 30,
+          decode_ms: 40,
+          normalize_ms: 50,
+        },
+        ...metrics,
+      },
+      at: '2026-10-07T10:00:00Z',
+      corpus: { clips: 12, audio_seconds: 320, sha256: corpus },
+    };
+  }
+
+  /**
+   * The plan a press draws: the feed's own transcribing pick, the cleanup
+   * role's most-downloaded candidates, and the in-use cleanup model read
+   * against - priced before anything moves.
+   */
+  it('plans the runs by downloads and prices only what must come down', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      rows: [
+        normalizer('a/norm-b', 500),
+        normalizer('a/norm-a', 900),
+        normalizer('a/norm-c', 300),
+        normalizer('a/norm-d', 100),
+      ],
+    };
+
+    const plan = sweepPlan(wire);
+
+    expect(plan.runs.map((run) => run.why)).toEqual([
+      'pick',
+      'baseline',
+      'baseline',
+      'candidate',
+      'candidate',
+      'candidate',
+    ]);
+    expect(plan.runs.map((run) => run.variant)).toEqual([
+      'granite-speech-5.0-470m-turboctc-nc',
+      'cohere-transcribe-03-2026',
+      's1-mini-f16.gguf',
+      'a/norm-a',
+      'a/norm-b',
+      'a/norm-c',
+    ]);
+    // The pick is on this machine already, and the baseline is what runs:
+    // the three candidates are the whole download.
+    expect(plan.bytes).toBe(900_000_000);
+    expect(plan.beyond).toBe(1);
+    expect(plan.tier).toBe('consensus');
+    expect(plan.seconds_runs).toBeNull();
+  });
+
+  /**
+   * The baseline is the file the role RUNS. A pin can run one quant while
+   * the store holds another under the same variant, and reading the store's
+   * file would bench a model that is not the one being compared against.
+   */
+  it('takes the baseline from what runs, and never benches it twice', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      in_use: modelsWire.in_use.map((model) =>
+        model.role === 'normalization'
+          ? {
+              ...model,
+              catalogue: {
+                variant: 'a/norm-a',
+                display_name: 'Norm',
+                size_bytes: 1,
+                streaming: false,
+                languages: ['en'],
+                speed: null,
+              },
+            }
+          : model,
+      ),
+      installed: [
+        ...modelsWire.installed,
+        {
+          variant: 'a/norm-a',
+          file: 'a-norm-a-Q4_K_M.gguf',
+          url: 'https://huggingface.co/a/norm-a',
+          size: 300_000_000,
+          facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+          at: '2026-10-07T09:00:00Z',
+        },
+      ],
+      rows: [normalizer('a/norm-a', 900), normalizer('a/norm-b', 500)],
+    };
+
+    const plan = sweepPlan(wire);
+    const baseline = plan.runs.find((run) => run.why === 'baseline' && run.role === 'cleanup');
+    const candidates = plan.runs.filter((run) => run.why === 'candidate');
+
+    expect(baseline?.file).toBe('s1-mini-f16.gguf');
+    expect(baseline?.installed).toBe(true);
+    // The candidate the role already runs is not a second run.
+    expect(candidates.map((run) => run.variant)).toEqual(['a/norm-b']);
+    expect(plan.bytes).toBe(300_000_000);
+  });
+
+  /** The read-aloud set, once recorded, is the corpus a press scores on. */
+  it('scores on the read-aloud set when one is recorded', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      read_aloud: {
+        ...modelsWire.read_aloud,
+        recordings: [
+          {
+            id: 'take-1700000000000',
+            duration_ms: 14_000,
+            bytes: 64_044,
+            sha256: 'ab'.repeat(32),
+            at: '2026-10-07T09:00:00Z',
+          },
+        ],
+      },
+    };
+
+    expect(sweepPlan(wire).tier).toBe('read_aloud');
+  });
+
+  /**
+   * One corpus is one comparison: the verdict reads the newest corpus the
+   * plan's runs share, and a better number from another corpus is not a
+   * number about this one.
+   */
+  it('reads the verdict off one corpus, against the model in use', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      rows: [normalizer('a/norm-a', 900)],
+      installed: [
+        ...modelsWire.installed,
+        {
+          variant: 'a/norm-a',
+          file: 'a-norm-a-Q4_K_M.gguf',
+          url: 'https://huggingface.co/a/norm-a',
+          size: 300_000_000,
+          facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+          at: '2026-10-07T09:00:00Z',
+        },
+      ],
+    };
+    const plan = sweepPlan(wire);
+    wire.results = [
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { wer: 0.08, matched: [9, 12] }),
+      benchResult('s1-mini-f16.gguf', 'cleanup', 'new', { wer: 0.12, matched: [7, 12] }),
+      // A better run from before the corpus moved: it must not win.
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'old', { wer: 0.01, matched: [12, 12] }),
+      benchResult('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', 'transcribing', 'new', {
+        wer: 0.06,
+      }),
+    ];
+
+    const cleanup = sweepVerdicts(wire, plan).find((verdict) => verdict.role === 'cleanup');
+    if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
+
+    expect(cleanup.best.result.target.file).toBe('a-norm-a-Q4_K_M.gguf');
+    expect(cleanup.baseline?.target.file).toBe('s1-mini-f16.gguf');
+    expect(cleanup.onBest).toBe(false);
+    expect(cleanup.scored).toBe(2);
+    expect(cleanup.tried).toBe(1);
+    expect(cleanup.beyond).toBe(0);
+    expect(cleanup.tier).toBe('consensus');
+
+    // The verdict may never say a bare best: the scope carries what it saw.
+    expect(sweepScope(cleanup)).toContain('1 most-downloaded cleanup candidates');
+    expect(sweepScope(cleanup)).toContain('your takes, 12 clips');
+    expect(sweepHeadline(cleanup)).toContain('a-norm-a-Q4_K_M.gguf read better than');
+  });
+
+  /** On the best is its own verdict, and it says so. */
+  it('says when what runs is the best of what was scored', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      rows: [normalizer('a/norm-a', 900)],
+      installed: [
+        ...modelsWire.installed,
+        {
+          variant: 'a/norm-a',
+          file: 'a-norm-a-Q4_K_M.gguf',
+          url: 'https://huggingface.co/a/norm-a',
+          size: 300_000_000,
+          facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+          at: '2026-10-07T09:00:00Z',
+        },
+      ],
+    };
+    const plan = sweepPlan(wire);
+    wire.results = [
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { wer: 0.14 }),
+      benchResult('s1-mini-f16.gguf', 'cleanup', 'new', { wer: 0.11 }),
+    ];
+
+    const cleanup = sweepVerdicts(wire, plan).find((verdict) => verdict.role === 'cleanup');
+    if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
+
+    expect(cleanup.onBest).toBe(true);
+    expect(sweepHeadline(cleanup)).toBe('the cleanup model you run read best of the 2 scored');
   });
 });

@@ -20,6 +20,7 @@ import type {
   CatalogueCheck,
   CatalogueKind,
   CatalogueRow,
+  DictateModelsWire,
   InstallState,
   InstalledModel,
   InUseModel,
@@ -580,6 +581,215 @@ export function benchTargets(
     );
   }
   return rows;
+}
+
+/** One run a sweep will make. */
+export interface SweepRun {
+  variant: string;
+  role: BenchRole;
+  /** The file, when this machine has it: what a bench target names and what
+   * an uninstall would remove. `null` until a run's own install lands, since
+   * the feed names a variant and the install is what resolves its file. */
+  file: string | null;
+  /** The bytes its download costs, so the card can price a press. */
+  size_bytes: number;
+  /** Whether its bytes were already on this machine when the plan was drawn.
+   * A run that was already here is never downloaded by the sweep, and never
+   * removed by it either. */
+  installed: boolean;
+  /** What it is for: the role's pick, a candidate the bench has to decide,
+   * or the model in use read against. */
+  why: 'pick' | 'candidate' | 'baseline';
+}
+
+/** What one press of the sweep button will do, before it does any of it. */
+export interface SweepPlan {
+  runs: SweepRun[];
+  /** The tier every run scores on: the read-aloud set when one is recorded,
+   * the takes otherwise. */
+  tier: BenchTier;
+  /** The bytes that come down the wire: what is not already here. */
+  bytes: number;
+  /** The candidates the sweep will NOT reach, so the verdict can carry its
+   * own scope: "best among these", never a bare best. */
+  beyond: number;
+  /** The runtime a comparable run last measured, when one exists - the honest
+   * answer to "how long will this take". */
+  seconds_runs: number | null;
+}
+
+/** How many cleanup candidates a press takes. Downloads is the only pre-run
+ * signal a normalizer has, so the depth is by popularity, and the verdict
+ * says what it left out. */
+export const SWEEP_DEPTH = 3;
+
+/**
+ * The runs one press makes: the transcribing side's own pick, the cleanup
+ * role's most-downloaded candidates, and each role's model in use as the
+ * baseline the others are read against.
+ *
+ * **A sweep cannot promise the best model; it promises the best of what it
+ * ran.** Downloads orders the candidates because nothing else exists before
+ * a run, and the plan carries how many were left out so no verdict can say a
+ * bare "best".
+ */
+export function sweepPlan(wire: DictateModelsWire): SweepPlan {
+  const tier: BenchTier = wire.read_aloud.recordings.length > 0 ? 'read_aloud' : 'consensus';
+  const runs: SweepRun[] = [];
+  const add = (
+    role: BenchRole,
+    variant: string,
+    file: string | null,
+    size_bytes: number,
+    why: SweepRun['why'],
+  ): void => {
+    if (runs.some((run) => run.role === role && run.variant === variant)) return;
+    runs.push({ variant, role, file, size_bytes, installed: file !== null, why });
+  };
+
+  const update = wire.updates.find((held) => held.role === 'transcribing');
+  const pick = update === undefined ? null : recommendation(update);
+  if (pick !== null) {
+    const record = wire.installed.find((model) => model.variant === pick.row.variant);
+    add(
+      'transcribing',
+      pick.row.variant,
+      record?.file ?? null,
+      record?.size ?? pick.row.download?.size_bytes ?? 0,
+      'pick',
+    );
+  }
+
+  // Each baseline is the FILE the role runs, not the installed record under
+  // the same variant: a pin can run one quant while the store holds another,
+  // and the verdict is about what runs.
+  const running = wire.in_use.find((model) => model.role === 'transcribing');
+  if (running !== undefined) {
+    add(
+      'transcribing',
+      running.catalogue?.variant ?? running.file,
+      running.file,
+      running.size,
+      'baseline',
+    );
+  }
+  const inUse = wire.in_use.find((model) => model.role === 'normalization');
+  if (inUse !== undefined) {
+    add('cleanup', inUse.catalogue?.variant ?? inUse.file, inUse.file, inUse.size, 'baseline');
+  }
+
+  const ranked = wire.rows
+    .filter((row) => row.kind === 'normalizer')
+    .sort((a, b) => (b.download_count ?? 0) - (a.download_count ?? 0));
+  for (const row of ranked.slice(0, SWEEP_DEPTH)) {
+    const record = wire.installed.find((model) => model.variant === row.variant);
+    add(
+      'cleanup',
+      row.variant,
+      record?.file ?? null,
+      record?.size ?? row.download?.size_bytes ?? 0,
+      'candidate',
+    );
+  }
+  const beyond = Math.max(0, ranked.length - SWEEP_DEPTH);
+
+  const bytes = runs.filter((run) => !run.installed).reduce((sum, run) => sum + run.size_bytes, 0);
+  // The last comparable run's wall time: the corpus is the same shape as the
+  // sweep's, so its clock is the honest estimate.
+  const comparable = wire.results.filter((result) => result.tier === tier);
+  const seconds_runs =
+    comparable.length === 0 ? null : (comparable[0]?.metrics.wall_seconds ?? null);
+
+  return { runs, tier, bytes, beyond, seconds_runs };
+}
+
+/** What one sweep's runs say, per role: the best of them, the baseline it is
+ * read against, and the scope of the claim. */
+export interface SweepVerdict {
+  role: BenchRole;
+  /** The run that read best, and its result. */
+  best: { run: SweepRun; result: BenchResult };
+  /** The model in use's own run on the same corpus, when the sweep has one. */
+  baseline: BenchResult | null;
+  /** Whether the model in use is the one that read best. */
+  onBest: boolean;
+  /** How many runs were scored, and how many candidates were never tried. */
+  scored: number;
+  beyond: number;
+  /** The candidates this role's sweep ran - the scope's own number. */
+  tried: number;
+  tier: BenchTier;
+}
+
+/**
+ * Read one sweep's own results into a verdict, per role.
+ *
+ * Only runs that share ONE tier and ONE corpus are compared - a number from
+ * another corpus is not a comparison - and the baseline is the in-use
+ * model's own run from that same set, which is why the sweep benches it too.
+ */
+export function sweepVerdicts(wire: DictateModelsWire, plan: SweepPlan): SweepVerdict[] {
+  const filed = plan.runs.filter((run) => run.file !== null);
+  const results = wire.results.filter(
+    (result) => filed.some((run) => run.file === result.target.file) && result.tier === plan.tier,
+  );
+  if (results.length === 0) return [];
+  // The corpus the sweep actually produced: the newest run's, which every run
+  // in one sweep shares.
+  const corpus = results[0]?.corpus.sha256;
+  const mine = results.filter((result) => result.corpus.sha256 === corpus);
+
+  const verdicts: SweepVerdict[] = [];
+  for (const role of ['transcribing', 'cleanup'] as const) {
+    const scored: { run: SweepRun; result: BenchResult }[] = [];
+    for (const run of plan.runs) {
+      if (run.file === null || run.role !== role) continue;
+      const result = mine.find((row) => row.target.file === run.file);
+      if (result !== undefined) scored.push({ run, result });
+    }
+    if (scored.length === 0) continue;
+    const best = scored.reduce((a, b) => (readsBetter(b.result, a.result) ? b : a));
+    const baseline = scored.find((entry) => entry.run.why === 'baseline')?.result ?? null;
+    verdicts.push({
+      role,
+      best,
+      baseline,
+      onBest: baseline !== null && baseline.target.file === best.run.file,
+      scored: scored.length,
+      beyond: role === 'cleanup' ? plan.beyond : 0,
+      tried: plan.runs.filter((run) => run.role === role && run.why === 'candidate').length,
+      tier: plan.tier,
+    });
+  }
+  return verdicts;
+}
+
+/** One verdict's headline: what read best, against what. */
+export function sweepHeadline(verdict: SweepVerdict): string {
+  const role = verdict.role === 'cleanup' ? 'cleanup model' : 'transcribing model';
+  const file = verdict.best.result.target.file;
+  if (verdict.baseline === null) return `${file} read best of the ${verdict.scored} scored`;
+  if (verdict.onBest) return `the ${role} you run read best of the ${verdict.scored} scored`;
+  return `${file} read better than the ${role} you run`;
+}
+
+/** The verdict's own scope, so a "best" always names what it saw. */
+export function sweepScope(verdict: SweepVerdict): string {
+  const clips = verdict.best.result.corpus.clips;
+  const corpus = verdict.tier === 'read_aloud' ? 'your read-aloud set' : 'your takes';
+  const where = `${corpus}, ${clips} clips`;
+  if (verdict.role !== 'cleanup') return `the feed's own pick, scored on ${where}`;
+  const left =
+    verdict.beyond === 0 ? '' : ` \u{b7} ${verdict.beyond} more candidates were not tried`;
+  return `best of the ${verdict.tried} most-downloaded cleanup candidates, scored on ${where}${left}`;
+}
+
+/** What switching a role to a variant would cost now: the bytes the sweep
+ * took back on its way out, when they must come down again. */
+export function sweepCost(wire: DictateModelsWire, variant: string): number {
+  if (wire.installed.some((model) => model.variant === variant)) return 0;
+  const row = wire.rows.find((entry) => entry.variant === variant);
+  return row?.download?.size_bytes ?? 0;
 }
 
 /** One role's models, as the dictation panel offers them. */

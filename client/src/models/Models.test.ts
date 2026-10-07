@@ -18,6 +18,7 @@ import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
 import type { SetRecorder } from './recorder.svelte';
 import { fakeConnection, MODELS, modelsWire } from './testing';
+import type { SweepVerdict } from './view';
 
 const drawn: ReturnType<typeof mount>[] = [];
 const hosts: HTMLElement[] = [];
@@ -58,8 +59,12 @@ function open(
     recorder: Pick<SetRecorder, 'wire'> | null;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
-    updated: string | null;
+    updated: { file: string; role: ModelRole } | null;
     refusal: string | null;
+    onsweep: () => void;
+    onsweepcancel: () => void;
+    onadopt: (variant: string, role: ModelRole) => void;
+    verdicts: SweepVerdict[];
   }> = {},
 ) {
   const host = document.createElement('div');
@@ -83,6 +88,10 @@ function open(
       onupdate: handlers.onupdate ?? (() => {}),
       updated: handlers.updated ?? null,
       refusal: handlers.refusal ?? null,
+      onsweep: handlers.onsweep ?? (() => {}),
+      onsweepcancel: handlers.onsweepcancel ?? (() => {}),
+      onadopt: handlers.onadopt ?? (() => {}),
+      verdicts: handlers.verdicts ?? [],
     },
   });
   drawn.push(component);
@@ -643,6 +652,7 @@ describe('the models page as it draws', () => {
       download: { quant: 'Q4_K_M', size_bytes: 396_000_000 },
       kind: 'normalizer',
       url: 'https://huggingface.co/mradermacher/CeluneNorm-0.6B-v2.0-ctx2048-GGUF',
+      download_count: 449,
     };
     const record = {
       variant: cleanupRow.variant,
@@ -1026,5 +1036,370 @@ describe('the models route as it draws', () => {
     await tick();
 
     expect(host.textContent).toContain('[dictate] transcribe_model pins this model in forge.toml');
+  });
+
+  /** One cleanup candidate as the feed lists it: popularity and a size. */
+  function normRow(variant: string, downloads: number, size = 300_000_000): CatalogueRow {
+    return {
+      variant,
+      display_name: variant,
+      family: 'norm',
+      params: 600_000_000,
+      license: null,
+      languages: ['en'],
+      streaming: false,
+      download: { quant: 'Q4_K_M', size_bytes: size },
+      speed: null,
+      wer: null,
+      kind: 'normalizer',
+      url: `https://huggingface.co/${variant}`,
+      download_count: downloads,
+    };
+  }
+
+  /** The record a landed install writes for one candidate. */
+  function recordFor(variant: string, file: string, size = 300_000_000) {
+    return {
+      variant,
+      file,
+      url: `https://huggingface.co/${variant}`,
+      size,
+      facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+      at: '2026-10-07T09:00:00Z',
+    };
+  }
+
+  /**
+   * Stopping the sweep stops its run too. A cancel that only cleared the card
+   * would leave the core loading and scoring a model for a press nobody is
+   * waiting on any more.
+   */
+  it('stops the bench the sweep started when the sweep is stopped', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    const withRow = { ...modelsWire, rows: [normRow('a/norm-a', 900)] };
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: withRow });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...withRow,
+        installed: [...modelsWire.installed, recordFor('a/norm-a', 'a-norm-a-Q4_K_M.gguf')],
+      },
+    });
+    await tick();
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...withRow,
+        installed: [...modelsWire.installed, recordFor('a/norm-a', 'a-norm-a-Q4_K_M.gguf')],
+        bench: {
+          state: 'running',
+          target: {
+            file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+            role: 'transcribing',
+            pinned: false,
+          },
+          tier: 'consensus',
+          clip: 1,
+          clips: 3,
+          so_far: null,
+        },
+      },
+    });
+    await tick();
+
+    const stop = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'stop the sweep',
+    );
+    expect(stop, 'the sweep stop did not draw').not.toBeUndefined();
+    stop?.click();
+    flushSync();
+
+    expect(forge.dispatched.at(-1)).toBe('dictate_bench_stop');
+  });
+
+  /** One cleanup candidate as the feed lists it: popularity and a size. */
+  /**
+   * An old result does not define the sweep's corpus. The takes can have
+   * moved since it was measured, so its corpus is not today's - and a sweep
+   * that anchored on it would bench every run, score none of them against
+   * it, and bench them again. The sweep's own first run names the corpus.
+   */
+  it('anchors the corpus on its own first run, not a result that was already here', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    const stale = benchResult(
+      'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+      'transcribing',
+      0.2,
+      'old',
+    );
+    stale.at = '2026-10-06T08:00:00Z';
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: { ...modelsWire, results: [stale] } });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    // The pick is benched first even though an old result names it: nothing
+    // counts until a run lands after the press.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_bench: {
+        target: {
+          file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+          role: 'transcribing',
+          pinned: false,
+        },
+        tier: 'consensus',
+      },
+    });
+
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        results: [
+          benchResult(
+            'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+            'transcribing',
+            0.09,
+            'now',
+          ),
+          stale,
+        ],
+      },
+    });
+    await tick();
+
+    // Its corpus is the sweep's from here, and the next run follows.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_bench: {
+        target: {
+          file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
+          role: 'transcribing',
+          pinned: false,
+        },
+        tier: 'consensus',
+      },
+    });
+  });
+
+  /** One finished run, for the verdict fixtures. */
+  function benchResult(
+    file: string,
+    role: 'transcribing' | 'cleanup',
+    wer: number,
+    corpus = 'new',
+  ): BenchResult {
+    return {
+      target: { file, role, pinned: false },
+      tier: 'consensus',
+      metrics: {
+        clips: 12,
+        audio_seconds: 320,
+        wall_seconds: 210,
+        xrt_wall: 30,
+        term_accuracy: null,
+        wer,
+        matched: null,
+        stages_ms: {
+          model_load_ms: 1200,
+          resample_ms: 10,
+          mel_ms: 20,
+          encode_ms: 30,
+          decode_ms: 40,
+          normalize_ms: 50,
+        },
+      },
+      at: '2026-10-07T10:00:00Z',
+      corpus: { clips: 12, audio_seconds: 320, sha256: corpus },
+    };
+  }
+
+  /**
+   * The sweep's card prices the press before it spends - which runs, which
+   * corpus, what has to come down - and the press is one dispatch.
+   */
+  it('prices the sweep before the press', () => {
+    let presses = 0;
+    const host = open(
+      { ...modelsWire, rows: [normRow('a/norm-a', 900), normRow('a/norm-b', 500)] },
+      { onsweep: () => (presses += 1) },
+    );
+
+    expect(host.textContent).toContain(
+      "the feed's transcribing pick + the 2 most-downloaded cleanup candidates",
+    );
+    expect(host.textContent).toContain('5 runs over your takes');
+    expect(host.textContent).toContain('about 600 MB to download');
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'benchmark',
+    );
+    expect(button, 'the sweep control did not draw').not.toBeUndefined();
+    button?.click();
+    flushSync();
+
+    expect(presses).toBe(1);
+  });
+
+  /**
+   * The verdict names what it saw and what to do: the scope carries the
+   * candidate count, and the switch takes the winner into the role it read
+   * best in - the cleanup one here, not transcribing's.
+   */
+  it('draws a verdict with its scope, and switches the role it read in', () => {
+    const adopted: [string, ModelRole][] = [];
+    const host = open(modelsWire, {
+      onadopt: (variant, role) => adopted.push([variant, role]),
+      verdicts: [
+        {
+          role: 'cleanup',
+          best: {
+            run: {
+              variant: 'a/norm-a',
+              role: 'cleanup',
+              file: 'a-norm-a-Q4_K_M.gguf',
+              size_bytes: 300_000_000,
+              installed: false,
+              why: 'candidate',
+            },
+            result: benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 0.08),
+          },
+          baseline: benchResult('s1-mini-f16.gguf', 'cleanup', 0.12),
+          onBest: false,
+          scored: 4,
+          beyond: 6,
+          tried: 3,
+          tier: 'consensus',
+        },
+      ],
+    });
+
+    expect(host.textContent).toContain('a-norm-a-Q4_K_M.gguf read better than the cleanup model');
+    expect(host.textContent).toContain(
+      'best of the 3 most-downloaded cleanup candidates, scored on your takes, 12 clips',
+    );
+    expect(host.textContent).toContain('6 more candidates were not tried');
+    expect(host.textContent).toContain('scored on your takes, where a run reads as agreement');
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'switch to it',
+    );
+    expect(button, 'the switch control did not draw').not.toBeUndefined();
+    button?.click();
+    flushSync();
+
+    expect(adopted).toEqual([['a/norm-a', 'normalization']]);
+  });
+
+  /**
+   * One press, and the sweep chains itself over the core's own pushes:
+   * install the candidate that is not here, score every run on one corpus,
+   * and hand the verdict back when the last one lands.
+   */
+  it("runs the sweep end to end on the core's own pushes", async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: { ...modelsWire, rows: [normRow('a/norm-a', 900)] },
+    });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'benchmark',
+    );
+    expect(button, 'the sweep control did not draw').not.toBeUndefined();
+    button?.click();
+    flushSync();
+    await tick();
+
+    const withRow = { ...modelsWire, rows: [normRow('a/norm-a', 900)] };
+
+    // The feeds are read fresh, and the one run that is not here comes down.
+    expect(forge.dispatched).toEqual([
+      'dictate_catalogue_check',
+      { dictate_install: { variant: 'a/norm-a' } },
+    ]);
+
+    // A push lands mid-download with no record yet: the sweep waits on the
+    // download rather than asking for it a second time.
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: withRow });
+    await tick();
+    expect(forge.dispatched.filter((command) => typeof command !== 'string')).toEqual([
+      { dictate_install: { variant: 'a/norm-a' } },
+    ]);
+
+    const record = {
+      variant: 'a/norm-a',
+      file: 'a-norm-a-Q4_K_M.gguf',
+      url: 'https://huggingface.co/a/norm-a',
+      size: 300_000_000,
+      facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+      at: '2026-10-07T09:00:00Z',
+    };
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: { ...withRow, installed: [...modelsWire.installed, record] },
+    });
+    await tick();
+
+    // Then the runs, one at a time: each waits for the one before it.
+    const runs = [
+      { file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', role: 'transcribing' },
+      { file: 'cohere-transcribe-03-2026-Q4_K_M.gguf', role: 'transcribing' },
+      { file: 's1-mini-f16.gguf', role: 'cleanup' },
+      { file: 'a-norm-a-Q4_K_M.gguf', role: 'cleanup' },
+    ] as const;
+    const results: BenchResult[] = [];
+    for (const [at, run] of runs.entries()) {
+      expect(forge.dispatched.at(-1)).toEqual({
+        dictate_bench: {
+          target: { file: run.file, role: run.role, pinned: false },
+          tier: 'consensus',
+        },
+      });
+      // The run lands, and the next one starts off the read it pushes.
+      results.unshift(benchResult(run.file, run.role, 0.1 + at / 100, 'sweep'));
+      forge.arrive({
+        kind: 'snapshot',
+        subject: MODELS,
+        data: {
+          ...withRow,
+          installed: [...modelsWire.installed, record],
+          results,
+        },
+      });
+      await tick();
+    }
+
+    // The verdict is in and the file nobody adopted goes back off the disk.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_uninstall: { file: 'a-norm-a-Q4_K_M.gguf' },
+    });
+    expect(host.textContent).toContain('read best of the');
+    expect(host.textContent).toContain('most-downloaded cleanup candidates');
   });
 });

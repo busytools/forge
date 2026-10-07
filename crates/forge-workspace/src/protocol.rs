@@ -428,6 +428,11 @@ pub enum Command {
         tier: forge_dictate::bench::Tier,
         corpus: String,
     },
+    /// Remove one downloaded model - the file and its record - which is what
+    /// a sweep that scored a candidate it did not adopt leaves behind.
+    DictateUninstall {
+        file: String,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -761,6 +766,7 @@ impl Command {
             | Self::DictateReadAloudStop { .. }
             | Self::DictateReadAloudDelete { .. }
             | Self::DictateBenchDelete { .. }
+            | Self::DictateUninstall { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -921,6 +927,9 @@ impl std::fmt::Debug for Command {
             }
             Self::DictateReadAloudDelete { id } => {
                 f.debug_struct("DictateReadAloudDelete").field("id", id).finish()
+            }
+            Self::DictateUninstall { file } => {
+                f.debug_struct("DictateUninstall").field("file", file).finish()
             }
             Self::DictateBenchDelete { target, tier, corpus } => f
                 .debug_struct("DictateBenchDelete")
@@ -2247,6 +2256,13 @@ pub enum DispatchError {
     /// The read-aloud set would not take the change, in the core's own words.
     #[error("the read-aloud set could not be changed: {reason}")]
     ReadAloudUnavailable { reason: String },
+    /// The model is what a role runs right now, and the engine holds it
+    /// loaded: the role has to be moved off it first.
+    #[error("this model is what the {role} runs; switch it first", role = role.label())]
+    ModelInUse { role: crate::dictate::DictateRole },
+    /// The model could not be removed, in the core's own words.
+    #[error("the model could not be removed: {reason}")]
+    UninstallRefused { reason: String },
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

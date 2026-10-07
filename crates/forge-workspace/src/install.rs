@@ -125,6 +125,40 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Remove one model this machine downloaded: the file and the record.
+    ///
+    /// Refused while a role RUNS the file - the engine holds it loaded - and
+    /// named by that role, because the swap that frees it is the caller's
+    /// next step rather than this one's.
+    pub(crate) fn uninstall_model(&self, file: &str) -> Result<(), DispatchError> {
+        if let Some((role, _)) =
+            self.active_models().iter().find(|(_, model)| model.spec.file == file)
+        {
+            return Err(DispatchError::ModelInUse { role: *role });
+        }
+        if let Some(dir) = self.config.dictate.models_dir() {
+            let path = dir.join(file);
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, file, "the model file was not removed");
+                return Err(DispatchError::UninstallRefused { reason: error.to_string() });
+            }
+        }
+        let db = self.db.lock();
+        if let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::dictate_models::remove_installed(db, file)
+        {
+            tracing::warn!(
+                event_name = "dictate_uninstall_record_failed",
+                %error,
+                file,
+                "the model was removed from disk but its record was not; the page still lists it"
+            );
+        }
+        Ok(())
+    }
+
     /// Install one feed variant: fetch its doc, take the quant the row
     /// draws, and download that file into the models directory.
     ///
@@ -850,6 +884,64 @@ mod tests_install {
             facts: ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
             at: "2026-10-06T00:00:00Z".to_owned(),
         });
+    }
+
+    /// **A model is removed by file name, and refused while a role runs it.**
+    /// A sweep leaves the candidates it scored and did not adopt behind, and
+    /// the file on disk is the litter - but the engine holds the file a role
+    /// runs, so that one goes through the role first.
+    #[tokio::test]
+    async fn a_model_is_removed_by_file_and_refused_while_a_role_runs_it() {
+        let Fixture { ws, mut updates, _models, .. } = fixture();
+        record_installed_model(&ws, "spare");
+        record_installed_model(&ws, "ruling");
+
+        // The file on disk is what the removal is about.
+        let dir = ws.config.dictate.models_dir().expect("the fixture sets one");
+        std::fs::write(dir.join("spare-Q4_K_M.gguf"), b"six!!!").unwrap();
+
+        // The role runs one of them: its swap is the caller's next step, and
+        // the refusal names the label.
+        ws.dictate.set_active(&[(
+            DictateRole::Normalization,
+            crate::install::ActiveModel {
+                role: DictateRole::Normalization,
+                spec: forge_dictate::ModelSpec {
+                    file: "ruling-Q4_K_M.gguf".to_owned(),
+                    ..forge_dictate::ModelSpec::cohere_transcribe_q4_k_m()
+                },
+                from: crate::install::ActiveFrom::Pin,
+                at: None,
+            },
+        )]);
+        let err = ws
+            .dispatch(Command::DictateUninstall { file: "ruling-Q4_K_M.gguf".to_owned() })
+            .expect_err("a role is running it");
+        assert!(
+            matches!(&err, DispatchError::ModelInUse { role } if *role == DictateRole::Normalization),
+            "got: {err:?}"
+        );
+
+        ws.dispatch(Command::DictateUninstall { file: "spare-Q4_K_M.gguf".to_owned() })
+            .expect("nothing runs it");
+        assert!(!dir.join("spare-Q4_K_M.gguf").exists(), "the file went with the record");
+        let rows = ws.installed_models();
+        assert_eq!(rows.len(), 1, "the record went with the file");
+        assert_eq!(rows[0].file, "ruling-Q4_K_M.gguf");
+        let last = {
+            let mut last = None;
+            while let Ok(update) = updates.try_recv() {
+                if let SessionUpdate::DictateModelsChanged { models } = update {
+                    last = Some(models);
+                }
+            }
+            last
+        };
+        assert_eq!(
+            last.map(|models| models.installed.len()),
+            Some(1),
+            "and the push carries the read without it"
+        );
     }
 
     /// Record one role's runtime pick, as an activation of it would.

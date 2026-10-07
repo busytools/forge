@@ -37,10 +37,17 @@
     roleWord,
     rowAction,
     search,
+    sizeLabel,
     speedLabel,
+    sweepCost,
+    sweepHeadline,
+    sweepPlan,
+    sweepScope,
     tierWord,
     updateWhy,
     type FactPart,
+    type SweepPlan,
+    type SweepVerdict,
   } from './view';
 
   /**
@@ -72,6 +79,12 @@
     updated = null,
     refusal = null,
     mark = null,
+    sweep = null,
+    sweepLine = null,
+    verdicts = [],
+    onsweep,
+    onsweepcancel,
+    onadopt,
   }: {
     wire: DictateModelsWire;
     oncheck: () => void;
@@ -94,9 +107,22 @@
     recordingLine?: string | null;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
-    updated?: string | null;
+    updated?: { file: string; role: ModelRole } | null;
     refusal?: string | null;
     mark?: string | null;
+    /** The sweep in flight, or `null` when none is: the card prices the
+     * press before it spends, and says where it is while it runs. */
+    sweep?: SweepPlan | null;
+    /** Where the sweep is, in its own words. */
+    sweepLine?: string | null;
+    /** The last sweep's verdicts, kept after the chain clears. */
+    verdicts?: SweepVerdict[];
+    /** Press the one button: score the picks on this machine. */
+    onsweep: () => void;
+    /** Stop the sweep where it is. */
+    onsweepcancel: () => void;
+    /** Take a verdict's winner into the role it read best in. */
+    onadopt: (variant: string, role: ModelRole) => void;
   } = $props();
 
   let query = $state('');
@@ -138,6 +164,54 @@
   /** The cleanup role's candidates, and the best of the runs on them. */
   const cleanupRows = $derived(cleanupCandidates(wire.rows, wire.installed, wire.results));
   const cleanupPick = $derived(cleanupPickOf(cleanupRows));
+
+  /** What a press would do right now, priced from this read: the card says
+   * what will run, what it costs and what it scores on, before it spends. */
+  const nextSweep = $derived(sweepPlan(wire));
+  const sweepCorpus = $derived(
+    nextSweep.tier === 'read_aloud' ? 'your read-aloud set' : 'your takes',
+  );
+  const sweepShape = $derived.by(() => {
+    const plan = nextSweep;
+    const candidates = plan.runs.filter((run) => run.why === 'candidate').length;
+    const picks: string[] = [];
+    if (plan.runs.some((run) => run.why === 'pick')) picks.push("the feed's transcribing pick");
+    if (candidates > 0) {
+      const of = plan.beyond > 0 ? ` of ${candidates + plan.beyond}` : '';
+      picks.push(`the ${candidates} most-downloaded cleanup candidates${of}`);
+    }
+    if (picks.length === 0) {
+      return 'nothing to score yet - the feed proposes no transcribing update and lists no cleanup candidates';
+    }
+    return picks.join(' + ');
+  });
+  const sweepPrice = $derived.by(() => {
+    const parts = [`up to ${nextSweep.runs.length} runs over ${sweepCorpus}`];
+    parts.push(
+      nextSweep.bytes === 0
+        ? 'no download needed'
+        : `about ${sizeLabel(nextSweep.bytes)} to download`,
+    );
+    parts.push(
+      nextSweep.seconds_runs === null
+        ? 'no run on this corpus yet, so no clock to estimate by'
+        : `the last run over ${sweepCorpus} took ${duration(nextSweep.seconds_runs)}`,
+    );
+    parts.push('a run already measured on that corpus is kept, not repeated');
+    return parts.join(' \u{b7} ');
+  });
+
+  /** A span of seconds as the card reads it. */
+  function duration(seconds: number): string {
+    const whole = Math.round(seconds);
+    const minutes = Math.floor(whole / 60);
+    return minutes > 0 ? `${minutes}m ${whole % 60}s` : `${whole}s`;
+  }
+
+  /** What switching to a verdict's winner would cost now. */
+  function adoptCost(verdict: SweepVerdict): number {
+    return sweepCost(wire, verdict.best.run.variant);
+  }
 
   /** How many level readings the recording card draws. */
   const REC_CELLS = 40;
@@ -235,7 +309,7 @@
       <span class="dot ok"></span>
       <span class="t">update completed</span>
       <span class="spacer"></span>
-      <span class="when">{updated} is now the transcribing model</span>
+      <span class="when">{updated.file} is now the {roleWord(updated.role)} model</span>
     </div>
   {/if}
 
@@ -535,6 +609,85 @@
         takes forge has recorded here
       </p>
     {:else}
+      <!-- One press, one verdict. The card prices the press before it
+           spends, says where the sweep is while it runs, and stands the
+           verdict afterwards: whether what this machine runs is the best of
+           what was scored, and what to switch to when it is not. -->
+      {#if sweep !== null}
+        <div class="status" role="status">
+          <span class="dot live"></span>
+          <span class="t">{sweepLine ?? 'drawing up the runs'}</span>
+          <span class="when">{tierWord(sweep.tier)} &middot; {sweep.runs.length} runs</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button" onclick={onsweepcancel}>stop the sweep</button>
+          <span class="detail">
+            each run loads one model and scores it on the same corpus &middot; what the sweep
+            downloaded and nobody kept goes back off the disk when the verdict is in
+          </span>
+        </div>
+      {:else if verdicts.length > 0}
+        {#each verdicts as verdict (verdict.role)}
+          <div class="status">
+            <span class="dot {verdict.onBest ? 'ok' : 'warn'}"></span>
+            <span class="t">{sweepHeadline(verdict)}</span>
+            <span class="when">{benchRoleWord(verdict.role)}</span>
+            <span class="spacer"></span>
+            {#if !verdict.onBest}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() =>
+                  onadopt(
+                    verdict.best.run.variant,
+                    verdict.role === 'cleanup' ? 'normalization' : 'transcribing',
+                  )}>switch to it</button
+              >
+            {/if}
+            <span class="detail">{sweepScope(verdict)}</span>
+            <span class="detail">{@render facts(resultFacts(verdict.best.result))}</span>
+            {#if verdict.baseline !== null && !verdict.onBest}
+              <span class="detail">
+                what you run, {verdict.baseline.target.file}: {@render facts(
+                  resultFacts(verdict.baseline),
+                )}
+              </span>
+            {/if}
+            {#if !verdict.onBest}
+              <span class="detail">
+                {adoptCost(verdict) === 0
+                  ? 'already on this machine'
+                  : `switching downloads ${sizeLabel(adoptCost(verdict))} again - the sweep took the file back when the verdict came in`}
+              </span>
+            {/if}
+          </div>
+        {/each}
+        {#if verdicts[0]?.tier === 'consensus'}
+          <p class="note">
+            scored on your takes, where a run reads as agreement with the words the model in use
+            recorded beside each one, not as correctness &middot; record the read-aloud passage
+            above and press again to score against known words
+          </p>
+        {/if}
+        <button class="chip add" type="button" disabled={busy} onclick={onsweep}
+          >benchmark again</button
+        >
+      {:else}
+        <div class="status">
+          <span class="dot off"></span>
+          <span class="t">score the picks on this machine</span>
+          <span class="spacer"></span>
+          <button
+            class="chip"
+            type="button"
+            disabled={busy || nextSweep.runs.length === 0}
+            onclick={onsweep}>benchmark</button
+          >
+          <span class="detail">{sweepShape}</span>
+          <span class="detail">{sweepPrice}</span>
+        </div>
+      {/if}
+
       {#if bench !== null}{@render op(bench)}{/if}
 
       {#if targets.length === 0}

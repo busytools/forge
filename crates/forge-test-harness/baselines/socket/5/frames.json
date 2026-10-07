@@ -112,6 +112,7 @@
     "DictateStart": "dictate_start",
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",
+    "DictateUninstall": "dictate_uninstall",
     "NewSession": "new_session",
     "OpenUrl": "open_url",
     "Prompt": "prompt",

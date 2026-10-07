@@ -1575,6 +1575,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateReadAloudStop { .. }
         | Command::DictateReadAloudDelete { .. }
         | Command::DictateBenchDelete { .. }
+        | Command::DictateUninstall { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

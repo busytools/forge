@@ -144,6 +144,10 @@ pub struct CatalogueRow {
     /// The Hub's entries do; the speech feed's leave this `None` and the
     /// page opens the entry's document instead.
     pub url: Option<String>,
+    /// How many times the Hub has served it - the only pre-run signal a
+    /// cleanup candidate carries, and what orders a sweep. The speech feed
+    /// carries no count.
+    pub download_count: Option<u64>,
 }
 
 /// One downloadable quantisation's size.
@@ -234,6 +238,7 @@ pub(crate) fn row_for(entry: &CatalogueEntry) -> CatalogueRow {
             }
             forge_dictate::catalogue::EntryKind::Asr => None,
         },
+        download_count: entry.download_count,
     }
 }
 
