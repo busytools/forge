@@ -614,24 +614,21 @@ export function railGroups(
  * rather than drawing an empty list under it.
  */
 export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | null {
-  const { branch, files } = placeOf(record.work);
+  const { branch } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
   const view = record.git;
   const uncommitted = view.worktree;
   const changed = record.work.changed;
-  // The toggle reads the tree at a glance: where the branch is, how far it
-  // runs, what moved - figures when git's own read has them - and whether
-  // the tree is dirty at all.
-  const figures =
-    uncommitted === null || uncommitted.totalAdded + uncommitted.totalRemoved === 0
-      ? null
-      : `+${uncommitted.totalAdded} -${uncommitted.totalRemoved}`;
+  // The toggle reads the tree at a glance: where the branch is, how many
+  // commits it runs ahead, the PR if it is on one - and `dirty` only when
+  // the tree is, an absence being the clean word.
   const label = [
     branch,
-    view.ahead !== null && view.ahead.count > 0 ? `${view.ahead.count} ahead` : null,
-    files,
-    figures,
-    changed === null ? null : changed === 0 ? 'clean' : 'dirty',
+    view.ahead !== null && view.ahead.count > 0
+      ? `${view.ahead.count} commit${view.ahead.count === 1 ? '' : 's'}`
+      : null,
+    record.pr !== null ? `PR #${record.pr.number}` : null,
+    changed !== null && changed > 0 ? 'dirty' : null,
   ]
     .filter((part) => part !== null)
     .join(' \u{b7} ');

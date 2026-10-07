@@ -519,8 +519,8 @@ describe('the tree the strip draws', () => {
       LEAD,
     );
 
-    expect(strip?.label, 'where the branch runs, what moved and that it is dirty').toBe(
-      'web-home-layout \u{b7} 2 ahead \u{b7} 2 files \u{b7} +15 -4 \u{b7} dirty',
+    expect(strip?.label, 'where the branch runs, how far, on which PR, and that it is dirty').toBe(
+      'web-home-layout \u{b7} 2 commits \u{b7} PR #1249 \u{b7} dirty',
     );
     expect(strip?.head, 'what the tree IS leads the hover').toBe("the project's tree");
     expect(strip?.ahead, 'the chain, its count, its range and the branch it is ahead of').toEqual({
@@ -554,6 +554,7 @@ describe('the tree the strip draws', () => {
       draft: true,
       closes: '#1200',
     });
+    expect(strip?.label, 'the toggle names the PR it is on').toContain('PR #1203');
   });
 
   /**
@@ -650,15 +651,15 @@ describe('the tree the strip draws', () => {
     expect(worker?.head, "a worker's own path is still the worker's").toBe("a worker's tree");
   });
 
-  it('reads a changed count of one in the singular', () => {
+  it('reads a commit count of one in the singular', () => {
     const strip = gitStrip(
       withGit(
-        {},
+        { ahead: { count: 1, commits: [], stats: null } },
         { work: { branch: 'feat/x', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
       ),
       LEAD,
     );
-    expect(strip?.label, 'one file reads as one').toBe('feat/x \u{b7} 1 file \u{b7} dirty');
+    expect(strip?.label, 'one commit reads as one').toBe('feat/x \u{b7} 1 commit \u{b7} dirty');
   });
 
   it('maps every status to the mark the terminal draws for it', () => {
