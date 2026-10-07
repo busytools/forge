@@ -183,6 +183,23 @@ export async function onTakeoverFrame(fn: (frame: TakeoverFrame) => void): Promi
   return () => void stop();
 }
 
+/**
+ * The current frame, for a screen that just mounted.
+ *
+ * **The first frame of a static page is also its last**, and the stream may
+ * have delivered it before the screen could listen - so the screen asks for
+ * what is current rather than depending on the next one arriving.
+ */
+export async function takeoverFrame(): Promise<TakeoverFrame | null> {
+  if (!canHost()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<TakeoverFrame | null>('browser_takeover_frame');
+  } catch {
+    return null;
+  }
+}
+
 /** Take the view back down. Idempotent, and silent outside the shell. */
 export async function closeTakeover(): Promise<void> {
   if (!canHost()) return;

@@ -9,7 +9,7 @@
    * keyboard events go back down the same connection, mapped into the page's
    * coordinates. The bar, the way back and Done are the web side's.
    */
-  import { onTakeoverFrame, takeoverInput, type TakeoverFrame } from './host';
+  import { onTakeoverFrame, takeoverFrame, takeoverInput, type TakeoverFrame } from './host';
   import { modifiers, toPage } from './input';
   import { takeover } from './takeover.svelte';
 
@@ -26,21 +26,29 @@
     canvas?.getContext('2d')?.drawImage(image, 0, 0);
   }
 
+  /** Draw a frame whenever one lands: the store update and the decode. */
+  function show(held: TakeoverFrame): void {
+    frame = held;
+    // The backing store is the page's own pixels the moment a frame lands;
+    // the draw waits for the decode so nothing draws half an image.
+    const el = canvas;
+    if (el !== null && held.width > 0 && held.height > 0) {
+      if (el.width !== held.width) el.width = held.width;
+      if (el.height !== held.height) el.height = held.height;
+    }
+    image.src = `data:image/png;base64,${held.data}`;
+  }
+
   $effect(() => {
     image.onload = () => draw();
     let stop: (() => void) | null = null;
     let gone = false;
-    void onTakeoverFrame((held) => {
-      frame = held;
-      // The backing store is the page's own pixels the moment a frame lands;
-      // the draw waits for the decode so nothing draws half an image.
-      const el = canvas;
-      if (el !== null && held.width > 0 && held.height > 0) {
-        if (el.width !== held.width) el.width = held.width;
-        if (el.height !== held.height) el.height = held.height;
-      }
-      image.src = `data:image/png;base64,${held.data}`;
-    }).then((off) => {
+    // What is current first - the stream may have delivered before this
+    // screen could listen - then every frame after it.
+    void takeoverFrame().then((held) => {
+      if (held !== null) show(held);
+    });
+    void onTakeoverFrame(show).then((off) => {
       if (gone) off();
       else stop = off;
     });

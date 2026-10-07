@@ -116,6 +116,15 @@ pub struct BrowserHost {
     named: Mutex<HashMap<String, Arc<Named>>>,
     /// The takeover's live view, when one is up.
     live: Mutex<Option<screencast::Live>>,
+    /// The last frame the view delivered.
+    ///
+    /// **Kept because the first frame of a static page is also its last.**
+    /// The screen mounts a moment after the view opens, so a frame emitted in
+    /// between would be lost and the canvas would stay empty; a screen that
+    /// asks for the current frame gets it whatever the timing. A plain lock
+    /// rather than the async one: the stream task writes it in a breath, and
+    /// nothing here ever waits on the browser.
+    last_frame: std::sync::Arc<std::sync::Mutex<Option<screencast::Frame>>>,
 }
 
 impl BrowserHost {
@@ -126,6 +135,7 @@ impl BrowserHost {
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
+            last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -139,6 +149,7 @@ impl BrowserHost {
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
+            last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -338,7 +349,10 @@ impl BrowserHost {
         let active = self.active_browser(&paths).await?;
         let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
         let emitter = app.clone();
+        let kept = std::sync::Arc::clone(&self.last_frame);
         let live = screencast::start(&endpoint, move |frame| {
+            let mut held = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *held = Some(frame.clone());
             let _ = emitter.emit("browser_frame", frame);
         })
         .await?;
@@ -375,6 +389,13 @@ impl BrowserHost {
         };
         live.input(method, params);
         Ok(())
+    }
+
+    /// The current frame, for a screen that just mounted: the stream may have
+    /// delivered it before the screen could listen.
+    pub async fn current_frame(&self) -> Result<Option<screencast::Frame>, String> {
+        self.paths.clone()?;
+        Ok(self.last_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
 
     /// Whether a WINDOW is up on the browser this client hosts.
@@ -518,6 +539,14 @@ pub async fn browser_takeover_input(
     params: Value,
 ) -> Result<(), String> {
     host.takeover_input(&method, params).await
+}
+
+/// The current frame, for a screen that just mounted.
+#[tauri::command]
+pub async fn browser_takeover_frame(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+) -> Result<Option<screencast::Frame>, String> {
+    host.current_frame().await
 }
 
 /// Take the view back down.

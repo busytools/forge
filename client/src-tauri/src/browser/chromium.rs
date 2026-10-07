@@ -204,11 +204,15 @@ const STDERR_TAIL: usize = 4096;
 ///
 /// Detached on purpose: the child is left running when this drops - its
 /// stdout goes nowhere a client reads, and its lifetime is the machine's, not
-/// the client run's. **The window follows the marker the last launch left**,
-/// so a relaunch after a crash comes back the way the person was looking at
-/// it rather than silently headless.
+/// the client run's.
+///
+/// **Always headless.** The only visible surface is the client's own
+/// takeover, which draws the browser's screencast inside the app; nothing
+/// raises an operating-system window for the person to be dropped into, so a
+/// launch never depends on what a previous one left behind - and a browser
+/// that looks like an automation tool never appears on their screen.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, launched_windowed(profile)).await
+    launch_with(binary, profile, false).await
 }
 
 /// The same, with the window asked for: what a hand-off's Open needs.

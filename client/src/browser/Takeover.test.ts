@@ -14,6 +14,7 @@ vi.mock('./host', async (importOriginal) => {
     takeoverActive: vi.fn(() => Promise.resolve(false)),
     takeoverInput: vi.fn(() => Promise.resolve()),
     onTakeoverFrame: vi.fn(() => Promise.resolve(() => {})),
+    takeoverFrame: vi.fn(() => Promise.resolve(null)),
   };
 });
 
@@ -22,6 +23,7 @@ import {
   onTakeoverFrame,
   openTakeover,
   takeoverActive,
+  takeoverFrame,
   takeoverInput,
 } from './host';
 
@@ -134,6 +136,22 @@ describe('the takeover', () => {
       },
     };
   }
+
+  /** **The frame current at mount is fetched, not waited for.** The stream may
+   * have delivered it before this screen could listen, and a static page
+   * sends no second one - the canvas would stay empty. */
+  it('draws the frame that is current when the screen mounts', async () => {
+    vi.mocked(takeoverFrame).mockResolvedValueOnce({ data: 'aGk=', width: 640, height: 480 });
+    takeover.active = true;
+    const shown = draw();
+
+    await vi.waitFor(() => {
+      const canvas = shown.target.querySelector('canvas');
+      expect(canvas?.width, 'the current frame lands without a next one').toBe(640);
+    });
+    expect(shown.target.querySelector('canvas')?.height).toBe(480);
+    shown.stop();
+  });
 
   it("draws a frame at the page's own pixel size", async () => {
     const shown = await withFrame();
