@@ -99,6 +99,23 @@ function runningOf(data: unknown): boolean {
 }
 
 /**
+ * Whether a connection failure reads as the accounts being rate limited.
+ *
+ * The terminal's own substring rule, matched arm for arm: the core surfaces
+ * no typed variant for it, and a false positive costs a recoverable explainer
+ * instead of the raw error.
+ */
+function rateLimitedFailure(message: string): boolean {
+  const held = message.toLowerCase();
+  return (
+    (held.includes('rate') && held.includes('limit')) ||
+    held.includes('rate-limited') ||
+    held.includes('rate_limited') ||
+    held.includes('all accounts')
+  );
+}
+
+/**
  * Whether the core says a turn is running on `slot`, read from the connection's
  * own store.
  *
@@ -1237,9 +1254,38 @@ export class Chat {
     // A process that is gone takes its queue with it: no lifecycle frame is
     // coming for anything it held, so the waits go rather than standing
     // forever. A fresh connect is the same fact from the other side.
-    if (variant === 'connection_failed' || variant === 'connected') {
+    if (variant === 'connected') {
       this.waiting.clear();
       this.drained.clear();
+      return;
+    }
+    // The failure itself is drawn, not only the roster row's reason: the
+    // terminal answers one with a chat line - the rate-limit explainer when
+    // the accounts are exhausted, the raw why otherwise (#1638). The
+    // terminal's own input-lock tail is deliberately not ported: "Press
+    // Ctrl+Q" is that view's input model, and the page's box is its own.
+    if (variant === 'connection_failed') {
+      this.waiting.clear();
+      this.drained.clear();
+      const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
+      const why = failed?.message;
+      if (typeof why === 'string' && why !== '') {
+        this.append(
+          rateLimitedFailure(why)
+            ? {
+                type: 'system',
+                subtype: 'forge_notice',
+                severity: 'warning',
+                text: 'Waiting for account reset; click another project or wait.',
+              }
+            : {
+                type: 'system',
+                subtype: 'forge_notice',
+                severity: 'error',
+                text: `Connection failed: ${why}`,
+              },
+        );
+      }
       return;
     }
     // A turn that has settled is the server's fold's to draw, and the frames
@@ -1247,6 +1293,26 @@ export class Chat {
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       this.heard(false);
       this.refresh();
+      // The plan-limit next steps ride the turn's own failure (#1638), where
+      // the core's class is known: the terminal's words and its numbered
+      // steps, reflowed onto the one line this page's notices draw, with the
+      // core's own message where the terminal's summary rides - it is not
+      // drawn a line above when the refusal never reached the CLI. Class-only
+      // deliberately: the terminal's fallback classifier is its own, and a
+      // hint the core did not classify stays off. The auth and input-lock
+      // hints stay unported: the auth line names a terminal command where the
+      // page has a sign-in state, and Ctrl+Q is that view's input model.
+      const failed = (update as { turn_error?: { class?: unknown; message?: unknown } }).turn_error;
+      if (variant === 'turn_error' && failed?.class === 'plan_limit') {
+        const why =
+          typeof failed.message === 'string' && failed.message !== '' ? `: ${failed.message}` : '';
+        this.appendOnce({
+          type: 'system',
+          subtype: 'forge_notice',
+          severity: 'error',
+          text: `Turn blocked by account or plan limits${why}. Next steps: 1. Wait a few minutes and retry. 2. Reduce request size or request frequency. 3. Check quota/billing for your account or switch plans.`,
+        });
+      }
     }
     // The core's own line: a command's answer, or why one did not run. It is
     // drawn here because this store is the conversation the page draws, and the
@@ -1498,6 +1564,17 @@ export class Chat {
    * would ask for one when a turn settles is defined and never sent - so the
    * window is a round trip rather than a turn.
    */
+  /**
+   * The same line twice in a row is one row: a repeated plan-limited turn
+   * reports the same incident, and the page keeps one line for it - the
+   * terminal's own upsert, at the grain this page draws.
+   */
+  private appendOnce(message: unknown): void {
+    const last = this.held.turns.at(-1)?.messages.at(-1);
+    if (last !== undefined && JSON.stringify(last) === JSON.stringify(message)) return;
+    this.append(message);
+  }
+
   private append(message: unknown): void {
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];

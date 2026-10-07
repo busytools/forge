@@ -795,6 +795,11 @@ describe('one turn folded into the units a view draws', () => {
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.severity : '').toBe('error');
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.text : '').toContain('Usage: /resume');
 
+    // The third level: a line this PAGE authors may carry it (the rate-limit
+    // explainer), where the wire's own NoticeSeverity has only two.
+    const warned = fold([line('warning')]);
+    expect(warned[0]?.kind === 'notice' ? warned[0].notice.severity : '').toBe('warning');
+
     // A severity word this page does not know is not a failure: the line is
     // still drawn, and it says so quietly rather than shouting.
     const unknown = fold([line('catastrophe')]);

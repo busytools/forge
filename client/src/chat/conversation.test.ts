@@ -275,6 +275,70 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A connection failure draws its own line, not only the roster row's reason
+   * (#1638): the terminal's answer, the raw why, or the rate-limit explainer
+   * when the accounts are exhausted.
+   */
+  it('draws a connection failure, and the rate-limit explainer for one', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      connection_failed: {
+        key: LEAD,
+        message: 'connection to claude subprocess failed',
+        fatal: true,
+      },
+    });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the why is drawn').toContain(
+      'Connection failed: connection to claude subprocess failed',
+    );
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+
+    server.update({
+      connection_failed: { key: LEAD, message: 'All accounts are exhausted', fatal: false },
+    });
+    expect(drawn(), 'a rate-limited failure draws the explainer instead').toContain(
+      'Waiting for account reset; click another project or wait.',
+    );
+  });
+
+  /**
+   * The plan-limit next steps ride the turn's own failure (#1638): the
+   * terminal's words and steps, with the core's own message where the
+   * terminal's summary rides - it is not drawn a line above when a
+   * dispatch-side refusal never reached the CLI.
+   */
+  it('adds the next steps to a plan-limited turn, with the core own words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const notice = {
+      key: LEAD,
+      message: 'Usage limit reached',
+      class: 'plan_limit',
+      terminal_reason: null,
+    };
+    server.update({ turn_error: notice });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the core own words ride the line').toContain('Usage limit reached');
+    expect(drawn(), 'and the steps are drawn').toContain('Next steps');
+    expect(drawn(), 'at the error the terminal draws them').toContain('"severity":"error"');
+
+    // The same incident twice is one line, not two: the terminal upserts.
+    const before = drawn();
+    server.update({ turn_error: notice });
+    expect(drawn(), 'a repeated incident keeps one line').toBe(before);
+  });
+
+  /**
    * A seat with no turn yet is the ordinary state, and a line that joins the
    * turn it arrived in has nothing to join there - so the core's own line is
    * the one `system` frame that opens a row. Held back, it would be dropped:
