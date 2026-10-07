@@ -27,7 +27,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | In use | one row per model forge runs: its role, its file, the facts the spec declares - size, quant, parameters, digest, licence - the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - one line per proposal with the control that takes it, and the comparison table under it | `check`, `updates` |
 | Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
-| Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
+| Benchmark | one row per model a bench can run, with the controls that run it and stop it; the read-aloud set's own state, and the record control when there is none; one row per saved result, with its figures, its verdict against the model in use, and its delete | `bench`, `read_aloud`, `results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -62,9 +62,10 @@ still allowed.
 
 **An update line carries its own control**, which is the recommendation made
 pressable: the candidate's comparison against the model in use, then the
-install or activation the rule above would draw. The bench that scores a
-candidate on this machine's own recordings is the piece that is not built,
-and the line says so rather than leaving a reader to look for it.
+install or activation the rule above would draw - download when the variant
+is not here, then load it, one press, with the completion line when the role
+runs it. The bench that scores a candidate on this machine's own recordings
+is the section below, not a second control in the line.
 
 **The comparison table is the rule's own working**, one row per model and
 one column per axis. Its columns are fixed widths, so the geometry holds
@@ -78,6 +79,22 @@ beats both, but slower`, `slower than this`, `no more accurate`, or a verdict
 this client is older than. The pick's control is drawn beside its verdict
 rather than in a last column of its own, so a row's action is labelled by the
 cell it sits in.
+
+**The bench scores a model on this machine's own material, and nothing is
+embedded.** A shipped binary carries no audio: a machine with no material
+says so, and the way to get material is to record it. Two tiers. The
+consensus tier is the takes forge has saved here, the candidate's words read
+against the words the model in use recorded beside each one - speed and
+agreement, and agreement is a signal rather than an error, because the other
+side is another model's output. The read-aloud tier is the one passage
+somebody read aloud on purpose: its words are known, so it is the only corpus
+that can score term accuracy and word error rate. The section draws the
+passage and the arming control when this machine has no set, and says what an
+arming means - the next take dictated anywhere is stored as the set, and
+nothing else about dictation changes - with a cancel while it waits. A run
+names its target, its own progress, and a stop that discards a partial corpus
+rather than saving one. Each saved result draws its figures, what it means
+against the model in use on the same corpus, and a delete.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no button to press and nothing

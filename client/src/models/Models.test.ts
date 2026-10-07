@@ -537,7 +537,7 @@ describe('the models page as it draws', () => {
     expect(host.textContent).toContain('45.7\u{d7} realtime');
     expect(host.textContent).toContain('WER 3.6%');
     expect(host.textContent).toContain('9 of 15 matched a baseline');
-    expect(host.textContent).toContain('your takes + the fixtures');
+    expect(host.textContent).toContain('your own takes');
     expect(host.textContent).toContain('15 clips');
     expect(host.textContent).toContain('encode 1470ms');
     expect(host.textContent).toContain('this is the model in use');

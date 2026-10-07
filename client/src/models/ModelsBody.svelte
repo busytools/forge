@@ -419,9 +419,9 @@
           {/each}
         </ul>
         <p class="note">
-          the run scores the model's own words against the takes forge has saved here plus the repo
-          fixtures &middot; term accuracy first, speed second - every number measured on this
-          machine
+          the run scores the candidate against your own takes - its words against the words the
+          model in use recorded beside each one - and against the read-aloud passage once you have
+          recorded that &middot; every number measured on this machine
         </p>
       {/if}
 

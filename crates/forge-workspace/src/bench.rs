@@ -301,9 +301,17 @@ impl Workspace {
             let corpus = forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir)
                 .map_err(|error| error.to_string())?;
             if corpus.clips.is_empty() {
-                return Err(
-                    "nothing to bench: no takes saved here and no read-aloud set".to_owned()
-                );
+                return Err(match tier {
+                    forge_dictate::bench::Tier::Consensus => {
+                        "nothing to bench: no takes have been saved here yet - dictate a take, \
+                         or record the read-aloud passage and score that"
+                            .to_owned()
+                    }
+                    forge_dictate::bench::Tier::ReadAloud => {
+                        "nothing to bench: the read-aloud passage has not been recorded yet"
+                            .to_owned()
+                    }
+                });
             }
             let run_cfg = config_for(&cfg, &models_dir, &ran).map_err(|e| e.to_string())?;
 

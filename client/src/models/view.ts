@@ -462,10 +462,8 @@ export function benchRoleWord(role: BenchRole): string {
 /** The tier's own word, as the section names what a run scores against. */
 export function tierWord(tier: BenchTier): string {
   switch (tier) {
-    case 'latency':
-      return 'your own takes';
     case 'consensus':
-      return 'your takes + the fixtures';
+      return 'your own takes';
     case 'read_aloud':
       return 'the read-aloud passage';
     case 'other':

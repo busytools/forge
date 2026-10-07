@@ -1,17 +1,18 @@
 //! The bench's corpus: the audio a run scores against, taken from this
 //! machine's own material.
 //!
-//! **Three sources, and what each can say is different.** A saved take is
+//! **Two sources, and what each can say is different.** A saved take is
 //! this machine's own speech with the in-use model's words beside it -
 //! latency on real material, but its `text.txt` is a model's output, not
-//! truth. A fixture's baseline came from another model too, so its text is
-//! an output as well: the consensus tier reads how far two models sit from
-//! each other, which is a signal and not an error. The read-aloud set is
+//! truth: the consensus tier reads how far the candidate sits from the
+//! model in use, which is a signal and not an error. The read-aloud set is
 //! the one source whose words are known, because they are a passage
 //! somebody read aloud on purpose - only a clip from it can be scored for
 //! term accuracy, and everything here keeps that distinction in the types.
+//!
+//! **Nothing is embedded.** A shipped binary carries no audio; a machine
+//! with no material says so, and the way to get material is to record it.
 
-use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
@@ -23,10 +24,9 @@ use crate::{Config, Error, SAMPLE_RATE, Stages};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
-    /// The saved takes alone: latency on this machine's own dictation.
-    Latency,
-    /// The saved takes plus the repo fixtures: how far the candidate's
-    /// words sit from the baselines, which are another model's.
+    /// The saved takes: latency on this machine's own dictation, and how
+    /// far the candidate's words sit from the in-use model's on the same
+    /// clips.
     Consensus,
     /// The read-aloud set alone: the one tier whose words are known.
     ReadAloud,
@@ -37,7 +37,6 @@ pub enum Tier {
 #[serde(rename_all = "snake_case")]
 pub enum ClipSource {
     Take,
-    Fixture,
     ReadAloud,
 }
 
@@ -45,10 +44,9 @@ pub enum ClipSource {
 pub struct Clip {
     pub source: ClipSource,
     pub audio: Vec<f32>,
-    /// Words a run is scored against where they are KNOWN: the read-aloud
-    /// passage, or a fixture's own baseline text - which is another
-    /// model's output, and only as true as that model was. `None` for a
-    /// saved take.
+    /// The words a run is scored against where they are KNOWN: the
+    /// read-aloud passage, and nothing else. `None` for a saved take,
+    /// whose `text.txt` is a model's output rather than truth.
     pub truth: Option<String>,
     /// The in-use model's own words for this audio, where a take saved
     /// them.
@@ -72,12 +70,7 @@ pub struct Corpus {
 /// Build one tier's corpus from the machine's own material.
 pub fn corpus(tier: Tier, takes_dir: &Path, read_aloud_dir: &Path) -> Result<Corpus, Error> {
     let clips = match tier {
-        Tier::Latency => takes(takes_dir)?,
-        Tier::Consensus => {
-            let mut clips = takes(takes_dir)?;
-            clips.extend(fixtures()?);
-            clips
-        }
+        Tier::Consensus => takes(takes_dir)?,
         Tier::ReadAloud => read_aloud(read_aloud_dir)?.into_iter().collect(),
     };
     let id = corpus_id(&clips);
@@ -123,64 +116,6 @@ pub fn takes(dir: &Path) -> Result<Vec<Clip>, Error> {
         clips.push(Clip { source: ClipSource::Take, audio, truth: None, recorded });
     }
     Ok(clips)
-}
-
-/// The repo's fixture corpus, embedded.
-///
-/// **A shipped binary has no repo beside it, and these clips ARE the
-/// consensus tier** - so the wavs and the manifest ride in the binary the
-/// way the read-aloud set rides on the machine. The manifest names each
-/// file; the byte table below is what resolves a name to its own bytes,
-/// and a test fails if the two ever disagree.
-pub fn fixtures() -> Result<Vec<Clip>, Error> {
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        file: String,
-        baseline_normalized: String,
-    }
-
-    let entries: Vec<Entry> = serde_json::from_str(include_str!("../fixtures/manifest.json"))
-        .map_err(|error| Error::Bench { message: format!("the fixture manifest: {error}") })?;
-
-    let mut clips = Vec::new();
-    for entry in entries {
-        let Some(bytes) = fixture_bytes(&entry.file) else {
-            return Err(Error::Bench {
-                message: format!("no embedded bytes for the fixture {}", entry.file),
-            });
-        };
-        let audio = decode_wav_bytes(bytes, &entry.file)?;
-        clips.push(Clip {
-            source: ClipSource::Fixture,
-            audio,
-            truth: Some(entry.baseline_normalized),
-            recorded: None,
-        });
-    }
-    Ok(clips)
-}
-
-/// One fixture's bytes, by the manifest's own file name. A new fixture is
-/// an arm here and a row in the manifest, and the pair is tested.
-fn fixture_bytes(file: &str) -> Option<&'static [u8]> {
-    Some(match file {
-        "01_003s.wav" => include_bytes!("../fixtures/01_003s.wav"),
-        "02_004s.wav" => include_bytes!("../fixtures/02_004s.wav"),
-        "03_005s.wav" => include_bytes!("../fixtures/03_005s.wav"),
-        "04_005s.wav" => include_bytes!("../fixtures/04_005s.wav"),
-        "05_006s.wav" => include_bytes!("../fixtures/05_006s.wav"),
-        "06_006s.wav" => include_bytes!("../fixtures/06_006s.wav"),
-        "07_007s.wav" => include_bytes!("../fixtures/07_007s.wav"),
-        "08_009s.wav" => include_bytes!("../fixtures/08_009s.wav"),
-        "09_012s.wav" => include_bytes!("../fixtures/09_012s.wav"),
-        "10_013s.wav" => include_bytes!("../fixtures/10_013s.wav"),
-        "11_013s.wav" => include_bytes!("../fixtures/11_013s.wav"),
-        "12_014s.wav" => include_bytes!("../fixtures/12_014s.wav"),
-        "13_015s.wav" => include_bytes!("../fixtures/13_015s.wav"),
-        "14_016s.wav" => include_bytes!("../fixtures/14_016s.wav"),
-        "15_020s.wav" => include_bytes!("../fixtures/15_020s.wav"),
-        _ => return None,
-    })
 }
 
 /// The read-aloud set, when this machine has recorded one.
@@ -332,10 +267,9 @@ pub struct ClipRun {
     pub stages: Stages,
     pub wall: Duration,
     /// Whether the run's words are the same as what this clip already
-    /// carries - another model's output: the in-use model's own text for a
-    /// saved take, or a fixture's baseline. `None` on a read-aloud clip,
-    /// whose truth is a passage rather than a model, and on a take that
-    /// saved none.
+    /// carries - another model's output, which is the in-use model's own
+    /// text for a saved take. `None` on a read-aloud clip, whose truth is
+    /// a passage rather than a model, and on a take that saved none.
     pub matched: Option<bool>,
 }
 
@@ -363,9 +297,9 @@ pub struct Metrics {
     /// without a read-aloud clip, because nothing else has words anybody
     /// knows were said.
     pub term_accuracy: Option<f64>,
-    /// Mean word error rate against every clip that carries a truth - a
-    /// fixture's baseline included, which is another model's output, so
-    /// this number is distance from that output rather than ground error.
+    /// Mean word error rate against every clip that carries a truth,
+    /// which only the read-aloud passage does: `None` on a tier without
+    /// one.
     pub wer: Option<f64>,
     /// How many clips the run agreed with word-for-word, of the clips
     /// that had something to compare against. The consensus signal;
@@ -394,7 +328,7 @@ fn walk(
         let wall = started.elapsed();
         let against = match clip.source {
             ClipSource::ReadAloud => None,
-            _ => clip.recorded.as_ref().or(clip.truth.as_ref()),
+            ClipSource::Take => clip.recorded.as_ref(),
         };
         let matched = against.map(|other| words(&outcome.text) == words(other));
         let run = ClipRun { index, text: outcome.text, stages: outcome.stages, wall, matched };
@@ -510,13 +444,6 @@ fn decode_wav(path: &Path) -> Result<Vec<f32>, Error> {
     decode_reader(reader, &path.display().to_string())
 }
 
-/// [`decode_wav`] over bytes rather than a path, for the embedded corpus.
-fn decode_wav_bytes(bytes: &[u8], name: &str) -> Result<Vec<f32>, Error> {
-    let reader = hound::WavReader::new(Cursor::new(bytes))
-        .map_err(|error| Error::Bench { message: format!("{name}: {error}") })?;
-    decode_reader(reader, name)
-}
-
 fn decode_reader<R: std::io::Read>(
     mut reader: hound::WavReader<R>,
     name: &str,
@@ -602,31 +529,6 @@ mod tests {
         assert!(takes(&none).unwrap().is_empty());
     }
 
-    /// The committed fixture corpus reads whole, from its embedded bytes:
-    /// fifteen clips, each with its baseline as the clip's truth. **The
-    /// manifest and the byte table are one set** - a fixture added to one
-    /// without the other fails here rather than mid-run.
-    #[test]
-    fn the_fixture_corpus_reads_by_its_manifest() {
-        let clips = fixtures().unwrap();
-
-        assert_eq!(clips.len(), 15, "the committed corpus is fifteen clips");
-        assert!(clips.iter().all(|clip| clip.source == ClipSource::Fixture));
-        assert!(
-            clips.iter().all(|clip| clip.truth.is_some()),
-            "every fixture carries its baseline to compare against"
-        );
-        assert!(clips.iter().all(|clip| !clip.audio.is_empty()));
-
-        // The denominator: every name the manifest carries has bytes.
-        let manifest: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("../fixtures/manifest.json")).unwrap();
-        for entry in &manifest {
-            let name = entry["file"].as_str().unwrap();
-            assert!(fixture_bytes(name).is_some(), "no embedded bytes for {name}");
-        }
-    }
-
     /// The corpus's identity moves with its clips: the count, the seconds,
     /// and a hash over the samples, so two takes of different audio cannot
     /// share one.
@@ -636,19 +538,16 @@ mod tests {
         write_take(dir.path(), 1, 16_000, "one");
         let empty = tempfile::tempdir().unwrap();
 
-        let one = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
-        let again = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+        let one = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
+        let again = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
         assert_eq!(one.id, again.id, "the same clips are the same corpus");
         assert_eq!(one.id.clips, 1);
         assert_eq!(one.id.audio_seconds, 1, "16k samples is one second");
 
         write_take(dir.path(), 2, 8_000, "two");
-        let two = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+        let two = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
         assert_ne!(one.id.sha256, two.id.sha256, "one more take is a different corpus");
-        assert_eq!(two.id.clips, 2);
-
-        let consensus = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
-        assert_eq!(consensus.id.clips, 2 + 15, "the takes plus the embedded corpus");
+        assert_eq!(two.id.clips, 2, "the tier is the machine's own takes and nothing else");
 
         let gold = corpus(Tier::ReadAloud, empty.path(), empty.path()).unwrap();
         assert!(gold.clips.is_empty(), "no passage recorded, no read-aloud tier");
@@ -699,7 +598,7 @@ mod tests {
         write_take(dir.path(), 2, 8, "two");
         write_take(dir.path(), 3, 8, "three");
         let empty = tempfile::tempdir().unwrap();
-        let built = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+        let built = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
 
         let mut called = 0;
         let mut transcribed = 0;
@@ -733,7 +632,7 @@ mod tests {
         write_take(dir.path(), 1, 8, "Hello, world!");
         write_take(dir.path(), 2, 8, "Something else entirely.");
         let empty = tempfile::tempdir().unwrap();
-        let built = corpus(Tier::Latency, dir.path(), empty.path()).unwrap();
+        let built = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
 
         let runs = walk(
             &built,

@@ -127,7 +127,7 @@ export interface BenchTarget {
 }
 
 /** Which clips a run scores against, in the core's own names. */
-export type BenchTier = 'latency' | 'consensus' | 'read_aloud' | 'other';
+export type BenchTier = 'consensus' | 'read_aloud' | 'other';
 
 /** Where one run's time went, summed over its clips. */
 export interface StageTotals {
@@ -281,8 +281,8 @@ const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
   'blunter',
 ];
 
-/** The bench tiers the core names; the fourth is this client's own. */
-const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['latency', 'consensus', 'read_aloud'];
+/** The bench tiers the core names; the last is this client's own. */
+const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['consensus', 'read_aloud'];
 
 /** The bench roles the core names; the fourth is this client's own. */
 const BENCH_ROLES: Exclude<BenchRole, 'other'>[] = ['transcribing', 'cleanup'];
