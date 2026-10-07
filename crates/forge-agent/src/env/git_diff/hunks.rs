@@ -505,19 +505,16 @@ pub(super) fn parse_name_status_entries(raw: &str) -> Vec<NameStatusEntry> {
             // walking the whole split.
             let path = parts.next_back()?;
             let leading = status_code.chars().next()?;
-            let status = match status_of(leading) {
-                Some(status) => status,
-                None => {
-                    tracing::warn!(
-                        target: crate::logging::targets::ENV_GIT,
-                        event_name = "git_name_status_unknown_code",
-                        message = "git diff --name-status emitted an unhandled status code; entry dropped",
-                        outcome = "skipped",
-                        status_code = ?leading,
-                        path = %path,
-                    );
-                    return None;
-                }
+            let Some(status) = status_of(leading) else {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "git_name_status_unknown_code",
+                    message = "git diff --name-status emitted an unhandled status code; entry dropped",
+                    outcome = "skipped",
+                    status_code = ?leading,
+                    path = %path,
+                );
+                return None;
             };
             // Whatever sits between the code and the new path is the
             // old path, which only a rename or copy names.
