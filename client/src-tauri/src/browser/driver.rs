@@ -76,7 +76,7 @@ impl Driver {
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
 
-        tauri_plugin_log::log::debug!("starting the driver against {cdp_endpoint}");
+        tauri_plugin_log::log::info!("starting the driver against {cdp_endpoint}");
         let transport =
             TokioChildProcess::new(tokio::process::Command::new(node).configure(|cmd| {
                 cmd.arg(cli);
@@ -103,6 +103,8 @@ impl Driver {
             }))
             .map_err(|why| format!("the driver would not start: {why}"))?;
 
+        // **The handshake is bounded**: a child that spawns and never answers
+        // parks the session exactly as a wedge does, with nothing to read.
         let service = tokio::time::timeout(START_TIMEOUT, ().serve(transport))
             .await
             .map_err(|_| {
@@ -112,6 +114,7 @@ impl Driver {
                 )
             })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
+        tauri_plugin_log::log::info!("the driver answers on {cdp_endpoint}");
         let client = service.peer().clone();
         Ok(Self { _service: service, client })
     }
