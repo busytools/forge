@@ -2351,6 +2351,31 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
 .models .cand:hover .go { color: var(--accent); }
 
+/* The comparison table: the rule's own working, drawn as a table because
+   that is what it is - one row per model, one column per axis. The wrap
+   owns the horizontal scroll on a narrow screen, so the page itself never
+   scrolls sideways. */
+.models .cmp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 20px 0 8px; }
+.models .cmp-head .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models .cmp-head .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .cmp-wrap { border: 1px solid var(--line); border-radius: var(--r);
+  background: rgba(13,17,26,.4); }
+.models table.cmp { width: 100%; border-collapse: collapse; }
+.models .cmp caption { text-align: left; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); padding: 10px 13px; border-bottom: 1px solid var(--line); }
+.models .cmp th, .models .cmp td { text-align: left; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); padding: 9px 13px;
+  border-bottom: 1px solid var(--line); vertical-align: top; }
+.models .cmp tbody tr:last-child th, .models .cmp tbody tr:last-child td { border-bottom: 0; }
+.models .cmp thead th { color: var(--muted); text-transform: uppercase; letter-spacing: .08em;
+  font-size: 11px; }
+.models .cmp th[scope="row"] { color: var(--text); font-size: var(--fs-data); font-weight: 400; }
+.models .cmp tr.base { background: rgba(27,33,48,.35); }
+.models .cmp tr.pick { background: rgba(130,199,107,.06); }
+.models .cmp .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
 @media (pointer: coarse) {
   /* A button and an input already take the 44 from the shared rule; these are
      the two targets it cannot reach: the way back, and a candidate row. */

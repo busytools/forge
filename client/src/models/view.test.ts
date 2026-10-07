@@ -25,7 +25,7 @@ import {
   search,
   sizeLabel,
   speedLabel,
-  updateFacts,
+  comparison,
 } from './view';
 
 /** A catalogue row with every fact the candidate list draws. */
@@ -209,40 +209,58 @@ describe('the candidate facts', () => {
   });
 });
 
-describe('the update line', () => {
+describe('the comparison table', () => {
   /**
-   * The proposal's whole claim is a comparison, so both sides of both numbers
-   * are drawn: a line that named only the candidate's figures would leave the
-   * reader to fetch the model in use's own row to judge it.
+   * The rule's whole claim is a comparison, so both sides of both numbers
+   * are on the row: a table that named only the candidate's figures would
+   * leave the reader to fetch the model in use's own row to judge it.
    */
-  it('draws the candidate against the model in use', () => {
-    const facts = updateFacts({
+  it("draws each candidate against the model in use, in the rule's order", () => {
+    const rows = comparison({
       role: 'transcribing',
       file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
       current: { speed_x: 72.9, fleurs_en_wer: 5.08 },
-      candidate: row(),
+      candidates: [
+        {
+          row: row({
+            variant: 'faster-but-nc',
+            license: 'CC-BY-NC-SA-4.0',
+            speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 401.6 },
+            wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.3 },
+          }),
+          verdict: 'recommended',
+        },
+        {
+          row: row({
+            variant: 'slower',
+            speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 50.0 },
+          }),
+          verdict: 'slower',
+        },
+      ],
     });
 
-    expect(facts).toEqual([
-      { text: '470M' },
-      { text: 'Q4_K_M 279 MB' },
-      { text: '388.8\u{d7} vs 72.9\u{d7}', hl: true },
-      { text: 'FLEURS-en 4.61 vs 5.08' },
-      { text: 'Apache-2.0' },
-      { text: 'English only, offline' },
-    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.speed).toBe('401.6\u{d7} vs 72.9\u{d7}');
+    expect(rows[0]?.error).toBe('4.3% vs 5.08%');
+    expect(rows[0]?.license, 'the licence is a column, not a filter').toBe('CC-BY-NC-SA-4.0');
+    expect(rows[0]?.verdict).toBe('recommended');
+    expect(rows[0]?.recommended).toBe(true);
+    expect(rows[1]?.verdict).toBe('slower than this');
+    expect(rows[1]?.recommended).toBe(false);
   });
 
-  /** A candidate the feed measured only partially draws only what it has. */
-  it('draws no comparison the candidate has no number for', () => {
-    const facts = updateFacts({
+  /** An entry the feed measured only partially draws only what it has. */
+  it('says so rather than inventing a number the feed did not carry', () => {
+    const rows = comparison({
       role: 'transcribing',
       file: 'x.gguf',
       current: { speed_x: 72.9, fleurs_en_wer: 5.08 },
-      candidate: row({ speed: null, wer: null, download: null, license: null, languages: [] }),
+      candidates: [{ row: row({ speed: null, wer: null }), verdict: 'blunter' }],
     });
 
-    expect(facts).toEqual([{ text: '470M' }, { text: 'offline' }]);
+    expect(rows[0]?.speed).toBeNull();
+    expect(rows[0]?.error).toBeNull();
   });
 });
 

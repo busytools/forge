@@ -156,16 +156,47 @@ pub struct WerFact {
     pub err_pct: f64,
 }
 
-/// An update worth adopting for one in-service model.
+/// The comparison one role's model is read against: the model in use, and
+/// every English entry it can be compared with, ranked the way the rule
+/// ranks them.
+///
+/// **The whole comparison crosses, not just the winner.** The rule that
+/// picks a candidate is the thing a reader wants to check, and a page that
+/// showed only the pick would be asking to be trusted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModelUpdate {
     pub role: DictateRole,
     /// The in-service file this is about.
     pub file: String,
     /// The numbers the in-service model's own catalogue entry carries,
-    /// so the page can draw the comparison.
+    /// which is the baseline every candidate row is read against.
     pub current: CurrentFacts,
-    pub candidate: CatalogueRow,
+    /// The comparable entries other than the one in use, fastest first
+    /// with the sharper breaking a tie - the order the rule walks.
+    pub candidates: Vec<CandidateRow>,
+}
+
+/// One compared entry, and what the rule makes of it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CandidateRow {
+    pub row: CatalogueRow,
+    pub verdict: UpdateVerdict,
+}
+
+/// Why a candidate is, or is not, the one the page proposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateVerdict {
+    /// The fastest entry that beats the model in use on both axes: what the
+    /// page proposes adopting.
+    Recommended,
+    /// It beats the model in use on both axes, and something faster does
+    /// too.
+    BeatsBoth,
+    /// It is no faster than the model in use, whatever its error rate.
+    Slower,
+    /// It is faster and no more accurate.
+    Blunter,
 }
 
 /// The in-service side of an update's comparison.
@@ -282,16 +313,23 @@ pub(crate) fn in_use(
         .collect()
 }
 
-/// What the page proposes adopting, per in-service model.
+/// The comparison one role's model is read against: the model in use and
+/// every comparable entry, ranked the way the rule ranks them.
 ///
-/// A candidate beats the model in use only on the axis both sides were
-/// measured on: FLEURS English word error rate lower AND m4-max Metal
-/// wall-clock realtime factor higher, both from the feed's own rows. Among
-/// the entries that clear both, the fastest wins - the rank the page's
-/// line shows first - with the sharper of two equally fast entries taking
-/// it. A variant already in use is never its own candidate, and neither is
-/// a non-commercial one: a proposal is what an adoption would pin into a
-/// public repo, and that has to be a licence anyone may run.
+/// **The rule, in full, because the page tables it.** A candidate is
+/// comparable when it carries English and the feed measured it on the same
+/// two axes the model in use carries - m4-max Metal wall-clock realtime
+/// factor, and FLEURS English word error rate. Comparable entries rank
+/// fastest first, with the sharper breaking a tie. The first one that
+/// beats the model in use on BOTH axes is the pick; the ones behind it
+/// that also beat both are listed as such; the rest carry the one axis
+/// they lose on.
+///
+/// **A non-commercial licence is a fact on the row, not a filter.**
+/// Recommending a model used to mean pinning it into forge's shipped
+/// defaults, where `-nc` bars it; what the page does now is download and
+/// run one on this machine, which is the licence's own personal use. The
+/// row states the licence so the constraint is read where the decision is.
 pub(crate) fn updates_for(
     entries: &[CatalogueEntry],
     specs: &[(DictateRole, ModelSpec)],
@@ -310,7 +348,7 @@ pub(crate) fn updates_for(
             let current_speed = joined.m4_metal_xrt_wall()?;
             let current_wer = joined.fleurs_en_wer()?;
 
-            let mut best: Option<(&CatalogueEntry, f64, f64)> = None;
+            let mut ranked: Vec<(&CatalogueEntry, f64, f64)> = Vec::new();
             for entry in entries {
                 if entry.variant == joined.variant {
                     continue;
@@ -318,43 +356,45 @@ pub(crate) fn updates_for(
                 if !entry.languages.iter().any(|language| language == "en") {
                     continue;
                 }
-                if entry.license.as_ref().is_some_and(|license| non_commercial(&license.spdx)) {
-                    continue;
-                }
                 let (Some(speed), Some(wer)) = (entry.m4_metal_xrt_wall(), entry.fleurs_en_wer())
                 else {
                     continue;
                 };
-                if speed <= current_speed || wer >= current_wer {
-                    continue;
-                }
-                let better = best.is_none_or(|(_, best_speed, best_wer)| {
-                    match speed.total_cmp(&best_speed) {
-                        std::cmp::Ordering::Greater => true,
-                        std::cmp::Ordering::Equal => wer < best_wer,
-                        std::cmp::Ordering::Less => false,
-                    }
-                });
-                if better {
-                    best = Some((entry, speed, wer));
-                }
+                ranked.push((entry, speed, wer));
             }
+            ranked.sort_by(|(_, a_speed, a_wer), (_, b_speed, b_wer)| {
+                b_speed.total_cmp(a_speed).then(a_wer.total_cmp(b_wer))
+            });
 
-            let candidate = row_for(best?.0);
+            let mut recommended = false;
+            let candidates: Vec<CandidateRow> = ranked
+                .into_iter()
+                .map(|(entry, speed, wer)| {
+                    let beats = speed > current_speed && wer < current_wer;
+                    // The first beater in the ranked order is the fastest
+                    // one, which is the pick.
+                    let verdict = if beats && !recommended {
+                        recommended = true;
+                        UpdateVerdict::Recommended
+                    } else if beats {
+                        UpdateVerdict::BeatsBoth
+                    } else if speed <= current_speed {
+                        UpdateVerdict::Slower
+                    } else {
+                        UpdateVerdict::Blunter
+                    };
+                    CandidateRow { row: row_for(entry), verdict }
+                })
+                .collect();
+
             Some(ModelUpdate {
                 role: *role,
                 file: spec.file.clone(),
                 current: CurrentFacts { speed_x: current_speed, fleurs_en_wer: current_wer },
-                candidate,
+                candidates,
             })
         })
         .collect()
-}
-
-/// Whether an SPDX id names a non-commercial variant: the `-nc` element
-/// the Creative Commons licences carry.
-fn non_commercial(spdx: &str) -> bool {
-    spdx.split('-').any(|part| part.eq_ignore_ascii_case("nc"))
 }
 
 /// Whether a feed is old enough to fetch again: no feed at all, one
@@ -742,15 +782,31 @@ pub(crate) mod tests_catalogue_view {
 
         let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
 
-        assert_eq!(updates.len(), 1, "one update for the one model that is in use");
+        assert_eq!(updates.len(), 1, "one comparison per model in use");
         let update = &updates[0];
-        assert_eq!(
-            update.candidate.variant, "granite-like",
-            "the fastest entry better on both axes, which is the number the page shows first"
-        );
         assert_eq!(update.file, "in-use-Q4_K_M.gguf");
         assert_eq!(update.current.speed_x, 72.9, "the in-use side of the comparison");
         assert_eq!(update.current.fleurs_en_wer, 5.08);
+
+        // The table: fastest first, the pick at its head, and every row
+        // carrying the axis it lost or won on.
+        let table: Vec<(&str, UpdateVerdict)> = update
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.row.variant.as_str(), candidate.verdict))
+            .collect();
+        assert_eq!(
+            table,
+            vec![
+                ("fast-but-blunt", UpdateVerdict::Blunter),
+                ("faster-but-equal-wer", UpdateVerdict::Blunter),
+                ("granite-like", UpdateVerdict::Recommended),
+                ("parakeet-like", UpdateVerdict::BeatsBoth),
+                ("slower-but-sharper", UpdateVerdict::Slower),
+            ],
+            "the ranked comparison the page tables: fastest first, the pick flagged where it \
+             lands, and every other row carrying the axis it lost on"
+        );
     }
 
     /// Two candidates equally fast: the sharper takes the line.
@@ -766,9 +822,10 @@ pub(crate) mod tests_catalogue_view {
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            updates[0].candidate.variant, "twin-sharper",
+            updates[0].candidates[0].row.variant, "twin-sharper",
             "equal speed is broken by the lower word error rate, not by list order"
         );
+        assert_eq!(updates[0].candidates[0].verdict, UpdateVerdict::Recommended);
     }
 
     /// FLEURS English is the comparison axis: a row without it cannot be
@@ -785,17 +842,21 @@ pub(crate) mod tests_catalogue_view {
         .expect("parse");
         let entries = vec![entry("in-use", r#"["en"]"#, 72.9, 5.08), headline_only];
 
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1, "the baseline still stands");
         assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "no common axis, no comparison - and no update line"
+            updates[0].candidates.is_empty(),
+            "no common axis, no comparison - and no row for it"
         );
     }
 
-    /// A proposal is what an adoption would pin, so it must be
-    /// adoptable: a non-commercial candidate is never proposed, even
-    /// when it is the fastest entry on the feed.
+    /// **A non-commercial licence is a fact on the row, not a filter.**
+    /// The fastest beater wins and the row carries the licence it would
+    /// run under - the page downloads and runs it on this machine, which
+    /// is the licence's own personal use.
     #[test]
-    fn a_non_commercial_candidate_is_never_proposed() {
+    fn a_non_commercial_candidate_is_recommended_with_its_licence_on_the_row() {
         let entries = vec![
             entry("in-use", r#"["en"]"#, 72.9, 5.08),
             entry_under(
@@ -814,39 +875,17 @@ pub(crate) mod tests_catalogue_view {
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            updates[0].candidate.variant, "permissive",
-            "the fastest PERMISSIVE entry, not the fastest entry: what gets proposed is a pin \
-             into a public repo"
+            updates[0].candidates[0].row.variant, "faster-but-nc",
+            "the fastest entry that beats the model in use, licence and all"
         );
+        assert_eq!(updates[0].candidates[0].verdict, UpdateVerdict::Recommended);
         assert_eq!(
-            updates[0].candidate.license.as_deref(),
-            Some("Apache-2.0"),
-            "and the proposal carries the licence it would be adopted under"
+            updates[0].candidates[0].row.license.as_deref(),
+            Some("CC-BY-NC-SA-4.0"),
+            "and the row states the licence the decision is read under"
         );
-    }
-
-    /// When nothing permissive beats the model in use, the page proposes
-    /// nothing - it does not fall back to the non-commercial entry it
-    /// skipped.
-    #[test]
-    fn a_feed_with_only_a_non_commercial_better_entry_proposes_nothing() {
-        let entries = vec![
-            entry("in-use", r#"["en"]"#, 72.9, 5.08),
-            entry_under(
-                "faster-but-nc",
-                r#"["en"]"#,
-                401.64,
-                4.30,
-                100,
-                "cc-by-nc-sa-4.0",
-                "CC-BY-NC-SA-4.0",
-            ),
-        ];
-
-        assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "nothing permissive beats it, so there is nothing to propose"
-        );
+        assert_eq!(updates[0].candidates[1].row.variant, "permissive");
+        assert_eq!(updates[0].candidates[1].verdict, UpdateVerdict::BeatsBoth);
     }
 
     /// The pin's own byte length is the witness an entry is about the
@@ -881,9 +920,13 @@ pub(crate) mod tests_catalogue_view {
             entry("in-use", r#"["en"]"#, 900.0, 1.00),
         ];
 
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1, "the comparison still stands");
         assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "a variant already in use is not a candidate to adopt"
+            updates[0].candidates.is_empty(),
+            "and the variant in use is no row of it: {:?}",
+            updates[0].candidates
         );
     }
 

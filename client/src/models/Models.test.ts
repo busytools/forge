@@ -102,10 +102,19 @@ describe('the models page as it draws', () => {
     const html = open().innerHTML;
 
     expect(html).toContain('update available');
-    expect(html).toContain('Granite Speech 5.0 470M TurboCTC');
-    expect(html).toContain('388.8\u{d7} vs 72.9\u{d7}');
-    expect(html).toContain('FLEURS-en 4.61 vs 5.08');
-    expect(html).toContain('The fastest English model on the feed that beats the model in use');
+    // The table says what it is read against, and carries every candidate
+    // with the numbers the rule compared.
+    expect(html).toContain('read against the transcribing model in use');
+    expect(html).toContain('Granite Speech 5.0 470M TurboCTC NC');
+    expect(html).toContain('401.6\u{d7} vs 72.9\u{d7}');
+    expect(html).toContain('4.3% vs 5.08%');
+    // **The licence is a column, not a filter**: the non-commercial pick is
+    // recommended and the row states what it would run under.
+    expect(html).toContain('CC-BY-NC-SA-4.0');
+    expect(html).toContain('recommended');
+    // And the rows under it say why they lost.
+    expect(html).toContain('also beats both, but slower');
+    expect(html).toContain('slower than this');
     expect(html).toContain('Update to this model');
   });
 
@@ -310,17 +319,17 @@ describe('the models page as it draws', () => {
    * file the core should load.
    */
   it('offers the recommended candidate as the transcribing model', () => {
-    const activated: string[] = [];
-    const host = open(modelsWire, { onactivate: (file) => activated.push(file) });
+    const updates: string[] = [];
+    const host = open(modelsWire, { onupdate: (variant) => updates.push(variant) });
 
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
-      c.textContent?.includes('use for transcribing'),
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('Update to this model'),
     );
-    expect(button, 'the update row drew no activation control').not.toBeUndefined();
+    expect(button, 'the recommended row drew no update control').not.toBeUndefined();
     button?.click();
     flushSync();
 
-    expect(activated).toEqual(['granite-speech-5.0-470m-turboctc-Q4_K_M.gguf']);
+    expect(updates).toEqual(['granite-speech-5.0-470m-turboctc-nc']);
   });
 
   /**
@@ -329,20 +338,21 @@ describe('the models page as it draws', () => {
    * resolves a doc and a URL from.
    */
   it('offers the download for a candidate this machine does not have', () => {
-    const installed: string[] = [];
+    const updates: string[] = [];
     const host = open(
       { ...modelsWire, installed: [] },
-      { oninstall: (variant) => installed.push(variant) },
+      { onupdate: (variant) => updates.push(variant) },
     );
 
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
-      c.textContent?.includes('install Q4_K_M'),
+    // The one control is the update itself: it downloads first, then loads.
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('Update to this model'),
     );
-    expect(button, 'the update row drew no install control').not.toBeUndefined();
+    expect(button, 'the recommended row drew no update control').not.toBeUndefined();
     button?.click();
     flushSync();
 
-    expect(installed).toEqual(['granite-speech-5.0-470m-turboctc']);
+    expect(updates).toEqual(['granite-speech-5.0-470m-turboctc-nc']);
   });
 
   /**
@@ -415,12 +425,12 @@ describe('the models page as it draws', () => {
     });
 
     expect(host.textContent).toContain('pinned by [dictate] transcribe_model');
-    const activation = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
-      c.textContent?.includes('use for transcribing'),
+    const activation = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('Update to this model'),
     );
-    expect(activation, 'a pinned role drew an activation control').toBeUndefined();
+    expect(activation, 'a pinned role drew the update control').toBeUndefined();
     // The download stays: a pinned role can still pull candidates down.
-    const download = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+    const download = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
       c.textContent?.includes('install'),
     );
     expect(download, 'a pinned role lost its download control').not.toBeUndefined();
@@ -467,7 +477,7 @@ describe('the models page as it draws', () => {
       'in use',
     );
     expect(
-      marked.find((text) => text.includes('granite-speech-5.0-470m-turboctc-Q4_K_M.gguf')),
+      marked.find((text) => text.includes('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf')),
     ).toContain('recommended');
 
     const benchButtons = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((c) =>
@@ -707,8 +717,10 @@ describe('the models route as it draws', () => {
     forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
     await tick();
 
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
-      c.textContent?.includes('use for transcribing'),
+    // The fixture has the recommended model installed, so the press is the
+    // swap itself - the route's chained update action.
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('Update to this model'),
     );
     button?.click();
     flushSync();
@@ -717,7 +729,7 @@ describe('the models route as it draws', () => {
       {
         dictate_activate: {
           role: 'transcribing',
-          file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+          file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
         },
       },
     ]);
@@ -737,23 +749,23 @@ describe('the models route as it draws', () => {
     forge.arrive({ kind: 'snapshot', subject: MODELS, data: { ...modelsWire, installed: [] } });
     await tick();
 
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.cmp button')].find((c) =>
       c.textContent?.includes('Update to this model'),
     );
     expect(button, 'the update control did not draw').not.toBeUndefined();
     button?.click();
     flushSync();
     expect(forge.dispatched).toEqual([
-      { dictate_install: { variant: 'granite-speech-5.0-470m-turboctc' } },
+      { dictate_install: { variant: 'granite-speech-5.0-470m-turboctc-nc' } },
     ]);
 
     // The download lands: the record arrives, and the page loads it.
     const record = {
-      variant: 'granite-speech-5.0-470m-turboctc',
-      file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
-      url: 'https://huggingface.co/handy-computer/granite-gguf/resolve/main/x.gguf',
+      variant: 'granite-speech-5.0-470m-turboctc-nc',
+      file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+      url: 'https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-nc-gguf/resolve/main/x.gguf',
       size: 279_000_000,
-      facts: { quant: 'Q4_K_M', params: 470_000_000, license: 'Apache-2.0', runtime: null },
+      facts: { quant: 'Q4_K_M', params: 473_014_752, license: 'CC-BY-NC-SA-4.0', runtime: null },
       at: '2026-10-07T02:00:00Z',
     };
     forge.arrive({
@@ -780,7 +792,7 @@ describe('the models route as it draws', () => {
     });
     await tick();
     expect(host.textContent).toContain('update completed');
-    expect(host.textContent).toContain('granite-speech-5.0-470m-turboctc-Q4_K_M.gguf is now');
+    expect(host.textContent).toContain('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf is now');
   });
 
   /**

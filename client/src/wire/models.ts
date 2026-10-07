@@ -203,12 +203,24 @@ export interface CatalogueRow {
   wer: WerFact | null;
 }
 
-/** An update worth adopting for one in-service model. */
+/** Why a candidate is, or is not, the one the page proposes. */
+export type UpdateVerdict = 'recommended' | 'beats_both' | 'slower' | 'blunter' | 'unknown';
+
+/** One compared entry: the row, and what the rule makes of it. */
+export interface CandidateRow {
+  row: CatalogueRow;
+  verdict: UpdateVerdict;
+}
+
+/**
+ * The comparison one model in use is read against: its own numbers as the
+ * baseline, and every comparable entry ranked fastest first.
+ */
 export interface ModelUpdate {
   role: ModelRole;
   file: string;
   current: { speed_x: number; fleurs_en_wer: number };
-  candidate: CatalogueRow;
+  candidates: CandidateRow[];
 }
 
 /**
@@ -261,6 +273,14 @@ const ACTIVATE_STATES = ['idle', 'activating', 'failed'] as const;
 /** The bench states the server writes; the fourth is this client's own. */
 const BENCH_STATES = ['idle', 'running', 'failed'] as const;
 
+/** The verdicts the core writes; the fifth is this client's own. */
+const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
+  'recommended',
+  'beats_both',
+  'slower',
+  'blunter',
+];
+
 /** The bench tiers the core names; the fourth is this client's own. */
 const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['latency', 'consensus', 'read_aloud'];
 
@@ -290,6 +310,10 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
     updates: data.updates.map((update) => ({
       ...update,
       role: narrow(update.role, ROLES, 'other'),
+      candidates: (update.candidates ?? []).map((candidate) => ({
+        ...candidate,
+        verdict: narrow(candidate.verdict, VERDICTS, 'unknown'),
+      })),
     })),
     install: tagged(data.install, INSTALL_STATES),
     activate: activateFrom(data.activate),

@@ -93,12 +93,20 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     const wire = modelsFrom(
       payload({
         in_use: [{ ...(payload().in_use[0] as InUseModel), role: 'summarizing' }],
-        updates: [{ role: 'summarizing', file: 'x.gguf', current: {}, candidate: {} }],
+        updates: [
+          {
+            role: 'summarizing',
+            file: 'x.gguf',
+            current: {},
+            candidates: [{ row: {}, verdict: 'sideways' }],
+          },
+        ],
       }),
     );
 
     expect(wire.in_use[0]?.role).toBe('other');
     expect(wire.updates[0]?.role).toBe('other');
+    expect(wire.updates[0]?.candidates[0]?.verdict).toBe('unknown');
   });
 
   /**
@@ -153,7 +161,7 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
             role: 'transcribing',
             file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
             current: { speed_x: 72.9, fleurs_en_wer: 5.08 },
-            candidate: row,
+            candidates: [{ row, verdict: 'recommended' }],
           },
         ],
       }),
@@ -169,7 +177,7 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     });
     expect(wire.rows).toEqual([row]);
     expect(wire.updates[0]?.current).toEqual({ speed_x: 72.9, fleurs_en_wer: 5.08 });
-    expect(wire.updates[0]?.candidate.speed?.xrt_wall).toBe(388.8);
+    expect(wire.updates[0]?.candidates[0]?.row.speed?.xrt_wall).toBe(388.8);
   });
 
   /**

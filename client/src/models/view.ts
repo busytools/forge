@@ -16,6 +16,7 @@ import type {
   BenchState,
   BenchTarget,
   BenchTier,
+  CandidateRow,
   CatalogueCheck,
   CatalogueRow,
   InstallState,
@@ -23,6 +24,7 @@ import type {
   InUseModel,
   ModelRole,
   ModelUpdate,
+  UpdateVerdict,
 } from '../wire/models';
 import type { DictateModelState } from '../wire/types';
 
@@ -218,37 +220,73 @@ export function candidateFacts(row: CatalogueRow): CandidateFacts {
 }
 
 /**
- * The line an update draws: the candidate's own facts, each number the
- * comparison it was admitted on.
+ * What one comparison row says about its candidate, in the column order the
+ * table draws: the speed against the model in use, the error the same way,
+ * the licence, and what the rule makes of it.
  */
-export function updateFacts(update: ModelUpdate): FactPart[] {
-  const candidate = update.candidate;
-  const parts: FactPart[] = [{ text: paramsLabel(candidate.params) }];
+export interface ComparisonRow {
+  /** The feed's own row, for the controls that act on it. */
+  source: CatalogueRow;
+  variant: string;
+  display_name: string;
+  /** The speed axis, against the model in use. */
+  speed: string | null;
+  /** The error axis, against the model in use. */
+  error: string | null;
+  license: string | null;
+  /** The verdict's own sentence. */
+  verdict: string;
+  /** The verdict's own word, for the row's chip. */
+  mark: string;
+  recommended: boolean;
+}
 
-  if (candidate.download !== null) {
-    parts.push({ text: `${candidate.download.quant} ${sizeLabel(candidate.download.size_bytes)}` });
+/**
+ * The rule's verdict as the table states it, in plain words.
+ *
+ * **A non-commercial licence is said here, not filtered out.** A
+ * recommendation that hid the licence would be asking the reader to
+ * discover it after the download.
+ */
+export function verdictWord(verdict: UpdateVerdict): string {
+  switch (verdict) {
+    case 'recommended':
+      return 'recommended';
+    case 'beats_both':
+      return 'also beats both, but slower';
+    case 'slower':
+      return 'slower than this';
+    case 'blunter':
+      return 'no more accurate';
+    case 'unknown':
+      return 'a verdict this client cannot read';
   }
-  if (candidate.speed !== null) {
-    parts.push({
-      text: `${speedLabel(candidate.speed.xrt_wall)} vs ${speedLabel(update.current.speed_x)}`,
-      hl: true,
-    });
-  }
-  if (candidate.wer !== null) {
-    parts.push({
-      text: `${candidate.wer.dataset.toUpperCase()}-${candidate.wer.language} ${candidate.wer.err_pct} vs ${update.current.fleurs_en_wer}`,
-    });
-  }
-  if (candidate.license !== null) parts.push({ text: candidate.license });
+}
 
-  const languages = languagesLabel(candidate.languages);
-  parts.push({
-    text: [languages, candidate.streaming ? 'streaming' : 'offline']
-      .filter((word) => word !== null)
-      .join(', '),
+/** One update's rows, in the rule's own order, with the baseline's numbers. */
+export function comparison(update: ModelUpdate): ComparisonRow[] {
+  return update.candidates.map((candidate) => {
+    const row = candidate.row;
+    return {
+      source: row,
+      variant: row.variant,
+      display_name: row.display_name,
+      speed:
+        row.speed === null
+          ? null
+          : `${speedLabel(row.speed.xrt_wall)} vs ${speedLabel(update.current.speed_x)}`,
+      error: row.wer === null ? null : `${row.wer.err_pct}% vs ${update.current.fleurs_en_wer}%`,
+      license: row.license,
+      verdict: verdictWord(candidate.verdict),
+      mark: candidate.verdict === 'recommended' ? 'ok' : 'off',
+      recommended: candidate.verdict === 'recommended',
+    };
   });
+}
 
-  return parts;
+/** The candidate the feed recommends for one role, when there is one. */
+export function recommendation(update: ModelUpdate): CandidateRow | null {
+  return update.candidates.find((candidate) => candidate.verdict === 'recommended') ?? null;
 }
 
 /**
@@ -484,7 +522,11 @@ export function benchTargets(
     });
   }
   for (const row of rows) {
-    row.recommended = updates.some((update) => update.candidate.variant === row.variant);
+    row.recommended = updates.some((update) =>
+      update.candidates.some(
+        (candidate) => candidate.verdict === 'recommended' && candidate.row.variant === row.variant,
+      ),
+    );
   }
   return rows;
 }
@@ -557,19 +599,9 @@ export function resultFacts(result: BenchResult): FactPart[] {
   return parts;
 }
 
-/** Why the feed proposes one candidate, in the rule's own terms. */
-export function updateWhy(update: ModelUpdate): string {
-  const candidate = update.candidate;
-  const speed =
-    candidate.speed === null
-      ? null
-      : `${speedLabel(candidate.speed.xrt_wall)} vs ${speedLabel(update.current.speed_x)} realtime on ${candidate.speed.machine}`;
-  const error =
-    candidate.wer === null
-      ? null
-      : `${candidate.wer.err_pct}% vs ${update.current.fleurs_en_wer}% word error, ${candidate.wer.dataset.toUpperCase()}-${candidate.wer.language}`;
-  const both = [speed, error].filter((part) => part !== null).join(', and ');
-  return `The fastest English model on the feed that beats the model in use on both axes - ${both} - under a licence you can run.`;
+/** The rule, one sentence, for the table's own caption. */
+export function updateWhy(): string {
+  return 'Every English model the feed measured on both axes, fastest first. The rule takes the first that beats the model in use on both - speed and error - and the rows under it say which axis each one loses on.';
 }
 
 /** When one result ran, as the row's own line. */

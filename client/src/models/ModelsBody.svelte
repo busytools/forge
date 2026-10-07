@@ -15,19 +15,21 @@
     benchTargets,
     candidateFacts,
     checkLine,
+    comparison,
     entryUrl,
     inUseRowFacts,
     installLine,
     modelChip,
+    recommendation,
     resultFacts,
     resultVerdict,
     resultWhen,
-    updateWhy,
     roleWord,
     rowAction,
     search,
+    speedLabel,
     tierWord,
-    updateFacts,
+    updateWhy,
     type FactPart,
   } from './view';
 
@@ -76,7 +78,8 @@
   // that waited for a button would be a second step over data this side
   // already holds.
   const results = $derived(search(wire.rows, query));
-  const line = $derived(checkLine(wire.check, wire.updates.length, wire.enabled));
+  const picks = $derived(wire.updates.filter((update) => recommendation(update) !== null).length);
+  const line = $derived(checkLine(wire.check, picks, wire.enabled));
   const placeholder = $derived(
     `search ${wire.rows.length} variants - parakeet, granite, whisper, moonshine...`,
   );
@@ -88,6 +91,7 @@
     wire.install.state === 'downloading' || wire.activate.state === 'activating',
   );
   const transcribing = $derived(wire.in_use.find((model) => model.role === 'transcribing') ?? null);
+  const pinnedTranscribing = $derived(transcribing?.from.from === 'config');
   const download = $derived(installLine(wire.install));
   const building = $derived(activateLine(wire.activate));
   const benchState = $derived(wire.bench);
@@ -232,28 +236,64 @@
     </div>
 
     {#each wire.updates as update (`${update.role}/${update.file}`)}
-      <div class="status warn">
-        <span class="dot warn"></span>
-        <span class="t">{update.candidate.display_name}</span>
-        <span class="when">replaces the {roleWord(update.role)} model</span>
-        <span class="spacer"></span>
-        {@render control(update.candidate)}
-        <button
-          class="chip"
-          type="button"
-          disabled={busy}
-          onclick={() => onupdate(update.candidate.variant)}
-          title="download it if needed, then load it as the {roleWord(update.role)} model"
-          >Update to this model</button
-        >
-        <span class="detail">
-          {@render facts(updateFacts(update))}
+      <div class="cmp-head">
+        <span class="t">read against the {roleWord(update.role)} model in use</span>
+        <span class="when">
+          {speedLabel(update.current.speed_x)} and {update.current.fleurs_en_wer}% word error, on
+          the feed's own FLEURS-en and m4-max rows
         </span>
-        <span class="detail">
-          {updateWhy(update)} The feed measured it upstream; bench it below to score it on your own recordings,
-          or update now - it downloads, loads while the current model keeps running, and says so when
-          it is done.
-        </span>
+      </div>
+      <div class="cmp-wrap">
+        <table class="cmp">
+          <caption>{updateWhy()}</caption>
+          <thead>
+            <tr>
+              <th scope="col">model</th>
+              <th scope="col">speed</th>
+              <th scope="col">error</th>
+              <th scope="col">licence</th>
+              <th scope="col">the rule</th>
+              <th scope="col"><span class="sr">actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="base">
+              <th scope="row">{update.file}</th>
+              <td>{speedLabel(update.current.speed_x)}</td>
+              <td>{update.current.fleurs_en_wer}%</td>
+              <td colspan="2">this is what is running now</td>
+              <td></td>
+            </tr>
+            {#each comparison(update) as row (row.variant)}
+              <tr class:pick={row.recommended}>
+                <th scope="row">{row.display_name}</th>
+                <td>{row.speed ?? 'not measured'}</td>
+                <td>{row.error ?? 'not measured'}</td>
+                <td>{row.license ?? 'no licence on the feed'}</td>
+                <td>{row.verdict}</td>
+                <td>
+                  {#if row.recommended}
+                    {#if update.role === 'transcribing' && pinnedTranscribing}
+                      <!-- A pinned role refuses the load by name, so the row
+                         keeps the download and drops the update control. -->
+                      {@render control(row.source)}
+                    {:else}
+                      <button
+                        class="chip"
+                        type="button"
+                        disabled={busy}
+                        onclick={() => onupdate(row.variant)}
+                        title="download it if needed, then load it as the {roleWord(
+                          update.role,
+                        )} model">Update to this model</button
+                      >
+                    {/if}
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
     {/each}
   </section>
