@@ -122,11 +122,13 @@ the conversation it appears in. What the migration has
 not reached is the five refreshes that ask the core for a new snapshot:
 they are still direct
 `Workspace` calls, so `forge-tui` keeps its `forge-workspace` dependency
-and the arrow above is not yet one-way. The surface carries one of them for
+and the arrow above is not yet one-way. The surface carries two of them for
 the socket - `refresh_context_usage`, asked on a seat's read, on a turn
-finishing on a seat a page holds, and on a compaction settling - while the
-TUI's own call sites are the ones still direct. A read a second view would want
-goes on that surface; a read only the TUI makes stays a plain method.
+finishing on a seat a page holds, and on a compaction settling, and
+`refresh_mcp_snapshot`, asked on the seat's read when it reports no snapshot -
+while the TUI's own call sites are the ones still direct. A read a second view
+would want goes on that surface; a read only the TUI makes stays a plain
+method.
 
 Splits across several crates are normal; a git-diff feature naturally
 touches agent, workspace and TUI. The rule of thumb is that logic, I/O
