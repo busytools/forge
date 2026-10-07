@@ -1253,12 +1253,15 @@ function beside(sentence: string, word: string | null): string {
 /**
  * The core's own severity word, narrowed where it enters.
  *
- * `NoticeSeverity` on the Rust side is two levels; a word this page does not
- * know reads as an informational line, because a line nobody can classify is
- * not a failure to shout about.
+ * The wire's `NoticeSeverity` is two levels, but a line this page authors
+ * itself may carry the third the notice row draws (the rate-limit explainer
+ * at warning); a word nobody classifies reads as informational, because a
+ * line nobody can classify is not a failure to shout about.
  */
 function noticeSeverity(value: unknown): NoticeSeverity {
-  return value === 'error' ? 'error' : 'info';
+  if (value === 'error') return 'error';
+  if (value === 'warning') return 'warning';
+  return 'info';
 }
 
 /**

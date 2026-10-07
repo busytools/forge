@@ -300,7 +300,7 @@ describe('the conversation the chat draws', () => {
     expect(drawn(), 'as the core own line').toContain('forge_notice');
 
     server.update({
-      connection_failed: { key: LEAD, message: 'All accounts are rate limited', fatal: false },
+      connection_failed: { key: LEAD, message: 'All accounts are exhausted', fatal: false },
     });
     expect(drawn(), 'a rate-limited failure draws the explainer instead').toContain(
       'Waiting for account reset; click another project or wait.',
@@ -308,32 +308,34 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * The terminal's failure hints ride the turn's own ending (#1638): the
-   * next steps a plan-limited failure earns, and the line a reader's own
-   * cancel earns.
+   * The plan-limit next steps ride the turn's own failure (#1638): the
+   * terminal's words and steps, with the core's own message where the
+   * terminal's summary rides - it is not drawn a line above when a
+   * dispatch-side refusal never reached the CLI.
    */
-  it('adds the next steps to a plan-limited turn, and the line to a cancel', () => {
+  it('adds the next steps to a plan-limited turn, with the core own words', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    server.update({
-      turn_error: {
-        key: LEAD,
-        message: 'Usage limit reached',
-        class: 'plan_limit',
-        terminal_reason: null,
-      },
-    });
+    const notice = {
+      key: LEAD,
+      message: 'Usage limit reached',
+      class: 'plan_limit',
+      terminal_reason: null,
+    };
+    server.update({ turn_error: notice });
 
     const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
-    expect(drawn(), 'the plan-limit next steps are drawn').toContain('Next steps');
+    expect(drawn(), 'the core own words ride the line').toContain('Usage limit reached');
+    expect(drawn(), 'and the steps are drawn').toContain('Next steps');
+    expect(drawn(), 'at the error the terminal draws them').toContain('"severity":"error"');
 
-    server.update({ turn_cancelled: { key: LEAD } });
-    expect(drawn(), 'and a cancel earns its own line').toContain(
-      'Conversation interrupted. Tell the model how to proceed.',
-    );
+    // The same incident twice is one line, not two: the terminal upserts.
+    const before = drawn();
+    server.update({ turn_error: notice });
+    expect(drawn(), 'a repeated incident keeps one line').toBe(before);
   });
 
   /**

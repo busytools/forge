@@ -101,13 +101,18 @@ function runningOf(data: unknown): boolean {
 /**
  * Whether a connection failure reads as the accounts being rate limited.
  *
- * The terminal's own substring rule, ported rather than reinvented: the core
- * surfaces no typed variant for it, and a false positive costs a recoverable
- * explainer instead of the raw error.
+ * The terminal's own substring rule, matched arm for arm: the core surfaces
+ * no typed variant for it, and a false positive costs a recoverable explainer
+ * instead of the raw error.
  */
 function rateLimitedFailure(message: string): boolean {
   const held = message.toLowerCase();
-  return held.includes('rate') && held.includes('limit');
+  return (
+    (held.includes('rate') && held.includes('limit')) ||
+    held.includes('rate-limited') ||
+    held.includes('rate_limited') ||
+    held.includes('all accounts')
+  );
 }
 
 /**
@@ -1288,28 +1293,24 @@ export class Chat {
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       this.heard(false);
       this.refresh();
-      // Two of the terminal's failure hints ride here (#1638), where the
-      // class and the cancel are known: the next steps a plan-limited failure
-      // earns, and the line a reader's own cancel earns. The failure's own
-      // sentence is the fold's, drawn from the record a line above. The
-      // terminal's auth and input-lock hints stay unported: its auth line
-      // names a terminal command the page has a sign-in state for, and
-      // Ctrl+Q is that view's input model.
-      const failed = (update as { turn_error?: { class?: unknown } }).turn_error;
+      // The plan-limit next steps ride the turn's own failure (#1638), where
+      // the core's class is known: the terminal's words and its numbered
+      // steps, reflowed onto the one line this page's notices draw, with the
+      // core's own message where the terminal's summary rides - it is not
+      // drawn a line above when the refusal never reached the CLI. Class-only
+      // deliberately: the terminal's fallback classifier is its own, and a
+      // hint the core did not classify stays off. The auth and input-lock
+      // hints stay unported: the auth line names a terminal command where the
+      // page has a sign-in state, and Ctrl+Q is that view's input model.
+      const failed = (update as { turn_error?: { class?: unknown; message?: unknown } }).turn_error;
       if (variant === 'turn_error' && failed?.class === 'plan_limit') {
-        this.append({
+        const why =
+          typeof failed.message === 'string' && failed.message !== '' ? `: ${failed.message}` : '';
+        this.appendOnce({
           type: 'system',
           subtype: 'forge_notice',
-          severity: 'warning',
-          text: 'Turn blocked by account or plan limits. Next steps: wait a few minutes and retry; reduce request size or frequency; check quota/billing for the account or switch plans.',
-        });
-      }
-      if (variant === 'turn_cancelled') {
-        this.append({
-          type: 'system',
-          subtype: 'forge_notice',
-          severity: 'info',
-          text: 'Conversation interrupted. Tell the model how to proceed.',
+          severity: 'error',
+          text: `Turn blocked by account or plan limits${why}. Next steps: 1. Wait a few minutes and retry. 2. Reduce request size or request frequency. 3. Check quota/billing for your account or switch plans.`,
         });
       }
     }
@@ -1563,6 +1564,17 @@ export class Chat {
    * would ask for one when a turn settles is defined and never sent - so the
    * window is a round trip rather than a turn.
    */
+  /**
+   * The same line twice in a row is one row: a repeated plan-limited turn
+   * reports the same incident, and the page keeps one line for it - the
+   * terminal's own upsert, at the grain this page draws.
+   */
+  private appendOnce(message: unknown): void {
+    const last = this.held.turns.at(-1)?.messages.at(-1);
+    if (last !== undefined && JSON.stringify(last) === JSON.stringify(message)) return;
+    this.append(message);
+  }
+
   private append(message: unknown): void {
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
