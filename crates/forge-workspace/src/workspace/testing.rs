@@ -205,6 +205,14 @@ impl Workspace {
         });
     }
 
+    /// Hold the last fatal, as the boot spawn's failure records it, so a
+    /// cross-crate test can read the home's encoding without a dying spawn.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_fatal_error(&self, error: forge_primitives::error::AppError) {
+        self.record_fatal_error(error);
+    }
+
     /// Register a fresh testing-stub agent against `key`'s
     /// `DomainSession`. Returns the matching
     /// `forge_primitives::AgentCommand` receiver so tests can assert on

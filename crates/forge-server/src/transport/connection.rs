@@ -321,7 +321,16 @@ async fn run_connection(
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
                 if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
+                    // **A fatal goes out now, not on the batch's clock.** The
+                    // exit it announces is already on its way - `workspace.
+                    // shutdown` follows `run_tui`'s return - and a frame still
+                    // waiting out its window when the process drops dies with
+                    // it. Everything else can wait the interval.
+                    let fatal = matches!(update, SessionUpdate::FatalError { .. });
                     held.push(Instant::now(), update);
+                    if fatal {
+                        batch::flush(socket, held.take()).await?;
+                    }
                 }
             }
             // **The role's own channel and its asks, raced as one future**

@@ -215,7 +215,8 @@ export interface HomeWire {
   forge_version: string;
   forge_version_short: string;
   service_status: unknown;
-  fatal_error: unknown;
+  /** The words of the core's last fatal, which the terminal prints on exit. */
+  fatal_error: string | null;
 }
 
 /** The lifecycles the core names. A value outside these is one this client is older than. */
@@ -253,6 +254,10 @@ const TASK_STATUSES: TaskStatus[] = ['pending', 'in_progress', 'blocked', 'compl
 export function homeFrom(data: HomeWire): HomeWire {
   return {
     ...data,
+    // Absent, or carrying nothing wordable, reads as no fatal: a page must not
+    // draw a stopped line it cannot word.
+    fatal_error:
+      typeof data.fatal_error === 'string' && data.fatal_error !== '' ? data.fatal_error : null,
     agents: data.agents.map((agent) => ({
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),

@@ -158,6 +158,24 @@ describe('axe over the rendered pages', () => {
     }
   });
 
+  /**
+   * The stopped-forge state (#1638): the home's one fatal row, in front of
+   * axe like every other state a page can be in.
+   */
+  it('draws the stopped-forge home with no violations', async () => {
+    const html = render(Home, {
+      props: {
+        wire: {
+          ...homeWire,
+          fatal_error: 'Failed to establish or maintain the Agent SDK bridge connection.',
+        },
+        address: '127.0.0.1:8790',
+      },
+    }).body;
+    expect(html, 'the fatal row was not rendered').toContain('forge stopped:');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
   it('draws the connect screen with no violations', async () => {
     const html = render(Connect, {
       props: { settings: DEFAULT_SETTINGS, onconnect: () => {} },

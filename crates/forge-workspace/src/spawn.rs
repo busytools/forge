@@ -199,7 +199,7 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
     // Held before it goes out: a fatal error is an App-level event with no
     // state behind it, so without this a view that was not subscribed when
     // it fired can never learn of it at all.
-    if let SessionUpdate::FatalError(error) = &update {
+    if let SessionUpdate::FatalError { error, .. } = &update {
         workspace.record_fatal_error(error.clone());
     }
     if !workspace.update_tx().send(update) {
@@ -1217,11 +1217,10 @@ pub(crate) fn handle_start_default(
                     fatal: true,
                 },
             );
-            try_emit(
-                workspace,
-                "start_default::FatalError",
-                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
-            );
+            try_emit(workspace, "start_default::FatalError", {
+                let error = forge_primitives::error::AppError::ConnectionFailed;
+                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
+            });
             return;
         }
     };
@@ -1262,11 +1261,10 @@ pub(crate) fn handle_start_default(
                 "start_default::ConnectionFailed",
                 SessionUpdate::ConnectionFailed { key: session_key, message, fatal: true },
             );
-            try_emit(
-                workspace,
-                "start_default::FatalError",
-                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
-            );
+            try_emit(workspace, "start_default::FatalError", {
+                let error = forge_primitives::error::AppError::ConnectionFailed;
+                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
+            });
         }
     }
 }
@@ -2484,7 +2482,14 @@ mod tests {
 
         assert!(ws.last_fatal_error().is_none(), "nothing has failed fatally yet");
 
-        try_emit(&ws, "test", SessionUpdate::FatalError(failed.clone()));
+        try_emit(
+            &ws,
+            "test",
+            SessionUpdate::FatalError {
+                message: failed.user_message().to_owned(),
+                error: failed.clone(),
+            },
+        );
 
         assert_eq!(
             ws.last_fatal_error(),
@@ -2693,7 +2698,7 @@ provider = "anthropic"
         }
         let second = rx.try_recv().expect("second update");
         assert!(
-            matches!(second, SessionUpdate::FatalError(_)),
+            matches!(second, SessionUpdate::FatalError { .. }),
             "startup spawn failure must follow with FatalError"
         );
     }
@@ -2726,7 +2731,7 @@ provider = "anthropic"
         // assertion is that nothing here is a FatalError.
         while let Ok(update) = rx.try_recv() {
             assert!(
-                !matches!(update, SessionUpdate::FatalError(_)),
+                !matches!(update, SessionUpdate::FatalError { .. }),
                 "spawn_session failure must not emit FatalError"
             );
             if let SessionUpdate::ConnectionFailed { fatal, .. } = update {
@@ -2767,7 +2772,7 @@ provider = "anthropic"
 
         while let Ok(update) = rx.try_recv() {
             assert!(
-                !matches!(update, SessionUpdate::FatalError(_)),
+                !matches!(update, SessionUpdate::FatalError { .. }),
                 "unknown target must not emit FatalError"
             );
         }

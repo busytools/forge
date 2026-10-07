@@ -335,6 +335,73 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * The service status the core watches for the whole install arrives keyless,
+   * so it rides every seat's stream and each open conversation draws it as the
+   * terminal pushes it (#1638) - once per report.
+   */
+  it('draws a service-status report, once per report', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    // A seat-addressed update for ANOTHER seat must stay out: the door
+    // passing keyless updates did not open it to other seats' news.
+    server.update({
+      connection_failed: {
+        key: { org: 'OtherOrg', project: 'other', label: 'lead' },
+        message: 'another seat failure',
+        fatal: false,
+      },
+    });
+    expect(drawn(), "another seat's failure stays out").not.toContain('another seat failure');
+
+    server.update({
+      service_status: { severity: 'warning', message: 'Elevated error rates on the Anthropic API' },
+    });
+    expect(drawn(), 'the report is drawn').toContain('Elevated error rates on the Anthropic API');
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+    expect(drawn(), 'a warning').toContain('"severity":"warning"');
+
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'an error report draws as an error').toContain('"severity":"error"');
+    expect(drawn()).toContain('The API is down');
+
+    const once = drawn();
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'the same report twice is one row').toBe(once);
+  });
+
+  /**
+   * The core's fatal arrives keyless before the process goes (#1638): every
+   * open conversation draws the line, in the terminal's own words.
+   */
+  it("draws the core's fatal once", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    const fatal = {
+      error: 'connection_failed',
+      message: 'Failed to establish or maintain the Agent SDK bridge connection.',
+    };
+    server.update({ fatal_error: fatal });
+    expect(drawn(), 'the fatal is drawn').toContain(
+      'forge stopped: Failed to establish or maintain the Agent SDK bridge connection.',
+    );
+    expect(drawn(), 'as a failure').toContain('"severity":"error"');
+
+    const once = drawn();
+    server.update({ fatal_error: fatal });
+    expect(drawn(), 'the same fatal twice is one row').toBe(once);
+  });
+
+  /**
    * The plan-limit next steps ride the turn's own failure (#1638): the
    * terminal's words and steps, with the core's own message where the
    * terminal's summary rides - it is not drawn a line above when a

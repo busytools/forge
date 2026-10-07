@@ -246,7 +246,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         | SessionUpdate::AccountsChanged => {
             app.needs_redraw = true;
         }
-        SessionUpdate::FatalError(error) => {
+        SessionUpdate::FatalError { error, .. } => {
             session::apply_session_update_fatal_error(app, error);
         }
         SessionUpdate::ForgeAccountIdentity { key, display_name } => {

@@ -270,7 +270,7 @@ census!(SessionUpdate,
         PromptCancelResolved struct,
         ReviewActivityNotice struct, DictateAvailability struct,
         DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
-        DictateProgress struct, DictateEnded struct, FatalError tuple,
+        DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
