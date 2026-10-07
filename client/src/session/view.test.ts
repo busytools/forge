@@ -706,7 +706,14 @@ describe('the tasks the strip draws', () => {
         owner: { org: 'TestOrg', project: 'proj', label: 'builder' },
         parent: 'top',
       },
-      { ...base, id: 'child', subject: 'a child row', status: 'pending', parent: 'top' },
+      {
+        ...base,
+        id: 'child',
+        subject: 'a child row',
+        status: 'pending',
+        owner: null,
+        parent: 'top',
+      },
     ];
 
     // A lead draws its campaign board: top-level rows only, so the child of
