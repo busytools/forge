@@ -79,12 +79,6 @@ pub struct ReadAloudState {
     pub passage: String,
 }
 
-/// The directory the read-aloud set lives under, beside forge's other
-/// machine-local stores; `None` when no app-support dir resolves.
-pub(crate) fn read_aloud_dir() -> Option<std::path::PathBuf> {
-    forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-read-aloud"))
-}
-
 /// The config one target runs under: the base with the target's file in
 /// its role's slot.
 ///
@@ -128,12 +122,22 @@ impl Workspace {
         self.dictate_bench.lock().clone()
     }
 
+    /// The directory the read-aloud set lives under, beside forge's other
+    /// machine-local stores; `None` when no app-support dir resolves. A
+    /// test points it at its own dir rather than the real one.
+    fn read_aloud_dir(&self) -> Option<std::path::PathBuf> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(dir) = self.test_read_aloud_dir.lock().clone() {
+            return Some(dir);
+        }
+        forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-read-aloud"))
+    }
+
     /// The read-aloud set, as the page draws it: whether one exists here,
     /// whether one is armed for the next take, and the passage it was read
-    /// from. The set is the machine's rather than the workspace's, so this
-    /// needs no handle to answer.
-    pub fn read_aloud_state() -> ReadAloudState {
-        let dir = read_aloud_dir();
+    /// from.
+    pub fn read_aloud_state(&self) -> ReadAloudState {
+        let dir = self.read_aloud_dir();
         ReadAloudState {
             recorded: dir.as_ref().is_some_and(|dir| dir.join("passage.txt").is_file()),
             armed: dir.is_some_and(|dir| dir.join("armed.txt").is_file()),
@@ -151,7 +155,7 @@ impl Workspace {
         if !self.config.dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        let Some(dir) = read_aloud_dir() else {
+        let Some(dir) = self.read_aloud_dir() else {
             return Err(DispatchError::ReadAloudUnavailable {
                 reason: "no app-support directory resolves".to_owned(),
             });
@@ -222,7 +226,7 @@ impl Workspace {
         if !self.config.dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        let Some(dir) = read_aloud_dir() else {
+        let Some(dir) = self.read_aloud_dir() else {
             return Err(DispatchError::ReadAloudUnavailable {
                 reason: "no app-support directory resolves".to_owned(),
             });
@@ -585,5 +589,36 @@ mod tests {
             1,
             "one row per (role, file, tier, corpus)"
         );
+    }
+
+    /// The last models frame queued so far, draining what came before it.
+    fn drained_models(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>,
+    ) -> Option<crate::catalogue::DictateModelsSnapshot> {
+        let mut found = None;
+        while let Ok(update) = updates.try_recv() {
+            if let crate::SessionUpdate::DictateModelsChanged { models } = update {
+                found = Some(models);
+            }
+        }
+        found
+    }
+
+    /// **Arming and cancelling both push the read.** The armed box is drawn
+    /// from a frame like every other fact on the page, so a command that
+    /// moves the arming without a frame leaves the press looking dead.
+    #[test]
+    fn arming_and_cancelling_push_the_models_read() {
+        let (ws, mut updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
+        let dir = tempfile::tempdir().unwrap();
+        *ws.test_read_aloud_dir.lock() = Some(dir.path().to_path_buf());
+
+        ws.dispatch(crate::Command::DictateReadAloudArm).expect("the test dir is writable");
+        let models = drained_models(&mut updates).expect("arming pushes the read");
+        assert!(models.read_aloud.armed, "the frame carries the armed set");
+
+        ws.dispatch(crate::Command::DictateReadAloudDisarm).expect("the arming is there to cancel");
+        let models = drained_models(&mut updates).expect("cancelling pushes the read");
+        assert!(!models.read_aloud.armed, "the frame carries the arming cleared");
     }
 }

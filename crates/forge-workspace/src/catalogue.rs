@@ -456,7 +456,7 @@ impl crate::Workspace {
             installed: self.installed_models(),
             bench: self.dictate_bench(),
             results: self.bench_results(),
-            read_aloud: crate::Workspace::read_aloud_state(),
+            read_aloud: self.read_aloud_state(),
         }
     }
 

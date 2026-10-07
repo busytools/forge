@@ -312,6 +312,10 @@ pub struct Workspace {
     /// real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_catalogue_dir: Mutex<Option<std::path::PathBuf>>,
+    /// A test's own read-aloud set directory, so an arming never writes to
+    /// the real app-support dir. Not present in production builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_read_aloud_dir: Mutex<Option<std::path::PathBuf>>,
     /// Fan-in [`SessionUpdate`] sender: every producer inside the
     /// workspace holds a clone, and it fans each update out to whatever
     /// subscribed at [`Self::subscribe`].
@@ -1517,6 +1521,8 @@ impl Workspace {
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_read_aloud_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
@@ -4497,10 +4503,14 @@ impl Workspace {
                     return self.stop_bench();
                 }
                 Command::DictateReadAloudArm => {
-                    return self.arm_read_aloud();
+                    let outcome = self.arm_read_aloud();
+                    self.push_models();
+                    return outcome;
                 }
                 Command::DictateReadAloudDisarm => {
-                    return self.disarm_read_aloud();
+                    let outcome = self.disarm_read_aloud();
+                    self.push_models();
+                    return outcome;
                 }
                 Command::DictateBenchDelete { target, tier, corpus } => {
                     let outcome = self.delete_bench_result(&target, tier, &corpus);
