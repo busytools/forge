@@ -312,7 +312,17 @@ describe('the session page over a socket', () => {
    * in the suite renders it.
    */
   it('reaches the page through the Router a session URL lands on', async () => {
-    server = await stubServer(sessionFixture);
+    // A queued prompt rides the record, and this is the one arrangement where
+    // the pile has no home of its own: the page handing its column the queue
+    // snippet is the whole of what draws it, so dropping that prop would
+    // silently stop drawing the pile everywhere.
+    server = await stubServer({
+      ...sessionFixture,
+      state: {
+        ...sessionFixture.state,
+        queue: [{ uuid: 'q1', source: 'you', text: 'a queued prompt' }],
+      },
+    });
     connection = connect(server.url);
     app = mount(Router, {
       target: document.body,
@@ -332,6 +342,10 @@ describe('the session page over a socket', () => {
 
     expect(git.strip()?.label, 'the URL-reached page drew no seat record').toContain('worktree-pr');
     expect(document.querySelector('.sess .nm')?.textContent, 'the page drew its seat').toBe('proj');
+    expect(
+      document.querySelector('.pile .qcard .w')?.textContent,
+      'the queued row did not reach the column through the page',
+    ).toBe('a queued prompt');
   });
 
   /* The queue-above-strip order is pinned where the column itself draws it:
