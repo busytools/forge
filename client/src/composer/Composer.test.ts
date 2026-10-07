@@ -19,7 +19,8 @@ vi.mock('../browser/host', async (importOriginal) => {
     // not be opened.
     openTakeover: vi.fn(() => Promise.reject(new Error('no engine'))),
     closeTakeover: vi.fn(() => Promise.resolve()),
-    takeoverActive: vi.fn(() => Promise.resolve(false)),
+    takeoverState: vi.fn(() => Promise.resolve({ active: false, native: false })),
+    takeoverUrl: vi.fn(() => Promise.resolve(null)),
   };
 });
 

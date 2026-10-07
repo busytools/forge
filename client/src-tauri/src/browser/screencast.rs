@@ -56,10 +56,16 @@ impl Live {
 /// Open the view on the browser whose debug endpoint is `endpoint` (the
 /// websocket URL the port file names), delivering frames to `on_frame`.
 ///
+/// **`with_frames` is where the platforms part.** The desktop client
+/// renders the browser natively, so its session carries INPUT and nothing
+/// else - a screencast whose frames nobody draws is pure cost. The
+/// platforms that still draw frames (the phone) ask for them.
+///
 /// Fails rather than pretending: a debug port that will not open is the
 /// dock's cue to say the view is not up.
 pub async fn start(
     endpoint: &str,
+    with_frames: bool,
     on_frame: impl Fn(Frame) + Send + 'static,
 ) -> Result<Live, String> {
     let (socket, _) = tokio_tungstenite::connect_async(endpoint)
@@ -132,16 +138,19 @@ pub async fn start(
                         continue;
                     }
                     page = Some(session_id.to_owned());
-                    for (method, params) in [
+                    let mut opening = vec![
                         ("Page.enable", json!({})),
                         // The target is held for the debugger at attach; this
                         // is what lets it run.
                         ("Runtime.runIfWaitingForDebugger", json!({})),
-                        (
+                    ];
+                    if with_frames {
+                        opening.push((
                             "Page.startScreencast",
                             json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1 }),
-                        ),
-                    ] {
+                        ));
+                    }
+                    for (method, params) in opening {
                         let message = json!({
                             "id": id(), "method": method, "params": params,
                             "sessionId": session_id,
@@ -162,7 +171,7 @@ pub async fn start(
                         }
                     }
                 }
-                Some("Page.screencastFrame") => {
+                Some("Page.screencastFrame") if with_frames => {
                     let Some(params) = message.get("params") else { continue };
                     let ack = json!({
                         "id": id(),

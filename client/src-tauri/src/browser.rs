@@ -372,7 +372,10 @@ impl BrowserHost {
         let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
         let emitter = app.clone();
         let kept = std::sync::Arc::clone(&self.last_frame);
-        let started = screencast::start(&endpoint, move |frame| {
+        // **The desktop draws the browser itself**, so its session carries
+        // input without frames; the platforms that draw frames ask for them.
+        let with_frames = !cfg!(all(desktop, target_os = "macos"));
+        let started = screencast::start(&endpoint, with_frames, move |frame| {
             let mut held = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *held = Some(frame.clone());
             let _ = emitter.emit("browser_frame", frame);
@@ -405,10 +408,31 @@ impl BrowserHost {
     }
 
     /// Whether the shell is holding a takeover up - what a reloaded window
-    /// reads to re-draw the screen it was on.
-    pub async fn takeover_active(&self) -> Result<bool, String> {
+    /// reads to re-draw the screen it was on - and **whether the picture is
+    /// the browser's own view** (the desktop), which the screen must know to
+    /// stop drawing frames nobody sees.
+    pub async fn takeover_state(&self) -> Result<TakeoverState, String> {
         self.paths.clone()?;
-        Ok(self.takeover_up.load(std::sync::atomic::Ordering::Acquire))
+        Ok(TakeoverState {
+            active: self.takeover_up.load(std::sync::atomic::Ordering::Acquire),
+            native: cfg!(all(desktop, target_os = "macos")),
+        })
+    }
+
+    /// The page the browser is showing, for the takeover's bar.
+    pub async fn takeover_url(&self) -> Result<Option<String>, String> {
+        let paths = self.paths.clone()?;
+        #[cfg(all(desktop, target_os = "macos"))]
+        let port = {
+            let _ = paths;
+            cef::debug_port()
+        };
+        #[cfg(not(all(desktop, target_os = "macos")))]
+        let port = self.active_browser(&paths).await?.port;
+        if port == 0 {
+            return Ok(None);
+        }
+        Ok(chromium::page_url(port).await)
     }
 
     /// One input event into the live view, as CDP wants it.
@@ -562,11 +586,29 @@ pub async fn browser_takeover_close(
     Ok(())
 }
 
-/// Whether the shell is holding a takeover up, for a window that has just
-/// reloaded.
+/// What a (reloaded) window reads to re-draw the takeover it was on.
+#[derive(serde::Serialize)]
+pub struct TakeoverState {
+    /// Whether the takeover is up.
+    pub active: bool,
+    /// Whether the picture is the browser's own view: the screen then draws
+    /// no frames of its own.
+    pub native: bool,
+}
+
 #[tauri::command]
-pub async fn browser_takeover_state(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
-    host.takeover_active().await
+pub async fn browser_takeover_state(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+) -> Result<TakeoverState, String> {
+    host.takeover_state().await
+}
+
+/// The page the browser is showing, for the takeover's bar.
+#[tauri::command]
+pub async fn browser_takeover_url(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+) -> Result<Option<String>, String> {
+    host.takeover_url().await
 }
 
 /// One named context, as the client's own browser strip draws it.

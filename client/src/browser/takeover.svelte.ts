@@ -9,7 +9,7 @@
  * so the answer crosses from the bar exactly as it would from the dock.
  */
 
-import { closeTakeover, openTakeover, takeoverActive } from './host';
+import { closeTakeover, openTakeover, takeoverState } from './host';
 
 /** The hand-off the bar's Done would answer. */
 export interface Asking {
@@ -22,6 +22,12 @@ export interface Asking {
 class Takeover {
   active = $state(false);
   asking = $state<Asking | null>(null);
+  /**
+   * Whether the picture is the browser's own view, rendered by the shell.
+   * The screen then draws no frames and sizes nothing: the polling and the
+   * canvas exist only for the platforms whose picture IS frames.
+   */
+  native = $state(false);
 
   /**
    * Open the view.
@@ -33,6 +39,8 @@ class Takeover {
   async open(): Promise<void> {
     await openTakeover();
     this.active = true;
+    const state = await takeoverState();
+    this.native = state.native;
   }
 
   /** Back out: the screen returns exactly as it was, and the dock keeps its question. */
@@ -52,7 +60,9 @@ class Takeover {
 
   /** What the shell says after a window reload: the view may still be up. */
   async sync(): Promise<void> {
-    this.active = await takeoverActive();
+    const state = await takeoverState();
+    this.active = state.active;
+    this.native = state.native;
   }
 }
 

@@ -158,14 +158,35 @@ export async function closeTakeover(): Promise<void> {
   await invoke('browser_takeover_close');
 }
 
-/** Whether the shell still holds a takeover up, for a window that reloaded. */
-export async function takeoverActive(): Promise<boolean> {
-  if (!canHost()) return false;
+/** What a reloaded window reads to re-draw the takeover it was on. */
+export interface TakeoverState {
+  /** Whether the takeover is up. */
+  active: boolean;
+  /**
+   * Whether the picture is the browser's own view. Then the screen draws no
+   * frames of its own - polling for them would be paying for nothing.
+   */
+  native: boolean;
+}
+
+export async function takeoverState(): Promise<TakeoverState> {
+  if (!canHost()) return { active: false, native: false };
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<boolean>('browser_takeover_state');
+    return await invoke<TakeoverState>('browser_takeover_state');
   } catch {
-    return false;
+    return { active: false, native: false };
+  }
+}
+
+/** The page the browser is showing, for the takeover's bar. */
+export async function takeoverUrl(): Promise<string | null> {
+  if (!canHost()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string | null>('browser_takeover_url');
+  } catch {
+    return null;
   }
 }
 

@@ -396,7 +396,7 @@ async fn the_takeover_view_delivers_a_frame() {
 
     let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
     let (frames, mut seen) = tokio::sync::mpsc::unbounded_channel();
-    let live = forge_client::browser::screencast::start(&endpoint, move |frame| {
+    let live = forge_client::browser::screencast::start(&endpoint, true, move |frame| {
         let _ = frames.send(frame);
     })
     .await
@@ -446,7 +446,7 @@ async fn an_input_sent_before_the_page_attaches_still_lands() {
     let browser = Launched::new(active.pid, active.port, paths.profile.clone());
 
     let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
-    let live = forge_client::browser::screencast::start(&endpoint, |_| {})
+    let live = forge_client::browser::screencast::start(&endpoint, false, |_| {})
         .await
         .expect("the view opens on the running browser");
     live.input(

@@ -9,7 +9,7 @@
    * keyboard events go back down the same connection, mapped into the page's
    * coordinates. The bar, the way back and Done are the web side's.
    */
-  import { takeoverFrame, takeoverInput, type TakeoverFrame } from './host';
+  import { takeoverFrame, takeoverInput, takeoverUrl, type TakeoverFrame } from './host';
   import { keyStroke, modifiers, toPage } from './input';
   import { takeover } from './takeover.svelte';
 
@@ -18,6 +18,8 @@
   let canvas = $state<HTMLCanvasElement | null>(null);
   let stage = $state<HTMLElement | null>(null);
   let frame = $state<TakeoverFrame | null>(null);
+  /** What the bar says: the page when the shell can say it, else the forge address. */
+  let pageUrl = $state<string | null>(null);
   /**
    * The CSS size the browser's own viewport is being told to be.
    *
@@ -25,7 +27,8 @@
    * headless browser renders at 800x600 and the stage shows a small page in a
    * void; overriding the device metrics to the stage's own box makes the
    * page fill it - at the display's scale, so the frames are crisp - and the
-   * input mapping is one rectangle either way.
+   * input mapping is one rectangle either way. All of this belongs to the
+   * platforms whose picture is frames; a native view is sized by the shell.
    */
   let viewport = $state<{ width: number; height: number } | null>(null);
   /** The decoded last frame; drawn when it loads, so frames never flicker. */
@@ -39,6 +42,7 @@
 
   /** Tell the browser how big its viewport is, so the page fills the stage. */
   function fit(): void {
+    if (takeover.native) return;
     const el = stage;
     if (el === null) return;
     const width = Math.round(el.clientWidth);
@@ -81,6 +85,9 @@
   }
 
   $effect(() => {
+    // **A native picture needs no frames.** The shell renders the browser
+    // itself; polling for images nobody draws was pure cost.
+    if (takeover.native) return;
     image.onload = () => draw();
     // **Read the current frame on a beat rather than trust a pushed event.**
     // The shell keeps the last frame, so the worst case is one beat of lag;
@@ -103,6 +110,23 @@
     const beat = setInterval(tick, 80);
     return () => clearInterval(beat);
   });
+
+  // The bar's page line, for a native view: read on a slow beat, and only
+  // while the takeover is up.
+  $effect(() => {
+    if (!takeover.native) return;
+    const read = (): void => {
+      void takeoverUrl().then((url) => (pageUrl = url));
+    };
+    read();
+    const beat = setInterval(read, 1000);
+    return () => clearInterval(beat);
+  });
+
+  /** Reload the page, for the bar's own button. */
+  function reload(): void {
+    void takeoverInput('Page.reload', {});
+  }
 
   /** A client point in the page's pixels, and the geometry that mapped it. */
   function at(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
@@ -166,23 +190,29 @@
     <button type="button" class="back" onclick={() => void takeover.back()}>
       <span class="arw">←</span> back to forge
     </button>
-    <span class="addr">{address}</span>
+    {#if takeover.native}
+      <button type="button" class="reload" onclick={reload}>reload</button>
+    {/if}
+    <span class="addr">{pageUrl ?? address}</span>
     {#if takeover.asking !== null}
       <button type="button" class="done" onclick={() => void takeover.done()}>Done</button>
     {/if}
   </div>
-  <!-- The stage: the page's own pixels, drawn from the shell's frames. -->
+  <!-- The stage: the browser itself when the shell draws it natively, the
+       shell's frames otherwise. -->
   <div class="stage" bind:this={stage}>
-    <canvas
-      bind:this={canvas}
-      tabindex="0"
-      aria-label="the browser"
-      onpointerdown={(event: PointerEvent) => mouse(event, 'mousePressed')}
-      onpointermove={(event: PointerEvent) => mouse(event, 'mouseMoved')}
-      onpointerup={(event: PointerEvent) => mouse(event, 'mouseReleased')}
-      onwheel={wheel}
-      onkeydown={(event: KeyboardEvent) => key(event, 'keyDown')}
-      onkeyup={(event: KeyboardEvent) => key(event, 'keyUp')}
-    ></canvas>
+    {#if !takeover.native}
+      <canvas
+        bind:this={canvas}
+        tabindex="0"
+        aria-label="the browser"
+        onpointerdown={(event: PointerEvent) => mouse(event, 'mousePressed')}
+        onpointermove={(event: PointerEvent) => mouse(event, 'mouseMoved')}
+        onpointerup={(event: PointerEvent) => mouse(event, 'mouseReleased')}
+        onwheel={wheel}
+        onkeydown={(event: KeyboardEvent) => key(event, 'keyDown')}
+        onkeyup={(event: KeyboardEvent) => key(event, 'keyUp')}
+      ></canvas>
+    {/if}
   </div>
 </div>

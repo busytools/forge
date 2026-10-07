@@ -11,13 +11,21 @@ vi.mock('./host', async (importOriginal) => {
     ...actual,
     openTakeover: vi.fn(() => Promise.resolve()),
     closeTakeover: vi.fn(() => Promise.resolve()),
-    takeoverActive: vi.fn(() => Promise.resolve(false)),
     takeoverInput: vi.fn(() => Promise.resolve()),
     takeoverFrame: vi.fn(() => Promise.resolve(null)),
+    takeoverState: vi.fn(() => Promise.resolve({ active: false, native: false })),
+    takeoverUrl: vi.fn(() => Promise.resolve(null)),
   };
 });
 
-import { closeTakeover, openTakeover, takeoverActive, takeoverFrame, takeoverInput } from './host';
+import {
+  closeTakeover,
+  openTakeover,
+  takeoverFrame,
+  takeoverInput,
+  takeoverState,
+  takeoverUrl,
+} from './host';
 
 function draw(address = '127.0.0.1:8790') {
   const target = document.createElement('div');
@@ -38,8 +46,11 @@ afterEach(() => {
   vi.mocked(closeTakeover).mockClear();
   vi.mocked(takeoverFrame).mockReset();
   vi.mocked(takeoverFrame).mockResolvedValue(null);
+  vi.mocked(takeoverUrl).mockReset();
+  vi.mocked(takeoverUrl).mockResolvedValue(null);
   takeover.active = false;
   takeover.asking = null;
+  takeover.native = false;
 });
 
 describe('the takeover', () => {
@@ -106,9 +117,45 @@ describe('the takeover', () => {
   });
 
   it('re-draws the screen a reloaded window was on', async () => {
-    vi.mocked(takeoverActive).mockResolvedValueOnce(true);
+    vi.mocked(takeoverState).mockResolvedValueOnce({ active: true, native: false });
     await takeover.sync();
     expect(takeover.active, 'the shell still held the view').toBe(true);
+  });
+
+  /** **A native picture needs no frames.** The shell renders the browser
+   *  itself, so the screen draws no canvas and polls for nothing. */
+  it('draws no canvas and polls no frames when the view is native', async () => {
+    vi.mocked(takeoverState).mockResolvedValueOnce({ active: true, native: true });
+    await takeover.sync();
+    takeover.active = true;
+    vi.mocked(takeoverFrame).mockClear();
+    const shown = draw();
+
+    expect(takeover.native, 'the shell said the picture is its own').toBe(true);
+    expect(shown.target.querySelector('canvas'), 'nothing to draw frames on').toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(takeoverFrame, 'and nothing is asked for them').not.toHaveBeenCalled();
+    shown.stop();
+  });
+
+  it('carries the page URL on a native bar, and reloads it', async () => {
+    vi.mocked(takeoverUrl).mockResolvedValue('https://example.com/');
+    takeover.native = true;
+    takeover.active = true;
+    const shown = draw('127.0.0.1:8792');
+
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'the bar shows the page, not the forge address').toContain(
+        'https://example.com/',
+      );
+    });
+
+    click(shown.target.querySelector('.reload'));
+    expect(
+      takeoverInput,
+      'and reload asks the browser for the page again',
+    ).toHaveBeenLastCalledWith('Page.reload', {});
+    shown.stop();
   });
 
   /** A frame the shell holds, which the screen's own beat reads: the canvas

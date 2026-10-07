@@ -103,6 +103,22 @@ pub async fn probe(port: u16) -> bool {
     probe_identity(port).await.is_some()
 }
 
+/// The first page target's URL on `port`, from the browser's own HTTP
+/// endpoint - what the takeover's bar shows beside the way back.
+pub async fn page_url(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/json/list");
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+        .and_then(|entry| entry.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 /// The browser target path an answering port reports - `/devtools/browser/
 /// <uuid>`, taken from its own `/json/version` - or `None` when nothing
 /// answers there as a browser. Compared against the port file's own line,

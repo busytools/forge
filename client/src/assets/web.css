@@ -1048,6 +1048,9 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; color: var(--text);
   font: inherit; font-size: var(--fs-label); cursor: pointer; }
 .takeover .back .arw { color: var(--accent); }
+.takeover .reload { background: none; border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 10px; color: var(--text); font: inherit; font-size: var(--fs-label);
+  cursor: pointer; }
 .takeover .addr { color: var(--dim); font-size: var(--fs-label); min-width: 0;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .takeover .done { margin-left: auto; background: var(--accent); color: #1a1000; border: 0;
