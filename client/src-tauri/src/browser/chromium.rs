@@ -47,6 +47,12 @@ pub fn launch_args(profile: &Path, headed: bool) -> Vec<String> {
     ];
     if !headed {
         args.push("--headless".to_owned());
+    } else {
+        // **The X closes the window, not the browser** (measured on Brave,
+        // 2026-10-07): Chrome's own automation keep-alive, so the process
+        // and the agents' CDP connection survive a person closing the
+        // window. The tab dies with its window; the next call re-navigates.
+        args.push("--keep-alive-for-test".to_owned());
     }
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
@@ -564,6 +570,25 @@ mod tests {
         assert!(
             args.contains(&"--password-store=basic".to_owned()),
             "and the store behind the mock is the plain one: {args:?}",
+        );
+    }
+
+    /// **The headed launch survives its own window closing** (measured on
+    /// Brave): `--keep-alive-for-test` is Chrome's own automation switch for
+    /// it, and the X must not take the agents' browser down with the window.
+    #[test]
+    fn a_headed_launch_drops_headless_and_keeps_the_browser_alive() {
+        let headless = launch_args(Path::new("/tmp/forge-profile"), false);
+        let headed = launch_args(Path::new("/tmp/forge-profile"), true);
+        assert!(headless.contains(&"--headless".to_owned()), "{headless:?}");
+        assert!(!headed.contains(&"--headless".to_owned()), "{headed:?}");
+        assert!(
+            headed.contains(&"--keep-alive-for-test".to_owned()),
+            "a window close must leave the browser serving: {headed:?}",
+        );
+        assert!(
+            !headless.contains(&"--keep-alive-for-test".to_owned()),
+            "the headless launch has no window to keep it alive past: {headless:?}",
         );
     }
 
