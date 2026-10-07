@@ -10,7 +10,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
-import { refused } from './refusals';
+import { refused } from '../refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
 // record should have been replaced throws here as well as in a mounted column.
@@ -328,6 +328,10 @@ describe('the conversation the chat draws', () => {
     expect(drawn(), 'the line is drawn').toContain('Not sent - the connection is down.');
     expect(drawn(), 'as the core own line').toContain('forge_notice');
     expect(drawn(), 'a warning').toContain('warning');
+
+    const once = drawn();
+    refused(LEAD);
+    expect(drawn(), 'the same line twice in a row is one row').toBe(once);
   });
 
   /**
