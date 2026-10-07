@@ -909,6 +909,7 @@ name = "forge-client"
 version = "1.1.0"
 dependencies = [
  "rmcp",
+ "rustix",
  "serde",
  "serde_json",
  "tauri",

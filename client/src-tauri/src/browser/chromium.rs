@@ -114,6 +114,82 @@ fn fresh_session(profile: &Path) {
     }
 }
 
+/// **One launch per profile ACROSS PROCESSES.** The host's own mutex
+/// serializes its calls; a second host on the same directory - the app
+/// opened twice, a second client - would otherwise delete the live launch's
+/// port file (`forget_launch` does exactly that) and spawn onto a locked
+/// profile, wedging both. An flock beside the port file makes the launch
+/// critical section machine-wide, and the loser re-checks for the live
+/// launch under the guard instead of launching over it.
+///
+/// A crash releases the flock with the process, so there is no stale-lock
+/// cleanup; a holder that wedges past every bound is given up on by name
+/// rather than waited for.
+struct LaunchLock {
+    _file: std::fs::File,
+}
+
+enum Locked {
+    Held(LaunchLock),
+    Contended,
+    Unavailable(String),
+}
+
+fn try_lock(profile: &Path) -> Locked {
+    let path = profile.join("launch.lock");
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(why) => {
+            return Locked::Unavailable(format!(
+                "the launch lock at {} cannot be opened: {why}",
+                path.display()
+            ));
+        }
+    };
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Locked::Held(LaunchLock { _file: file }),
+        Err(why)
+            if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN =>
+        {
+            Locked::Contended
+        }
+        Err(why) => {
+            Locked::Unavailable(format!("the launch lock at {} cannot be taken: {why}", path.display()))
+        }
+    }
+}
+
+impl LaunchLock {
+    /// The lock for `profile`, waiting out whoever holds it - a launch takes
+    /// seconds and the holder releases the moment its port answers - up to
+    /// the launch deadline plus slack.
+    async fn acquire(profile: &Path) -> Result<Self, String> {
+        let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT + Duration::from_secs(2);
+        loop {
+            match try_lock(profile) {
+                Locked::Held(lock) => return Ok(lock),
+                Locked::Unavailable(why) => return Err(why),
+                Locked::Contended => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "the browser on {} is being launched by another process and did not \
+                             answer in time",
+                            profile.display(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+}
+
 /// One launch, as `DevToolsActivePort` records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivePort {
@@ -279,6 +355,15 @@ async fn launch_with(
     }
     std::fs::create_dir_all(profile)
         .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
+    // **The machine-wide guard, held until the port answers.** Another
+    // process may be mid-launch on this very directory: waiting for its lock
+    // and then re-checking means this call attaches to the browser it
+    // started, instead of deleting its port file and spawning onto a locked
+    // profile.
+    let _guard = LaunchLock::acquire(profile).await?;
+    if let Some(active) = verified(profile).await {
+        return Ok(active);
+    }
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
     forget_launch(profile);
@@ -773,6 +858,39 @@ mod tests {
             std::fs::read_to_string(&prefs).expect("prefs read"),
             "not json at all",
             "a prefs file this cannot parse is left exactly as it was",
+        );
+    }
+
+    /// **The launch lock is exclusive across open file descriptions**, which
+    /// is what makes it work across processes: a second take on the same
+    /// directory is contended while the first is held, and free once it
+    /// drops. (The wait-until-free path needs a second live process to hold
+    /// it, and is covered by the live battery instead.)
+    #[tokio::test]
+    async fn the_launch_lock_is_held_until_it_drops() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let first = LaunchLock::acquire(dir.path()).await.expect("the first take");
+        assert!(
+            matches!(try_lock(dir.path()), Locked::Contended),
+            "a second take is contended while the first is held",
+        );
+        drop(first);
+        assert!(
+            matches!(try_lock(dir.path()), Locked::Held(_)),
+            "and free once the first drops",
+        );
+    }
+
+    /// A lock file that cannot be used answers why rather than looping: a
+    /// directory where the lock file goes is the cheapest stand-in.
+    #[tokio::test]
+    async fn an_unusable_launch_lock_answers_why() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir(dir.path().join("launch.lock")).expect("a directory in the lock's place");
+        let refused = LaunchLock::acquire(dir.path()).await;
+        assert!(
+            matches!(refused, Err(ref why) if why.contains("launch.lock")),
+            "the refusal names the file it could not take",
         );
     }
 
