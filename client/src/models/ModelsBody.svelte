@@ -427,13 +427,14 @@
 
       {#if wire.read_aloud.armed}
         <div class="status" role="status">
-          <span class="dot live"></span>
-          <span class="t">this machine is armed for the read-aloud set</span>
+          <span class="dot off"></span>
+          <span class="t">armed: your next take becomes the read-aloud set</span>
           <span class="spacer"></span>
           <button class="chip" type="button" onclick={ondisarm}>cancel</button>
           <span class="detail">
-            The next take you dictate gets stored as the bench's read-aloud set - record it in any
-            session, reading this passage aloud, then stop the take. Nothing else changes.
+            Read the passage below aloud in any session and stop the take - that recording becomes
+            the read-aloud set, the one corpus a bench can score on words that are known. Nothing
+            else about dictation changes.
           </span>
           <span class="detail passage">{wire.read_aloud.passage}</span>
         </div>
@@ -441,8 +442,9 @@
         <div class="empty">
           <p class="t">the read-aloud set is not recorded yet</p>
           <p class="d">
-            Read this passage aloud once, with the bench armed - it is the only corpus whose words
-            are known, so it is the only one that can score term accuracy:
+            Read the passage below aloud once, with the bench armed - a bench over the takes
+            compares two models' words, and this is the one corpus whose words are known, so it is
+            the one that can score accuracy outright:
           </p>
           <p class="d passage">{wire.read_aloud.passage}</p>
           <button class="chip" type="button" disabled={busy} onclick={onarm}

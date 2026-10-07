@@ -611,8 +611,8 @@ describe('the models page as it draws', () => {
       { ondisarm: () => (cancels += 1) },
     );
 
-    expect(host.textContent).toContain('this machine is armed for the read-aloud set');
-    expect(host.textContent).toContain('The next take you dictate gets stored');
+    expect(host.textContent).toContain('armed: your next take becomes the read-aloud set');
+    expect(host.textContent).toContain('Read the passage below aloud in any session');
     expect(host.textContent).not.toContain('the read-aloud set is not recorded yet');
     const cancel = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
       c.textContent?.includes('cancel'),
