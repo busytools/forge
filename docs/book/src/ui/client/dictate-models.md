@@ -24,7 +24,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 |---|---|---|
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
-| In use | one row per model forge runs: its role, its file, the facts the spec declares - size, quant, parameters, digest, licence - the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
+| In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - one line per proposal with the control that takes it, and the comparison table under it | `check`, `updates` |
 | Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | one row per model a bench can run, with the controls that run it and stop it; the read-aloud set's own state, and the record control when there is none; one row per saved result, with its figures, its verdict against the model in use, and its delete | `bench`, `read_aloud`, `results` |
@@ -79,6 +79,15 @@ beats both, but slower`, `slower than this`, `no more accurate`, or a verdict
 this client is older than. The pick's control is drawn beside its verdict
 rather than in a last column of its own, so a row's action is labelled by the
 cell it sits in.
+
+**The role row is the selector.** Pressing a role in use draws that role's
+own proposal below - the section follows the first role that has one until a
+press, so a role with news is never hidden behind one without. A role the
+feed has nothing for says so in words rather than leaving another role's
+table standing under its name, and a proposal whose candidate list is empty
+says that too. The role is a button rather than the row itself, for the
+reason a row's name is the link on the home: the row carries its own
+controls, and a control inside a control is not HTML.
 
 **The bench scores a model on this machine's own material, and nothing is
 embedded.** A shipped binary carries no audio: a machine with no material

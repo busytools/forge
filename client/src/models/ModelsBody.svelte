@@ -116,6 +116,16 @@
   const bench = $derived(benchLine(wire.bench));
   const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates));
 
+  /**
+   * The role whose proposal the Updates section draws. The rows in use are
+   * the selector; until one is pressed the section follows the first role
+   * that has something to propose, so a role with news is never hidden
+   * behind a role without any.
+   */
+  let selected = $state<ModelRole | null>(null);
+  const shownRole = $derived(selected ?? wire.updates[0]?.role ?? 'transcribing');
+  const shown = $derived(wire.updates.filter((update) => update.role === shownRole));
+
   /** How many level readings the recording card draws. */
   const REC_CELLS = 40;
 
@@ -232,7 +242,18 @@
         {@const factsOf = inUseRowFacts(model)}
         {@const source = activeSource(model.from)}
         <div class="model">
-          <span class="role">{roleWord(model.role)}</span>
+          <!-- The role is the selector: pressing it shows that role's own
+               proposal below, the way a row in a list picks what the pane
+               beside it draws. A button rather than the row itself, for the
+               same reason a row's name is the link: the row carries its own
+               controls, and a control inside a control is not HTML. -->
+          <button
+            class="role"
+            type="button"
+            aria-pressed={shownRole === model.role}
+            onclick={() => (selected = model.role)}
+            title="show this role's updates">{roleWord(model.role)}</button
+          >
           <div class="facts">
             <div class="nm">{model.file}</div>
             <div class="meta">{@render facts(factsOf.pinned)}</div>
@@ -277,7 +298,7 @@
       {#if line.detail !== null}<span class="detail">{line.detail}</span>{/if}
     </div>
 
-    {#each wire.updates as update (`${update.role}/${update.file}`)}
+    {#each shown as update (`${update.role}/${update.file}`)}
       <div class="cmp-head">
         <span class="t">read against the {roleWord(update.role)} model in use</span>
         <span class="when">
@@ -285,6 +306,12 @@
           the feed's own FLEURS-en and m4-max rows
         </span>
       </div>
+      {#if update.candidates.length === 0}
+        <p class="note">
+          no other English model in the feed is measured on both axes &middot; there is nothing to
+          compare against
+        </p>
+      {/if}
       <div class="cmp-wrap">
         <table class="cmp">
           <caption>{updateWhy()}</caption>
@@ -337,6 +364,15 @@
         </table>
       </div>
     {/each}
+    {#if shown.length === 0}
+      <!-- The role has no entry at all: nothing in the feed joins the model
+           it runs, so there is nothing this page could compare. The row's own
+           source line says `not in the feed` for that model already. -->
+      <p class="note">
+        nothing to compare for the {roleWord(shownRole)} role &middot; the model in use has no measured
+        rows in the feed
+      </p>
+    {/if}
   </section>
 
   <section class="block">

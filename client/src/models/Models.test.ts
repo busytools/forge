@@ -158,8 +158,10 @@ describe('the models page as it draws', () => {
       },
     });
 
-    const button = host.querySelector('button');
-    expect(button?.textContent).toContain('Check now');
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('Check now'),
+    );
+    expect(button, 'the check control did not draw').not.toBeUndefined();
     button?.click();
     flushSync();
 
@@ -583,6 +585,35 @@ describe('the models page as it draws', () => {
     expect(other.textContent).toContain(
       'no run of cohere-transcribe-03-2026-Q4_K_M.gguf over this same corpus to compare with yet',
     );
+  });
+
+  /**
+   * **A role row is the selector**: the proposal the Updates section draws is
+   * the pressed role's, and a role the feed has nothing for says so rather
+   * than leaving the last role's table standing under another role's name.
+   */
+  it('draws the pressed role and says when one has no proposal', () => {
+    const host = open();
+    const roles = [...host.querySelectorAll<HTMLButtonElement>('button.role')];
+    const word = (text: string) =>
+      roles.find((button) => button.textContent?.includes(text) === true);
+
+    const transcribing = word('transcribing');
+    const cleanup = word('cleanup');
+    expect(transcribing, 'the in-use rows are the selector').not.toBeUndefined();
+    expect(cleanup).not.toBeUndefined();
+    expect(transcribing?.getAttribute('aria-pressed'), 'the first proposal is drawn').toBe('true');
+    expect(host.textContent).toContain('read against the transcribing model in use');
+
+    cleanup?.click();
+    flushSync();
+    expect(host.textContent).toContain('nothing to compare for the cleanup role');
+    expect(host.textContent).not.toContain('read against the transcribing model in use');
+
+    transcribing?.click();
+    flushSync();
+    expect(host.textContent).toContain('read against the transcribing model in use');
+    expect(host.textContent).not.toContain('nothing to compare for the cleanup role');
   });
 
   /** The read-aloud set: not recorded draws the passage and the record press. */

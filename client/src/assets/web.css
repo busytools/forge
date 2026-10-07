@@ -2263,8 +2263,14 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
   padding: 13px 15px; margin-bottom: 10px; }
+/* The role is the row's selector, so it is a button: the browser's chrome
+   comes off, and the pressed one is what says the section below is that
+   role's - a colour as well as a weight, never colour alone. */
 .models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
-  color: var(--dim); flex: 0 0 118px; }
+  color: var(--dim); flex: 0 0 118px; text-align: left; background: none; border: 0;
+  padding: 0; cursor: pointer; }
+.models .role:hover { color: var(--muted); }
+.models .role[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
 /* The row's middle column. Not `.body`: that name is the chat turn's own
    drawing, and the sheet's sweeps read a rule by its class name wherever it
    sits. */
