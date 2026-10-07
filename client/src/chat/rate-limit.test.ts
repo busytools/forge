@@ -132,6 +132,16 @@ describe('the summary, branch for branch with the terminal', () => {
     expect(summary).toBe("Approaching rate limit, you've used 12% of your 5-hour rate limit.");
   });
 
+  it('offers overage only when the wire carries a status', () => {
+    // The terminal's `overage_status.is_some()`: an explicit null is not a
+    // carried value, so no allowance is offered for it.
+    const summary = formatRateLimitSummary({
+      status: 'allowed_warning',
+      overageStatus: null,
+    });
+    expect(summary).toBe("Approaching rate limit, you've hit your rate limit.");
+  });
+
   it('states overage use on a rejection that is consuming it', () => {
     at(15_780);
     const summary = formatRateLimitSummary({

@@ -147,7 +147,7 @@ export function formatRateLimitSummary(info: Info): string {
   const usingOverage = flag(info, 'isUsingOverage');
   if (rejected) {
     if (usingOverage === true) message += ' You are using your overage allowance.';
-  } else if (usingOverage === false || info['overageStatus'] !== undefined) {
+  } else if (usingOverage === false || line(info, 'overageStatus') !== null) {
     message += ' You can continue using your overage allowance.';
   }
 
