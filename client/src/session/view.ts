@@ -126,11 +126,12 @@ export interface GitStrip {
    *  first thing a reader looking at a fleet needs to know. */
   head: string;
   /** The branch's chain ahead of its default, when it has one: each commit
-   *  with the files it changed, and the range's own totals. */
+   *  with the files it changed and when it landed, and the range's own
+   *  totals. */
   ahead: {
     count: number;
     base: string | null;
-    commits: { sha: string; subject: string; stats: GitStats | null }[];
+    commits: { sha: string; subject: string; stats: GitStats | null; time: number }[];
     stats: GitStats | null;
   } | null;
   /** The uncommitted layer, with its marks and counts. */

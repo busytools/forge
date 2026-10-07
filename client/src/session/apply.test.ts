@@ -336,7 +336,7 @@ describe('applyUpdate', () => {
         },
         ahead: {
           count: 1,
-          commits: [{ sha: 'a1b2c3d', subject: 'the commit', stats: null }],
+          commits: [{ sha: 'a1b2c3d', subject: 'the commit', stats: null, time: 0 }],
           stats: null,
         },
       });

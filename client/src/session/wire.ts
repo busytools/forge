@@ -284,7 +284,13 @@ export interface GitWorkRecord {
   worktree: GitStatsRecord | null;
   ahead: {
     count: number;
-    commits: { sha: string; subject: string; stats: GitStatsRecord | null }[];
+    commits: {
+      sha: string;
+      subject: string;
+      stats: GitStatsRecord | null;
+      /** When it was committed, unix seconds; 0 where the wire stated none. */
+      time: number;
+    }[];
     stats: GitStatsRecord | null;
   } | null;
 }
@@ -724,6 +730,7 @@ export function gitFrom(value: unknown): GitWorkRecord {
             sha,
             subject: text(commit['subject']) ?? '',
             stats: gitStatsFrom(commit['stats']),
+            time: number(commit['time']) ?? 0,
           },
         ];
   });

@@ -852,12 +852,14 @@
             "totalFiles": 1,
             "totalAdded": 12,
             "totalRemoved": 4
-          }
+          },
+          "time": 1767222000
         },
         {
           "sha": "d4e5f6a",
           "subject": "the tree states what it is",
-          "stats": null
+          "stats": null,
+          "time": 1767100000
         }
       ],
       "stats": {

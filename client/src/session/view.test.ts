@@ -506,8 +506,8 @@ describe('the tree the strip draws', () => {
           ahead: {
             count: 2,
             commits: [
-              { sha: 'a1b2c3d', subject: 'the first commit', stats: null },
-              { sha: 'd4e5f6a', subject: 'the second commit', stats: null },
+              { sha: 'a1b2c3d', subject: 'the first commit', stats: null, time: 1_766_000_000 },
+              { sha: 'd4e5f6a', subject: 'the second commit', stats: null, time: 1_766_000_100 },
             ],
             stats,
           },
@@ -527,8 +527,8 @@ describe('the tree the strip draws', () => {
       count: 2,
       base: 'main',
       commits: [
-        { sha: 'a1b2c3d', subject: 'the first commit', stats: null },
-        { sha: 'd4e5f6a', subject: 'the second commit', stats: null },
+        { sha: 'a1b2c3d', subject: 'the first commit', stats: null, time: 1_766_000_000 },
+        { sha: 'd4e5f6a', subject: 'the second commit', stats: null, time: 1_766_000_100 },
       ],
       stats,
     });

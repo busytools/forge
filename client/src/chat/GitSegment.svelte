@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import { elapsedLabel } from '../home/view';
   import { markOf, type GitStats, type StripFile } from '../session/view';
   import { git } from './git.svelte';
   import { panelStyle } from './strip-panel';
@@ -44,6 +45,14 @@
   // The reveal goes with the panel: the next open starts quiet.
   $effect(() => {
     if (!open) watching = null;
+  });
+
+  /** The clock the commit ages read against, ticking while the panel is up. */
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!open) return;
+    const tick = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(tick);
   });
 
   /** `N files`, the one-file case spelled out. */
@@ -166,7 +175,32 @@
               {`${filesWord(strip.ahead.stats)} \u{b7} `}{@render figures(strip.ahead.stats)}
             </div>
           {/if}
+        {/if}
+
+        {#if strip.uncommitted !== null}
+          <div class="sg-head">
+            {`uncommitted \u{b7} ${filesWord(strip.uncommitted)} \u{b7} `}{@render figures(
+              strip.uncommitted,
+            )}
+          </div>
+          {#each strip.uncommitted.files as file (file.path)}
+            {@render fileRow(file)}
+          {/each}
+        {:else if strip.gate === null}
+          <div class="sg-head">{`uncommitted \u{b7} clean`}</div>
+        {/if}
+
+        <!-- The chain below the uncommitted rows: what is happening NOW
+             leads and the history follows - the panel opens at its top, so a
+             reader reads down from the present, newest commit first. Each
+             row carries when it landed, and hover, focus or a tap reveals
+             the files it changed. -->
+        {#if strip.ahead !== null}
           {#each strip.ahead.commits as commit (commit.sha)}
+            {@const age =
+              commit.time > 0
+                ? elapsedLabel({ secs_since_epoch: commit.time, nanos_since_epoch: 0 }, now)
+                : null}
             <button
               type="button"
               class="sg-it"
@@ -196,6 +230,7 @@
             >
               <span class="sha">{commit.sha}</span>
               <span class="nm lead">{commit.subject}</span>
+              {#if age !== null}<span class="n">{age}</span>{/if}
             </button>
             {#if watching === commit.sha && commit.stats !== null}
               <div class="sg-cm">
@@ -212,19 +247,6 @@
               </div>
             {/if}
           {/each}
-        {/if}
-
-        {#if strip.uncommitted !== null}
-          <div class="sg-head">
-            {`uncommitted \u{b7} ${filesWord(strip.uncommitted)} \u{b7} `}{@render figures(
-              strip.uncommitted,
-            )}
-          </div>
-          {#each strip.uncommitted.files as file (file.path)}
-            {@render fileRow(file)}
-          {/each}
-        {:else if strip.gate === null}
-          <div class="sg-head">{`uncommitted \u{b7} clean`}</div>
         {/if}
 
         {#if strip.pr !== null}

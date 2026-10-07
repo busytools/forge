@@ -47,6 +47,7 @@ const TREE: GitStrip = {
           totalAdded: 12,
           totalRemoved: 4,
         },
+        time: Math.floor(Date.now() / 1000) - 7200,
       },
       {
         sha: 'd4e5f6a',
@@ -57,6 +58,7 @@ const TREE: GitStrip = {
           totalAdded: 3,
           totalRemoved: 0,
         },
+        time: Math.floor(Date.now() / 1000) - 3 * 86_400,
       },
     ],
     stats: {
@@ -241,19 +243,24 @@ describe("the tree row's interaction state machine", () => {
       'uncommitted \u{b7} 2 files \u{b7} +15 -4',
     ]);
 
-    expect(rows(), 'two commits, two files and the pull request').toHaveLength(5);
+    // The uncommitted rows lead and the chain follows: a reader opens at the
+    // top and reads down from the present.
+    expect(rows(), 'two files, two commits and the pull request').toHaveLength(5);
     expect(
-      rows()[0]?.querySelector('.sha')?.textContent?.trim(),
-      'a commit leads with its short sha',
-    ).toBe('a1b2c3d');
-    expect(rows()[0]?.querySelector('.nm')?.textContent?.trim()).toBe('the first commit');
-    expect(
-      rows()[2]?.querySelector('.fm')?.textContent?.trim(),
+      rows()[0]?.querySelector('.fm')?.textContent?.trim(),
       'a file wears the mark its status maps to',
     ).toBe('M');
-    expect(rows()[2]?.querySelector('.nm')?.textContent?.trim()).toBe('client/src/lib.rs');
-    expect(rows()[2]?.querySelector('.n')?.textContent?.trim()).toBe('+12 -4');
-    expect(rows()[3]?.querySelector('.fm')?.textContent?.trim()).toBe('A');
+    expect(rows()[0]?.querySelector('.nm')?.textContent?.trim()).toBe('client/src/lib.rs');
+    expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('+12 -4');
+    expect(rows()[1]?.querySelector('.fm')?.textContent?.trim()).toBe('A');
+    expect(
+      rows()[2]?.querySelector('.sha')?.textContent?.trim(),
+      'the chain follows, newest first, each with its sha',
+    ).toBe('a1b2c3d');
+    expect(rows()[2]?.querySelector('.nm')?.textContent?.trim()).toBe('the first commit');
+    expect(rows()[2]?.querySelector('.n')?.textContent?.trim(), 'and when it landed').toBe('2h');
+    expect(rows()[3]?.querySelector('.sha')?.textContent?.trim()).toBe('d4e5f6a');
+    expect(rows()[3]?.querySelector('.n')?.textContent?.trim()).toBe('3d');
     expect(
       document.querySelector('a.sg-it')?.textContent?.replace(/\s+/g, ' ').trim(),
       'the pull request states its own number and state',
@@ -267,7 +274,7 @@ describe("the tree row's interaction state machine", () => {
 
     // A file row has no destination yet, so picking it closes the list; a
     // commit row reveals instead, pinned in its own test above.
-    rows()[2]?.click();
+    rows()[0]?.click();
     flushSync();
     expect(list(), 'the pick closes the list').toBeNull();
   });
