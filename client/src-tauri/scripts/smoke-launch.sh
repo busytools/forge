@@ -4,9 +4,8 @@
 # **A client that dies on launch is a shipped-broken artifact**, and neither
 # the compiler nor the bundler can see it. This runs the app's own binary,
 # watches it live in a window of seconds, reads its words, and exits
-# non-zero when it crashed, when CEF stayed off, or when the app object was
-# claimed out of order. The e2e and release flows call THIS script; they do
-# not re-implement it.
+# non-zero when it crashed or when its browser host never came up. The e2e
+# and release flows call THIS script; they do not re-implement it.
 #
 # Usage: smoke-launch.sh <forge.app>
 set -uo pipefail
@@ -33,14 +32,23 @@ fi
 if grep -q "forge client failed to start" "$LOG"; then
     FAILED="$(grep -m1 'forge client failed to start' "$LOG")"
 fi
-# **The host's own line is the engine's proof**: the browser came up. It is
-# the vendored Chromium/installed Brave path (CEF is dormant), so the smoke
-# checks the host's announcement and leaves the rest to the live suite.
+# **The host's own line is the engine's proof**: the browser came up, and
+# the smoke checks the host's announcement and leaves the rest to the live
+# suite.
 if ! grep -q "the browser is up on port" "$LOG"; then
     FAILED="${FAILED:-the browser host never came up}"
 fi
-HELPERS=$(ps -eo pid,args | grep -E "forge-client Helper|browser-stack" | grep -v grep | awk '{print $1}')
-kill -9 "$PID" $HELPERS 2>/dev/null
+# The browser dies by PORT, never by a process-name pattern: a pattern would
+# reach a browser another session launched. The host names its port in the
+# very line the check above reads.
+PORT=$(sed -n 's/.*the browser is up on port \([0-9][0-9]*\).*/\1/p' "$LOG" | head -1)
+kill -9 "$PID" 2>/dev/null
+if [ -n "$PORT" ]; then
+    BROWSE_PIDS=$(lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$BROWSE_PIDS" ]; then
+        kill -9 $BROWSE_PIDS 2>/dev/null
+    fi
+fi
 sleep 1
 if [ -n "$FAILED" ]; then
     echo "SMOKE FAILED: $FAILED"

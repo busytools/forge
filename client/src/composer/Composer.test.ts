@@ -4,7 +4,6 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { showBrowser } from '../browser/host';
-import { takeover } from '../browser/takeover.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -17,10 +16,6 @@ vi.mock('../browser/host', async (importOriginal) => {
     ...actual,
     // No window in tests: a raise that fails says so on the dock.
     showBrowser: vi.fn(() => Promise.resolve(false)),
-    openTakeover: vi.fn(() => Promise.reject(new Error('no engine'))),
-    closeTakeover: vi.fn(() => Promise.resolve()),
-    takeoverState: vi.fn(() => Promise.resolve({ active: false, native: false })),
-    takeoverUrl: vi.fn(() => Promise.resolve(null)),
   };
 });
 
@@ -137,10 +132,6 @@ afterEach(() => {
   if (second !== null) void unmount(second);
   app = null;
   second = null;
-  // The takeover is a module singleton: a test that opened it must not leave
-  // the next one with the screen already replaced.
-  takeover.active = false;
-  takeover.asking = null;
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
@@ -4282,18 +4273,6 @@ describe('the dock', () => {
     await vi.waitFor(() =>
       expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledTimes(1),
     );
-
-    expect(takeover.active, 'and the screen is untouched').toBe(false);
-  });
-
-  /** The bar's Done is the dock's own answer: the dock arms it while its
-   * hand-off is the one up, and the answer crosses from either door. */
-  it('arms the bar with the hand-off its dock holds', () => {
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-
-    expect(takeover.asking?.id, 'the bar answers THIS hand-off').toBe(
-      '0192e1c0-0000-7000-8000-0000000000aa',
-    );
   });
 
   /** A window that will not open says so rather than pretending. */
@@ -4304,7 +4283,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(drawn()).toContain('The browser window could not be opened'));
 
-    expect(takeover.active, 'and nothing took the screen').toBe(false);
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
 

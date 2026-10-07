@@ -55,15 +55,9 @@ pub fn run() {
             browser::browser_call,
             browser::browser_profile_close,
             browser::browser_profiles,
-            browser::browser_takeover_open,
-            browser::browser_takeover_close,
             browser::browser_show,
             browser::browser_hide,
-            browser::browser_takeover_state,
-            browser::browser_takeover_url,
             browser::browser_used,
-            browser::browser_takeover_input,
-            browser::browser_takeover_frame,
             check_update,
             install_update,
             restart_app
@@ -74,15 +68,9 @@ pub fn run() {
         browser::browser_call,
         browser::browser_profile_close,
         browser::browser_profiles,
-        browser::browser_takeover_open,
-        browser::browser_takeover_close,
         browser::browser_show,
         browser::browser_hide,
-        browser::browser_takeover_state,
-        browser::browser_takeover_url,
-        browser::browser_used,
-        browser::browser_takeover_input,
-        browser::browser_takeover_frame
+        browser::browser_used
     ]);
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
@@ -96,15 +84,9 @@ pub fn run() {
         browser::browser_call,
         browser::browser_profile_close,
         browser::browser_profiles,
-        browser::browser_takeover_open,
-        browser::browser_takeover_close,
         browser::browser_show,
         browser::browser_hide,
-        browser::browser_takeover_state,
-        browser::browser_takeover_url,
         browser::browser_used,
-        browser::browser_takeover_input,
-        browser::browser_takeover_frame,
         check_update,
         install_update
     ]);

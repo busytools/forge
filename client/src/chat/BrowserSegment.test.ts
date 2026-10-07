@@ -3,15 +3,11 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { browserUsed, closeProfile, listProfiles, openTakeover } from '../browser/host';
-import { takeover } from '../browser/takeover.svelte';
+import { browserUsed, closeProfile, listProfiles, showBrowser } from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
 
 afterEach(() => {
-  vi.mocked(openTakeover).mockClear();
-  takeover.active = false;
-  takeover.asking = null;
-  takeover.native = false;
+  vi.mocked(showBrowser).mockClear();
 });
 
 /**
@@ -27,7 +23,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     listProfiles: vi.fn(() => Promise.resolve([])),
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
-    openTakeover: vi.fn(() => Promise.resolve()),
+    showBrowser: vi.fn(() => Promise.resolve(true)),
   };
 });
 
@@ -167,8 +163,8 @@ describe('the browser segment', () => {
   });
 
   /** Ved, live round 2026-10-07: hovering the row must offer the way to SEE
-   *  the browser - the in-app view, with no session answering anything. */
-  it('opens the in-app view from the shared row', async () => {
+   *  the browser - the real window, with no session answering anything. */
+  it('raises the browser window from the shared row', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
@@ -176,25 +172,21 @@ describe('the browser segment', () => {
     expect(door, 'the shared row carries the way to look').not.toBeNull();
     click(door);
 
-    await vi.waitFor(() => {
-      expect(takeover.active, 'the screen is the browser while it is up').toBe(true);
-    });
-    expect(openTakeover, 'the view the door asks for').toHaveBeenCalledTimes(1);
+    expect(showBrowser, 'the raise the door asks for').toHaveBeenCalledTimes(1);
     shown.stop();
   });
 
-  it('keeps the panel and says why when the view cannot open', async () => {
-    vi.mocked(openTakeover).mockRejectedValueOnce(new Error('no engine'));
+  it('keeps the panel and says why when the window cannot open', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce(false);
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     click(shown.target.querySelector('.bz-show'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('no engine');
+      expect(shown.target.textContent).toContain('could not be opened');
     });
     expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
     shown.stop();
-    vi.mocked(openTakeover).mockResolvedValue(undefined);
   });
 
   it('says the read failed rather than claiming there are no profiles', async () => {
@@ -319,7 +311,7 @@ describe('the browser segment', () => {
   it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
     const shown = show(false, true);
     click(toggle(shown.target));
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
 
     // Tabbing from the toggle into a control: a bubbling focusout whose
@@ -353,7 +345,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -367,7 +359,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -383,7 +375,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
-    const take = shown.target.querySelector('.bz-takeover');
+    const take = shown.target.querySelector('.bz-override');
     expect(take, 'capable and not hosting: the override is the door').not.toBeNull();
     click(take);
     expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
@@ -396,7 +388,7 @@ describe('the browser segment', () => {
 
     expect(shown.target.textContent).toContain('browser not connected');
     expect(
-      shown.target.querySelector('.bz-takeover'),
+      shown.target.querySelector('.bz-override'),
       'nothing to override with no host',
     ).toBeNull();
     shown.stop();
@@ -405,7 +397,7 @@ describe('the browser segment', () => {
   it('flips on the role frame: holding it drops the override and says so', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    expect(shown.target.querySelector('.bz-takeover')).not.toBeNull();
+    expect(shown.target.querySelector('.bz-override')).not.toBeNull();
 
     shown.flip(true);
     flushSync();
@@ -413,7 +405,7 @@ describe('the browser segment', () => {
     expect(shown.target.textContent, 'the role frame is what the line reads').toContain(
       'browser connected',
     );
-    expect(shown.target.querySelector('.bz-takeover'), 'a holder offers no override').toBeNull();
+    expect(shown.target.querySelector('.bz-override'), 'a holder offers no override').toBeNull();
     shown.stop();
   });
 });

@@ -144,77 +144,6 @@ export async function hideBrowser(): Promise<void> {
   }
 }
 
-/**
- * Bring the in-app browser view up over the client's window: the takeover
- * the frames path draws (the surface kept for the platforms whose browsers
- * cannot have a window of their own).
- */
-export async function openTakeover(): Promise<void> {
-  if (!canHost()) throw new Error('this page is not the client');
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_takeover_open');
-}
-
-/** One input event into the live view, as CDP wants it. */
-export async function takeoverInput(method: string, params: unknown): Promise<void> {
-  if (!canHost()) return;
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_takeover_input', { method, params });
-}
-
-/** One frame of the live view, as the shell's `browser_frame` event carries it. */
-export interface TakeoverFrame {
-  data: string;
-  width: number;
-  height: number;
-}
-
-/**
- * The frame the shell holds, which the view reads on its own beat.
- *
- * **A pull, not a push.** The first frame of a static page is also its last,
- * and the event path across the process boundary is the piece observed to go
- * missing - so the screen asks for what is current rather than depending on
- * the next one arriving.
- */
-export async function takeoverFrame(): Promise<TakeoverFrame | null> {
-  if (!canHost()) return null;
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<TakeoverFrame | null>('browser_takeover_frame');
-  } catch {
-    return null;
-  }
-}
-
-/** Take the view back down. Idempotent, and silent outside the shell. */
-export async function closeTakeover(): Promise<void> {
-  if (!canHost()) return;
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_takeover_close');
-}
-
-/** What a reloaded window reads to re-draw the takeover it was on. */
-export interface TakeoverState {
-  /** Whether the takeover is up. */
-  active: boolean;
-  /**
-   * Whether the picture is the browser's own view. Then the screen draws no
-   * frames of its own - polling for them would be paying for nothing.
-   */
-  native: boolean;
-}
-
-export async function takeoverState(): Promise<TakeoverState> {
-  if (!canHost()) return { active: false, native: false };
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<TakeoverState>('browser_takeover_state');
-  } catch {
-    return { active: false, native: false };
-  }
-}
-
 /** Whether a session has driven this client's browser since it came up. */
 export async function browserUsed(): Promise<boolean> {
   if (!canHost()) return false;
@@ -223,17 +152,6 @@ export async function browserUsed(): Promise<boolean> {
     return await invoke<boolean>('browser_used');
   } catch {
     return false;
-  }
-}
-
-/** The page the browser is showing, for the takeover's bar. */
-export async function takeoverUrl(): Promise<string | null> {
-  if (!canHost()) return null;
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<string | null>('browser_takeover_url');
-  } catch {
-    return null;
   }
 }
 

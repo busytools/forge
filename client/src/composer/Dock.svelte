@@ -2,7 +2,6 @@
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import { hideBrowser, showBrowser } from '../browser/host';
-  import { takeover } from '../browser/takeover.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -519,43 +518,23 @@
   );
 
   /**
-   * Open the in-app browser view, which is the client's own act rather than
-   * the core's.
+   * Raise the browser window, which is the client's own act rather than the
+   * core's.
    *
-   * **There is no second door.** Seeing the browser IS this view - the
-   * operating-system window it used to raise is the machinery the takeover
-   * replaced, and a fallback to it would put a different browser on screen
-   * than the one the sessions drive. A view that will not open says so.
+   * **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
+   * runs headless until this moment, and Open raises the person's own
+   * browser over the profile the agents drive. A raise that does not land
+   * says so rather than claiming a window is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    // **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
-    // runs headless until this moment, and Open raises the person's own
-    // browser over the profile the agents drive.
     void showBrowser().then((raised) => {
       if (!raised) {
         raiseFailedFor = id;
       }
     });
   }
-
-  /**
-   * The bar's Done answers the same hand-off this dock holds: armed while
-   * this dock's prompt is the one up, so the answer crosses from the takeover
-   * exactly as it would from here.
-   */
-  $effect(() => {
-    const held = ask;
-    if (held !== null && held.kind === 'browser_hand_off') {
-      takeover.asking = { id: held.request.id, done: () => handOff(true) };
-    } else {
-      takeover.asking = null;
-    }
-    return () => {
-      takeover.asking = null;
-    };
-  });
 
   /** A hand-off's answer, which is the only release for its blocked handler.
    *  **Answering also lowers the window**: Open raises it, Done or Not now

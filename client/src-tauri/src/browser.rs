@@ -22,23 +22,19 @@
 //! tool name and arguments, the driver runs them, and the answer is the parts
 //! it returned.
 
-#[cfg(all(desktop, target_os = "macos"))]
-pub mod cef;
 pub mod chromium;
 pub mod custom;
 pub mod driver;
 pub mod profiles;
-pub mod screencast;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::Emitter as _;
 use tauri::Manager as _;
 
-use profiles::{DriverStart, Named, Profile, Seat};
 use driver::ReplyPart;
+use profiles::{DriverStart, Named, Profile, Seat};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -119,24 +115,6 @@ pub struct BrowserHost {
     shared: Mutex<Option<Arc<Profile>>>,
     /// The named profiles, by name.
     named: Mutex<HashMap<String, Arc<Named>>>,
-    /// The takeover's live view, when one is up.
-    live: Mutex<Option<screencast::Live>>,
-    /// The last frame the view delivered.
-    ///
-    /// **Kept because the first frame of a static page is also its last.**
-    /// The screen mounts a moment after the view opens, so a frame emitted in
-    /// between would be lost and the canvas would stay empty; a screen that
-    /// asks for the current frame gets it whatever the timing. A plain lock
-    /// rather than the async one: the stream task writes it in a breath, and
-    /// nothing here ever waits on the browser.
-    last_frame: std::sync::Arc<std::sync::Mutex<Option<screencast::Frame>>>,
-    /// Whether the takeover is up.
-    ///
-    /// **The screen's state, not the stream's.** On macOS the picture is the
-    /// browser's own view rendered natively, so a screencast that failed to
-    /// start (or one that is not needed) must not decide whether a reloaded
-    /// window draws the takeover.
-    takeover_up: std::sync::atomic::AtomicBool,
     /// Whether any session has driven this client's browser since it came up,
     /// which the strip's row marks (Ved, 2026-10-07).
     used: std::sync::atomic::AtomicBool,
@@ -149,10 +127,7 @@ impl BrowserHost {
             launch: Mutex::new(()),
             shared: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
-            live: Mutex::new(None),
-            takeover_up: std::sync::atomic::AtomicBool::new(false),
             used: std::sync::atomic::AtomicBool::new(false),
-            last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -165,10 +140,7 @@ impl BrowserHost {
             launch: Mutex::new(()),
             shared: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
-            live: Mutex::new(None),
-            takeover_up: std::sync::atomic::AtomicBool::new(false),
             used: std::sync::atomic::AtomicBool::new(false),
-            last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -370,106 +342,10 @@ impl BrowserHost {
         Ok(())
     }
 
-    /// Bring the in-app browser view up over the client's window: the
-    /// approved takeover.
-    ///
-    /// **The picture is the browser's own view on macOS**, rendered natively
-    /// under the bar; the screencast that platforms without it need is
-    /// best-effort - a stream that will not start must not take the takeover
-    /// down with it.
-    pub async fn takeover_open(&self, app: &tauri::AppHandle) -> Result<(), String> {
-        let paths = self.paths.clone()?;
-        let active = self.active_browser(&paths).await?;
-        let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
-        let emitter = app.clone();
-        let kept = std::sync::Arc::clone(&self.last_frame);
-        // **The takeover draws frames everywhere** (CEF was measured out):
-        // the hand-off's own window is the native surface now, and the
-        // in-app view is the stream.
-        let with_frames = true;
-        let started = screencast::start(&endpoint, with_frames, move |frame| {
-            let mut held = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            *held = Some(frame.clone());
-            let _ = emitter.emit("browser_frame", frame);
-        })
-        .await;
-        let mut held = self.live.lock().await;
-        if let Some(previous) = held.take() {
-            previous.stop();
-        }
-        *held = started.ok();
-        self.takeover_up.store(true, std::sync::atomic::Ordering::Release);
-        // **The real view comes up under the bar.** CEF may only be touched
-        // on the main thread, and this command is not on it.
-        #[cfg(all(desktop, target_os = "macos"))]
-        {
-            let _ = app.run_on_main_thread(|| crate::browser::cef::view::set_visible(true));
-        }
-        Ok(())
-    }
-
-    /// Take the view back down. Idempotent: back, Done and a reloaded window
-    /// may each ask.
-    pub async fn takeover_close(&self) -> Result<(), String> {
-        self.paths.clone()?;
-        if let Some(live) = self.live.lock().await.take() {
-            live.stop();
-        }
-        self.takeover_up.store(false, std::sync::atomic::Ordering::Release);
-        Ok(())
-    }
-
-    /// Whether the shell is holding a takeover up - what a reloaded window
-    /// reads to re-draw the screen it was on - and **whether the picture is
-    /// the browser's own view** (the desktop), which the screen must know to
-    /// stop drawing frames nobody sees.
-    pub async fn takeover_state(&self) -> Result<TakeoverState, String> {
-        self.paths.clone()?;
-        Ok(TakeoverState {
-            active: self.takeover_up.load(std::sync::atomic::Ordering::Acquire),
-            // The frames path is the picture everywhere again (CEF retired):
-            // the native surface is the hand-off's own browser window.
-            native: false,
-        })
-    }
-
     /// Whether a session has driven this client's browser since it came up.
     pub async fn used(&self) -> Result<bool, String> {
         self.paths.clone()?;
         Ok(self.used.load(std::sync::atomic::Ordering::Acquire))
-    }
-
-    /// The page the browser is showing, for the takeover's bar.
-    pub async fn takeover_url(&self) -> Result<Option<String>, String> {
-        let paths = self.paths.clone()?;
-        #[cfg(all(desktop, target_os = "macos"))]
-        let port = {
-            let _ = paths;
-            cef::debug_port()
-        };
-        #[cfg(not(all(desktop, target_os = "macos")))]
-        let port = self.active_browser(&paths).await?.port;
-        if port == 0 {
-            return Ok(None);
-        }
-        Ok(chromium::page_url(port).await)
-    }
-
-    /// One input event into the live view, as CDP wants it.
-    pub async fn takeover_input(&self, method: &str, params: Value) -> Result<(), String> {
-        let held = self.live.lock().await;
-        let Some(live) = held.as_ref() else {
-            return Err("no takeover is up".to_owned());
-        };
-        live.input(method, params);
-        Ok(())
-    }
-
-    /// The current frame, for a screen that just mounted: the stream may have
-    /// delivered it before the screen could listen.
-    pub async fn current_frame(&self) -> Result<Option<screencast::Frame>, String> {
-        self.paths.clone()?;
-        Ok(self.last_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
 
     /// The shared profile: one, cached, whose driver builds and rebuilds
@@ -562,67 +438,6 @@ pub async fn browser_call(
     host.call(&seat, &tool, args).await.map(|parts| BrowserReply { parts })
 }
 
-/// Bring the in-app browser view up over the client's window.
-#[tauri::command]
-pub async fn browser_takeover_open(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    host.takeover_open(&app).await
-}
-
-/// One input event into the live view (`Input.dispatchMouseEvent`,
-/// `Input.dispatchKeyEvent`, `Input.insertText`), with its params.
-#[tauri::command]
-pub async fn browser_takeover_input(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-    method: String,
-    params: Value,
-) -> Result<(), String> {
-    host.takeover_input(&method, params).await
-}
-
-/// The current frame, for a screen that just mounted.
-#[tauri::command]
-pub async fn browser_takeover_frame(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-) -> Result<Option<screencast::Frame>, String> {
-    host.current_frame().await
-}
-
-/// Take the view back down.
-#[tauri::command]
-pub async fn browser_takeover_close(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    host.takeover_close().await?;
-    // **The real view goes down with the screen.** CEF may only be touched
-    // on the main thread, and this command is not on it.
-    #[cfg(all(desktop, target_os = "macos"))]
-    {
-        let _ = app.run_on_main_thread(|| crate::browser::cef::view::set_visible(false));
-    }
-    Ok(())
-}
-
-/// What a (reloaded) window reads to re-draw the takeover it was on.
-#[derive(serde::Serialize)]
-pub struct TakeoverState {
-    /// Whether the takeover is up.
-    pub active: bool,
-    /// Whether the picture is the browser's own view: the screen then draws
-    /// no frames of its own.
-    pub native: bool,
-}
-
-#[tauri::command]
-pub async fn browser_takeover_state(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-) -> Result<TakeoverState, String> {
-    host.takeover_state().await
-}
-
 /// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
 /// the core: the window is the client's act, and Done or Not now is the
 /// answer.
@@ -636,14 +451,6 @@ pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<()
 #[tauri::command]
 pub async fn browser_hide(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
     host.hide().await
-}
-
-/// The page the browser is showing, for the takeover's bar.
-#[tauri::command]
-pub async fn browser_takeover_url(
-    host: tauri::State<'_, Arc<BrowserHost>>,
-) -> Result<Option<String>, String> {
-    host.takeover_url().await
 }
 
 /// Whether a session has driven this client's browser, for the strip's mark.
@@ -739,24 +546,6 @@ mod tests {
             host.start().await,
             Err("the browser stack was never vendored".to_owned()),
             "the start says why rather than panicking at the app's boot",
-        );
-    }
-
-    /// A host whose directories did not resolve answers that before anything
-    /// else, closing is idempotent, nothing is held up, and input with no view
-    /// names that rather than vanishing.
-    #[tokio::test]
-    async fn a_takeover_on_an_unavailable_host_answers_the_reason_and_holds_nothing() {
-        let host = BrowserHost::unavailable("the browser stack was never vendored".to_owned());
-        assert_eq!(
-            host.takeover_close().await,
-            Err("the browser stack was never vendored".to_owned()),
-            "the missing directories answer first",
-        );
-        assert_eq!(
-            host.takeover_input("Input.insertText", serde_json::json!({ "text": "x" })).await,
-            Err("no takeover is up".to_owned()),
-            "with no view, input says so rather than vanishing",
         );
     }
 

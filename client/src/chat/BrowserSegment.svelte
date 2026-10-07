@@ -5,10 +5,10 @@
     canHost,
     closeProfile,
     listProfiles,
+    showBrowser,
     whyText,
     type ProfileRow,
   } from '../browser/host';
-  import { takeover } from '../browser/takeover.svelte';
   import type { Connection } from '../socket';
 
   /**
@@ -53,15 +53,25 @@
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
   /**
+   * What each read was issued as, so a read that lands after a newer one -
+   * or after a failed raise - cannot write over what came later.
+   */
+  let readToken = 0;
+
+  /**
    * The client's own profiles, read at mount and when the list opens. A
    * failed read keeps whatever the last one answered and says why.
    */
   async function readProfiles(): Promise<void> {
+    const token = (readToken += 1);
     try {
-      profiles = await listProfiles();
+      const rows = await listProfiles();
+      if (token !== readToken) return;
+      profiles = rows;
       read = 'ready';
       why = null;
     } catch (error) {
+      if (token !== readToken) return;
       read = 'failed';
       why = whyText(error);
     }
@@ -223,14 +233,19 @@
   }
 
   /**
-   * The person's own look: the in-app browser view, over the screen, with
-   * the way back. No session is answering a question here - it is the door
-   * Ved asked for (2026-10-07), and coming back out disturbs nothing.
+   * The person's own look: the real browser window, over the same browser
+   * the sessions drive. No session is answering a question here - it is the
+   * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
    */
   function show(): void {
-    void takeover.open().catch((error: unknown) => {
-      read = 'failed';
-      why = whyText(error);
+    void showBrowser().then((raised) => {
+      if (!raised) {
+        // A read in flight was issued before this failure and must not
+        // erase it when it lands.
+        readToken += 1;
+        read = 'failed';
+        why = 'the browser window could not be opened';
+      }
     });
   }
 
@@ -294,7 +309,7 @@
         {#if capable && !hosting}
           <button
             type="button"
-            class="bz-take bz-takeover"
+            class="bz-take bz-override"
             aria-label="override the browser to this client"
             onclick={() => connection.takeBrowserRole()}
             onkeydown={esc}

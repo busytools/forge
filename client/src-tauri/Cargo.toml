@@ -4,9 +4,6 @@ version = "1.0.116"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
-# Two binaries exist (the app and CEF's helper); the bundler needs to be told
-# which one the app is.
-default-run = "forge-client"
 
 # Its own workspace root, so the crate above is not a member of forge's: the
 # shell links the whole webview stack, which is minutes of compile the
@@ -18,12 +15,6 @@ default-run = "forge-client"
 # The Android target links the app as a native library; a binary-only crate
 # gives `tauri android build` no library target to build.
 crate-type = ["staticlib", "cdylib", "rlib"]
-
-# CEF's subprocesses are these, laid out by `scripts/bundle-cef.sh` as the
-# `forge-client Helper*.app` bundles CEF looks for.
-[[bin]]
-name = "forge_client_helper"
-path = "src/bin/forge_client_helper.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -39,36 +30,11 @@ tauri-plugin-log = "2"
 rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time"] }
-# The takeover's live view: the shell opens its own CDP session to the browser
-# and speaks the screencast + input messages over it.
-tokio-tungstenite = "0.30"
-futures-util = "0.3"
 
 # Desktop-only: no plugin path exists for Android, where the APK updates
 # through the system installer instead (a Kotlin side of its own).
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
-
-# **The browser, in-process.** CEF is the real Chromium rendered as a native
-# view inside the client window; its CDP endpoint is what the sessions'
-# driver attaches to. macOS first - the other platforms keep the vendored
-# path until they follow.
-[target.'cfg(target_os = "macos")'.dependencies]
-cef = { version = "154.4.0", features = ["build-util"] }
-# The app-data root CEF's profile hangs off, computed before tauri exists.
-dirs = "6"
-# The window's own NSView, where the browser view is created.
-raw-window-handle = "0.6"
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-app-kit = { version = "0.3", features = [
-    "NSApplication",
-    "NSEvent",
-    "NSGraphics",
-    "NSResponder",
-    "NSView",
-    "NSWindow",
-] }
 
 # The payloads and answers the Android commands hand to the Kotlin plugin.
 [target.'cfg(target_os = "android")'.dependencies]

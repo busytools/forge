@@ -113,22 +113,6 @@ pub async fn probe(port: u16) -> bool {
     probe_identity(port).await.is_some()
 }
 
-/// The first page target's URL on `port`, from the browser's own HTTP
-/// endpoint - what the takeover's bar shows beside the way back.
-pub async fn page_url(port: u16) -> Option<String> {
-    let url = format!("http://127.0.0.1:{port}/json/list");
-    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
-    let body = answer.split_once("\r\n\r\n")?.1;
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
-    parsed
-        .as_array()?
-        .iter()
-        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
-        .and_then(|entry| entry.get("url"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-}
-
 /// The browser target path an answering port reports - `/devtools/browser/
 /// <uuid>`, taken from its own `/json/version` - or `None` when nothing
 /// answers there as a browser. Compared against the port file's own line,
@@ -216,11 +200,10 @@ const STDERR_TAIL: usize = 4096;
 /// stdout goes nowhere a client reads, and its lifetime is the machine's, not
 /// the client run's.
 ///
-/// **Always headless.** The only visible surface is the client's own
-/// takeover, which draws the browser's screencast inside the app; nothing
-/// raises an operating-system window for the person to be dropped into, so a
-/// launch never depends on what a previous one left behind - and a browser
-/// that looks like an automation tool never appears on their screen.
+/// **Headless by default.** The agents drive it invisibly, and the only
+/// visible surface is the hand-off's window: `show` raises the same browser
+/// over the same profile, so the person is dropped into the very browser the
+/// sessions drive rather than a second one.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     launch_with(binary, profile, false).await
 }
@@ -548,10 +531,11 @@ mod tests {
     /// Chrome for Testing 155 writes no port file and nothing can find the
     /// launch again - carries the profile that keeps logins, opens a page
     /// (because a browser with no tab makes the first navigation depend on
-    /// the driver inventing one), runs **headless** (a window is the
-    /// automation-looking surface the takeover replaced), and **never reaches
-    /// for the OS keychain**: that dialog is raised at whoever is at the
-    /// machine, once per ask, and a headless browser has nobody to answer it.
+    /// the driver inventing one), runs **headless** (nothing appears on the
+    /// person's screen until a hand-off's Open raises the window), and
+    /// **never reaches for the OS keychain**: that dialog is raised at
+    /// whoever is at the machine, once per ask, and a headless browser has
+    /// nobody to answer it.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
         let args = launch_args(Path::new("/tmp/forge-profile"), false);
