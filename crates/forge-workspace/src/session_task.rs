@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use crate::SessionSlot;
-use crate::domain_session::DomainSession;
+use crate::domain_session::{DomainSession, PendingAutoContinue};
 use crate::protocol::{Command, PendingInteractionSlot, PromptSource, SessionUpdate};
 use crate::update_fanout::UpdateFanout;
 
@@ -1600,6 +1600,25 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
 /// literal.
 const API_RETRY_SUBTYPE: &str = "api_retry";
 
+/// How long a failed turn waits for a reader before its nudge goes out.
+/// The terminal's own continuation waits 5s before its first attempt; the
+/// same window here is what gives a reader time to open the seat first.
+/// One prompt, not a ladder: the terminal retries (5s / 20s / 60s), and
+/// this fire descends to the once-per-unopened-failure rule instead.
+pub(crate) const AUTO_CONTINUE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the failure is called in the nudge: the CLI's own errors when the
+/// result frame reported any, else its subtype, else a plain fallback.
+pub(crate) fn failure_reason(errors: Option<&[String]>, subtype: &str) -> String {
+    if let Some(errors) = errors.filter(|errors| !errors.is_empty()) {
+        return errors.join("; ");
+    }
+    if !subtype.is_empty() && subtype != "success" {
+        return subtype.to_owned();
+    }
+    "an error".to_owned()
+}
+
 /// What one event MOVED in the domain's whole sets.
 ///
 /// **A set that did not change is not news.** Each moves whole and on discrete
@@ -1648,6 +1667,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.turn_pending = false;
         domain.pending_cancel = false;
         domain.failed_turn_at = None;
+        domain.auto_continue = None;
+        domain.auto_continue_spent = false;
         // No terminal `background_tasks_changed` follows a dead session,
         // so the last snapshot would stand forever - and the registry with
         // it, spinning rows over tasks a dead process never finished.
@@ -1658,7 +1679,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.process_snapshot = None;
     }
     if let AgentEvent::SdkMessage {
-        msg: forge_primitives::Message::Result { is_error, .. }, ..
+        msg: forge_primitives::Message::Result { is_error, subtype, errors, .. },
+        ..
     } = event
     {
         // The stamp is spent on every outcome: a cancel that raced a turn
@@ -1668,7 +1690,27 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // reader asked for the interruption - a cancel ends with the same
         // failed result a genuine error does.
         if *is_error && !cancelled {
-            domain.failed_turn_at = Some(std::time::SystemTime::now());
+            let at = std::time::SystemTime::now();
+            domain.failed_turn_at = Some(at);
+            // A transient server error is the terminal's own dead-turn
+            // path, which continues it with its own prompt; arming here too
+            // would double-fire. Everything else is this nudge's to answer.
+            let terminal_owns_it = matches!(
+                domain.last_api_retry,
+                Some((forge_primitives::ApiRetryError::ServerError, _))
+            );
+            if !terminal_owns_it && !domain.auto_continue_spent {
+                domain.auto_continue = Some(PendingAutoContinue {
+                    due_at: at + AUTO_CONTINUE_DELAY,
+                    reason: failure_reason(errors.as_deref(), subtype),
+                });
+            }
+        } else if !*is_error {
+            // A turn that finished ends the episode: a later failure is a
+            // new one and gets its own nudge.
+            domain.auto_continue = None;
+            domain.auto_continue_spent = false;
+            domain.last_api_retry = None;
         }
     }
     if let AgentEvent::SdkMessage { msg: forge_primitives::Message::Error { .. }, .. } = event {
@@ -1747,6 +1789,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // interrupt it was holding.
         domain.pending_cancel = false;
         domain.failed_turn_at = None;
+        domain.last_api_retry = None;
+        domain.auto_continue = None;
+        domain.auto_continue_spent = false;
         // A second Connected is a new occupant in the same slot, and the
         // CLI re-sends the whole background set only when it changes: a
         // registry left standing would spin a row over a task that went
@@ -1781,15 +1826,19 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
                 ..
             } => domain.awaiting_login = true,
             forge_primitives::Message::System { subtype, data, .. }
-                if subtype == API_RETRY_SUBTYPE
-                    && data
-                        .as_object()
-                        .and_then(forge_agent::translate::state_parsing::build_api_retry_update)
-                        .is_some_and(|update| {
-                            update.error == forge_primitives::ApiRetryError::AuthenticationFailed
-                        }) =>
+                if subtype == API_RETRY_SUBTYPE =>
             {
-                domain.awaiting_login = true;
+                if let Some(update) = data
+                    .as_object()
+                    .and_then(forge_agent::translate::state_parsing::build_api_retry_update)
+                {
+                    if update.error == forge_primitives::ApiRetryError::AuthenticationFailed {
+                        domain.awaiting_login = true;
+                    }
+                    // Kept for the failure fold below: the CLI's retries are
+                    // the only place the wire says what went wrong.
+                    domain.last_api_retry = Some((update.error, update.error_status));
+                }
             }
             _ => {}
         }
@@ -3096,6 +3145,38 @@ mod tests {
         .expect("parse result message")
     }
 
+    /// An errored `Result` carrying the CLI's own error strings, which are
+    /// what the nudge's reason is composed from.
+    fn result_message_with_errors(errors: &[&str]) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": true,
+            "num_turns": 1,
+            "session_id": "worker",
+            "errors": errors,
+        }))
+        .expect("parse result message")
+    }
+
+    /// A wire `api_retry` frame, the only place the CLI says what went
+    /// wrong on a retried request.
+    fn api_retry_message(error: &str, status: Option<u16>) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "api_retry",
+            "session_id": "worker",
+            "attempt": 1,
+            "max_retries": 4,
+            "retry_delay_ms": 500,
+            "error_status": status,
+            "error": error,
+        }))
+        .expect("parse api_retry message")
+    }
+
     /// Turn-end wiring: a `Message::Result` on a worker session drains its
     /// accumulated review activity into one `ReviewActivityNotice` routed to
     /// the submit origin. Guards the seam - a wrong `Message::Result` arm
@@ -3183,6 +3264,103 @@ mod tests {
             task.domain.lock().failed_turn_at.is_some(),
             "a success spends the stamp, so the next real failure marks",
         );
+    }
+
+    /// A failure the terminal's own dead-turn path leaves alone arms the
+    /// seat's nudge: the CLI's own error strings as the reason, and the
+    /// terminal's first backoff as the delay before it goes out.
+    #[test]
+    fn a_plain_failure_arms_the_continuation_with_its_reason() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("nudge-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "nudge-rail".to_owned(),
+            msg: result_message_with_errors(&["API Error: 400 ...", "request too large"]),
+        });
+
+        let domain = task.domain.lock();
+        let pending = domain.auto_continue.clone().expect("a plain failure arms the nudge");
+        assert_eq!(
+            pending.reason, "API Error: 400 ...; request too large",
+            "the CLI's own errors are the reason, in the order it reported them",
+        );
+        let failed_at = domain.failed_turn_at.expect("the rail's mark is set with it");
+        assert!(pending.due_at > failed_at, "the nudge is not immediate - it waits for a reader",);
+        assert_eq!(
+            pending.due_at,
+            failed_at + super::AUTO_CONTINUE_DELAY,
+            "and its wait is the delay, counted from the failure itself",
+        );
+    }
+
+    /// A turn the reader cancelled ends with the same failed `Result` a
+    /// genuine error does, and arms nothing - there is no failure to pick
+    /// back up, only the interruption the reader asked for.
+    #[test]
+    fn a_cancelled_turn_arms_no_continuation() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("cancelled-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        task.domain.lock().pending_cancel = true;
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "cancelled-rail".to_owned(),
+            msg: result_message_with_errors(&["aborted_streaming"]),
+        });
+
+        let domain = task.domain.lock();
+        assert!(domain.failed_turn_at.is_none(), "a cancelled turn is not a failure to mark");
+        assert!(domain.auto_continue.is_none(), "and nothing is armed to pick up");
+    }
+
+    /// The terminal's own dead-turn path continues a transient server
+    /// error with its own prompt; arming one here too would double-fire on
+    /// the same failure. The rail still marks it.
+    #[test]
+    fn a_transient_server_error_arms_no_continuation() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("transient-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "transient-rail".to_owned(),
+            msg: api_retry_message("server_error", Some(529)),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "transient-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let domain = task.domain.lock();
+        assert!(domain.failed_turn_at.is_some(), "the rail still marks the failure");
+        assert!(
+            domain.auto_continue.is_none(),
+            "the terminal continues this one; the core must not fire beside it",
+        );
+    }
+
+    /// A turn that finished ends the episode: the spend is dropped and so
+    /// is the classification it was read against, so a later unrelated
+    /// failure is nudged on its own terms.
+    #[test]
+    fn a_completed_turn_clears_the_spend_for_the_next_failure() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("spent-rail");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        task.domain.lock().auto_continue_spent = true;
+        task.domain.lock().last_api_retry =
+            Some((forge_primitives::ApiRetryError::InvalidRequest, Some(400)));
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "spent-rail".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let domain = task.domain.lock();
+        assert!(!domain.auto_continue_spent, "a completed turn ends the episode");
+        assert!(domain.last_api_retry.is_none(), "and drops the classification it was read for");
     }
 
     /// The gateway edge: a rate_limit_event whose status is not
