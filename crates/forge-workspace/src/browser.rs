@@ -293,6 +293,15 @@ impl Workspace {
         }
         let Some((owner, _, sender)) = parked.remove(&id) else { return false };
         drop(parked);
+        // **The ending is what tells an answer from an abandonment**, and
+        // hand-offs were seen resolving by themselves in a live round
+        // (2026-10-07) with nothing naming the hand that sent it.
+        tracing::debug!(
+            event_name = "browser_hand_off_resolved",
+            id = %id,
+            ending = ?ending,
+            "a parked browser hand-off left the registry"
+        );
         let _ = sender.send(ending);
         let _ = self.update_sender().send(crate::protocol::SessionUpdate::BrowserHandOffResolved {
             key: owner,
