@@ -3833,8 +3833,9 @@ impl Workspace {
     /// One seat's nudge, refused when the failure is the reader's to see
     /// first. The decision is taken under the lock; the dispatch is not.
     fn fire_auto_continue(self: &Arc<Self>, key: &SessionSlot) {
-        // The hold is read before the session lock, which is the order
-        // `hold_seat` takes them in.
+        // The hold is read and released before the session lock is taken, so
+        // the two never nest; `hold_seat` writes the stamp before taking the
+        // hold, so reading both here covers the window between them.
         let held = self.held_work_seats.is_held(key);
         let Some(domain) = self.domain_session_for(key) else {
             return;
@@ -4389,17 +4390,17 @@ impl Workspace {
                     // queues behind a busy turn keeps the stamp - that turn
                     // is still the one it was armed for, and its error Result
                     // still has to read as the reader's own cancel.
+                    //
+                    // The nudge and the classification it was read against
+                    // are the running turn's for the same reason: a queued
+                    // prompt is not the turn that will fail next.
                     if !guard.turn_in_flight() {
                         guard.pending_cancel = false;
+                        guard.auto_continue = None;
+                        guard.last_api_retry = None;
                     }
                     guard.turn_pending = true;
                     guard.failed_turn_at = None;
-                    // A new turn is the newest turn, so a pending nudge for
-                    // the old one has nothing left to answer - and the
-                    // classification it might have been excluded on was the
-                    // last turn's, so it goes too.
-                    guard.auto_continue = None;
-                    guard.last_api_retry = None;
                 }
                 // Arm the cancel stamp on the routed path, so the turn's
                 // own failed `Result` can tell a reader's interrupt from a
@@ -10910,6 +10911,41 @@ provider = "anthropic"
         assert!(
             !domain.lock().pending_cancel,
             "a prompt committed with no turn in flight expires the stamp",
+        );
+    }
+
+    /// A prompt that only QUEUES behind a live turn does not clear the
+    /// classification that describes it: the turn it belongs to has not
+    /// ended, and its own transient failure must still read as the
+    /// terminal's own. Clearing here would starve the nudge for a
+    /// `server_error` the terminal continues, which is the double-fire
+    /// boundary crossed the other way.
+    #[test]
+    fn a_queued_prompt_keeps_the_running_turns_classification() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("queued-classification");
+        workspace.register_domain_session(key.clone(), None);
+        // Registers the sender, so dispatch takes the routed path rather
+        // than the test-only synchronous fallback.
+        workspace.mark_test_session_live(&key);
+        let domain = workspace.domain_session_for(&key).expect("registered domain");
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(key.display()));
+        domain.lock().turn_pending = true;
+        domain.lock().last_api_retry =
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529)));
+
+        workspace
+            .dispatch(Command::Prompt {
+                key: key.clone(),
+                text: "later".to_owned(),
+                attachments: Vec::new(),
+            })
+            .expect("dispatch");
+
+        assert_eq!(
+            domain.lock().last_api_retry,
+            Some((forge_primitives::ApiRetryError::ServerError, Some(529))),
+            "the running turn's classification survives a prompt that only queues",
         );
     }
 
