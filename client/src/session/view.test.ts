@@ -861,6 +861,25 @@ describe("the palette's rows", () => {
   });
 
   /**
+   * A project's identity is (org, name) here as everywhere else: a namesake
+   * in another org must not wear the chip, or Enter lands in the wrong org's
+   * seat.
+   */
+  it('marks the lead by its org and project both', () => {
+    const wire = withHome({
+      agents: [
+        agent('lead', { slot: { org: 'Other', project: 'proj', label: 'lead' } }),
+        agent('lead'),
+      ],
+    });
+    const leads = paletteRows(wire, LEAD)
+      .flatMap((section) => section.rows)
+      .filter((row) => row.lead === true);
+    expect(leads, 'two orgs sharing a project name both wore the chip').toHaveLength(1);
+    expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
+  });
+
+  /**
    * **The fleet grouped its own way**: the seats that want a person, the ones
    * working, the ones asleep - then forge's commands, then the doings. The
    * current project's lead wears `lead`, which is where the cursor starts, so

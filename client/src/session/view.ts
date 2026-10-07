@@ -204,7 +204,11 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
     label: row.slot.label,
     detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
     href: hrefForSlot(row.slot),
-    lead: row.slot.project === slot.project && row.slot.label === 'lead',
+    // A project's identity is (org, name): two orgs sharing a project name
+    // would otherwise both wear the chip, and Enter would land in the wrong
+    // one.
+    lead:
+      row.slot.org === slot.org && row.slot.project === slot.project && row.slot.label === 'lead',
     mark: railMark(stateOf(row, unseen)),
   });
   const seats = wire.agents;
