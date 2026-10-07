@@ -578,7 +578,8 @@
             </li>
           {/each}
         </ul>
-        <button class="chip" type="button" disabled={busy} onclick={onrecord}>record another</button
+        <button class="chip add" type="button" disabled={busy} onclick={onrecord}
+          >record another</button
         >
         {#if wire.read_aloud.error !== null}
           <p class="note bad">{wire.read_aloud.error}</p>

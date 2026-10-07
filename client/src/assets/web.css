@@ -2321,6 +2321,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    right at a measure a voice can hold, not the full width of the card. */
 .models .status .detail.passage { max-width: 84ch; }
 
+/* The add control sits between the recordings list and the results below it,
+   so it carries the space on both sides: a bare chip there touches both. */
+.models .chip.add { margin: 10px 0 12px; }
+
 /* One recording's row: the length as its own column, the facts beside it
    left-aligned rather than pushed to the far edge - a two-word row stretched
    across the card reads as a table nobody claimed. */
