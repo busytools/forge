@@ -1100,8 +1100,10 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
         service_status: surface.service_status().and_then(|issue| serde_json::to_value(issue).ok()),
+        // The words the terminal prints on exit, which is what a client draws:
+        // the serde tag alone is for matching, and nothing matches on this.
         fatal_error: encode(
-            surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
+            surface.fatal_error().map(|error| Value::String(error.user_message().to_owned())),
         ),
         agents: agent_rows,
         unseen: agents

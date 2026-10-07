@@ -42,6 +42,27 @@ const withGate = (gate: Gate): HomeWire => {
 
 describe('the home page as it draws', () => {
   /**
+   * The core's last fatal draws above everything (#1638): the words are the
+   * terminal's own, carried on the home wire.
+   */
+  it("draws the core's fatal above the header, and nothing when there is none", () => {
+    const stopped = draw({
+      wire: {
+        ...homeWire,
+        fatal_error: 'Failed to establish or maintain the Agent SDK bridge connection.',
+      },
+    });
+    expect(stopped, 'the fatal is drawn').toContain(
+      'forge stopped: Failed to establish or maintain the Agent SDK bridge connection.',
+    );
+    expect(
+      stopped.indexOf('forge stopped:'),
+      'above the header, where a stopped install is the first thing said',
+    ).toBeLessThan(stopped.indexOf('class="top"'));
+    expect(draw(), 'no fatal, no line').not.toContain('forge stopped:');
+  });
+
+  /**
    * The mark on the page is the one the server sent. A prop the component
    * does not declare is dropped without a word, so the page would fall back
    * to the built-in and still look right.

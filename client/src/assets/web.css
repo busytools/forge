@@ -132,6 +132,14 @@ body {
 
 /* ---------- header ---------- */
 
+/* The core's last fatal, above everything: the page it lands on is served by
+   a forge that has stopped, and the row it otherwise reads as is healthy. */
+.stopped {
+  border: 1px solid rgba(224,104,62,.4); border-left: 3px solid var(--bad);
+  background: rgba(224,104,62,.07); color: var(--bad);
+  border-radius: 9px; padding: 9px 13px; margin-bottom: 18px; font-size: 13.5px;
+}
+
 header.top {
   display: flex; align-items: center; gap: 14px;
   padding-bottom: 18px; margin-bottom: 18px;

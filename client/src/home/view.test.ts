@@ -853,3 +853,13 @@ describe('how long ago a row last wrote', () => {
     expect(whenOf(row, Date.now())).toBe('now');
   });
 });
+
+describe('the fatal on the wire', () => {
+  it('keeps the words, and reads anything else as no fatal', () => {
+    expect(homeFrom({ ...homeWire, fatal_error: 'stopped hard' }).fatal_error).toBe('stopped hard');
+    expect(
+      homeFrom({ ...homeWire, fatal_error: 7 as unknown as string }).fatal_error,
+      'a value that is not words reads as no fatal',
+    ).toBeNull();
+  });
+});
