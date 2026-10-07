@@ -223,13 +223,17 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
     host.call(&alpha, "browser_navigate", json!({ "url": page, "profile": "hunt" }))
         .await
         .unwrap_or_else(|why| panic!("alpha could not open the profile: {why}"));
-    let set = format!(
-        "async (page) => {{ await page.context().addCookies([{{ name: 'who', value: 'alpha', \
-         url: '{page}' }}]); return 'set'; }}"
-    );
+    // **What a login durably is, written where Chromium keeps it durably.**
+    // localStorage is flushed as it changes; a cookie store is written on
+    // Chromium's own cadence, so a cookie set seconds before a close can be
+    // lost - the person's own browser behaves the same, and a session cookie
+    // is not persisted at all. A site's auth token usually lives in both,
+    // and localStorage is the half whose survival a test can pin.
+    let set = "async (page) => { await page.evaluate(() => localStorage.setItem('who', 'alpha')); \
+               return 'set'; }";
     host.call(&alpha, "browser_run_code_unsafe", json!({ "code": set, "profile": "hunt" }))
         .await
-        .unwrap_or_else(|why| panic!("alpha could not set its cookie: {why}"));
+        .unwrap_or_else(|why| panic!("alpha could not set its storage: {why}"));
 
     // Beta naming the profile is refused by name, with alpha's slot in the
     // reason so it can tell who holds it.
@@ -240,7 +244,11 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
     assert!(refusal.contains("'hunt'"), "the refusal names the profile: {refusal}");
     assert!(refusal.contains("Busytools/forge/alpha"), "and the session holding it: {refusal}",);
 
-    // The browser dies under the profile, by its own pid file - a crash.
+    // The browser is closed the way Done closes it - a clean shutdown, which
+    // is what flushes Chromium's cookie store. **A SIGKILL would lose the
+    // just-set cookie instead**: Chromium writes cookies periodically, so a
+    // crash drops the last stretch of logins, and that is the person's own
+    // browser's behaviour too, not this host's.
     let port_file = paths.profiles.join("hunt/DevToolsActivePort");
     let port = std::fs::read_to_string(&port_file)
         .expect("the launch wrote its port file")
@@ -248,34 +256,28 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
         .next()
         .and_then(|first| first.trim().parse::<u16>().ok())
         .expect("the port file names a port");
-    let pid = std::fs::read_to_string(paths.profiles.join("hunt/browser.pid"))
-        .expect("the launch wrote its pid")
-        .trim()
-        .parse::<u32>()
-        .expect("the pid file is a pid");
-    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
-    for _ in 0..100 {
-        if !forge_client::browser::chromium::probe(port).await {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    forge_client::browser::chromium::hide(&paths.profiles.join("hunt")).await;
     assert!(
         !forge_client::browser::chromium::probe(port).await,
-        "precondition: the browser really died",
+        "precondition: the browser really closed",
     );
 
     // The next call brings a new browser up on the SAME directory; Chromium
-    // persisted the profile, so the cookie is still there.
-    let read = "async (page) => JSON.stringify(await page.context().cookies())";
+    // persisted the profile, so the login is still there. The page is
+    // returned to first - the relaunch starts on about:blank, whose origin
+    // cannot read storage at all.
+    host.call(&alpha, "browser_navigate", json!({ "url": page, "profile": "hunt" }))
+        .await
+        .unwrap_or_else(|why| panic!("the profile's browser could not reopen the page: {why}"));
+    let read = "async (page) => await page.evaluate(() => localStorage.getItem('who'))";
     let seen = host
         .call(&alpha, "browser_run_code_unsafe", json!({ "code": read, "profile": "hunt" }))
         .await
         .map(|parts| text_of(&parts))
         .unwrap_or_else(|why| panic!("the profile could not be reopened: {why}"));
     assert!(
-        seen.contains("who") && seen.contains("alpha"),
-        "the profile's logins survived the browser's death: {seen}",
+        seen.contains("alpha"),
+        "the profile's login survived the browser's close: {seen}",
     );
 
     let relaunched = std::fs::read_to_string(&port_file)

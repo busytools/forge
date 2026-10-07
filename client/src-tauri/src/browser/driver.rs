@@ -25,6 +25,13 @@ use serde_json::Value;
 /// The longest one tool call is given before the driver is presumed mute.
 const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
+/// **The longest a driver start is given before it is presumed wedged.**
+/// Measured live 2026-10-07: a named profile's driver child spawned and sat
+/// idle on its stdin while the parent never wrote the handshake - and the
+/// start has no bound of its own, so the session's call parked with it, past
+/// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// One part of a tool's answer, on its way to the socket.
 ///
 /// An image's bytes cross here as the base64 the MCP client's own model
@@ -69,6 +76,7 @@ impl Driver {
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
 
+        tauri_plugin_log::log::debug!("starting the driver against {cdp_endpoint}");
         let transport =
             TokioChildProcess::new(tokio::process::Command::new(node).configure(|cmd| {
                 cmd.arg(cli);
@@ -95,9 +103,14 @@ impl Driver {
             }))
             .map_err(|why| format!("the driver would not start: {why}"))?;
 
-        let service = ()
-            .serve(transport)
+        let service = tokio::time::timeout(START_TIMEOUT, ().serve(transport))
             .await
+            .map_err(|_| {
+                format!(
+                    "the driver did not answer its MCP handshake within {} s",
+                    START_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         let client = service.peer().clone();
         Ok(Self { _service: service, client })
