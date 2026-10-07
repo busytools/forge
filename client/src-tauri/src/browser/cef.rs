@@ -21,6 +21,26 @@ mod client_application;
 /// not CEF did, so the pump must never reach an uninitialized CEF.
 static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The port CEF's own CDP answers on, chosen before `initialize` (CEF's
+/// `remote_debugging_port` of 0 means DISABLED, unlike the browser flag, so
+/// a port is always named). What the sessions' driver attaches to.
+static DEBUG_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// The first port nothing holds, from a small private range.
+fn pick_debug_port() -> u16 {
+    for port in 9411..9430_u16 {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    0
+}
+
+/// The port CEF's CDP answers on, or 0 when CEF is not up.
+pub fn debug_port() -> u16 {
+    DEBUG_PORT.load(std::sync::atomic::Ordering::Acquire)
+}
+
 // The process-wide app: the rules every browser this client runs obeys,
 // decided before CEF parses its own command line.
 wrap_app! {
@@ -57,7 +77,7 @@ wrap_app! {
 /// the bundle's helper apps); `execute_process` is what runs them, and a
 /// subprocess's whole life is that call. The browser process carries on to
 /// claim NSApplication and `initialize`.
-pub fn bootstrap() {
+pub fn bootstrap(identifier: &str) {
     // **The framework comes first.** Every CEF wrapper below calls into it -
     // `Args` and the command line included - and before `load` + `api_hash`
     // those calls land on null pointers.
@@ -88,12 +108,42 @@ pub fn bootstrap() {
     #[cfg(target_os = "macos")]
     client_application::setup();
 
+    // **The profile is forge's own.** Its own directory for now: the
+    // vendored Chromium still runs beside it on `browser/profile` during the
+    // migration, and two Chromiums on one profile means a `SingletonLock`
+    // fight - CEF refuses to start rather than risk the profile. The
+    // retirement step moves this to `browser/profile` as the vendored one
+    // goes, and CEF's `DevToolsActivePort` then lands where the host already
+    // looks for it.
+    let profile = match dirs::data_dir() {
+        Some(dir) => dir.join(identifier).join("browser/cef-profile"),
+        None => {
+            eprintln!("forge client: no application data directory; CEF stays off");
+            return;
+        }
+    };
+    let profile = CefString::from(profile.to_string_lossy().as_ref());
+    if let Err(why) = std::fs::create_dir_all(profile.to_string()) {
+        eprintln!("forge client: the profile directory cannot be made ({why}); CEF stays off");
+        return;
+    }
+
+    let port = pick_debug_port();
+    if port == 0 {
+        eprintln!("forge client: no free port for CEF's CDP; CEF stays off");
+        return;
+    }
+    DEBUG_PORT.store(port, std::sync::atomic::Ordering::Release);
+
     let mut app = ClientApp::new();
     let settings = Settings {
         no_sandbox: 1,
         // **The pump is the embedder's.** tao drives its own loop and CEF's
         // work is done on it - see `pump`.
         external_message_pump: 1,
+        // The cache root IS the profile: cookies, logins and the rest.
+        root_cache_path: profile,
+        remote_debugging_port: i32::from(port),
         ..Default::default()
     };
     let initialized = initialize(
@@ -104,7 +154,9 @@ pub fn bootstrap() {
     );
     if initialized == 1 {
         INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
+        eprintln!("forge client: CEF is up, debugging on 127.0.0.1:{port}");
     } else {
+        DEBUG_PORT.store(0, std::sync::atomic::Ordering::Release);
         eprintln!("forge client: CEF did not initialize; the browser stays off");
     }
 }
