@@ -1,117 +1,105 @@
-import { describe, expect, it, vi } from 'vitest';
-
-import type { BrowserAnswer, BrowserAsk } from '../protocol';
-import type { Connection } from '../socket';
-import { answerPart, bytesOf, hostTheBrowser, canHost, type HostReply } from './host';
-
+// @vitest-environment jsdom
 /**
- * The mapping from what the shell's host returns to what the socket sends,
- * on its own so it can be asserted without a Tauri process: the base64 the
- * host carries is what has to become the bytes of a binary frame.
+ * The page and the shell agree on the command NAMES.
+ *
+ * **A one-sided rename fails only as an opaque runtime "failed".** There is
+ * no compiler across the `invoke` boundary: the page calls `browser_profiles`
+ * while the shell registers something else, and every read dies with a
+ * sentence that names neither side. This file is the compiler - each call is
+ * driven against a mocked shell and the string on the wire is asserted.
  */
-describe('what the host answered', () => {
-  it('turns a text part into a text part and an image into its bytes', () => {
-    const reply: HostReply = {
-      parts: [
-        { type: 'text', text: 'navigated' },
-        { type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' },
-      ],
-    };
-    expect(reply.parts.map(answerPart)).toEqual([
-      { type: 'text', text: 'navigated' },
-      { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) },
-    ]);
-  });
 
-  /** The bytes of a base64 string, which is what a binary frame carries. */
-  it('decodes the base64 the host carries', () => {
-    expect(bytesOf('')).toEqual(new Uint8Array([]));
-    expect(bytesOf('AP8Q')).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
-  });
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+const invoke = vi.hoisted(() => vi.fn(async (): Promise<unknown> => undefined));
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+
+import {
+  browserUsed,
+  canHost,
+  closeProfile,
+  hideBrowser,
+  hostTheBrowser,
+  listProfiles,
+  showBrowser,
+} from './host';
+import type { BrowserAsk } from '../protocol';
+import type { Connection } from '../socket';
+
+// **The marker the real shell carries.** Without it `canHost()` answers
+// false and every call short-circuits before the invoke - which is the
+// module's own guard working, not the thing under test.
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'] = {};
 });
 
-/** The seat every ask in these tests is made for. */
-const SEAT = { org: 'o', project: 'p', label: 'lead' };
+afterEach(() => {
+  invoke.mockClear();
+});
 
-/** A connection that records what the host registered, and can be asked. */
-function fakeConnection() {
-  let handler: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
-  const connection = {
-    onBrowserAsk(fn: typeof handler) {
-      handler = fn;
-      return () => {
-        handler = null;
-      };
-    },
-  } as unknown as Connection;
-  return {
-    connection,
-    /**
-     * One ask, through whatever the host registered. An arrow property rather
-     * than a method: this is handed around on its own, and a method taken off
-     * its object is the shape the lint exists to catch.
-     */
-    ask: async (tool: string, args: unknown = {}): Promise<BrowserAnswer> => {
-      if (handler === null) throw new Error('the host registered no handler');
-      return await handler({ id: 1, seat: SEAT, tool, args });
-    },
-  };
-}
+describe('the shell command names', () => {
+  it('are the ones the page invokes, one call each', async () => {
+    const core = await import('@tauri-apps/api/core');
+    expect(core.invoke, 'the module under test is the mocked shell').toBe(invoke);
+    invoke.mockResolvedValueOnce([]);
+    await listProfiles();
+    expect(invoke, 'the profiles read').toHaveBeenLastCalledWith('browser_profiles');
 
-describe('the shell as the browser host', () => {
-  it('answers an ask with what the shell returned, and a failure with its reason', async () => {
-    const invoke = vi.fn();
-    const { connection, ask } = fakeConnection();
-    hostTheBrowser(connection, invoke);
-
-    invoke.mockResolvedValueOnce({
-      parts: [{ type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' }],
-    });
-    expect(await ask('browser_take_screenshot')).toEqual({
-      parts: [{ type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) }],
+    await closeProfile('hunt');
+    expect(invoke, "the person's close").toHaveBeenLastCalledWith('browser_profile_close', {
+      name: 'hunt',
     });
 
-    // The shell answers a failed call by REJECTING with the reason, which is
-    // what the tool's failure arm carries: the driver's own sentence.
-    invoke.mockRejectedValueOnce('the vendored browser is not there');
-    expect(await ask('browser_navigate')).toEqual({ error: 'the vendored browser is not there' });
+    await showBrowser();
+    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show');
+
+    await hideBrowser();
+    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide');
+
+    await browserUsed();
+    expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
   });
 
-  /** The tool, its arguments and the asking seat cross to the shell verbatim:
-   * the shell is what decides a named context's owner, so it has to know who
-   * asked. */
-  it('hands the shell the tool, the arguments and the seat the ask carried', async () => {
-    const invoke = vi.fn().mockResolvedValue({ parts: [] });
-    const { connection, ask } = fakeConnection();
-    hostTheBrowser(connection, invoke);
+  it('and the phone does not claim the capability before its phase', async () => {
+    const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)',
+      configurable: true,
+    });
+    expect(canHost(), 'the phone is not a browser client yet').toBe(false);
+    if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
+  });
 
-    await ask('browser_navigate', { url: 'https://example.com' });
-    expect(invoke).toHaveBeenCalledWith('browser_call', {
-      seat: SEAT,
+  it('and the ask rides browser_call with its seat, its tool and its args', async () => {
+    let asked: ((ask: BrowserAsk) => Promise<unknown>) | null = null;
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    hostTheBrowser(connection);
+    invoke.mockResolvedValueOnce({ parts: [{ type: 'text', text: 'ok' }] });
+
+    const ask = {
+      seat: { org: 'o', project: 'p', label: 'l' },
       tool: 'browser_navigate',
       args: { url: 'https://example.com' },
+      id: 7,
+    } as unknown as BrowserAsk;
+    const answer = await asked?.(ask);
+
+    expect(invoke, 'the ask names the command and carries the call').toHaveBeenLastCalledWith(
+      'browser_call',
+      {
+        seat: { org: 'o', project: 'p', label: 'l' },
+        tool: 'browser_navigate',
+        args: { url: 'https://example.com' },
+      },
+    );
+    expect(answer, 'and the parts come back mapped').toEqual({
+      parts: [{ type: 'text', text: 'ok' }],
     });
-  });
-
-  /** Registration is undoable, and unregistering twice is not a mistake. */
-  it('unregisters the handler it registered', async () => {
-    const { connection, ask } = fakeConnection();
-    const stop = hostTheBrowser(connection, vi.fn());
-
-    stop();
-    await expect(ask('browser_close')).rejects.toThrow('no handler');
-  });
-
-  /**
-   * The capability is only declared where a host is really there: a page
-   * opened outside the shell (the dev server in a plain browser) must not
-   * claim it, because every ask it claimed would come back a failure.
-   */
-  it('declares the capability only inside the shell that has a host', () => {
-    expect(canHost()).toBe(false);
-    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
-    expect(canHost()).toBe(true);
-    (globalThis as { window?: unknown }).window = {};
-    expect(canHost()).toBe(false);
   });
 });

@@ -213,10 +213,22 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+    // **One is singular.** The count arm has a `=== 1 ? '' : 's'` that
+    // nothing pinned, and "1 profiles" is what a reader sees when it goes.
+    expect(
+      shown.target.querySelector('.bz-tog .n')?.textContent,
+      'one profile reads singular',
+    ).toBe('1 profile');
 
+    // **The close names the ROW's own profile**, not its owner's slot: the
+    // two strings sit beside each other on the row, and a swap would strand
+    // exactly the profile whose owner is gone - the one this door exists for.
     vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
     click(shown.target.querySelector('.bz-close'));
 
+    expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith(
+      'hunt',
+    );
     await vi.waitFor(() => {
       expect(shown.target.textContent).toContain('no browser profile is open under hunt');
     });

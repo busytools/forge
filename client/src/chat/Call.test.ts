@@ -114,6 +114,25 @@ describe('the row one call draws', () => {
    * their soft breaks, and the browser's body does too now; literal lines
    * are a fence's business.
    */
+  it('renders the family with no mcp prefix as markdown too', () => {
+    // **The bare name half of the body branch.** `browser_hand_off` is the
+    // family's own tool, so it arrives with no `mcp__` prefix - the branch
+    // tests the name against `isBrowserTool` as well, and dropping that half
+    // would spoon its body out as a terminal box.
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_handoff',
+        open: true,
+        call: mcp('browser_hand_off', 'The person is done in the browser.'),
+      },
+    }).body;
+
+    expect(drawn, 'a bare browser tool renders markdown, not a terminal box').toContain(
+      'The person is done in the browser.',
+    );
+    expect(drawn, 'and not the terminal box').not.toContain('class="term"');
+  });
+
   it("flows an MCP result's soft breaks like a peer message", () => {
     const drawn = render(Call, {
       props: {

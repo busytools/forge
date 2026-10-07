@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { showBrowser } from '../browser/host';
+import { hideBrowser, showBrowser } from '../browser/host';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -14,8 +14,11 @@ vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
-    // No window in tests: a raise that fails says so on the dock.
+    // No window in tests: the shell's raise answers the reason it could not
+    // land, or null when it did. The default takes it as landing; a case
+    // that wants the failure resolves the reason instead.
     showBrowser: vi.fn(() => Promise.resolve(null)),
+    hideBrowser: vi.fn(() => Promise.resolve()),
   };
 });
 
@@ -132,6 +135,7 @@ afterEach(() => {
   if (second !== null) void unmount(second);
   app = null;
   second = null;
+  vi.mocked(hideBrowser).mockClear();
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
@@ -4174,6 +4178,11 @@ describe('the dock', () => {
         },
       },
     ]);
+    // **Answering also lowers the window** (Ved live, 2026-10-07: "I said
+    // done, but the browser tab is still open"): Open raised it, and the
+    // answer is what takes it down. This line was the live bug's fix and
+    // nothing pinned it.
+    expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1);
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
