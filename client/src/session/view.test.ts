@@ -554,6 +554,17 @@ describe('the tree the strip draws', () => {
     );
     expect(clean, 'a clean default branch drew a row').toBeNull();
 
+    // In a clone the default arrives as `origin/main` while the checked-out
+    // branch is plain `main`: the same row must stay hidden.
+    const clone = gitStrip(
+      withGit(
+        { defaultBranch: 'origin/main' },
+        { work: { branch: 'main', changed: 0, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(clone, 'a clone on main with a clean tree drew a row').toBeNull();
+
     const dirty = gitStrip(
       withGit(
         {

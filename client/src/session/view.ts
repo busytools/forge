@@ -631,11 +631,11 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
     .filter((part) => part !== null)
     .join(' \u{b7} ');
   const clean = uncommitted === null && view.ahead === null && record.pr === null;
-  const onDefault =
-    gate === null &&
-    branch !== null &&
-    view.defaultBranch !== null &&
-    branch === view.defaultBranch;
+  // The default arrives as its remote-tracking ref (`origin/main`); compare
+  // the plain name, the way the terminal's own row does, so a checked-out
+  // `main` in a clone is recognised as the default rather than as work.
+  const base = view.defaultBranch?.replace(/^origin\//, '') ?? null;
+  const onDefault = gate === null && branch !== null && base !== null && branch === base;
   // The default branch with nothing on it has no state a row could state:
   // it is where work lands, not work. A dirty default branch still draws -
   // there is something to see.

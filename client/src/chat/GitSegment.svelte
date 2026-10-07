@@ -10,8 +10,10 @@
    *
    * It was the inspector's first section because the working tree is the
    * first thing a person looks for, and the one read whose absence reads as
-   * "this seat has no repository" - so this row draws for every seat with a
-   * record, which is also what holds the strip open on an idle one.
+   * "this seat has no repository" - so it draws whenever the tree has
+   * something to state. A clean tree on its default branch states nothing
+   * and draws no row at all, which is what keeps it from claiming nothing
+   * is happening on every seat forever.
    */
   let open = $state(false);
   /** The segment and its list, so leaving and opening can be told apart. */
