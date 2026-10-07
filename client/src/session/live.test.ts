@@ -158,6 +158,22 @@ async function settle(): Promise<void> {
   }
 }
 
+/**
+ * Let a predicate hold, over a bounded number of paints.
+ *
+ * **A `history.back()` is an asynchronous browser event**, and one tick is a
+ * race the CI machine schedules differently from a dev machine - the round
+ * where the palette's entry hand-off landed passed locally on one tick and
+ * failed there. The condition is what is waited on, never the tick.
+ */
+async function until(ok: () => boolean): Promise<void> {
+  for (let i = 0; i < 60; i += 1) {
+    flushSync();
+    if (ok()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 let app: Record<string, unknown> | null = null;
 let server: Awaited<ReturnType<typeof stubServer>> | null = null;
 let connection: Connection | null = null;
@@ -415,8 +431,7 @@ describe('the session page over a socket', () => {
     );
 
     history.back();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
+    await until(() => document.querySelector('.pal') === null);
     expect(document.querySelector('.pal'), 'Back left the palette up').toBeNull();
   });
 
@@ -447,8 +462,7 @@ describe('the session page over a socket', () => {
     expect(state?.forgeRail, "the entry on top is not the rail's").toBe('left');
 
     history.back();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
+    await until(() => !(document.querySelector('.app')?.className ?? '').includes('rail-open'));
     expect(
       document.querySelector('.app')?.className ?? '',
       'one Back did not close the rail',
