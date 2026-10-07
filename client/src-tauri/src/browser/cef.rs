@@ -16,6 +16,8 @@ use cef::*;
 
 #[cfg(target_os = "macos")]
 mod client_application;
+#[cfg(target_os = "macos")]
+pub mod view;
 
 /// Whether `initialize` has answered. The client's loop starts whether or
 /// not CEF did, so the pump must never reach an uninitialized CEF.

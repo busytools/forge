@@ -130,6 +130,11 @@ pub fn run() {
                 }
             });
             app.manage(host);
+            // **The browser's view, created now and hidden.** The takeover
+            // shows it; between takeovers the sessions drive the same
+            // browser through its CDP, exactly as a headless one.
+            #[cfg(all(desktop, target_os = "macos"))]
+            browser_view(app.handle(), true);
             Ok(())
         })
         .build(context);
@@ -146,15 +151,50 @@ pub fn run() {
 
     // **CEF's work rides this loop.** Tauri fires `MainEventsCleared` every
     // turn, and CEF is pumped there - the one place the client's own loop
-    // and Chromium's meet.
+    // and Chromium's meet. A resize keeps the view under the bar.
+    let handle = app.handle().clone();
     app.run(move |_handle, event| {
         #[cfg(all(desktop, target_os = "macos"))]
-        if let tauri::RunEvent::MainEventsCleared = event {
-            browser::cef::pump();
+        match event {
+            tauri::RunEvent::MainEventsCleared => browser::cef::pump(),
+            tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Resized(_), .. } => {
+                browser_view(&handle, false);
+            }
+            _ => {}
         }
         #[cfg(not(all(desktop, target_os = "macos")))]
         let _ = event;
     });
+}
+
+/// The browser's view, sized to the window: `install` creates it once
+/// (hidden), everything after is a resize.
+///
+/// Runs on the main thread from both callers - setup, and the run loop's
+/// resize events - which is the only place CEF may be touched.
+#[cfg(all(desktop, target_os = "macos"))]
+fn browser_view(app: &tauri::AppHandle, install: bool) {
+    use raw_window_handle::HasWindowHandle as _;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (width, height) = window
+        .inner_size()
+        .map(|size| (f64::from(size.width) / scale, f64::from(size.height) / scale))
+        .unwrap_or((1440.0, 900.0));
+    if install {
+        browser::cef::view::install(appkit.ns_view.as_ptr().cast(), width, height);
+    } else {
+        browser::cef::view::resize(width, height);
+    }
 }
 
 /// The version an update check found, or `None` when this build is current.

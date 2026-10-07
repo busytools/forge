@@ -110,7 +110,9 @@ pub struct BrowserHost {
     paths: Result<StackPaths, String>,
     /// Every `chromium::ensure` runs under this, whichever context asks for
     /// one: a burst of first calls launches ONE browser rather than two onto
-    /// one profile.
+    /// one profile. (macOS has nothing to launch: the browser is CEF, in
+    /// this process.)
+    #[cfg(not(all(desktop, target_os = "macos")))]
     launch: Mutex<()>,
     /// The browser's own context, shared by every session.
     default: Mutex<Option<Arc<Context>>>,
@@ -127,16 +129,25 @@ pub struct BrowserHost {
     /// rather than the async one: the stream task writes it in a breath, and
     /// nothing here ever waits on the browser.
     last_frame: std::sync::Arc<std::sync::Mutex<Option<screencast::Frame>>>,
+    /// Whether the takeover is up.
+    ///
+    /// **The screen's state, not the stream's.** On macOS the picture is the
+    /// browser's own view rendered natively, so a screencast that failed to
+    /// start (or one that is not needed) must not decide whether a reloaded
+    /// window draws the takeover.
+    takeover_up: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserHost {
     pub fn new(paths: StackPaths) -> Self {
         Self {
             paths: Ok(paths),
+            #[cfg(not(all(desktop, target_os = "macos")))]
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
+            takeover_up: std::sync::atomic::AtomicBool::new(false),
             last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -147,10 +158,12 @@ impl BrowserHost {
     pub fn unavailable(why: String) -> Self {
         Self {
             paths: Err(why),
+            #[cfg(not(all(desktop, target_os = "macos")))]
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
+            takeover_up: std::sync::atomic::AtomicBool::new(false),
             last_frame: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -300,8 +313,26 @@ impl BrowserHost {
 
     /// The live browser, launched when nothing is up.
     async fn active_browser(&self, paths: &StackPaths) -> Result<chromium::ActivePort, String> {
-        let _launching = self.launch.lock().await;
-        chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
+        // **On macOS the browser IS the client's own.** CEF renders inside
+        // this window and its CDP is where the sessions' driver attaches -
+        // there is no second browser to launch and nothing to find again.
+        #[cfg(all(desktop, target_os = "macos"))]
+        {
+            let _ = paths;
+            let port = cef::debug_port();
+            if port == 0 {
+                return Err("the client's own browser is not up".to_owned());
+            }
+            let Some(path) = chromium::probe_identity(port).await else {
+                return Err(format!("nothing answers as a browser on 127.0.0.1:{port}"));
+            };
+            return Ok(chromium::ActivePort { port, path, pid: None });
+        }
+        #[cfg(not(all(desktop, target_os = "macos")))]
+        {
+            let _launching = self.launch.lock().await;
+            chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
+        }
     }
 
     /// The named contexts this host holds, oldest name first, for its own
@@ -325,26 +356,34 @@ impl BrowserHost {
     /// Bring the in-app browser view up over the client's window: the
     /// approved takeover.
     ///
-    /// The browser is brought up first (a person waiting on a cold launch is
-    /// the one wait worth removing), then a CDP session of our own starts the
-    /// screencast and keeps the latest frame for the view to read.
+    /// **The picture is the browser's own view on macOS**, rendered natively
+    /// under the bar; the screencast that platforms without it need is
+    /// best-effort - a stream that will not start must not take the takeover
+    /// down with it.
     pub async fn takeover_open(&self, app: &tauri::AppHandle) -> Result<(), String> {
         let paths = self.paths.clone()?;
         let active = self.active_browser(&paths).await?;
         let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
         let emitter = app.clone();
         let kept = std::sync::Arc::clone(&self.last_frame);
-        let live = screencast::start(&endpoint, move |frame| {
+        let started = screencast::start(&endpoint, move |frame| {
             let mut held = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *held = Some(frame.clone());
             let _ = emitter.emit("browser_frame", frame);
         })
-        .await?;
+        .await;
         let mut held = self.live.lock().await;
         if let Some(previous) = held.take() {
             previous.stop();
         }
-        *held = Some(live);
+        *held = started.ok();
+        self.takeover_up.store(true, std::sync::atomic::Ordering::Release);
+        // **The real view comes up under the bar.** CEF may only be touched
+        // on the main thread, and this command is not on it.
+        #[cfg(all(desktop, target_os = "macos"))]
+        {
+            let _ = app.run_on_main_thread(|| crate::browser::cef::view::set_visible(true));
+        }
         Ok(())
     }
 
@@ -355,6 +394,7 @@ impl BrowserHost {
         if let Some(live) = self.live.lock().await.take() {
             live.stop();
         }
+        self.takeover_up.store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -362,7 +402,7 @@ impl BrowserHost {
     /// reads to re-draw the screen it was on.
     pub async fn takeover_active(&self) -> Result<bool, String> {
         self.paths.clone()?;
-        Ok(self.live.lock().await.is_some())
+        Ok(self.takeover_up.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// One input event into the live view, as CDP wants it.
@@ -502,8 +542,18 @@ pub async fn browser_takeover_frame(
 
 /// Take the view back down.
 #[tauri::command]
-pub async fn browser_takeover_close(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
-    host.takeover_close().await
+pub async fn browser_takeover_close(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    host.takeover_close().await?;
+    // **The real view goes down with the screen.** CEF may only be touched
+    // on the main thread, and this command is not on it.
+    #[cfg(all(desktop, target_os = "macos"))]
+    {
+        let _ = app.run_on_main_thread(|| crate::browser::cef::view::set_visible(false));
+    }
+    Ok(())
 }
 
 /// Whether the shell is holding a takeover up, for a window that has just

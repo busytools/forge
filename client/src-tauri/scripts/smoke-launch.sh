@@ -33,6 +33,9 @@ fi
 if grep -q "CEF stays off\|CEF did not initialize\|browser stays off\|NSApplication was created before" "$LOG"; then
     FAILED="CEF did not come up"
 fi
+if ! grep -q "the browser view is up" "$LOG"; then
+    FAILED="${FAILED:-the browser view was not created}"
+fi
 # The engine's own announcement, then its endpoint actually answering: a
 # CEF that initialized but cannot be reached is not up.
 CEF_LINE=$(grep -o "CEF is up, debugging on 127.0.0.1:[0-9]*" "$LOG" | head -1)

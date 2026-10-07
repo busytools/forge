@@ -57,6 +57,8 @@ tauri-plugin-updater = "2"
 cef = { version = "154.4.0", features = ["build-util"] }
 # The app-data root CEF's profile hangs off, computed before tauri exists.
 dirs = "6"
+# The window's own NSView, where the browser view is created.
+raw-window-handle = "0.6"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = { version = "0.3", features = [
