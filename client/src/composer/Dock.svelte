@@ -345,7 +345,7 @@
    */
   function answer(command: Command): void {
     try {
-      void connection.dispatch(command);
+      void connection.dispatch(command, slot);
     } catch (error) {
       report('the answer was not sent', error);
     }

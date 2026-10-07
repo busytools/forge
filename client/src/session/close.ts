@@ -243,7 +243,10 @@ export function closeSeat(
   const command = closeCommand(home, slot);
   if (command === null) return false;
   try {
-    void connection.dispatch(command);
+    // The seat the button was pressed in, not the one it targets: the rail's
+    // close can name another project's seat, and the reader is looking at
+    // `current`'s column.
+    void connection.dispatch(command, current);
   } catch (error) {
     // A closed socket throws rather than answering, and nothing went.
     report('the close was not sent', error);

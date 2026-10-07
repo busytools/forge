@@ -120,15 +120,18 @@
     if (row.text !== undefined) {
       // Exactly what the composer sends for a typed command, id included:
       // the CLI emits that prompt's lifecycle frames only under our uuid.
-      void connection.dispatch({
-        prompt_under: {
-          key: slot,
-          text: row.text,
-          attachments: [],
-          uuid: mintPromptId(),
-          source: 'you',
+      void connection.dispatch(
+        {
+          prompt_under: {
+            key: slot,
+            text: row.text,
+            attachments: [],
+            uuid: mintPromptId(),
+            source: 'you',
+          },
         },
-      });
+        slot,
+      );
       onclose();
       return;
     }
