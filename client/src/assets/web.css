@@ -1772,11 +1772,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    typed into. Both wrappers dissolve, so the composer is still a grid item
    of the app and still sits under the chat column. */
 #session-body, #composer-slot { display: contents; }
+/* The chat takes the first row of everything left, the composer's own row
+   beneath it - the only column there is, now the rail is summoned. */
 .app { grid-template-rows: minmax(0, 1fr) auto; }
-.composer { grid-column: 2; grid-row: 2; }
-@media (max-width: 980px) {
-  .composer { grid-column: 1; }
-}
+.composer { grid-column: 1; grid-row: 2; }
 
 .ac .it.sel { background: rgba(244,118,0,.09); }
 .ac .it.sel .p { color: var(--text); }

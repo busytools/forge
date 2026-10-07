@@ -139,6 +139,7 @@
   /* ---------- panes: checked is COLLAPSED, and the handle lives in the
      chat header so it stays clickable while the pane is gone ---------- */
   .app { display: grid; grid-template-columns: minmax(0,1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
   /* The rail is summoned: parked off-canvas and slid in when the chip opens
      it. In this drawing the #l checkbox is the chip's stand-in. The two
