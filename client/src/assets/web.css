@@ -103,7 +103,7 @@ html::-webkit-scrollbar-thumb:active,
      is what you read, a row is data, and a label sits on data. */
   --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
   --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
-  --ins: 10px; --rail-l: 312px; --rail-r: 366px;
+  --ins: 10px; --rail-l: 312px;
   /* one line per entity: state | name | where | what | when.
      no action column - the whole row is the target.
      name and where are capped because their content is short; the surplus
@@ -466,7 +466,7 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* `dvh` rather than `vh`: a phone's URL bar hides and shows, and a frame sized
    to `vh` is taller than the window it is in whenever the bar is showing. */
 .app {
-  display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
+  display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr);
   gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
@@ -474,29 +474,22 @@ details[open] > summary .arw { transform: rotate(90deg); }
    empty, and auto-flowing the rest along moves the conversation into the
    rail's column and blanks the page. A rail takes the rows as well as the
    column, or the composer's row ends under the chat alone and leaves a band
-   of bare page beneath both rails. */
+   of bare page beneath it. */
 .app .rail.left { grid-column: 1; grid-row: 1 / -1; }
 .app main.chat { grid-column: 2; }
-.app .rail.right { grid-column: 3; grid-row: 1 / -1; }
 /* A folded column says so on the app rather than in a hidden box beside it.
    The server held this in checkboxes because a page with no script had
    nowhere else to put it; the class is the same fact stated once, and it
    means what it says at every width - the media queries below turn a shown
    rail into a sheet rather than inverting the word. */
 .app.left-hidden { --rail-l: 0px; }
-.app.right-hidden { --rail-r: 0px; }
-.app.left-hidden .rail.left,
-.app.right-hidden .rail.right { display: none; }
+.app.left-hidden .rail.left { display: none; }
 .rail-tog { display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
   color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
 .rail-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
 .rail-tog svg { width: 16px; height: 16px; display: block; }
-/* Both handles sit with the title on a phone; on a wide screen the
-   inspector's goes to the far right, past the facts. */
-.sess .tog-r { order: 99; }
-.app.left-hidden .rail-tog.tog-l,
-.app.right-hidden .rail-tog.tog-r {
+.app.left-hidden .rail-tog.tog-l {
   color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
 
 .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
@@ -525,6 +518,9 @@ details[open] > summary .arw { transform: rotate(90deg); }
 .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
 .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
 .rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+/* The connection's own line over the versions: a skew or a reconnect is a
+   thing to act on, so it carries the amber an update line uses. */
+.rfoot .notice { font-size: var(--fs-label); color: var(--warn); padding: 0 1px 6px; }
 .rfoot .led.wait { background: var(--warn); }
 .rfoot .led.bad { background: var(--bad); }
 .rfoot .an { color: var(--text); font-size: var(--fs-base); }
@@ -538,7 +534,15 @@ details[open] > summary .arw { transform: rotate(90deg); }
 .rfoot .vers { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px;
   display: flex; flex-direction: column; gap: 2px;
   font-family: var(--mono); font-size: var(--fs-data); }
-.rfoot .vers .v { color: var(--muted); }
+/* One lane per side: the build elides - a version carrying its commit is
+   long - and the socket figure never does, because the pair is what the
+   line is for. */
+.rfoot .vers .v { color: var(--muted); display: flex; gap: 5px; }
+.rfoot .vers .vt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rfoot .vers .vs { flex: none; }
+/* A mismatched pair: both sides carry the amber, because either number may
+   be the stale one - and the notice above it says which to fix. */
+.rfoot .vers .v.skewed { color: var(--warn); }
 .rfoot .vers .up { color: var(--warn); }
 
 /* The chat column. min-height:0 or the column refuses to shrink below its
@@ -684,53 +688,6 @@ details.sfold div.wk:hover { background: none; }
   background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
   color: transparent; animation: shimmer 1.4s cubic-bezier(.37, 0, .63, 1) infinite; }
 
-/* ---------- inspector: one collapsed section per subject ---------- */
-
-/* the two sides of a count that moves, wherever the count is drawn */
-.pm { color: var(--ok); }
-.mm { color: var(--bad); }
-
-.sec { border-bottom: 1px solid rgba(34,42,60,.55); }
-.sec:last-child { border-bottom: 0; }
-details.sec > summary { list-style: none; display: flex; align-items: center; gap: 10px;
-  padding: 11px 14px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
-  text-transform: uppercase; color: var(--muted); cursor: pointer; }
-details.sec > summary::-webkit-details-marker { display: none; }
-details.sec > summary:hover { background: rgba(27,33,48,.4); }
-details.sec > summary .gl { color: var(--dim); }
-/* The summary is the section's own line - a branch and a count, a number of
-   workspaces. It takes the room the title leaves and wraps inside it rather
-   than being cut, which is what the terminal's one-line row did. */
-details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-  font-style: italic; letter-spacing: 0; text-transform: none; font-weight: 400;
-  min-width: 0; overflow-wrap: anywhere; }
-details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
-details.sec[open] > summary { border-bottom: 1px solid var(--line); }
-details.sec[open] > summary .arw { color: var(--accent); }
-.sb { padding: 10px 14px 14px; }
-/* Stacked rows in a section body: a little air between the facts, none
-   before the first. */
-.sb .kv + .kv { padding-top: 6px; }
-
-.sb .dir { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 5px 0 1px; }
-.sb .file { display: flex; align-items: center; gap: 8px; padding: 2px 0;
-  font-family: var(--mono); font-size: var(--fs-data); }
-.sb .file .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; }
-.sb .file .pm { margin-left: auto; }
-
-/* one task: a rule down its left, in the colour of its state */
-.sb .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
-.sb .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3);
-  flex: none; }
-.sb .tk.now .b { background: var(--accent); }
-.sb .tk.done .b { background: var(--ok); }
-.sb .tk.blocked .b { background: var(--warn); }
-.sb .tk .s { font-size: var(--fs-base); color: var(--muted); }
-.sb .tk.done .s { color: var(--dim); text-decoration: line-through; }
-.sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
-.sb .tk .meta b { color: var(--muted); font-weight: 500; }
-
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0;
   font-family: var(--mono); font-size: var(--fs-data); }
 /* A key can be a task subject, a cron prompt or a process command, so it
@@ -747,20 +704,7 @@ details.sec[open] > summary .arw { color: var(--accent); }
 .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
   text-align: right; }
 
-/* ---------- narrow: the session page loses its columns ----------
-   Below 1280 the inspector stops being a column and becomes a sheet over
-   the chat when its handle asks for it, so the handle the header draws is
-   never a control that does nothing. */
-
-@media (max-width: 1280px) {
-  .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
-  /* The inspector stops being a column, so a shown one is a sheet over the
-     chat: the handle the header draws is never a control that does nothing. */
-  .rail.right { display: none; }
-  .app.right-shown .rail.right {
-    display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
-  }
-}
+/* ---------- narrow: the session page loses its column ---------- */
 
 @media (max-width: 980px) {
   .app { grid-template-columns: minmax(0,1fr); }
@@ -769,14 +713,10 @@ details.sec[open] > summary .arw { color: var(--accent); }
      implicit second column that takes the width, leaving the composer -
      which is on column one - zero pixels wide. */
   .app main.chat { grid-column: 1; }
-  /* The header's own fold answers the column width, and the inspector handle
-     keeps the row's far end at every width: moving it beside the title here
-     made it jump ends as the layout folded. */
   /* One column, so a shown rail covers it rather than sitting beside it. */
   .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
-  .rail.left, .rail.right { display: none; }
-  .app.left-shown .rail.left,
-  .app.right-shown .rail.right { display: flex; }
+  .rail.left { display: none; }
+  .app.left-shown .rail.left { display: flex; }
 }
 
 /* ---------- narrow: a phone is a client too ---------- */
@@ -1050,6 +990,10 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
 .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
 .sg-seg .sg-tog .ic.ok { color: var(--ok); }
+/* The toggle's own line in its own box, so a long one gives way to the
+   strip's nowrap instead of running under the segment beside it. */
+.sg-seg .sg-tog .lab { flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 /* The panel's rows FILL it: no padding of its own, and the hairline drawn as
    an inset outline rather than a border, so every pixel a pointer can cross
    belongs to a row and carries that row's leave. A padded panel leaves strips
@@ -1063,6 +1007,24 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   background: none; border: 0; cursor: pointer; font: inherit; color: inherit; text-align: left; }
 .sg-list .sg-it:hover, .sg-list .sg-it:focus-visible { background: var(--s3); outline: none; }
 .sg-list .sg-it .ring { width: 9px; height: 9px; flex: none; }
+/* A section's own line, and the panel's opening word: dim, mono, no row of
+   its own - the rows under it belong to it. */
+.sg-list .sg-head { padding: 8px 13px 3px; font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--dim); }
+.sg-list .sg-head:first-child { padding-top: 9px; }
+/* A commit's short sha ahead of its subject, and a file's mark ahead of its
+   path: fixed cells the row's own text never pushes out. */
+.sg-list .sg-it .sha { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+  flex: none; }
+.sg-list .sg-it .fm { font-family: var(--mono); font-size: var(--fs-data); flex: none;
+  width: 12px; }
+.sg-list .sg-it .fm.mark { color: var(--accent); }
+.sg-list .sg-it .fm.ok { color: var(--ok); }
+.sg-list .sg-it .fm.bad { color: var(--bad); }
+.sg-list .sg-it .fm.warn { color: var(--warn); }
+/* A task nothing has started: the ring's own shape, hollow and still. */
+.sg-list .sg-it .hollow { width: 9px; height: 9px; flex: none; border-radius: 50%;
+  border: 1px solid var(--dim); }
 .sg-list .sg-it .ic { flex: none; }
 .sg-list .sg-it .ic.ok { color: var(--ok); }
 .sg-list .sg-it .ic.bad { color: var(--bad); }
@@ -1074,9 +1036,24 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+/* The signed counts: plus green, minus red, wherever a list totals itself. */
+.sg-list .plus { color: var(--ok); }
+.sg-list .minus { color: var(--bad); }
+/* A file's path is the row's body text, not its name: regular colour under
+   the commit subjects' accent. */
+.sg-list .sg-it .nm.path { color: var(--text); font-weight: 500; }
+/* A commit's own files, drawn under the row the reveal is on: a step in
+   from the commit they belong to. */
+.sg-list .sg-cm .sg-head { padding-left: 27px; }
+.sg-list .sg-cm .sg-it { padding-left: 27px; }
+/* The PR row is a real link and reads like every other row: the row's own
+   hover wash is the affordance, not an underline under just one row. */
+.sg-list a.sg-it { text-decoration: none; }
 /* A settled row is kept, not alive: its name drops to the muted tone while
    the check in the mark slot says why it is still here. */
 .sg-list .sg-it.settled .nm { color: var(--muted); }
+/* A task that moved since the last read: the reveal's own tint for a beat. */
+.sg-list .sg-it.hit { animation: sg-flash 6s ease-out 1; }
 @media (pointer: coarse) { .sg-seg .sg-tog, .sg-list .sg-it { min-height: 44px; } }
 /* The status depth under a server row: the tools it offers and what backs it,
    wrapping rather than eliding - the panel is where the detail lives now, so
@@ -2083,37 +2060,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    Scoped to the track, because `.fl` is a file name inside a chat search hit
    as well. */
 .tk > .fl { display: block; height: 100%; background: var(--accent); }
-
-/* A section body's own note. The home's is a failure line and is scoped
-   to its own list. */
-.sb .note { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 4px 0 0; }
-
-/* A section body's row: the key on the left, its value on the right.
-   The server cut both to one line because a terminal row IS one line, with a
-   proportional floor under the key so neither half pushed the other off the
-   rail. Neither half is one line here: a value is a process command, an MCP
-   failure reason or a server scope, and cutting it strands the row's whole
-   point. So both wrap where they stand, and the split is left to the words
-   rather than to a percentage. */
-/* The key takes the row and wraps inside it; the value gives way first,
-   because a name or a command is what the row is about and a memory figure
-   is not. */
-.sb .kv .k { flex: 1 1 auto; }
-.sb .kv .v { flex: 0 1 auto; }
-
-/* A card: one monitor, or one sub-agent, with its own head and body. */
-.sb .sa { border: 1px solid var(--line); border-radius: 10px; background: var(--s1); padding: 0 0 1px; }
-.sb .sa + .sa { margin-top: 8px; }
-.sb .sa .sh { display: flex; align-items: center; gap: 9px; padding: 8px 12px; }
-.sb .sa .sh .st { color: var(--ok); }
-.sb .sa .sh .gl { color: var(--accent); }
-.sb .sa .sh .nm { color: var(--accent); font-weight: 700; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
-.sb .sa .sh .n { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
-.sb .sa .tt { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 0 12px 3px; }
-.sb .sa .tt .tg { color: var(--muted); }
-.sb .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
-  padding: 0 12px 9px; }
 
 /* A command with no description is named by its own command in the row title,
    so that title wraps instead of ellipsising a line off it, and stops at

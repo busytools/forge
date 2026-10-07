@@ -36,7 +36,7 @@ use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::conversation::Held;
 use crate::transport::envelope::Subject;
-use crate::work::{WorkState, work_from_scan};
+use crate::work::{WorkState, git_work_view, work_from_scan};
 
 /// The seat the fixture surface is populated for.
 ///
@@ -411,6 +411,15 @@ pub struct SessionWire {
     /// changed, and the gate. The changed files themselves ride `diff`
     /// below.
     pub work: WorkState,
+    /// The tree behind the git row's depth: the uncommitted files with
+    /// their marks and counts, the branch's chain ahead of its default
+    /// with the commits that produced it, and which branch that is.
+    ///
+    /// What the row above cannot say: a branch and a count tell a reader
+    /// nothing about WHAT is working, and this is what a hover over the
+    /// row draws. The content read below carries the same layers with
+    /// hunks, for the surface that reviews them.
+    pub git: forge_primitives::git_diff::GitWorkView,
     /// The open pull request this seat's branch is on, and the issues it
     /// closes.
     ///
@@ -1167,6 +1176,10 @@ async fn session(
     // does not name.
     let held = surface.work(slot, cwd).await;
     let work = work_from_scan(&held.diff, &held.cwd);
+    // The tree behind the row's depth, from the same held scan and through
+    // the same constructor the pushed frame goes through - one derivation,
+    // so a client that applies the update lands on the record's own answer.
+    let git = git_work_view(&held.diff);
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
@@ -1247,6 +1260,7 @@ async fn session(
             }
         },
         work,
+        git,
         pr: held.diff.pr,
         closes: held.diff.closes,
         diff,
@@ -1680,6 +1694,12 @@ mod tests {
                 .env_remove("GIT_DIR")
                 .env_remove("GIT_WORK_TREE")
                 .env_remove("GIT_COMMON_DIR")
+                // The dates are pinned because the record now carries the
+                // branch's commit chain, and a sha covers the commit's
+                // timestamps: unpinned, every run minted a different sha and
+                // the fixture could not hold one.
+                .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
+                .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
                 .arg("-C")
                 .arg(path)
                 .args(args)
@@ -1809,6 +1829,7 @@ mod tests {
         diff.pr = Some(forge_primitives::git::GitPrInfo {
             number: 1249,
             url: "https://example.test/pull/1249".to_owned(),
+            draft: false,
         });
         diff.closes = vec![forge_primitives::git::GitIssueRef {
             number: 1215,
@@ -2388,13 +2409,20 @@ mod tests {
             serde_json::to_value(&held.diff.closes).expect("encode"),
             "and the issues it closes",
         );
+        assert_eq!(
+            encoded["git"],
+            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff)).expect("encode"),
+            "and the tree behind the row's depth",
+        );
     }
 
     /// A scan as the terminal's inspector reads it: one branch, one worktree
-    /// layer, one PR and one closing issue.
+    /// layer, one chain ahead, one PR and one closing issue. Both depth
+    /// layers are populated so the record-vs-constructor guard covers both
+    /// axes - a derivation omitting either reddens.
     fn scanned() -> GitDiffSnapshot {
-        use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-        use forge_primitives::git_diff::{GitDiffStats, LayerState, RepoGate};
+        use forge_primitives::git::{GitBranch, GitCommit, GitIssueRef, GitPrInfo};
+        use forge_primitives::git_diff::{GitBranchAhead, GitDiffStats, LayerState, RepoGate};
         GitDiffSnapshot {
             branch: GitBranch::Named("worktree-pr".to_owned()),
             pushed_sha: Some("abc123".to_owned()),
@@ -2407,8 +2435,26 @@ mod tests {
                 total_added: 9,
                 total_removed: 2,
             }),
-            branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 1249, url: "https://example.test/pull/1249".to_owned() }),
+            branch_ahead: LayerState::Populated(GitBranchAhead {
+                commit_count: 1,
+                stats: GitDiffStats {
+                    files: Vec::new(),
+                    total_files: 0,
+                    total_added: 0,
+                    total_removed: 0,
+                },
+                commits: vec![GitCommit {
+                    sha: "a1b2c3d".to_owned(),
+                    subject: "the branch's own commit".to_owned(),
+                    stats: GitDiffStats::default(),
+                    time: 1_766_000_000,
+                }],
+            }),
+            pr: Some(GitPrInfo {
+                number: 1249,
+                url: "https://example.test/pull/1249".to_owned(),
+                draft: false,
+            }),
             closes: vec![GitIssueRef {
                 number: 1215,
                 url: "https://example.test/issues/1215".to_owned(),

@@ -125,8 +125,19 @@ describe('the session the floor sends', () => {
 
   it('reads the work, the pull request and the issues it closes', () => {
     expect(held.work).toEqual({ branch: 'protocol-4', changed: 3, gate: 'in_repo' });
-    expect(held.pr).toEqual({ number: 1234, url: 'https://example.test/pull/1234' });
+    expect(held.pr).toEqual({
+      number: 1234,
+      url: 'https://example.test/pull/1234',
+      draft: false,
+    });
     expect(held.closes).toEqual([{ number: 1200, url: 'https://example.test/issues/1200' }]);
+    // A v4 record carries no git field at all: the tree reads as nothing to
+    // state rather than as a missing read.
+    expect(held.git, 'a record without git did not read as an empty tree').toEqual({
+      defaultBranch: null,
+      worktree: null,
+      ahead: null,
+    });
   });
 
   it('reads the conversation it was handed', () => {

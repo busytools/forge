@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentRow, HomeWire } from '../wire/home';
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import GroupFold from './GroupFold.svelte';
@@ -233,6 +234,9 @@ function recording(commands: unknown[]): Connection {
       commands.push(command);
       return null;
     },
+    // The rail's footer reads the protocol pair as it renders, so a render
+    // that reaches this stub asks for it rather than sends.
+    serverProtocol: () => PROTOCOL_VERSION,
   } as unknown as Connection;
 }
 

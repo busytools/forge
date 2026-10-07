@@ -67,21 +67,10 @@ pub struct FileHunks {
 /// codes (`X` - internal error indicator, `B` - broken pairing)
 /// fire a WARN log and skip the entry rather than collapsing to
 /// `Modified`; legitimate user-visible types stay distinct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileStatus {
-    Modified,
-    Added,
-    Deleted,
-    Renamed,
-    Copied,
-    /// File mode changed (regular ↔ symlink, file ↔ submodule).
-    Typechange,
-    /// Unmerged - caught mid-merge-conflict. Common when the user
-    /// runs `/diff` while resolving a merge.
-    Unmerged,
-    Untracked,
-}
+///
+/// The definition moved to primitives because it crosses to views
+/// now; this re-export keeps every existing reader.
+pub use forge_primitives::git::FileStatus;
 
 /// A single `@@`-delimited hunk inside one file's diff. `lines`
 /// preserves the original unified-diff ordering with each line
@@ -482,6 +471,21 @@ pub(super) struct NameStatusEntry {
     pub old_path: Option<String>,
 }
 
+/// The status a `--name-status` code's leading letter means, or `None` for
+/// a code git grew that forge does not know.
+pub(super) fn status_of(leading: char) -> Option<FileStatus> {
+    Some(match leading {
+        'M' => FileStatus::Modified,
+        'A' => FileStatus::Added,
+        'D' => FileStatus::Deleted,
+        'R' => FileStatus::Renamed,
+        'C' => FileStatus::Copied,
+        'T' => FileStatus::Typechange,
+        'U' => FileStatus::Unmerged,
+        _ => return None,
+    })
+}
+
 /// Parse `git diff --name-status` output into entries.
 ///
 /// Status codes covered: M (modified), A (added), D (deleted),
@@ -501,25 +505,16 @@ pub(super) fn parse_name_status_entries(raw: &str) -> Vec<NameStatusEntry> {
             // walking the whole split.
             let path = parts.next_back()?;
             let leading = status_code.chars().next()?;
-            let status = match leading {
-                'M' => FileStatus::Modified,
-                'A' => FileStatus::Added,
-                'D' => FileStatus::Deleted,
-                'R' => FileStatus::Renamed,
-                'C' => FileStatus::Copied,
-                'T' => FileStatus::Typechange,
-                'U' => FileStatus::Unmerged,
-                other => {
-                    tracing::warn!(
-                        target: crate::logging::targets::ENV_GIT,
-                        event_name = "git_name_status_unknown_code",
-                        message = "git diff --name-status emitted an unhandled status code; entry dropped",
-                        outcome = "skipped",
-                        status_code = ?other,
-                        path = %path,
-                    );
-                    return None;
-                }
+            let Some(status) = status_of(leading) else {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "git_name_status_unknown_code",
+                    message = "git diff --name-status emitted an unhandled status code; entry dropped",
+                    outcome = "skipped",
+                    status_code = ?leading,
+                    path = %path,
+                );
+                return None;
             };
             // Whatever sits between the code and the new path is the
             // old path, which only a rename or copy names.

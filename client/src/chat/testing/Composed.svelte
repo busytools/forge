@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
-   * The pile and the box in one container, which is how the page composes
-   * them - `Session.svelte` renders the queue and the composer inside one
-   * `.composer` div, and the walk's handback reaches the box through it.
+   * The pile and the box as the page composes them: `Session.svelte` renders
+   * the queue inside the chat column and the composer bar as its sibling,
+   * both under the page root - and the walk's handbacks reach across that
+   * root, which is the whole reason this harness draws it.
    *
    * **A test harness, because `mount` alone cannot hand a new `rows`.** The
    * walk's two handbacks are about the pile CHANGING under the reader - the
@@ -40,8 +41,12 @@
   };
 </script>
 
-<div class="composer">
-  <Queue rows={held} {slot} {connection} />
-  <!-- The composer's own editor name, so the census reads it as the box it imitates. -->
-  <textarea data-editor="composer"></textarea>
+<div class="app">
+  <main class="chat">
+    <Queue rows={held} {slot} {connection} />
+  </main>
+  <div class="composer">
+    <!-- The composer's own editor name, so the census reads it as the box it imitates. -->
+    <textarea data-editor="composer"></textarea>
+  </div>
 </div>

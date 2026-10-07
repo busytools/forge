@@ -4,19 +4,21 @@ import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import session from '../dev/fixtures/session.json';
 import load from '../dev/fixtures/session-load.json';
-import type { CronEntry } from '../wire/home';
 import { mcp } from '../chat/mcp.svelte';
+import { processes } from '../chat/processes.svelte';
 import { schedules } from '../chat/schedules.svelte';
+import type { CronEntry } from '../wire/home';
 import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { freeze } from '../chat/testing/frozen';
 
 /**
- * Every builder the inspector reaches through is wrapped, so what one arriving
- * frame costs is a count rather than an impression.
+ * Every builder the record's readers reach through is wrapped, so what one
+ * arriving frame costs is a count rather than an impression.
  *
  * The wrappers live in the mock factories because that is the only place a
  * module's exports can be replaced, and they record into `./testing/counts`
@@ -28,10 +30,8 @@ vi.mock('./view', async (importOriginal) => {
   const { counting } = await import('./testing/counts');
   return {
     ...real,
-    gitSection: counting('gitSection', real.gitSection),
+    gitStrip: counting('gitStrip', real.gitStrip),
     projectOf: counting('projectOf', real.projectOf),
-    tasksSection: counting('tasksSection', real.tasksSection),
-    monitorsSection: counting('monitorsSection', real.monitorsSection),
   };
 });
 
@@ -125,6 +125,7 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     onStatus: () => () => undefined,
     store: () => undefined,
     settings: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open' as const,
     close: () => undefined,
   };
@@ -186,37 +187,6 @@ function arrive(frame: () => void): void {
   flushSync();
 }
 
-/** Every section the inspector drew: its name, whether it is open, and what
- * it built behind the summary. */
-function drawn(): { key: string; open: boolean; body: number }[] {
-  return [...document.querySelectorAll('details.sec')].map((element) => {
-    const section = element as HTMLDetailsElement;
-    return {
-      key: section.getAttribute('data-k') ?? '',
-      open: section.open,
-      body: element.querySelector('.sb')?.querySelectorAll('*').length ?? 0,
-    };
-  });
-}
-
-/** Close every section the way a reader does, and settle the binding. */
-function collapseAll(): void {
-  for (const element of document.querySelectorAll('details.sec')) {
-    (element as HTMLDetailsElement).open = false;
-    element.dispatchEvent(new Event('toggle'));
-  }
-  flushSync();
-}
-
-/** Open one section, so its body is drawn. */
-function openSection(name: string): void {
-  const found = document.querySelector(`details.sec[data-k="sec-${name}"]`);
-  if (!(found instanceof HTMLDetailsElement)) throw new Error(`no ${name} section was drawn`);
-  found.open = true;
-  found.dispatchEvent(new Event('toggle'));
-  flushSync();
-}
-
 beforeEach(() => {
   counts.clear();
   // The page schedules paints on animation frames, and a case that drives one
@@ -231,13 +201,13 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-describe('what one arriving frame costs the inspector', () => {
+describe('what one arriving frame costs the page', () => {
   /**
    * **The instrument's own negative is inside the run it measures.** A frame
-   * for this seat re-derives `gitSection`; the same flush re-derives
-   * `projectOf` not at all, because `projectOf` reads the home and the home did
-   * not move. A counter wired to renders rather than to re-derivations reports
-   * both, so the pair is what makes the number below readable.
+   * for this seat re-derives `gitStrip`; the same flush re-derives `projectOf`
+   * not at all, because `projectOf` reads the home and the home did not move.
+   * A counter wired to renders rather than to re-derivations reports both, so
+   * the pair is what makes the number below readable.
    *
    * The two frames the page should ignore are the second control: one for
    * another seat, one naming no seat. Both are routes the server really sends -
@@ -274,59 +244,12 @@ describe('what one arriving frame costs the inspector', () => {
     expect(called('projectOf'), `the home did not move, so nothing re-reads it: ${measured}`).toBe(
       0,
     );
-    expect(called('gitSection'), measured).toBe(1);
+    expect(called('gitStrip'), measured).toBe(1);
     // And over a record of a real size, which the call counts cannot say: every
     // number in this file is about a conversation the record really carries, and
     // a fixture that stopped carrying one would leave all of them green.
     expect(rows, `the rows the record handed the page: ${measured}`).toBe(MESSAGES);
     expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
-  });
-
-  /**
-   * **A section nobody has opened owes its name and its count, and nothing
-   * else.** It used to build its whole body anyway, and the body is where the
-   * inspector's cost was: a process tree, a monitor list, a hundred elements
-   * behind a `<details>` that is shut.
-   *
-   * The count is the line. A summary's own arithmetic still runs - a summary
-   * that stated a stale number would be a worse defect than a slow one - and
-   * everything that exists only to fill the body does not.
-   */
-  it('does not compute or draw a section nobody has opened', () => {
-    const server = open();
-    collapseAll();
-    counts.clear();
-
-    const shut = drawn();
-    expect(shut.filter((section) => section.open).length, JSON.stringify(shut)).toBe(0);
-    expect(shut.length, 'the precondition: sections were drawn at all').toBeGreaterThan(0);
-
-    arrive(server.update);
-    const tally = counts.tally();
-    const called = (name: string): number => tally.find((row) => row.name === name)?.calls ?? 0;
-
-    const measured = JSON.stringify({ tally, shut });
-    // Nothing behind any of them, so what is computed is not also drawn.
-    expect(
-      shut.reduce((total, section) => total + section.body, 0),
-      `${measured} - a shut section built elements behind its summary`,
-    ).toBe(0);
-    // Where the line is: a summary still states its count with every section
-    // shut, so the arithmetic its summary needs is what may still run - and
-    // only where the slice it states moved. A frame carrying a message moves
-    // the record, which is what the git reader walks; it says nothing about
-    // the monitors, so that section is not recomputed at all.
-    expect(called('gitSection'), measured).toBeGreaterThan(0);
-    expect(
-      called('monitorsSection'),
-      `${measured} - a shut section was recomputed for a slice that did not move`,
-    ).toBe(0);
-
-    // The other half of the claim: the deferral is not a section that never
-    // draws. Opening one draws the body it was holding back.
-    openSection('monitors');
-    const opened = drawn().find((section) => section.key === 'sec-monitors');
-    expect(opened?.body, `opening drew nothing: ${JSON.stringify(drawn())}`).toBeGreaterThan(0);
   });
 
   /**
@@ -377,17 +300,26 @@ describe('what one arriving frame costs the inspector', () => {
   });
 
   /**
-   * **A pushed walk no longer draws a section.** It used to be the inspector's
-   * processes section; the walk is the strip's row now, so the claim that
-   * survives the removal is the frame reaching the inspector as NOTHING - no
-   * section, and no re-read of the seat behind it.
+   * **A pushed walk reaches the strip's row without a re-read of the seat.**
+   * The walk is the page's own loop sending what the process scan found; the
+   * row's store reads it off the record the frame moves, so the claim is both
+   * halves: the store took the walk, and nothing asked the server to fold the
+   * transcript again.
    */
-  it('lets a pushed walk pass the inspector without drawing or re-reading', () => {
+  it('lets a pushed walk reach the row store without re-reading the seat', () => {
     const fields: Record<string, unknown> = {
       processes: { processes: [], scanned_at: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
+      background_tasks: [
+        {
+          task_id: 't-1',
+          task_type: 'local_bash',
+          description: 'run the gate',
+          command: 'claude',
+          tool_use_id: null,
+        },
+      ],
     };
     const server = open([], fields);
-    expect(drawn().map((section) => section.key)).not.toContain('sec-processes');
 
     arrive(() =>
       server.walk({
@@ -398,10 +330,9 @@ describe('what one arriving frame costs the inspector', () => {
       }),
     );
 
-    const keys = drawn().map((section) => section.key);
-    expect(keys, `a pushed walk drew a section again: ${JSON.stringify(keys)}`).not.toContain(
-      'sec-processes',
-    );
+    const held = processes.rows();
+    expect(held, 'the pushed walk reached the row store').toHaveLength(1);
+    expect(held[0]?.headline, 'and the row is the batch the registry carries').toBe('run the gate');
     expect(server.asked.length, 'the frame re-read the seat').toBe(0);
   });
 });

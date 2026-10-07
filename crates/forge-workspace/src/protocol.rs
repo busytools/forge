@@ -1309,6 +1309,10 @@ pub enum SessionUpdate {
     WorkChanged {
         key: SessionSlot,
         work: crate::work::WorkState,
+        /// The tree behind the row's depth: the uncommitted files with
+        /// their marks and counts, the branch's chain ahead of its
+        /// default, and which branch that is.
+        git: forge_primitives::git_diff::GitWorkView,
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },

@@ -1,12 +1,15 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
   import { connectors } from '../chat/connectors.svelte';
+  import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
+  import { monitors } from '../chat/monitors.svelte';
   import { processes } from '../chat/processes.svelte';
   import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
   import type { ServerMessage } from '../protocol';
-  import type { McpRow } from '../session/view';
+  import type { GitStrip, McpRow, MonitorStripRow, TaskStripRow } from '../session/view';
   import { backgroundTaskFrom, processesFrom, subagentCardFrom } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -56,6 +59,12 @@
     schedules?: { id: string; key: string; value: string }[];
     /** The session's MCP servers, already in row shape. */
     mcp?: McpRow[];
+    /** The seat's working tree, already in strip shape. */
+    tree?: GitStrip;
+    /** The project's tasks, already in row shape. */
+    taskList?: TaskStripRow[];
+    /** The session's monitors, already in row shape. */
+    monitors?: MonitorStripRow[];
   }
 
   /**
@@ -284,6 +293,11 @@
       // The session's MCP servers, seeded the same way: the strip's fifth row
       // reads this store, and nothing else here would fill it.
       mcp.sync(page.mcp ?? null);
+      // The tree, the tasks and the monitors, seeded the same way: the last
+      // three rows read these stores, and nothing else here would fill them.
+      git.sync(page.tree ?? null);
+      tasks.sync(page.taskList ?? null);
+      monitors.sync(page.monitors ?? null);
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

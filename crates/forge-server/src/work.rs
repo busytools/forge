@@ -18,7 +18,7 @@ use forge_primitives::SessionSlot;
 // The row a view draws, and the gate that qualifies it, live where the
 // session page's scan does: one shape for both readers, and one place the
 // shape is decided.
-pub use forge_workspace::work::{Gate, WorkState, work_from_scan};
+pub use forge_workspace::work::{Gate, WorkState, git_work_view, work_from_scan};
 
 /// How long a read answers for. Everything inside the window is served
 /// from the cache, which is what keeps a page render off a subprocess.

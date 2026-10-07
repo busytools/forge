@@ -20,6 +20,7 @@ import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
   backgroundTaskFrom,
+  gitFrom,
   issuesFrom,
   monitorFrom,
   prFrom,
@@ -142,6 +143,7 @@ export const HANDLERS: Record<string, Apply> = {
   work_changed: (held, payload) => ({
     ...held,
     work: workFrom(payload['work']),
+    git: gitFrom(payload['git']),
     pr: prFrom(payload['pr']),
     closes: issuesFrom(payload['closes']),
   }),
@@ -632,7 +634,7 @@ function settled(held: SessionRecord): SessionRecord {
  *   which opens a turn on a queued prompt; the chat refuses that cut and joins
  *   the row to the turn above it.
  *
- * Nothing draws these turns whole: the inspector reads them flattened, so a
+ * Nothing draws these turns whole: a view reads them flattened, so a
  * difference here is a row count rather than a picture.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {

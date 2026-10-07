@@ -361,21 +361,27 @@ describe('the box', () => {
   });
 
   it('hands an empty box up to the pile, and only an empty one', () => {
-    // The page's own shape: `Session.svelte` renders the pile and the composer
-    // inside one `.composer` div, and this is the container the up-entry
-    // reaches through. The pile next to it is the minimal thing the query
-    // finds - what the walk does once it has the keyboard is Queue's own test.
+    // The page's own shape: the queue rides the chat column and the box sits
+    // in the composer bar, both under the page root - the container the
+    // up-entry reaches across. The pile is the minimal thing the query finds
+    // - what the walk does once it has the keyboard is Queue's own test.
     const shell = document.createElement('div');
-    shell.className = 'composer';
+    shell.className = 'app';
+    const column = document.createElement('div');
+    column.className = 'chat';
     const pile = document.createElement('div');
     pile.className = 'pile';
     const list = document.createElement('div');
     list.setAttribute('role', 'listbox');
     list.tabIndex = -1;
     pile.append(list);
-    shell.append(pile);
+    column.append(pile);
+    shell.append(column);
+    const bar = document.createElement('div');
+    bar.className = 'composer';
     const target = document.createElement('div');
-    shell.append(target);
+    bar.append(target);
+    shell.append(bar);
     document.body.append(shell);
     app = mount(Harness, { target, props: { wire: wire(), initial: {}, dictation: false } });
     flushSync();
