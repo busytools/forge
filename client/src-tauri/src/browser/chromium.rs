@@ -829,9 +829,11 @@ mod tests {
 
         let default = dir.path().join("Default");
         std::fs::create_dir_all(default.join("Sessions")).expect("a Default profile");
-        std::fs::write(default.join("Sessions/Session_1"), b"last session").expect("a session");
-        std::fs::write(default.join("Current Session"), b"current").expect("a current session");
-        std::fs::write(default.join("Last Tabs"), b"tabs").expect("last tabs");
+        // Every entry the clearing covers, or a new one added without a
+        // write here is one nothing checks.
+        for stale in ["Sessions/Session_1", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+            std::fs::write(default.join(stale), b"stale").unwrap_or_else(|why| panic!("{stale}: {why}"));
+        }
         let prefs = default.join("Preferences");
         std::fs::write(
             &prefs,
@@ -841,9 +843,9 @@ mod tests {
 
         fresh_session(dir.path());
 
-        assert!(!default.join("Sessions").exists(), "the session data is gone");
-        assert!(!default.join("Current Session").exists(), "so is the current one");
-        assert!(!default.join("Last Tabs").exists(), "and the older tab files");
+        for stale in ["Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+            assert!(!default.join(stale).exists(), "{stale} is cleared");
+        }
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&prefs).expect("prefs read"))
                 .expect("prefs are JSON");

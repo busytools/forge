@@ -64,15 +64,12 @@ pub fn run() {
             restart_app
         ],
     );
+    // The iOS arm is desktop-less too, and it registers nothing: the
+    // browser's set stays off there for the Android arm's own reason - no
+    // host exists to serve an ask - and the update commands are the Kotlin
+    // plugin's, which is Android's own.
     #[cfg(not(desktop))]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        browser::browser_call,
-        browser::browser_profile_close,
-        browser::browser_profiles,
-        browser::browser_show,
-        browser::browser_hide,
-        browser::browser_used
-    ]);
+    let builder = builder;
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
     // the Android arm carries every command the desktop arm does, and the

@@ -48,13 +48,30 @@ fi
 # The browser dies by PORT, never by a process-name pattern: a pattern would
 # reach a browser another session launched. The host names its port in the
 # very line the check above reads.
+#
+# **And only when this run LAUNCHED it.** A run that merely ATTACHED to a
+# browser already up (one a previous run left detached) must not kill it:
+# measured 2026-10-07, a smoke run killed a reused shared browser. A browser
+# younger than this run's own elapsed time is the one this run started.
 PORT=$(sed -n 's/.*the browser is up on port \([0-9][0-9]*\).*/\1/p' "$LOG" | head -1)
 kill -9 "$PID" 2>/dev/null
+etime_seconds() {
+    awk -F'[-:]' -v when="$1" '{
+        if (NF == 2) print $1 * 60 + $2;
+        else if (NF == 3) print $1 * 3600 + $2 * 60 + $3;
+        else print $1 * 86400 + $2 * 3600 + $3 * 60 + $4;
+    }' <<< "$1"
+}
+RUN_SECS=$(etime_seconds "$(ps -p $$ -o etime= | tr -d ' ')")
 if [ -n "$PORT" ]; then
-    BROWSE_PIDS=$(lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$BROWSE_PIDS" ]; then
-        kill -9 $BROWSE_PIDS 2>/dev/null
-    fi
+    for browse in $(lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true); do
+        BROWSE_SECS=$(etime_seconds "$(ps -p "$browse" -o etime= | tr -d ' ')")
+        if [ -n "$BROWSE_SECS" ] && [ "$BROWSE_SECS" -le "$((RUN_SECS + 2))" ]; then
+            kill -9 "$browse" 2>/dev/null
+        else
+            echo "left alone: the browser on $PORT (pid $browse) was up before this run (browser ${BROWSE_SECS:-?}s, run ${RUN_SECS:-?}s)"
+        fi
+    done
 fi
 sleep 1
 if [ -n "$FAILED" ]; then

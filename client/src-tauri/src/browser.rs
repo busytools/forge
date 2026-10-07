@@ -181,14 +181,16 @@ impl BrowserHost {
             return Err(refusal);
         }
         let paths = self.paths.clone()?;
-        // **The browser has been driven**, which the strip's row draws: a
-        // session's call is the only way a browser of this client's is used.
-        self.used.store(true, std::sync::atomic::Ordering::Release);
         let node = driver::node_path(&paths.stack);
         let cli = driver::cli_path(&paths.stack);
         match profile {
             None => {
-                let active = self.browser_for(&paths, &paths.user_data).await?;
+                let active = self.browser_for(&paths.user_data).await?;
+                // **The browser has been driven**, which the strip's row
+                // draws: a session's call is the only way a browser of this
+                // client's is used. Set after the profile is resolved, so a
+                // refused call never lights the mark.
+                self.used.store(true, std::sync::atomic::Ordering::Release);
                 let endpoint = format!("http://127.0.0.1:{}", active.port);
                 let shared = self.shared_profile().await;
                 let start = DriverStart {
@@ -205,7 +207,8 @@ impl BrowserHost {
             }
             Some(name) => {
                 let named = self.named_profile(seat, &name).await?;
-                let active = self.browser_for(&paths, &named.dir).await?;
+                let active = self.browser_for(&named.dir).await?;
+                self.used.store(true, std::sync::atomic::Ordering::Release);
                 let endpoint = format!("http://127.0.0.1:{}", active.port);
                 let start = DriverStart {
                     node: &node,
@@ -250,7 +253,6 @@ impl BrowserHost {
     /// The profile's BROWSER goes with its name: the next call relaunches it
     /// over the same directory, so a close ends the run and never the logins.
     pub async fn close(&self, name: &str) -> Result<(), String> {
-        self.paths.clone()?;
         let entry = {
             let named = self.named.lock().await;
             let Some(entry) = named.get(name).map(Arc::clone) else {
@@ -276,7 +278,7 @@ impl BrowserHost {
     /// must reap it (a test that launched it) can; the app ignores both.
     pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
-        self.browser_for(&paths, &paths.user_data).await
+        self.browser_for(&paths.user_data).await
     }
 
     /// One profile's live browser, launched when nothing is up: the shared
@@ -289,11 +291,7 @@ impl BrowserHost {
     /// view (see `chromium::show` for how the person sees it). The launch
     /// lock serializes across every profile: one launch at a time, whichever
     /// directory it is for.
-    async fn browser_for(
-        &self,
-        _paths: &StackPaths,
-        user_data: &Path,
-    ) -> Result<chromium::ActivePort, String> {
+    async fn browser_for(&self, user_data: &Path) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
         let binary = chromium::browser_binary()?;
         chromium::ensure(&binary, user_data).await
@@ -371,7 +369,6 @@ impl BrowserHost {
 
     /// Whether a session has driven this client's browser since it came up.
     pub async fn used(&self) -> Result<bool, String> {
-        self.paths.clone()?;
         Ok(self.used.load(std::sync::atomic::Ordering::Acquire))
     }
 
