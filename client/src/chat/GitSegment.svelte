@@ -165,6 +165,30 @@
              worktree this is before reading what is in it. -->
         <div class="sg-head">{strip.head}</div>
 
+        {#if strip.pr !== null}
+          <!-- A real link, because the PR is a place: the row is the one
+               thing in this panel with somewhere to go - and it sits at the
+               TOP, where a long chain cannot bury it below the scroll. -->
+          <a
+            class="sg-it"
+            href={strip.pr.url}
+            target="_blank"
+            rel="noreferrer"
+            onfocusout={release}
+            onkeydown={(event) => {
+              if (event.key !== 'Escape') return;
+              toToggle();
+              open = false;
+            }}
+          >
+            <span class="nm">{`PR #${strip.pr.number}`}</span>
+            <span class="n">{strip.pr.draft ? 'draft' : 'open'}</span>
+          </a>
+          {#if strip.pr.closes !== ''}
+            <div class="sg-sub">{`closes ${strip.pr.closes}`}</div>
+          {/if}
+        {/if}
+
         {#if strip.ahead !== null}
           {@const said = `${strip.ahead.count} commit${strip.ahead.count === 1 ? '' : 's'}`}
           <div class="sg-head">
@@ -247,29 +271,6 @@
               </div>
             {/if}
           {/each}
-        {/if}
-
-        {#if strip.pr !== null}
-          <!-- A real link, because the PR is a place: the row is the one
-               thing in this panel with somewhere to go. -->
-          <a
-            class="sg-it"
-            href={strip.pr.url}
-            target="_blank"
-            rel="noreferrer"
-            onfocusout={release}
-            onkeydown={(event) => {
-              if (event.key !== 'Escape') return;
-              toToggle();
-              open = false;
-            }}
-          >
-            <span class="nm">{`PR #${strip.pr.number}`}</span>
-            <span class="n">{strip.pr.draft ? 'draft' : 'open'}</span>
-          </a>
-          {#if strip.pr.closes !== ''}
-            <div class="sg-sub">{`closes ${strip.pr.closes}`}</div>
-          {/if}
         {/if}
 
         {#if strip.gate !== null}

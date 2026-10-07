@@ -243,24 +243,31 @@ describe("the tree row's interaction state machine", () => {
       'uncommitted \u{b7} 2 files \u{b7} +15 -4',
     ]);
 
-    // The uncommitted rows lead and the chain follows: a reader opens at the
-    // top and reads down from the present.
-    expect(rows(), 'two files, two commits and the pull request').toHaveLength(5);
+    // The PR leads, the uncommitted rows follow and the chain closes: a
+    // reader opens at the top and reads down from the present, and a long
+    // chain cannot bury the PR below the scroll.
+    expect(rows(), 'the pull request, two files and two commits').toHaveLength(5);
+    const anchorRow = document.querySelector('a.sg-it');
     expect(
-      rows()[0]?.querySelector('.fm')?.textContent?.trim(),
+      (anchorRow?.compareDocumentPosition(rows()[1] as Node) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      'the PR row did not lead the list',
+    ).not.toBe(0);
+    expect(
+      rows()[1]?.querySelector('.fm')?.textContent?.trim(),
       'a file wears the mark its status maps to',
     ).toBe('M');
-    expect(rows()[0]?.querySelector('.nm')?.textContent?.trim()).toBe('client/src/lib.rs');
-    expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('+12 -4');
-    expect(rows()[1]?.querySelector('.fm')?.textContent?.trim()).toBe('A');
+    expect(rows()[1]?.querySelector('.nm')?.textContent?.trim()).toBe('client/src/lib.rs');
+    expect(rows()[1]?.querySelector('.n')?.textContent?.trim()).toBe('+12 -4');
+    expect(rows()[2]?.querySelector('.fm')?.textContent?.trim()).toBe('A');
     expect(
-      rows()[2]?.querySelector('.sha')?.textContent?.trim(),
+      rows()[3]?.querySelector('.sha')?.textContent?.trim(),
       'the chain follows, newest first, each with its sha',
     ).toBe('a1b2c3d');
-    expect(rows()[2]?.querySelector('.nm')?.textContent?.trim()).toBe('the first commit');
-    expect(rows()[2]?.querySelector('.n')?.textContent?.trim(), 'and when it landed').toBe('2h');
-    expect(rows()[3]?.querySelector('.sha')?.textContent?.trim()).toBe('d4e5f6a');
-    expect(rows()[3]?.querySelector('.n')?.textContent?.trim()).toBe('3d');
+    expect(rows()[3]?.querySelector('.nm')?.textContent?.trim()).toBe('the first commit');
+    expect(rows()[3]?.querySelector('.n')?.textContent?.trim(), 'and when it landed').toBe('2h');
+    expect(rows()[4]?.querySelector('.sha')?.textContent?.trim()).toBe('d4e5f6a');
+    expect(rows()[4]?.querySelector('.n')?.textContent?.trim()).toBe('3d');
     expect(
       document.querySelector('a.sg-it')?.textContent?.replace(/\s+/g, ' ').trim(),
       'the pull request states its own number and state',
@@ -274,7 +281,7 @@ describe("the tree row's interaction state machine", () => {
 
     // A file row has no destination yet, so picking it closes the list; a
     // commit row reveals instead, pinned in its own test above.
-    rows()[0]?.click();
+    rows()[1]?.click();
     flushSync();
     expect(list(), 'the pick closes the list').toBeNull();
   });
