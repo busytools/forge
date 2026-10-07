@@ -96,13 +96,13 @@ knowing before changing them:
   from the shell and never from a page opened outside it, because an ask
   routed to a client that cannot serve it arrives as a session's tool call
   failing.
-- **A named profile is a driver of its own.** Upstream multiplexes nothing:
-  attached to a CDP endpoint it drives the browser's own context unless
-  `--isolated` makes it create one. So `profile: "name"` on a tool call picks
-  a separate driver, owned by the session that opened it (another session is
-  refused by name until it is released) and saved after every call - cookies
-  into its storage file, open tab URLs beside it - so opening it again reopens
-  what it had.
+- **A named profile is a browser of its own.** `profile: "name"` on a tool
+  call launches (or attaches to) a browser on its OWN data directory, and the
+  driver attaches to it exactly as it attaches to the shared one. Logins,
+  cookies and sessions persist natively, the session that opened it owns it
+  (another session is refused by name until it is released), and a hand-off
+  naming it raises THAT profile's window on THAT profile's page - a CAPTCHA
+  solved in the right session, not a lookalike in the wrong one.
 
 `client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
 driver, `browser_navigate` and `browser_snapshot` - against the vendored

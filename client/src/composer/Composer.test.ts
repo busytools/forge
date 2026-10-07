@@ -4183,6 +4183,12 @@ describe('the dock', () => {
     // answer is what takes it down. This line was the live bug's fix and
     // nothing pinned it.
     expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1);
+    // **The hand-off's own profile, not the shared one**: lowering the wrong
+    // window would leave the person's browser up while the answer said done.
+    expect(
+      hideBrowser,
+      "and it is that hand-off's profile that comes down",
+    ).toHaveBeenCalledWith('job-hunt');
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
@@ -4280,7 +4286,7 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledTimes(1),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith('job-hunt'),
     );
   });
 

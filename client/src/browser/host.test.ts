@@ -52,10 +52,20 @@ describe('the shell command names', () => {
     });
 
     await showBrowser();
-    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show');
+    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show', { profile: null });
+
+    await showBrowser('hunt');
+    expect(invoke, 'a named raise names its profile').toHaveBeenLastCalledWith('browser_show', {
+      profile: 'hunt',
+    });
 
     await hideBrowser();
-    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide');
+    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide', { profile: null });
+
+    await hideBrowser('hunt');
+    expect(invoke, 'a named lower names its profile').toHaveBeenLastCalledWith('browser_hide', {
+      profile: 'hunt',
+    });
 
     await browserUsed();
     expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');

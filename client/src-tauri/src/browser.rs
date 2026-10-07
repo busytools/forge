@@ -2,13 +2,15 @@
 //! profile and the drivers, and answers the asks a session's browser tools
 //! send over the socket.
 //!
-//! **One browser, one driver for the shared context, one per named
-//! profile**, and the browser outlives the client: it is launched detached
+//! **One shared browser for every session, and a browser of its own per
+//! named profile**, and each outlives the client: it is launched detached
 //! against a data directory under the app-support directory, so logins and
 //! cookies survive a client restart and a forge restart touches nothing here
-//! (spec section 3). The browser's own context is shared by every session; a
-//! NAMED profile is a driver of its own over the same browser, owned by the
-//! session that opened it and kept in [`profiles`].
+//! (spec section 3). The shared browser is driven by every session that
+//! names no profile; a NAMED profile is a browser and a data directory of
+//! its own, owned by the session that opened it and kept in [`profiles`] -
+//! which is what makes a hand-off's Open able to raise that profile's own
+//! window on its own page.
 //!
 //! The pieces:
 //! - [`chromium`] - where the machine's browser is found, how it is launched,
@@ -170,15 +172,15 @@ impl BrowserHost {
             return Err(refusal);
         }
         let paths = self.paths.clone()?;
-        let active = self.active_browser(&paths).await?;
         // **The browser has been driven**, which the strip's row draws: a
-        // session's call is the only way this client's browser is used.
+        // session's call is the only way a browser of this client's is used.
         self.used.store(true, std::sync::atomic::Ordering::Release);
-        let endpoint = format!("http://127.0.0.1:{}", active.port);
         let node = driver::node_path(&paths.stack);
         let cli = driver::cli_path(&paths.stack);
         match profile {
             None => {
+                let active = self.browser_for(&paths, &paths.user_data).await?;
+                let endpoint = format!("http://127.0.0.1:{}", active.port);
                 let shared = self.shared_profile().await;
                 let start = DriverStart {
                     node: &node,
@@ -186,26 +188,25 @@ impl BrowserHost {
                     endpoint: &endpoint,
                     identity: &active.path,
                     output: &paths.output,
-                    storage: None,
-                    tabs: None,
                 };
                 let outcome = shared.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&paths, &shared, active.port, outcome.is_err()).await;
+                self.forget_a_dead_browser(&paths.user_data, &shared, active.port, outcome.is_err())
+                    .await;
                 outcome
             }
             Some(name) => {
                 let named = self.named_profile(seat, &name).await?;
+                let active = self.browser_for(&paths, &named.dir).await?;
+                let endpoint = format!("http://127.0.0.1:{}", active.port);
                 let start = DriverStart {
                     node: &node,
                     cli: &cli,
                     endpoint: &endpoint,
                     identity: &active.path,
                     output: &paths.output,
-                    storage: Some(&named.storage),
-                    tabs: Some(&named.tabs),
                 };
-                let outcome = named.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&paths, &named.profile, active.port, outcome.is_err())
+                let outcome = named.profile.call(&start, tool, args).await;
+                self.forget_a_dead_browser(&named.dir, &named.profile, active.port, outcome.is_err())
                     .await;
                 outcome
             }
@@ -220,12 +221,12 @@ impl BrowserHost {
     /// a relaunched browser. Bounded by the probe's own read timeout.
     async fn forget_a_dead_browser(
         &self,
-        paths: &StackPaths,
+        user_data: &Path,
         profile: &Profile,
         port: u16,
         failed: bool,
     ) {
-        if !failed || chromium::answers_as(&paths.user_data, port).await {
+        if !failed || chromium::answers_as(user_data, port).await {
             return;
         }
         profile.drop_driver().await;
@@ -237,13 +238,10 @@ impl BrowserHost {
     /// **The human's door, and no seat.** A session drives only the profile it
     /// opened - the verdict refuses the rest - but the row is the person's, and
     /// a profile whose owning session is GONE is exactly what this is for.
-    /// **The save lands before the name is free, and the map's lock is not
-    /// held across it**: a save drives the browser and answers on a call's own
-    /// clock, while the lock is only for the map. The name goes only once the
-    /// save landed - a close that could not persist keeps the profile, so a
-    /// failed save is not also a lost name.
+    /// The profile's BROWSER goes with its name: the next call relaunches it
+    /// over the same directory, so a close ends the run and never the logins.
     pub async fn close(&self, name: &str) -> Result<(), String> {
-        let paths = self.paths.clone()?;
+        self.paths.clone()?;
         let entry = {
             let named = self.named.lock().await;
             let Some(entry) = named.get(name).map(Arc::clone) else {
@@ -251,28 +249,9 @@ impl BrowserHost {
             };
             entry
         };
-        let active = self.active_browser(&paths).await?;
-        let endpoint = format!("http://127.0.0.1:{}", active.port);
-        let node = driver::node_path(&paths.stack);
-        let cli = driver::cli_path(&paths.stack);
-        let start = DriverStart {
-            node: &node,
-            cli: &cli,
-            endpoint: &endpoint,
-            identity: &active.path,
-            output: &paths.output,
-            storage: Some(&entry.storage),
-            tabs: Some(&entry.tabs),
-        };
-        entry.save(&start).await?;
-        // Compared before it goes: a name that was re-opened while the save
-        // ran belongs to the new profile, not to what was just saved.
+        chromium::hide(&entry.dir).await;
         let mut named = self.named.lock().await;
-        if let Some(held) = named.get(name)
-            && Arc::ptr_eq(held, &entry)
-        {
-            named.remove(name);
-        }
+        named.remove(name);
         Ok(())
     }
 
@@ -288,20 +267,27 @@ impl BrowserHost {
     /// must reap it (a test that launched it) can; the app ignores both.
     pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
-        self.active_browser(&paths).await
+        self.browser_for(&paths, &paths.user_data).await
     }
 
-    /// The live browser, launched when nothing is up.
-    async fn active_browser(&self, paths: &StackPaths) -> Result<chromium::ActivePort, String> {
-        // **The machine's own browser, headless, one browser for the client.**
-        // CEF was measured out on 2026-10-07: its windowed runtime drops
-        // CDP-dispatched input whenever the window is not frontmost, and the
-        // pinned driver's click wedges on its target bookkeeping - full
-        // playwright parity wins over the native view (see `chromium::show`
-        // for how the person sees it).
+    /// One profile's live browser, launched when nothing is up: the shared
+    /// profile's directory for most calls, a named profile's own for its.
+    ///
+    /// **The machine's own browser, headless.** CEF was measured out on
+    /// 2026-10-07: its windowed runtime drops CDP-dispatched input whenever
+    /// the window is not frontmost, and the pinned driver's click wedges on
+    /// its target bookkeeping - full playwright parity wins over the native
+    /// view (see `chromium::show` for how the person sees it). The launch
+    /// lock serializes across every profile: one launch at a time, whichever
+    /// directory it is for.
+    async fn browser_for(
+        &self,
+        _paths: &StackPaths,
+        user_data: &Path,
+    ) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
         let binary = chromium::browser_binary()?;
-        chromium::ensure(&binary, &paths.user_data).await
+        chromium::ensure(&binary, user_data).await
     }
 
     /// The named profiles this host holds, oldest name first, for its own
@@ -322,26 +308,41 @@ impl BrowserHost {
         rows
     }
 
-    /// Bring the browser up VISIBLY for a hand-off's Open: the person's own
-    /// browser window, over the same profile the agents drive.
+    /// Bring the browser up VISIBLY for a hand-off's Open or the strip's
+    /// show: **the profile the call names, or the shared one** - a profile's
+    /// window is raised over its own browser, on its own page, which is what
+    /// a CAPTCHA hand-off on a named profile needs.
     ///
     /// Serialized with every other launch, so a show racing a first call
     /// cannot leave two browsers on one profile. This is the client's own
     /// act and answers the core nothing: the hand-off's answer is Done or
     /// Not now, and never the window itself.
-    pub async fn show(&self) -> Result<chromium::ActivePort, String> {
+    pub async fn show(&self, profile: Option<&str>) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
+        let dir = match profile {
+            Some(name) => {
+                if let Some(refusal) = profiles::name_refusal(name) {
+                    return Err(refusal);
+                }
+                paths.profiles.join(name)
+            }
+            None => paths.user_data,
+        };
         let _launching = self.launch.lock().await;
         let binary = chromium::browser_binary()?;
-        chromium::show(&binary, &paths.user_data).await
+        chromium::show(&binary, &dir).await
     }
 
     /// Take the window back down: the browser closes, and the next agent
-    /// call relaunches it headless over the same profile. **The hand-off is
+    /// call relaunches it headless over the same directory. **The hand-off is
     /// not answered by this** - Done or Not now is.
-    pub async fn hide(&self) -> Result<(), String> {
+    pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
-        chromium::hide(&paths.user_data).await;
+        let dir = match profile {
+            Some(name) => paths.profiles.join(name),
+            None => paths.user_data,
+        };
+        chromium::hide(&dir).await;
         Ok(())
     }
 
@@ -448,15 +449,21 @@ pub async fn browser_call(
 /// the core: the window is the client's act, and Done or Not now is the
 /// answer.
 #[tauri::command]
-pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
-    host.show().await.map(|_| ())
+pub async fn browser_show(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    profile: Option<String>,
+) -> Result<(), String> {
+    host.show(profile.as_deref()).await.map(|_| ())
 }
 
-/// Take the hand-off's window back down; the next agent call relaunches the
-/// browser headless over the same profile.
+/// Take the hand-off's window back down; the next agent call relaunches that
+/// profile's browser headless over the same directory.
 #[tauri::command]
-pub async fn browser_hide(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
-    host.hide().await
+pub async fn browser_hide(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    profile: Option<String>,
+) -> Result<(), String> {
+    host.hide(profile.as_deref()).await
 }
 
 /// Whether a session has driven this client's browser, for the strip's mark.

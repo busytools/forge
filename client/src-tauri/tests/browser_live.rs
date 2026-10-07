@@ -281,7 +281,6 @@ async fn the_surface_matches_the_drivers_own_tools_list() {
         &forge_client::browser::driver::cli_path(&paths.stack),
         &endpoint,
         &paths.output,
-        None,
     )
     .await
     {

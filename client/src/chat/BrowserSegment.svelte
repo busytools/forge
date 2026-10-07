@@ -237,8 +237,8 @@
    * the sessions drive. No session is answering a question here - it is the
    * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
    */
-  function show(): void {
-    void showBrowser().then((reason) => {
+  function show(profile: string | null = null): void {
+    void showBrowser(profile).then((reason) => {
       if (reason !== null) {
         // A read in flight was issued before this failure and must not
         // erase it when it lands.
@@ -335,7 +335,7 @@
             type="button"
             class="bz-take bz-show"
             aria-label="show the browser"
-            onclick={show}
+            onclick={() => show(null)}
             onkeydown={esc}
           >
             show
@@ -352,6 +352,18 @@
           {/if}
           <span class="nm">{row.name}</span>
           <span class="tx">{row.owner}{row.running ? '' : ' · its driver is gone'}</span>
+          <!-- **The row's own door to its own browser**, the shared row's
+               show one level down: this profile's window over this
+               profile's browser, on this profile's page. -->
+          <button
+            type="button"
+            class="bz-take bz-show"
+            aria-label="show the {row.name} profile's browser"
+            onclick={() => show(row.name)}
+            onkeydown={esc}
+          >
+            show
+          </button>
           <button
             type="button"
             class="bz-take bz-close"

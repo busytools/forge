@@ -535,7 +535,10 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    void showBrowser().then((why) => {
+    // **The hand-off's own profile, when it named one**: the window comes up
+    // over THAT profile's browser, on THAT profile's page - the CAPTCHA
+    // lands in the session the person needs to act in.
+    void showBrowser(ask.request.profile).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;
@@ -550,9 +553,13 @@
   function handOff(done: boolean): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
+    // **Read before the answer.** Answering clears the dock's own ask, so a
+    // profile read after the command crosses throws and the window never
+    // comes down.
+    const profile = ask.request.profile;
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
-    void hideBrowser();
+    void hideBrowser(profile);
   }
 
   function move(step: number): void {

@@ -116,7 +116,9 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 /**
  * Bring the browser up visibly, which is what a hand-off's Open asks for:
  * the person's own browser window over the profile the agents drive
- * (headless until then).
+ * (headless until then). **`profile` names which one**: `null` is the
+ * shared profile, a name is that profile's own window over its own browser
+ * - the CAPTCHA in the right session, not a lookalike in the wrong one.
  *
  * **Answers why it could not be raised, or `null` when it was.** The shell
  * carries the actionable sentence - a machine with no browser to drive is
@@ -125,11 +127,11 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
  * A dock that claimed a window was up over a raise that never happened
  * would have the person press Done and tell the session they acted.
  */
-export async function showBrowser(): Promise<string | null> {
+export async function showBrowser(profile: string | null = null): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show');
+    await invoke('browser_show', { profile });
     return null;
   } catch (why) {
     return whyText(why);
@@ -142,11 +144,11 @@ export async function showBrowser(): Promise<string | null> {
  * itself is answered separately** - Done or Not now - and answering it
  * lowers the window, so the cycle opens and closes as one act.
  */
-export async function hideBrowser(): Promise<void> {
+export async function hideBrowser(profile: string | null = null): Promise<void> {
   if (!canHost()) return;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_hide');
+    await invoke('browser_hide', { profile });
   } catch {
     // A window that will not come down is the shell's to say; nothing here
     // can act on it.

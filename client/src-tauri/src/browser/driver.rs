@@ -166,24 +166,6 @@ impl Driver {
     }
 }
 
-/// The value a `browser_run_code_unsafe` snippet returned, read out of the
-/// driver's report.
-///
-/// Upstream reports a snippet's return value as JSON on the line after the
-/// report's `### Result` marker, so a snippet returning a string arrives
-/// quoted and escaped. Anything else - no marker, a value that is not a
-/// string, no text at all - is `None`: a save that cannot read its own report
-/// fails where it is seen rather than writing a guess.
-pub(super) fn reported_value(parts: &[ReplyPart]) -> Option<String> {
-    let text = parts.iter().find_map(|part| match part {
-        ReplyPart::Text { text } => Some(text.as_str()),
-        ReplyPart::Image { .. } => None,
-    })?;
-    let after = text.split_once("### Result")?.1;
-    let value = after.lines().find(|line| !line.trim().is_empty())?.trim();
-    serde_json::from_str::<String>(value).ok()
-}
-
 /// Map one MCP result onto the parts the socket carries.
 ///
 /// **A block this host cannot carry is an error rather than a silence.** The
@@ -270,41 +252,6 @@ mod tests {
         )]);
         let refused = parts_of(&result).expect_err("an audio block is not carried");
         assert!(refused.contains("cannot carry"), "{refused}");
-    }
-
-    /// A snippet's return value arrives as JSON on the line after the report's
-    /// `### Result` marker, so a returned string comes back quoted and
-    /// escaped. The report here is the live shape of one.
-    #[test]
-    fn a_snippets_value_is_read_out_of_the_drivers_report() {
-        let report = "### Result\n\"\\\"set\\\"\"\n### Ran Playwright code\n```js\n\
-                      await (async (page) => 'set')(page);\n```";
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: report.to_owned() }]),
-            Some("\"set\"".to_owned()),
-        );
-    }
-
-    /// Anything a save cannot read is `None`: no marker, a value that is not a
-    /// string, or an answer that carries no text at all. A save that guessed
-    /// here would persist the guess over the context's real tabs.
-    #[test]
-    fn a_report_without_a_readable_value_is_none() {
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: "just words, no marker".to_owned() }]),
-            None,
-        );
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: "### Result\n42\n".to_owned() }]),
-            None
-        );
-        assert_eq!(
-            reported_value(&[ReplyPart::Image {
-                mime_type: "image/png".to_owned(),
-                data_base64: "AP8Q".to_owned(),
-            }]),
-            None,
-        );
     }
 
     /// The driver's own paths are the vendoring's layout, pinned by name.
