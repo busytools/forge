@@ -152,6 +152,7 @@ describe('the session shell as it draws', () => {
     expect(body, 'a real anchor').toContain('<a class="needchip"');
     expect(body, 'the count in its label').toContain('aria-label="1 seat needs you"');
     expect(body, 'the mark as its face').toContain('ch-mk');
+    expect(body, 'and the needs shape beside the count').toContain('dot needs ch-tri');
     expect(body).not.toContain('aria-label="inspector"');
   });
 

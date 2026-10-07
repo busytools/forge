@@ -485,8 +485,10 @@
         {#if chip.state === 'none'}
           <span class="ch-w">projects</span>
         {:else if chip.state === 'failed'}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
           <Icon name="x" class="ch-ic" />
         {:else}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
           <span class="ch-n">{chip.count}</span>
         {/if}
       </a>
