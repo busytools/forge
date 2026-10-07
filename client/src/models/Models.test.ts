@@ -1289,6 +1289,7 @@ describe('the models route as it draws', () => {
           scored: 4,
           beyond: 6,
           tried: 3,
+          pick: false,
           tier: 'consensus',
         },
       ],
@@ -1400,6 +1401,6 @@ describe('the models route as it draws', () => {
       dictate_uninstall: { file: 'a-norm-a-Q4_K_M.gguf' },
     });
     expect(host.textContent).toContain('read best of the');
-    expect(host.textContent).toContain('most-downloaded cleanup candidates');
+    expect(host.textContent).toContain('most-downloaded cleanup candidate');
   });
 });

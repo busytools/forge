@@ -780,9 +780,53 @@ describe('the sweep', () => {
     expect(cleanup.tier).toBe('consensus');
 
     // The verdict may never say a bare best: the scope carries what it saw.
-    expect(sweepScope(cleanup)).toContain('1 most-downloaded cleanup candidates');
+    expect(sweepScope(cleanup)).toContain('the most-downloaded cleanup candidate');
     expect(sweepScope(cleanup)).toContain('your takes, 12 clips');
     expect(sweepHeadline(cleanup)).toContain('a-norm-a-Q4_K_M.gguf read better than');
+  });
+
+  /**
+   * A sweep with nothing proposed scores the model in use alone, and its
+   * scope says that rather than claiming a pick the plan never carried.
+   */
+  it('says when the feed proposed nothing to score against', () => {
+    const wire: DictateModelsWire = { ...modelsWire, updates: [], rows: [] };
+    const plan = sweepPlan(wire);
+    wire.results = [
+      benchResult('cohere-transcribe-03-2026-Q4_K_M.gguf', 'transcribing', 'now', { wer: 0.09 }),
+    ];
+
+    const transcribing = sweepVerdicts(wire, plan).find(
+      (verdict) => verdict.role === 'transcribing',
+    );
+    if (transcribing === undefined) throw new Error('the transcribing verdict did not form');
+
+    expect(transcribing.pick).toBe(false);
+    expect(transcribing.scored).toBe(1);
+    expect(sweepScope(transcribing)).toContain('only the model you run');
+    expect(sweepScope(transcribing)).toContain('nothing else was proposed');
+    expect(sweepHeadline(transcribing)).toBe(
+      'the transcribing model you run read best of the 1 scored',
+    );
+  });
+
+  /** With a pick in the plan, the scope names it - the other half of the rule. */
+  it('names the pick in the scope when one was proposed', () => {
+    const wire: DictateModelsWire = { ...modelsWire, rows: [] };
+    const plan = sweepPlan(wire);
+    wire.results = [
+      benchResult('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', 'transcribing', 'now', {
+        wer: 0.06,
+      }),
+    ];
+
+    const transcribing = sweepVerdicts(wire, plan).find(
+      (verdict) => verdict.role === 'transcribing',
+    );
+    if (transcribing === undefined) throw new Error('the transcribing verdict did not form');
+
+    expect(transcribing.pick).toBe(true);
+    expect(sweepScope(transcribing)).toContain("the feed's own pick");
   });
 
   /** On the best is its own verdict, and it says so. */

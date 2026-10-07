@@ -718,6 +718,10 @@ export interface SweepVerdict {
   beyond: number;
   /** The candidates this role's sweep ran - the scope's own number. */
   tried: number;
+  /** Whether the plan carried a feed pick for this role, which the scope has
+   * to be able to say: a sweep with nothing proposed scored the model in use
+   * alone, and calling that "the feed's own pick" is a claim nobody made. */
+  pick: boolean;
   tier: BenchTier;
 }
 
@@ -758,6 +762,7 @@ export function sweepVerdicts(wire: DictateModelsWire, plan: SweepPlan): SweepVe
       scored: scored.length,
       beyond: role === 'cleanup' ? plan.beyond : 0,
       tried: plan.runs.filter((run) => run.role === role && run.why === 'candidate').length,
+      pick: plan.runs.some((run) => run.role === role && run.why === 'pick'),
       tier: plan.tier,
     });
   }
@@ -778,10 +783,18 @@ export function sweepScope(verdict: SweepVerdict): string {
   const clips = verdict.best.result.corpus.clips;
   const corpus = verdict.tier === 'read_aloud' ? 'your read-aloud set' : 'your takes';
   const where = `${corpus}, ${clips} clips`;
-  if (verdict.role !== 'cleanup') return `the feed's own pick, scored on ${where}`;
+  if (verdict.role !== 'cleanup') {
+    return verdict.pick
+      ? `the feed's own pick, scored on ${where}`
+      : `only the model you run, scored on ${where} - nothing else was proposed`;
+  }
+  const tried =
+    verdict.tried === 1
+      ? 'the most-downloaded cleanup candidate'
+      : `the ${verdict.tried} most-downloaded cleanup candidates`;
   const left =
     verdict.beyond === 0 ? '' : ` \u{b7} ${verdict.beyond} more candidates were not tried`;
-  return `best of the ${verdict.tried} most-downloaded cleanup candidates, scored on ${where}${left}`;
+  return `best of ${tried}, scored on ${where}${left}`;
 }
 
 /** What switching a role to a variant would cost now: the bytes the sweep
