@@ -31,9 +31,9 @@ A turn that dies on a 5xx the CLI has already retried and given up on is recover
 <details>
 <summary>Auto-continue on the failures the terminal leaves alone</summary>
 
-A failed turn nobody is looking at does not sit until the reader comes back: the core sends the seat one prompt of its own, 5s after the failure, reading `The previous turn failed: <reason>. Continue from where you left off.` - `<reason>` being the CLI's own error strings from the result frame, or its subtype when it carried none. The prompt draws in the chat as the turn the model received, like every other forge-authored turn.
+A failed turn nobody is looking at does not sit until the reader comes back: the core sends the seat one prompt of its own, about 5s after the failure, reading `The previous turn failed: <reason>. Continue from where you left off.` - `<reason>` being the CLI's own error strings from the result frame, or its subtype when it carried none. The prompt draws in the chat as the turn the model received, like every other forge-authored turn.
 
-One prompt per unopened failure, not a ladder: if the continuation itself fails, the seat is not nudged again until the episode ends - you open the seat, or a turn completes. Nothing goes out while you are looking either: a seat a view is holding, or one you have shown since the failure, is yours, which is the same boundary the rail's failure mark clears on. A turn you cancelled yourself records no failure and gets nothing.
+One prompt per unopened failure, not a ladder: if the continuation itself fails, the seat is not nudged again until the episode ends - you open the seat, or a turn completes. Nothing goes out while you are looking either: a seat a view is holding, or one you have shown since the failure, is yours, which is the same boundary the rail's failure mark clears on. That hold is the client's today - a page holds the seat it shows, while the terminal's own session switch does not reach the core yet, so a seat only the terminal has looked at is still nudged. A turn you cancelled yourself records no failure and gets nothing.
 
 </details>
 
