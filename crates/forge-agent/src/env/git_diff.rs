@@ -662,13 +662,29 @@ fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
             let added = added.parse::<u32>().ok()?;
             let removed = removed.parse::<u32>().ok()?;
             Some(GitDiffFile {
-                path: path.to_owned(),
+                path: rename_target(path),
                 added,
                 removed,
                 status: forge_primitives::git::FileStatus::Modified,
             })
         })
         .collect()
+}
+
+/// A `--numstat` path resolved to the file's new name: a rename crosses as
+/// `dir/{old => new}.rs`, or `old => new` when the two share no affixes, while
+/// `--name-status` and the diff body both speak the new path alone - so the
+/// merge in [`scan`] needs the same key from every read.
+fn rename_target(path: &str) -> String {
+    let Some((before, after)) = path.split_once(" => ") else {
+        return path.to_owned();
+    };
+    match (before.rfind('{'), after.find('}')) {
+        (Some(open), Some(close)) => {
+            format!("{}{}{}", &before[..open], &after[..close], &after[close + 1..])
+        }
+        _ => after.to_owned(),
+    }
 }
 
 /// One changed path's status against `target`, from
@@ -1237,6 +1253,18 @@ mod tests {
         assert_eq!(parsed[0].removed, 3);
         assert_eq!(parsed[1].added, 5);
         assert_eq!(parsed[1].removed, 0);
+    }
+
+    #[test]
+    fn parse_numstat_resolves_rename_paths_to_the_new_name() {
+        // The forms measured from git: braces when the sides share affixes,
+        // plain `old => new` when they do not. The name-status pass and the
+        // diff body both speak the new path, so the merge needs it here.
+        let raw = "0\t0\tdir/{a.txt => b.txt}\n1\t1\tplain.txt => renamed.txt\n3\t0\tkept.txt\n";
+        let parsed = parse_numstat(raw);
+        assert_eq!(parsed[0].path, "dir/b.txt", "the brace form resolves to the new path");
+        assert_eq!(parsed[1].path, "renamed.txt", "the bare form takes the right side");
+        assert_eq!(parsed[2].path, "kept.txt", "a path without a rename is its own");
     }
 
     #[test]
