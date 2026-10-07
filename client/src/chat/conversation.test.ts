@@ -308,6 +308,35 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * The terminal's failure hints ride the turn's own ending (#1638): the
+   * next steps a plan-limited failure earns, and the line a reader's own
+   * cancel earns.
+   */
+  it('adds the next steps to a plan-limited turn, and the line to a cancel', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      turn_error: {
+        key: LEAD,
+        message: 'Usage limit reached',
+        class: 'plan_limit',
+        terminal_reason: null,
+      },
+    });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the plan-limit next steps are drawn').toContain('Next steps');
+
+    server.update({ turn_cancelled: { key: LEAD } });
+    expect(drawn(), 'and a cancel earns its own line').toContain(
+      'Conversation interrupted. Tell the model how to proceed.',
+    );
+  });
+
+  /**
    * A seat with no turn yet is the ordinary state, and a line that joins the
    * turn it arrived in has nothing to join there - so the core's own line is
    * the one `system` frame that opens a row. Held back, it would be dropped:

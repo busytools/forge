@@ -1288,6 +1288,30 @@ export class Chat {
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       this.heard(false);
       this.refresh();
+      // Two of the terminal's failure hints ride here (#1638), where the
+      // class and the cancel are known: the next steps a plan-limited failure
+      // earns, and the line a reader's own cancel earns. The failure's own
+      // sentence is the fold's, drawn from the record a line above. The
+      // terminal's auth and input-lock hints stay unported: its auth line
+      // names a terminal command the page has a sign-in state for, and
+      // Ctrl+Q is that view's input model.
+      const failed = (update as { turn_error?: { class?: unknown } }).turn_error;
+      if (variant === 'turn_error' && failed?.class === 'plan_limit') {
+        this.append({
+          type: 'system',
+          subtype: 'forge_notice',
+          severity: 'warning',
+          text: 'Turn blocked by account or plan limits. Next steps: wait a few minutes and retry; reduce request size or frequency; check quota/billing for the account or switch plans.',
+        });
+      }
+      if (variant === 'turn_cancelled') {
+        this.append({
+          type: 'system',
+          subtype: 'forge_notice',
+          severity: 'info',
+          text: 'Conversation interrupted. Tell the model how to proceed.',
+        });
+      }
     }
     // The core's own line: a command's answer, or why one did not run. It is
     // drawn here because this store is the conversation the page draws, and the
