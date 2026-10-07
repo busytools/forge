@@ -835,6 +835,9 @@ describe('the projects chip', () => {
       href: '/',
       count: 1,
     });
+    expect(failed.label, 'the failure is not in the accessible name').toBe(
+      '1 seat needs you, one failed',
+    );
 
     const none = chipState(withHome({ agents: [agent('busy')] }));
     expect(none, 'a quiet fleet did not read as the calm word').toEqual({

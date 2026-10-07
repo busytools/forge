@@ -498,6 +498,7 @@ details[open] > summary .arw { transform: rotate(90deg); }
   transition: opacity .18s ease; }
 .app.rail-open:not(.rail-peek) .scrim { opacity: 1; pointer-events: auto; }
 .app main.chat { grid-column: 1; }
+
 /* ---------- the command palette ---------- */
 
 .pal { position: fixed; inset: 0; z-index: 70; }
@@ -546,11 +547,6 @@ details[open] > summary .arw { transform: rotate(90deg); }
   .pal-btn { display: flex; }
   .pal .it { padding: 12px 15px; }
 }
-.rail-tog { display: flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
-  color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
-.rail-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
-.rail-tog svg { width: 16px; height: 16px; display: block; }
 
 .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
   border: 1px solid rgba(34,42,60,.9);
@@ -1429,10 +1425,6 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      than everywhere so a desktop pointer keeps the tighter rows. */
   button, input, select, textarea, details > summary { min-height: 44px; }
 
-  /* The session page's own controls, which are buttons now rather than the
-     spans and labels they were ported from. The rule above is for a control
-     whose own height IS the target; these two are not. */
-  .rail-tog { width: 44px; height: 44px; }
   /* The row's close chip is a live control, and its own box is ~26px wide, so
      it takes the height the rule above gives it and a width to match. */
   .pr .x, .wk .x { min-width: 44px; }
@@ -1444,7 +1436,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    too. */
 @media (pointer: coarse) {
   button, input, select, textarea, details > summary { min-height: 44px; }
-  .rail-tog { width: 44px; height: 44px; }
+  /* The mag door takes both axes, like the chip beside it. */
+  .pal-btn { min-width: 44px; min-height: 44px; }
   /* A row's own link is the finger's target: its box carries the 44, and the
      row grows with it. The rail's rows also stretch the link over the whole
      row - the way the home rows' own rule already stretches theirs - so the

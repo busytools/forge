@@ -157,6 +157,16 @@ describe('the command palette', () => {
     expect(rows(), 'a copy row survived with nothing to copy').toHaveLength(0);
   });
 
+  /** A filter that matches nothing says so rather than drawing an empty box. */
+  it('draws the empty state when nothing matches', () => {
+    draw();
+    type('zzzz');
+    expect(rows(), 'rows survived a filter matching nothing').toHaveLength(0);
+    expect(document.querySelector('.none')?.textContent, 'no empty copy').toContain(
+      'nothing matches',
+    );
+  });
+
   /**
    * **A command reads once**: the label carries its own slash, so the row's
    * mark is the same run glyph every action wears rather than a second

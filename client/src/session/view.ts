@@ -168,6 +168,7 @@ function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
         case 'Spawning':
           return 'starting';
         case 'Sleeping':
+        case 'LoggedOut':
           return 'asleep';
         default:
           return 'idle';
@@ -290,10 +291,18 @@ export function chipState(wire: HomeWire | null): ChipState {
   if (wanting.length === 0) {
     return { state: 'none', count: 0, href: '/', label: 'projects' };
   }
-  const label = wanting.length === 1 ? '1 seat needs you' : `${wanting.length} seats need you`;
+  const said = wanting.length === 1 ? '1 seat needs you' : `${wanting.length} seats need you`;
   if (failed) {
-    return { state: 'failed', count: wanting.length, href: '/', label };
+    // The cross is aria-hidden and the tone is colour alone, so the failure
+    // must reach the accessible name too.
+    return {
+      state: 'failed',
+      count: wanting.length,
+      href: '/',
+      label: `${said}, one failed`,
+    };
   }
+  const label = said;
   const only = wanting[0];
   if (wanting.length === 1 && only !== undefined) {
     return { state: 'one', count: 1, href: hrefForSlot(only.slot), label: '1 seat needs you' };

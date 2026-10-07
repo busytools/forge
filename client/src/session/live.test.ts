@@ -353,10 +353,9 @@ describe('the session page over a socket', () => {
      rows' document order. */
 
   /**
-   * **The rail is summoned now, at every width, and the width decides
-   * nothing.** It is drawn parked off-canvas and slides over when the chip,
-   * Cmd+Left or the palette opens it - never a column, so a page that has
-   * not summoned it owns the full width.
+   * **Below the fold width the rail parks, whatever the preference.** The
+   * column is a wide-page shape; a folded page draws the rail off-canvas
+   * and slides it over when the chip, Cmd+Left or the palette opens it.
    */
   it('keeps the rail parked at every width until it is summoned', async () => {
     matchMediaTo(true);

@@ -100,6 +100,13 @@
     if (event.key === 'Escape') {
       event.preventDefault();
       onclose();
+      return;
+    }
+    if (event.key === 'Tab') {
+      // The dialog is modal, and the input is its only stop: Tab stays on it
+      // rather than walking out to the page behind the scrim.
+      event.preventDefault();
+      field?.focus();
     }
   }
 
@@ -173,7 +180,9 @@
           role="combobox"
           aria-expanded="true"
           aria-controls="pal-rows"
-          aria-activedescendant={cursor >= 0 ? `pal-row-${flat[cursor]?.id ?? ''}` : undefined}
+          aria-activedescendant={flat[cursor] === undefined
+            ? undefined
+            : `pal-row-${flat[cursor]?.id}`}
           autocomplete="off"
           spellcheck="false"
           aria-label="seats and commands"

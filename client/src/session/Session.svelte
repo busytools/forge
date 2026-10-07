@@ -353,7 +353,13 @@
 
   $effect(() => {
     const restore = () => {
-      // Any pop is a navigation: the palette goes with the page it was over.
+      // Any pop is a navigation: the palette goes with the page it was over,
+      // and the keyboard goes back to where it was before the palette took it.
+      if (paletteOpen) {
+        const back = opener;
+        opener = null;
+        if (back !== null && back.isConnected) back.focus();
+      }
       paletteOpen = false;
       const landed = railOnTop(history.state);
       if (landed !== null && landed === closedUnder) {

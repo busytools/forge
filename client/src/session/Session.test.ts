@@ -294,6 +294,7 @@ describe('the header brand as both sheets draw it', () => {
       '.app .rail.left',
       '.app.rail-open .rail.left',
       '.app.rail-static .rail.left',
+      '.pal .grp',
     ]) {
       const app = ruleText(sheet, selector);
       // The denominator: a scan that reaches no rule reports both sheets
