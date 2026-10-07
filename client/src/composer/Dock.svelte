@@ -1,7 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import { showBrowser } from '../browser/host';
+  import { hideBrowser, showBrowser } from '../browser/host';
   import { takeover } from '../browser/takeover.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -557,12 +557,16 @@
     };
   });
 
-  /** A hand-off's answer, which is the only release for its blocked handler. */
+  /** A hand-off's answer, which is the only release for its blocked handler.
+   *  **Answering also lowers the window**: Open raises it, Done or Not now
+   *  takes it down, and the browser relaunches headless on the next call
+   *  (Ved, 2026-10-07: "I said done, but the browser is still open"). */
   function handOff(done: boolean): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
+    void hideBrowser();
   }
 
   function move(step: number): void {

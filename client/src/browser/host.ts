@@ -128,6 +128,23 @@ export async function showBrowser(): Promise<boolean> {
 }
 
 /**
+ * Take the hand-off's window back down: the browser closes, and the next
+ * agent call relaunches it headless over the same profile. **The hand-off
+ * itself is answered separately** - Done or Not now - and answering it
+ * lowers the window, so the cycle opens and closes as one act.
+ */
+export async function hideBrowser(): Promise<void> {
+  if (!canHost()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_hide');
+  } catch {
+    // A window that will not come down is the shell's to say; nothing here
+    // can act on it.
+  }
+}
+
+/**
  * Bring the in-app browser view up over the client's window: the takeover
  * the frames path draws (the surface kept for the platforms whose browsers
  * cannot have a window of their own).
