@@ -1726,6 +1726,13 @@ export function fold(
     // unterminated call: the resumed turn never brings its result, and a fold
     // reading only boundaries leaves the row spinning forever. A call opened
     // after a boundary is one the CLI is still running.
+    //
+    // **One stated divergence from the terminal** (rule 24): its normal
+    // turn-end sweep draws a still-open call COMPLETED, where this settles it
+    // failed. The two can only disagree when a turn ends CLEANLY with a
+    // foreground call unanswered - the interrupted shapes carry an error
+    // result, where both sides already say failed - and failed is the honest
+    // word for a call that never came back.
     const abandoned =
       (failedAt !== null && at < failedAt) || (resultAt !== null && at < resultAt) || ended;
 
