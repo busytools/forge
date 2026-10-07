@@ -99,6 +99,18 @@ function runningOf(data: unknown): boolean {
 }
 
 /**
+ * Whether a connection failure reads as the accounts being rate limited.
+ *
+ * The terminal's own substring rule, ported rather than reinvented: the core
+ * surfaces no typed variant for it, and a false positive costs a recoverable
+ * explainer instead of the raw error.
+ */
+function rateLimitedFailure(message: string): boolean {
+  const held = message.toLowerCase();
+  return held.includes('rate') && held.includes('limit');
+}
+
+/**
  * Whether the core says a turn is running on `slot`, read from the connection's
  * own store.
  *
@@ -1237,9 +1249,38 @@ export class Chat {
     // A process that is gone takes its queue with it: no lifecycle frame is
     // coming for anything it held, so the waits go rather than standing
     // forever. A fresh connect is the same fact from the other side.
-    if (variant === 'connection_failed' || variant === 'connected') {
+    if (variant === 'connected') {
       this.waiting.clear();
       this.drained.clear();
+      return;
+    }
+    // The failure itself is drawn, not only the roster row's reason: the
+    // terminal answers one with a chat line - the rate-limit explainer when
+    // the accounts are exhausted, the raw why otherwise (#1638). The
+    // terminal's own input-lock tail is deliberately not ported: "Press
+    // Ctrl+Q" is that view's input model, and the page's box is its own.
+    if (variant === 'connection_failed') {
+      this.waiting.clear();
+      this.drained.clear();
+      const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
+      const why = failed?.message;
+      if (typeof why === 'string' && why !== '') {
+        this.append(
+          rateLimitedFailure(why)
+            ? {
+                type: 'system',
+                subtype: 'forge_notice',
+                severity: 'warning',
+                text: 'Waiting for account reset; click another project or wait.',
+              }
+            : {
+                type: 'system',
+                subtype: 'forge_notice',
+                severity: 'error',
+                text: `Connection failed: ${why}`,
+              },
+        );
+      }
       return;
     }
     // A turn that has settled is the server's fold's to draw, and the frames

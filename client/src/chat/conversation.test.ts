@@ -275,6 +275,39 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A connection failure draws its own line, not only the roster row's reason
+   * (#1638): the terminal's answer, the raw why, or the rate-limit explainer
+   * when the accounts are exhausted.
+   */
+  it('draws a connection failure, and the rate-limit explainer for one', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      connection_failed: {
+        key: LEAD,
+        message: 'connection to claude subprocess failed',
+        fatal: true,
+      },
+    });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the why is drawn').toContain(
+      'Connection failed: connection to claude subprocess failed',
+    );
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+
+    server.update({
+      connection_failed: { key: LEAD, message: 'All accounts are rate limited', fatal: false },
+    });
+    expect(drawn(), 'a rate-limited failure draws the explainer instead').toContain(
+      'Waiting for account reset; click another project or wait.',
+    );
+  });
+
+  /**
    * A seat with no turn yet is the ordinary state, and a line that joins the
    * turn it arrived in has nothing to join there - so the core's own line is
    * the one `system` frame that opens a row. Held back, it would be dropped:
