@@ -73,19 +73,33 @@ pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<Stri
     args
 }
 
-/// Normalize the profile's own crash marker before a spawn, so a launch
-/// opens exactly the tabs it is given.
+/// Make the profile start fresh for the launch about to happen: the clean
+/// marker written, the last session's tab data cleared.
 ///
-/// **Chromium restores the last session's tabs whenever that marker says the
-/// previous run crashed**, and it stays "Crashed" under our closes - measured
-/// 2026-10-07: SIGTERM against Brave leaves `exit_type: Crashed` - so every
-/// Open's relaunch resurrected the window before it and the tabs piled up
-/// (Ved's four-tab window: two carried pages and two blanks). The marker is
-/// written the way a clean exit writes it (`Normal`, `exited_cleanly`), with
-/// everything else in the file preserved; a file that cannot be parsed is
-/// left alone rather than clobbered.
-fn mark_clean_shutdown(profile: &Path) {
-    let prefs = profile.join("Default/Preferences");
+/// **A launch must open exactly the tabs it is given.** Chromium restores the
+/// previous session's tabs here - measured 2026-10-07: every relaunch piled
+/// the window up (Ved's four-tab window: two carried pages and two blanks),
+/// and the pile then breaks the DRIVER: the tabs it did not navigate sit
+/// behind the page it did, the browser marks a background tab hidden, rAF
+/// stops, and playwright's click waits forever on "visible, enabled and
+/// stable" until its five-second timeout. The clean marker alone was not
+/// enough (measured: Brave restores regardless of `exit_type`), so the
+/// session-restore data is removed as well - the tabs a launch wants are the
+/// ones on its command line, and named profiles reopen their own saved tabs.
+/// The marker is written the way a clean exit writes it, with everything else
+/// in the file preserved; a prefs file that cannot be parsed is left alone
+/// rather than clobbered.
+fn fresh_session(profile: &Path) {
+    let default = profile.join("Default");
+    for stale in ["Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+        let path = default.join(stale);
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let prefs = default.join("Preferences");
     let Ok(text) = std::fs::read_to_string(&prefs) else { return };
     let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&text) else { return };
     let Some(profile_prefs) =
@@ -93,9 +107,6 @@ fn mark_clean_shutdown(profile: &Path) {
     else {
         return;
     };
-    if profile_prefs.get("exit_type").and_then(serde_json::Value::as_str) == Some("Normal") {
-        return;
-    }
     profile_prefs.insert("exit_type".to_owned(), serde_json::Value::String("Normal".to_owned()));
     profile_prefs.insert("exited_cleanly".to_owned(), serde_json::Value::Bool(true));
     if let Ok(serialized) = serde_json::to_string(&parsed) {
@@ -271,7 +282,7 @@ async fn launch_with(
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
     forget_launch(profile);
-    mark_clean_shutdown(profile);
+    fresh_session(profile);
 
     let mut command = tokio::process::Command::new(binary);
     for arg in launch_args(profile, headed, page) {
@@ -697,27 +708,35 @@ mod tests {
         assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
     }
 
-    /// **A launch must not resurrect the last session's tabs.** Chromium
-    /// restores them whenever the profile's own marker says the last run
-    /// crashed, and its marker is normalized here before every spawn - a
-    /// launch opens exactly the tabs it is given (Ved's four-tab window,
-    /// 2026-10-07).
+    /// **A launch must not resurrect the last session's tabs.** The clean
+    /// marker is normalized and the session-restore data is cleared here
+    /// before every spawn - a launch opens exactly the tabs it is given
+    /// (Ved's four-tab window, 2026-10-07).
     #[test]
-    fn a_launch_normalizes_the_crash_marker_so_tabs_do_not_accumulate() {
+    fn a_launch_clears_the_last_session_so_tabs_do_not_accumulate() {
         let dir = tempfile::tempdir().expect("a temp dir");
         // A fresh profile has no prefs at all, which is not an error: there
-        // is no marker to normalize.
-        mark_clean_shutdown(dir.path());
+        // is no marker to normalize and no session to clear.
+        fresh_session(dir.path());
         assert!(!dir.path().join("Default/Preferences").exists());
 
-        std::fs::create_dir_all(dir.path().join("Default")).expect("a Default profile");
-        let prefs = dir.path().join("Default/Preferences");
+        let default = dir.path().join("Default");
+        std::fs::create_dir_all(default.join("Sessions")).expect("a Default profile");
+        std::fs::write(default.join("Sessions/Session_1"), b"last session").expect("a session");
+        std::fs::write(default.join("Current Session"), b"current").expect("a current session");
+        std::fs::write(default.join("Last Tabs"), b"tabs").expect("last tabs");
+        let prefs = default.join("Preferences");
         std::fs::write(
             &prefs,
             br#"{"profile": {"exit_type": "Crashed", "name": "Person 1"}, "other": 7}"#,
         )
         .expect("prefs");
-        mark_clean_shutdown(dir.path());
+
+        fresh_session(dir.path());
+
+        assert!(!default.join("Sessions").exists(), "the session data is gone");
+        assert!(!default.join("Current Session").exists(), "so is the current one");
+        assert!(!default.join("Last Tabs").exists(), "and the older tab files");
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&prefs).expect("prefs read"))
                 .expect("prefs are JSON");
@@ -728,7 +747,7 @@ mod tests {
 
         // A file that is not JSON must not be clobbered by the normalizer.
         std::fs::write(&prefs, b"not json at all").expect("prefs");
-        mark_clean_shutdown(dir.path());
+        fresh_session(dir.path());
         assert_eq!(
             std::fs::read_to_string(&prefs).expect("prefs read"),
             "not json at all",
