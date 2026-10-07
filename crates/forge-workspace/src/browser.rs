@@ -121,13 +121,25 @@ impl BrowserRelay {
         // the retain drops it and the push below re-adds it, which is the
         // honest reading of "offered just now".
         role.waiting.retain(|client| client.id != id);
-        match role.host.as_ref() {
-            Some(host) if host.id != id => {
+        let held = role.host.as_ref().map(|host| host.id);
+        match held {
+            Some(host_id) if host_id != id => {
                 role.waiting.push(Client { id, to_host, notices });
+                tracing::debug!(
+                    event_name = "browser_host_waiting",
+                    client = id,
+                    host = host_id,
+                    "a capable client offered while the role was held; it waits in line",
+                );
                 false
             }
             _ => {
                 role.host = Some(Client { id, to_host, notices });
+                tracing::debug!(
+                    event_name = "browser_host_registered",
+                    client = id,
+                    "a capable client holds the browser role",
+                );
                 true
             }
         }
@@ -163,6 +175,13 @@ impl BrowserRelay {
         let mut role = self.lock();
         if role.host.as_ref().is_some_and(|host| host.id == id) {
             role.host = None;
+            // **The archaeology line**: a host that parks instead of
+            // answering names itself here, and this line says when it left.
+            tracing::debug!(
+                event_name = "browser_host_released",
+                client = id,
+                "the connection holding the browser role released it",
+            );
             promote(&mut role);
         }
         role.waiting.retain(|client| client.id != id);
@@ -182,16 +201,29 @@ impl BrowserRelay {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        let (id, to_host) = {
+        let (id, host_id, to_host) = {
             let role = self.lock();
             let Some(host) = role.host.as_ref() else {
                 return Err(NO_BROWSER_CLIENT.to_owned());
             };
-            (mint_id(), host.to_host.clone())
+            (mint_id(), host.id, host.to_host.clone())
         };
         let (reply, answer) = oneshot::channel();
         let request = BrowserRequest { id, seat: seat.clone(), tool: tool.to_owned(), args, reply };
-        if to_host.send(request).is_err() {
+        let sent = to_host.send(request);
+        // **Which connection an ask went to, and whether it went at all**:
+        // a parked ask says nothing on its own, and this pair of ids is what
+        // names the host a stall is sitting on.
+        tracing::debug!(
+            event_name = "browser_ask_routed",
+            ask = id,
+            host = host_id,
+            tool = %tool,
+            slot = %seat.display(),
+            sent = sent.is_ok(),
+            "a browser ask went to the host",
+        );
+        if sent.is_err() {
             self.forget_the_dead();
             tracing::debug!(
                 event_name = "browser_host_gone",
@@ -229,6 +261,11 @@ fn promote(role: &mut Role) {
             continue;
         }
         let _ = next.notices.send(RoleNotice::Granted);
+        tracing::debug!(
+            event_name = "browser_host_promoted",
+            client = next.id,
+            "a waiting client was promoted to the browser role",
+        );
         role.host = Some(next);
         return;
     }
