@@ -81,6 +81,13 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe("the tasks row's interaction state machine", () => {
+  it('counts the finished tasks on the toggle', () => {
+    draw();
+    // One of the four is completed, so a count read off the wrong side
+    // reads three: the fixture is asymmetric on purpose.
+    expect(toggle()?.textContent, 'the toggle states the finished count').toContain('1 of 4');
+  });
+
   it('reads a tap as open: the synthesised enter must not eat the click', () => {
     draw();
     toggle()?.dispatchEvent(pointer('pointerenter', 'touch'));

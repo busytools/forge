@@ -50,6 +50,20 @@ describe('the tasks store', () => {
     expect(tasks.lit('t1'), 'and the untouched one lit').toBe(false);
   });
 
+  it('lights the first task into an empty list, but not the list after no record', () => {
+    // The empty list is a read, not an opening: the task that follows it is
+    // the set changing under a reader, and it must light.
+    tasks.sync([]);
+    tasks.sync([row()]);
+    expect(tasks.lit('t1'), 'the first task into an empty list lit nothing').toBe(true);
+
+    vi.advanceTimersByTime(6500);
+    // A null sync forgets: the list after it opens the page.
+    tasks.sync(null);
+    tasks.sync([row()]);
+    expect(tasks.lit('t1'), 'the list after a null sync lit a row').toBe(false);
+  });
+
   it('leaves an untouched list dark, and a removal is not an error', () => {
     tasks.sync([row(), row({ id: 't2' })]);
     tasks.sync([row(), row({ id: 't2' })]);

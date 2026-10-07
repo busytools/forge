@@ -18,13 +18,17 @@ export class Tasks {
   #rows = $state<TaskStripRow[]>([]);
   #lit = new SvelteSet<string>();
   #timers = new SvelteMap<string, ReturnType<typeof setTimeout>>();
+  /** Whether a sync has landed since the last null one: the first lights nothing. */
+  #synced = false;
 
   /**
    * Take the project's rows whole, lighting the ones that moved.
    *
-   * The FIRST sync lights nothing - a page opening is not a change - and a
-   * task that arrived since the last sync lights like one that moved: both
-   * are the set changing under a reader.
+   * Only the first sync past a null lights nothing - a page opening is not a
+   * change - and after it a task that arrived or moved lights, an arrival
+   * into an empty list included: both are the set changing under a reader.
+   * A null sync forgets, so a record that comes back opens the page rather
+   * than lighting every row as an arrival.
    *
    * **Nothing in the body may register on the effect that calls it.** The
    * page's sync lives in an effect that re-runs on every home frame, and a
@@ -51,7 +55,9 @@ export class Tasks {
           this.#timers.delete(id);
         }
       }
-      if (prior.length === 0) return;
+      const opening = !this.#synced;
+      this.#synced = rows !== null;
+      if (opening) return;
       for (const row of next) {
         const was = prior.find((held) => held.id === row.id)?.status;
         if (was === undefined || was !== row.status) this.#light(row.id);
