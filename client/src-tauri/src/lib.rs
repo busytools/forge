@@ -132,9 +132,12 @@ pub fn run() {
             app.manage(host);
             // **The browser's view, created now and hidden.** The takeover
             // shows it; between takeovers the sessions drive the same
-            // browser through its CDP, exactly as a headless one.
+            // browser through its CDP, exactly as a headless one. Nothing
+            // to create when CEF is not up.
             #[cfg(all(desktop, target_os = "macos"))]
-            browser_view(app.handle(), true);
+            if browser::cef::debug_port() != 0 && std::env::var_os("FORGE_NO_CEF_VIEW").is_none() {
+                browser_view(app.handle(), true);
+            }
             Ok(())
         })
         .build(context);

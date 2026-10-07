@@ -56,9 +56,22 @@ struct View {
 
 impl View {
     fn set_visible(&self, visible: bool) {
-        if let Some(host) = self.browser.host() {
-            host.was_hidden(i32::from(!visible));
+        let Some(host) = self.browser.host() else { return };
+        // **AppKit's own hidden flag is what holds.** CEF's `hidden` at
+        // creation and `was_hidden` alone left the view covering the client
+        // window - a blank dark about:blank over the whole UI - so the view
+        // is hidden the way any NSView is, with CEF told as well so its
+        // renderer knows.
+        let view = host.window_handle();
+        if !view.is_null() {
+            // SAFETY: CEF's own child view, on the main thread.
+            unsafe {
+                let ns_view = view.cast::<objc2_app_kit::NSView>();
+                let hidden = objc2::runtime::Bool::new(!visible);
+                let _: () = objc2::msg_send![ns_view, setHidden: hidden];
+            }
         }
+        host.was_hidden(i32::from(!visible));
     }
 
     fn set_bounds(&self, bounds: Rect) {
@@ -106,7 +119,12 @@ pub fn install(parent: *mut c_void, width: f64, height: f64) {
     );
     match created {
         Some(browser) => {
-            VIEW.with(|slot| *slot.borrow_mut() = Some(View { browser }));
+            let view = View { browser };
+            // **Hidden AFTER creation, not just at it**: the creation flag
+            // alone left a blank about:blank view covering the whole window,
+            // which reads as a client that opened nothing.
+            view.set_visible(false);
+            VIEW.with(|slot| *slot.borrow_mut() = Some(view));
             eprintln!("forge client: the browser view is up (hidden)");
         }
         None => eprintln!("forge client: the browser view was not created"),

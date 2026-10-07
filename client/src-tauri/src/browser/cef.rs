@@ -80,6 +80,11 @@ wrap_app! {
 /// subprocess's whole life is that call. The browser process carries on to
 /// claim NSApplication and `initialize`.
 pub fn bootstrap(identifier: &str) {
+    // A diagnostic door for the dev loop: the client with no CEF at all.
+    if std::env::var_os("FORGE_NO_CEF").is_some() {
+        eprintln!("forge client: CEF skipped (FORGE_NO_CEF)");
+        return;
+    }
     // **The framework comes first.** Every CEF wrapper below calls into it -
     // `Args` and the command line included - and before `load` + `api_hash`
     // those calls land on null pointers.
