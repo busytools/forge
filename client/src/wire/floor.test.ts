@@ -23,7 +23,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { composerFrom } from '../composer/wire';
+import { askFrom, composerFrom } from '../composer/wire';
 import { MIN_PROTOCOL, skewOf, type ServerMessage } from '../protocol';
 import { applyUpdate } from '../session/apply';
 import { sessionFrom } from '../session/wire';
@@ -202,5 +202,35 @@ describe('the updates the floor sends', () => {
 
   it('settles the turn the unit frame names', () => {
     expect(folded.header.turn_in_flight).toBe(false);
+  });
+});
+
+describe('the v6 hand-off read', () => {
+  /**
+   * **The one step back is READ, not refused.** v6 called the hand-off's
+   * profile name `context` (the v7 bump renamed the field and the tool
+   * argument), and a v1.1.0 server is exactly what a mixed install sends:
+   * dropping the old name would drive the SHARED profile while the model
+   * asked for a named one, which is a silent wrong answer rather than a
+   * skew. This case is what the tolerance stands on.
+   */
+  it('reads a v6 hand-off context as the profile, and a v7 profile as itself', () => {
+    const v6 = askFrom({
+      kind: 'browser_hand_off',
+      request: { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' },
+    });
+    expect(v6).toEqual({
+      kind: 'browser_hand_off',
+      request: { id: 'h1', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
+
+    const v7 = askFrom({
+      kind: 'browser_hand_off',
+      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
+    expect(v7).toEqual({
+      kind: 'browser_hand_off',
+      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
   });
 });

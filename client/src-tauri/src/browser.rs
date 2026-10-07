@@ -405,12 +405,15 @@ impl BrowserHost {
 ///
 /// It chooses the profile and no driver's schema declares it, so it never
 /// reaches a tool. A `profile` that is not a name is the call's own mistake,
-/// answered rather than guessed at.
+/// answered rather than guessed at. **`context` is read as the same thing**:
+/// a v6 server's schema still names the argument that way, and an argument
+/// left in the call would reach the driver as an unknown key while the SHARED
+/// profile drove - the wrong browser, silently.
 fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
     let Some(fields) = args.as_object_mut() else {
         return Ok((None, args));
     };
-    let Some(profile) = fields.remove("profile") else {
+    let Some(profile) = fields.remove("profile").or_else(|| fields.remove("context")) else {
         return Ok((None, args));
     };
     match profile {
@@ -629,5 +632,15 @@ mod tests {
 
         let refused = take_profile(json!({ "profile": 7 })).expect_err("a number is not a name");
         assert!(refused.contains("`profile` is the name"), "{refused}");
+
+        // **The v6 name is read as the same thing.** A v1.1.0 server's schema
+        // still calls the argument `context`; left in the call it would reach
+        // the driver as an unknown key while the SHARED profile drove, so the
+        // one step back is read rather than dropped.
+        let (named, rest) =
+            take_profile(json!({ "url": "https://example.com", "context": "hunt" }))
+                .expect("a v6 name is taken off");
+        assert_eq!(named, Some("hunt".to_owned()));
+        assert_eq!(rest, json!({ "url": "https://example.com" }));
     }
 }

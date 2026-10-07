@@ -297,7 +297,11 @@ function browserHandOffFrom(value: unknown): Ask {
     request: {
       id: text(held['id']) ?? '',
       reason: text(held['reason']) ?? '',
-      profile: text(held['profile']),
+      // **A v6 server still calls it `context`** (PROTOCOL_VERSION 7 renamed
+      // the field): the one step back is READ rather than refused, and the
+      // floor's own case proves the read, so a v1.1.0 server's hand-off keeps
+      // its profile name in the dock's title instead of losing it.
+      profile: text(held['profile']) ?? text(held['context']),
     },
   };
 }
