@@ -31,6 +31,7 @@ import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
+import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
 import { PROTOCOL_VERSION } from './protocol';
 import type { Connection } from './socket';
@@ -449,6 +450,26 @@ describe('axe over the rendered pages', () => {
    * The models page with a feed in front of axe: the four sections, the
    * proposal, the chips, the search form and the check's own control.
    */
+  /**
+   * **The palette's open dialog**, which no other case renders: the session
+   * page draws it closed, so its combobox roles, the listbox's options and
+   * the dialog's name would otherwise go unguarded.
+   */
+  it('draws the open command palette with no violations', async () => {
+    const body = render(Palette, {
+      props: {
+        open: true,
+        wire: homeWire,
+        slot: SLOT,
+        connection: untouched(),
+        sessionId: 'd4f70669-1f2a-4c88',
+        onclose: () => undefined,
+        onpeek: () => undefined,
+      },
+    }).body;
+    expect(await violationsOf(body)).toEqual([]);
+  });
+
   it('draws the models page with no violations', async () => {
     const html = render(ModelsBody, {
       props: { wire: modelsWire, oncheck: () => {} },

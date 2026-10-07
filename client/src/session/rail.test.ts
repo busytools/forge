@@ -70,7 +70,6 @@ const footer = render(Rail, {
     current: LEAD,
     now: Date.now(),
     connection: untouched(),
-    onclose: () => undefined,
   },
 }).body;
 
@@ -158,7 +157,6 @@ describe('a project row', () => {
         current: LEAD,
         now: 0,
         connection: untouched(),
-        onclose: () => undefined,
       },
     }).body;
 
@@ -192,7 +190,6 @@ describe('a closed seat', () => {
           current: LEAD,
           now: 0,
           connection: closes(),
-          onclose: () => undefined,
         },
       }).body;
 
@@ -298,7 +295,6 @@ describe("a worker's failure", () => {
         current: LEAD,
         now: 0,
         connection: untouched(),
-        onclose: () => undefined,
       },
     }).body;
 

@@ -158,6 +158,22 @@ async function settle(): Promise<void> {
   }
 }
 
+/**
+ * Let a predicate hold, over a bounded number of paints.
+ *
+ * **A `history.back()` is an asynchronous browser event**, and one tick is a
+ * race the CI machine schedules differently from a dev machine - the round
+ * where the palette's entry hand-off landed passed locally on one tick and
+ * failed there. The condition is what is waited on, never the tick.
+ */
+async function until(ok: () => boolean): Promise<void> {
+  for (let i = 0; i < 60; i += 1) {
+    flushSync();
+    if (ok()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 let app: Record<string, unknown> | null = null;
 let server: Awaited<ReturnType<typeof stubServer>> | null = null;
 let connection: Connection | null = null;
@@ -353,19 +369,163 @@ describe('the session page over a socket', () => {
      rows' document order. */
 
   /**
-   * **The narrow bands are page state now, not checkboxes**, and jsdom has no
-   * `matchMedia` at all, so both rails take the wide default in every other
-   * test. This is the one case that sees the state the sheet folds by.
+   * **Below the fold width the rail parks, whatever the preference.** The
+   * column is a wide-page shape; a folded page draws the rail off-canvas
+   * and slides it over when the chip, Cmd+Left or the palette opens it.
    */
-  it('folds the rail away below the width it stops being a column at', async () => {
+  it('keeps the rail parked at every width until it is summoned', async () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
-    // The sheet does the hiding, and jsdom performs no layout - so the page's
-    // own state is the assertion, and its class is how that state is stated.
     const app = document.querySelector('.app')?.className ?? '';
-    expect(app, 'the rail ignored a narrow page').toContain('left-hidden');
+    expect(app, 'the rail claimed a column on a narrow page').not.toContain('rail-open');
+    expect(app, 'the width did not fold the column').not.toContain('rail-static');
+    expect(document.querySelector('.rail.left'), 'the rail is drawn, to summon').not.toBeNull();
     expect(document.querySelector('.rail-tog.tog-r'), 'the inspector handle is gone').toBeNull();
+  });
+
+  /**
+   * **The default is the column**: a wide page carries the rail statically,
+   * with the pin to float it. The drawer's own content - the working rows,
+   * the spend and the versions - is on the left from arrival.
+   */
+  it('keeps the projects rail as the column by default', async () => {
+    // The stub is global once installed by the fold test above, so the wide
+    // reading is asked for explicitly rather than assumed.
+    matchMediaTo(false);
+    await open(sessionFixture);
+
+    const app = document.querySelector('.app')?.className ?? '';
+    expect(app, 'the default did not pin the rail').toContain('rail-static');
+    expect(document.querySelector('.banner .pin'), 'the pin is the way to float it').not.toBeNull();
+  });
+
+  /**
+   * **The palette driven from the page itself.** Nothing else in the suite
+   * presses the real key or reads history, which is how a stranded entry
+   * survived a round: Cmd+K opens it, the walk starts on THIS org's lead (a
+   * namesake in another org must not take it), the arrows move, and one Back
+   * closes what it opened.
+   */
+  it('opens the palette from the page, walks it, and gives one Back', async () => {
+    const base = homeWire.agents[0];
+    if (base === undefined) throw new Error('the fixture holds no agent');
+    await open(sessionFixture, {
+      ...homeWire,
+      agents: [base, { ...base, slot: { ...base.slot, org: 'Other' } }],
+    });
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    expect(document.querySelector('.pal'), 'Cmd+K drew no palette').not.toBeNull();
+    expect(document.querySelector('.it.sel')?.id, 'the walk started on the wrong org lead').toBe(
+      'pal-row-TestOrg/proj/lead',
+    );
+
+    document
+      .querySelector('.pal input')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.it.sel')?.id, 'ArrowDown did not walk').toBe(
+      'pal-row-Other/proj/lead',
+    );
+
+    history.back();
+    await until(() => document.querySelector('.pal') === null);
+    expect(document.querySelector('.pal'), 'Back left the palette up').toBeNull();
+  });
+
+  /**
+   * **The peek's entry becomes the rail's** - the round's finding: one Back
+   * closes the rail, rather than the peek stranding a forward entry under a
+   * pushed one and the next Back leaving the page.
+   */
+  it("hands the palette's peek entry to the rail, so one Back closes", async () => {
+    matchMediaTo(true);
+    await open(sessionFixture);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.pal input');
+    if (field === null) throw new Error('the palette drew no input');
+    field.value = 'peek at the fleet';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.pal'), 'the peek left the palette up').toBeNull();
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the peek did not open the rail',
+    ).toContain('rail-open');
+    const state = history.state as { forgeRail?: string } | null;
+    expect(state?.forgeRail, "the entry on top is not the rail's").toBe('left');
+
+    history.back();
+    await until(() => !(document.querySelector('.app')?.className ?? '').includes('rail-open'));
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'one Back did not close the rail',
+    ).not.toContain('rail-open');
+  });
+
+  /**
+   * **The folded rail keeps its pointer door, whatever the stored mode.** A
+   * static preference at a folded width must still answer the chip's hover:
+   * the guard is the fold, not the preference - and nothing else in the
+   * suite dispatches this pointer.
+   */
+  it('summons the folded rail on the chip hover', async () => {
+    matchMediaTo(true);
+    await open(sessionFixture);
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the folded rail opened by itself',
+    ).not.toContain('rail-open');
+
+    document
+      .querySelector('.needchip')
+      ?.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }));
+    flushSync();
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the folded rail ignored the chip hover',
+    ).toContain('rail-open');
+  });
+
+  /**
+   * **A Back returns the keyboard where the palette took it**: the pop path
+   * restores focus the same way Escape and Cmd+K do.
+   */
+  it('returns the keyboard to the opener when a Back closes the palette', async () => {
+    await open(sessionFixture);
+    const chip = document.querySelector<HTMLElement>('.needchip');
+    chip?.focus();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    expect(document.querySelector('.pal'), 'Cmd+K drew no palette').not.toBeNull();
+
+    history.back();
+    await until(() => document.querySelector('.pal') === null);
+    expect(document.activeElement, 'the pop left the keyboard nowhere').toBe(chip);
+  });
+
+  /**
+   * **Escape's route consumes its own entry**: one Back after an
+   * Escape-closed palette must not find a stranded step - the same class R1
+   * named, through the other door.
+   */
+  it('consumes the palette entry when Escape closes it', async () => {
+    await open(sessionFixture);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await until(() => document.querySelector('.pal') === null);
+
+    const left = (): string | undefined =>
+      (history.state as { forgeRail?: string } | null)?.forgeRail;
+    await until(() => left() === undefined);
+    expect(left(), "Escape's route stranded its entry").toBeUndefined();
   });
 
   /**

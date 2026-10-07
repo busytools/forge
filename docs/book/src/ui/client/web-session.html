@@ -21,7 +21,8 @@
      are the session page's, and so is the seat's id cell (.sid) that took
      the slot the account chip left.
      New here, and the shape the pages after this should take:
-     .rail + .pane-tog (a collapsible pane and its handle), .leaves
+     .rail + .needchip + .pal (the projects pane, its brand-faced entry chip
+     and Cmd+K's palette), .leaves
      (a stretch of work: every call, message or thought a row of its own in
      the order it arrived, the kind's glyph leading it, opening on its own),
      .mine (a user turn - the orange rule is the attribution, so it
@@ -54,7 +55,7 @@
        detail takes the data size. */
     --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
     --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
-    --ins: 10px; --rail-l: 312px;
+    --ins: 10px;
   }
 
   html, body { height: 100%; }
@@ -138,22 +139,30 @@
 
   /* ---------- panes: checked is COLLAPSED, and the handle lives in the
      chat header so it stays clickable while the pane is gone ---------- */
-  .app { display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr);
+  .app { display: grid; grid-template-columns: minmax(0,1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
     gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
-  /* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
-     and auto-flowing the rest along moves the conversation into the rail's
-     column and blanks the page. */
-  .app > .rail.left { grid-column: 1; }
-  .app > main.chat { grid-column: 2; }
-  #l:checked ~ .app { --rail-l: 0px; }
-  #l:checked ~ .app .rail.left { display: none; }
-  .pane-tog { display: flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
-    color: var(--muted); border: 1px solid transparent; }
-  .pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
-  .pane-tog svg { width: 16px; height: 16px; display: block; }
-  #l:checked ~ .app .pane-tog.tog-l {
-    color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
+  /* The rail's two non-default modes are the summoned rail: parked
+     off-canvas and slid in over a scrim. The drawing shows the DEFAULT,
+     `.rail-static`, below; these two `.app` rules mirror web.css rule for
+     rule. */
+  .app .rail.left {
+    position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
+    transform: translateX(calc(-100% - 24px)); visibility: hidden;
+    transition: transform .2s ease, visibility 0s .2s;
+  }
+  .app.rail-open .rail.left {
+    transform: translateX(0); visibility: visible; transition: transform .2s ease;
+  }
+  /* The default: the column, which the app grid carries. Mirrors web.css. */
+  .app.rail-static { grid-template-columns: 312px minmax(0,1fr); }
+  .app.rail-static .rail.left {
+    position: static; inset: auto; width: auto; z-index: auto;
+    transform: none; visibility: visible; transition: none;
+    grid-column: 1; grid-row: 1 / -1;
+  }
+  .app.rail-static main.chat { grid-column: 2; }
+  .app.rail-static .composer { grid-column: 2; }
 
   .dot { width: 11px; height: 11px; flex: 0 0 11px; }
   .dot.live { border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
@@ -191,8 +200,7 @@
   .banner .n.ml { margin-left: auto; }
   /* A pane that covered the page carries its own way out: the header handle
      that opened it is underneath. */
-  .banner .close { margin-left: 8px; color: var(--dim); cursor: pointer; padding: 0 4px; }
-  .banner .close:hover { color: var(--text); }
+  .banner .pin:hover { color: var(--text); }
   /* The rail's footer: the account, what it is costing and the two builds.
      `flex: none` because the list is the thing that gives. */
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
@@ -249,8 +257,7 @@
      not gate pointer events, so on a hybrid whose PRIMARY pointer hovers, a tap
      would otherwise land on a chip nobody can see; the row's hover restores it
      (the chip cannot restore it itself, `none` means it never hovers), as does
-     focus, and a touch-primary screen keeps it shown. `.banner .close` is
-     deliberately not one of these: it is the way out of a covering rail. */
+     focus, and a touch-primary screen keeps it shown. */
   .pr:hover .x, .wk:hover .x { color: var(--bad); background: rgba(224,104,62,.12); opacity: 1;
     pointer-events: auto; }
   .pr .x:focus-visible, .wk .x:focus-visible { opacity: 1; pointer-events: auto; }
@@ -296,20 +303,24 @@
     flex-wrap: nowrap; min-width: 0; }
   .sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  /* The wordmark in the header, the way home: the home's own brand a size
-     down so the session's name still leads, in a real anchor so the keyboard
-     reaches it, the URL stays real and the router follows it in place. The
-     hairline is what separates the app's brand from the seat's own. */
-  .sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
-    color: inherit; text-decoration: none; }
-  /* The mark rides the same optical lift the icon rule carries: svg ink
-     centered against a text line box reads low. */
-  .sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent);
-    position: relative; top: -1px; }
-  .sess .brand .mark svg { display: block; width: 100%; height: 100%; }
-  .sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
-  .sess .brand:hover .word { text-decoration: underline; }
-  .sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
+  /* The chip: the brand's own mark as the face of the one projects control -
+     the mark with the count of seats that want a person beside it, and a
+     quiet `projects` word when none do. Warn-tinted while anyone waits, bad
+     on a failed one, plain when calm. The two selector rules mirror web.css
+     rule for rule. */
+  .needchip { display: flex; align-items: center; gap: 6px; flex: none;
+    font-family: var(--mono); font-size: var(--fs-data); color: var(--warn);
+    border: 1px solid rgba(201,161,59,.4); background: rgba(201,161,59,.08);
+    border-radius: 99px; padding: 2px 9px; cursor: pointer; text-decoration: none; }
+  .needchip:hover { color: var(--text); }
+  .needchip .ch-mk { width: 14px; height: 14px; flex: 0 0 14px; color: inherit;
+    display: flex; }
+  .needchip .ch-mk svg { width: 14px; height: 14px; display: block; }
+  .needchip .ch-tri { width: 9px; height: 9px; flex: 0 0 9px; }
+  .needchip .ch-ic { width: 13px; height: 13px; }
+  .needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
+    background: rgba(224,104,62,.08); }
+  .needchip.calm { color: var(--muted); border-color: var(--line); background: none; }
   /* The org appears only where the fleet makes the seat's name ambiguous
      (#1707): the demo draws the common shape, name alone. */
   .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
@@ -1073,31 +1084,65 @@
   .pfoot .key { color: var(--accent); }
   .pfoot .sep { padding: 0 8px; opacity: .5; }
 
-  /* Narrow: one column, the pane a sheet over the chat. The checkbox
-     inverts meaning here - unchecked is hidden, not open - so a phone
-     opens on the conversation and the header's handle reaches the pane. */
+  /* Narrow: the same one column, with the summoned rail unchanged - it was
+     never a column, so the width decides nothing about it. */
   @media (max-width: 980px) {
-    .app { grid-template-columns: minmax(0,1fr); }
-    .app > main.chat { grid-column: 1; }
-    .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
-    .rail.left { display: none; }
-    #l:checked ~ .app .rail.left { display: flex; }
-    #l:checked ~ .app { --rail-l: 0px; }
-    /* The diff page folds too: one column, its file rail away. */
+    /* The diff page folds: one column, its file rail away. */
     .pbody { grid-template-columns: minmax(0,1fr); }
     .prail { display: none; }
     .pmain { grid-column: 1; }
   }
+  /* ---------- the command palette [new] ---------- */
+
+  .pal { position: fixed; inset: 0; z-index: 70; }
+  .pal .pscrim { position: absolute; inset: 0; background: rgba(4,5,10,.6);
+    backdrop-filter: blur(3px); }
+  .pal .panel { position: absolute; top: 9vh; left: 50%; transform: translateX(-50%);
+    width: min(660px, 92vw); border: 1px solid var(--line); border-radius: 14px;
+    background: var(--s1); box-shadow: 0 28px 70px rgba(0,0,0,.6); overflow: hidden; }
+  .pal .pin { display: flex; align-items: center; gap: 10px; padding: 12px 15px;
+    border-bottom: 1px solid var(--line); }
+  .pal .pin .ic { width: 16px; height: 16px; flex: none; }
+  .pal .pin input { flex: 1; background: none; border: 0; outline: none; color: var(--text);
+    font-family: var(--mono); font-size: var(--fs-base); }
+  .pal .pin input::placeholder { color: var(--dim); }
+  .pal .pin .esc { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+  .pal .rows { max-height: min(420px, 60vh); overflow-y: auto; padding: 5px 0 7px; }
+  .pal .grp { padding: 8px 15px 3px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+  .pal .it { display: flex; align-items: center; gap: 10px; padding: 7px 15px; cursor: pointer;
+    width: 100%; background: none; border: 0; font: inherit; color: inherit; text-align: left; }
+  .pal .it .dot { width: 10px; height: 10px; flex: 0 0 10px; }
+  .pal .it .gl { width: 22px; flex: none; color: var(--dim); font-family: var(--mono);
+    font-size: var(--fs-data); }
+  .pal .it .nm { color: var(--text); }
+  .pal .it .kbd { margin-left: 7px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .pal .it .what { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 45%; }
+  .pal .it.sel { background: var(--s2); }
+  .pal .it.sel .nm { color: var(--accent); }
+  .pal .it:hover { background: var(--s2); }
+  .pal .none { padding: 14px 15px; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--dim); }
+  .pal .pfoot { display: flex; gap: 14px; padding: 8px 15px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  /* The specimen below the page: the same palette, in the flow. */
+  .spec .pal { position: static; }
+  .spec .pal .pscrim { display: none; }
+  .spec .pal .panel { position: static; transform: none; margin: 0 auto;
+    box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+
   /* The reach a finger needs, keyed on the pointer rather than the width:
      the brand is a way home and the more disclosure is a chevron, so both
      take more than their own box. The app's sheet carries the same rules. */
   @media (pointer: coarse) {
     button, input, select, textarea, details > summary { min-height: 44px; }
-    .banner .close { min-width: 44px; }
     /* The row's chip is a live control, so it keeps the height the rule
        above gives it and takes a width to match. */
-    .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
-    .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+    .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; } .needchip { min-height: 44px; padding: 0 12px; }
     .sess > .more > summary { min-width: 44px; }
   }
 
@@ -1247,21 +1292,20 @@
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
 </svg>
 
-<input type="checkbox" id="l" hidden>
 <input type="checkbox" id="diff" hidden>
 <!-- The diff page keeps its specimen and this opener even though the
      inspector's file list, which used to open it, is gone: the page is a
      design-phase drawing with no client surface behind it yet, and removing
      it - or re-homing its opener - is its own call. -->
 
-<div class="app">
+<div class="app rail-static">
 
   <!-- ============ PROJECTS ============ -->
   <aside class="rail left">
     <div class="banner">
       <span class="t">projects</span>
       <span class="n ml">10 live / 16</span>
-      <label class="close" for="l" title="close">&#215;</label>
+      <span class="pin" title="float the rail on hover">&#8592;</span>
     </div>
     <div class="scroll">
 
@@ -1416,18 +1460,18 @@
   <!-- ============ CHAT ============ -->
   <main class="chat">
     <div class="sess">
-      <!-- The wordmark in the header, the way home: the home's own brand, a
-           size down so the session's name still leads, on the band's own left
-           edge. -->
-      <a class="brand" href="/" title="home">
-        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
-        <span class="word">forge</span>
-      </a>
-      <span class="mastsep" aria-hidden="true"></span>
-      <label class="pane-tog tog-l" for="l" title="projects">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-      </label>
+      <!-- The chip: the brand's own mark as the face of the one projects
+           control, with the seats that want a person beside it. Its click is
+           smart - exactly one goes to that seat, several or a failure go
+           home to pick - and it is the rail's own door in its other modes:
+           hovering summons the peek in the hover mode, Cmd+Left and the
+           palette keep it. Drawn here in its loud state; the calm state is a
+           quiet `projects` word, no count. -->
+      <span class="needchip" title="2 seats need you">
+        <span class="ch-mk"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="dot needs ch-tri" aria-hidden="true"></span>
+        <span>2</span>
+      </span>
       <span class="dot live"></span>
       <span class="nm">forge</span>
       <!-- The line draws the name alone (#1707); the org joins it only where
@@ -2635,6 +2679,46 @@ branch main, nothing to commit</div>
   <!-- The inspector is gone. Its sections live on the strip's rows now -
        see the git, tasks and monitors rows in `.sg-fill` above - and the
        panel it was has no replacement to draw. -->
+</div>
+
+<!-- ============ THE COMMAND PALETTE (Cmd+K) ============ -->
+<div class="page spec">
+  <div class="ph">
+    <h2>The command palette</h2>
+    <p>Cmd+K's own surface, drawn here over the page: the fleet grouped its
+    own way (the seats that want a person, the ones working, the ones
+    asleep), forge's commands, then the doings. The walk starts on the
+    current project's lead, so Cmd+K then Enter lands there; typing filters
+    across every group. A coarse pointer reaches the same palette through
+    the magnifier drawn beside the chip - the desktop header does not carry
+    it.</p>
+  </div>
+  <div class="pal" role="dialog" aria-modal="true" aria-label="seats and commands">
+    <div class="pscrim"></div>
+    <div class="panel">
+      <div class="pin">
+        <svg class="ic dim"><use href="#i-search"/></svg>
+        <input type="text" placeholder="go to a seat, run a command, or do a thing" autocomplete="off">
+        <span class="esc">Esc</span>
+      </div>
+      <div class="rows">
+        <div class="grp">wants you</div>
+        <button type="button" class="it sel"><span class="dot needs"></span><span class="nm">lead<span class="kbd">current</span></span><span class="what">forge &#183; needs you</span></button>
+        <div class="grp">working</div>
+        <button type="button" class="it"><span class="dot live"></span><span class="nm">builder</span><span class="what">forge &#183; working</span></button>
+        <div class="grp">asleep</div>
+        <button type="button" class="it"><span class="dot idle"></span><span class="nm">session-design</span><span class="what">forge &#183; asleep</span></button>
+        <div class="grp">commands</div>
+        <button type="button" class="it"><span class="gl">&#8250;</span><span class="nm">/compact</span><span class="what">Compact session context</span></button>
+        <div class="grp">doings</div>
+        <button type="button" class="it"><span class="gl">&#8250;</span><span class="nm">peek at the fleet</span><span class="what">the projects rail, over this page</span></button>
+      </div>
+      <div class="pfoot">
+        <span>&#8593;&#8595; move</span><span>&#8629; open</span>
+        <span>Cmd+K or Esc closes</span>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ============ THE DIFF, AS ITS OWN PAGE ============ -->

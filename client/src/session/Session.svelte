@@ -9,10 +9,12 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import SessionId from './SessionId.svelte';
+  import Palette from './Palette.svelte';
   import Rail from './Rail.svelte';
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
   import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
@@ -26,6 +28,7 @@
   import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
+    chipState,
     gitStrip,
     headerFacts,
     mcpRows,
@@ -241,38 +244,76 @@
   );
 
   /**
-   * Whether each rail is shown, and the two widths a rail stops being a
-   * column at.
+   * Whether the projects rail is over the session, and how it got there.
    *
-   * The server held this in hidden checkboxes, because a page with no script
-   * had nowhere else to put it - and the same box meant `hidden` above the
-   * breakpoint and `shown` below it, which is a control that cannot be
-   * labelled honestly. Here the state is what it says, the default is each
-   * band's own, and the sheet turns a shown rail into a sheet below the step
-   * rather than inverting the word.
+   * **The rail is summoned now, at every width**: it is never a column, so
+   * nothing of the conversation is spent on it while it is away. The chip's
+   * hover summons the peek (`summoned`, no scrim, no history - a mouse that
+   * only crossed the chip dims nothing); Cmd+Left and the palette open it to
+   * stay (`leftChosen`, scrim, history entry, Esc).
    */
-  const BELOW_980 = '(max-width: 980px)';
+  // jsdom carries no `matchMedia`, so the capability is part of having a DOM
+  // at all here - without the check every mount under vitest throws.
   const hasDom = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
-  const matches = (query: string) => hasDom && window.matchMedia(query).matches;
 
-  let narrow = $state(matches(BELOW_980));
+  /** The rail's presence, which is a per-device preference (rail-mode.ts). */
+  let railMode = $state<RailMode>(hasDom ? rememberedRailMode() : 'static');
 
+  /** The width a static column folds to the overlay at, whatever the mode. */
+  const BELOW_980 = '(max-width: 980px)';
+  let narrow = $state(hasDom && window.matchMedia(BELOW_980).matches);
   $effect(() => {
     if (!hasDom) return;
-    const rails = window.matchMedia(BELOW_980);
-    const sync = () => {
-      narrow = rails.matches;
-    };
-    rails.addEventListener('change', sync);
-    return () => {
-      rails.removeEventListener('change', sync);
-    };
+    const mq = window.matchMedia(BELOW_980);
+    const sync = () => (narrow = mq.matches);
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
   });
 
-  // `null` is "whatever this band does by default", which is the state a
-  // reader who has never touched the handle is in.
+  const columned = $derived(railMode === 'static' && !narrow);
+
+  // `null` and `false` are both "closed": the overlay opens by its own
+  // doors, and a reader has not chosen it on arriving.
   let leftChosen = $state<boolean | null>(null);
-  const leftShown = $derived(leftChosen ?? !narrow);
+  let summoned = $state(false);
+  const overlaid = $derived(leftChosen === true || summoned);
+  const leftShown = $derived(columned || overlaid);
+  const peekOnly = $derived(!columned && summoned && leftChosen !== true);
+
+  /** Set the preference: the pin and the rail's own close both land here. */
+  function setRail(mode: RailMode) {
+    railMode = mode;
+    rememberRailMode(mode);
+  }
+
+  /** A shadow of the strip panels' grace: crossing the chip-to-rail gap lands. */
+  let graced: ReturnType<typeof setTimeout> | null = null;
+
+  function summon() {
+    // **The fold decides, not the stored preference.** Wherever the rail is
+    // not the column - the hover mode, or a static rail folded by the width -
+    // the chip's hover summons it; a mouse-only reader at a folded width has
+    // no other pointer door.
+    if (columned) return;
+    if (graced !== null) clearTimeout(graced);
+    graced = null;
+    summoned = true;
+  }
+
+  function unsummon() {
+    if (graced !== null) clearTimeout(graced);
+    graced = setTimeout(() => {
+      graced = null;
+      summoned = false;
+    }, 250);
+  }
+
+  $effect(() => () => {
+    if (graced !== null) clearTimeout(graced);
+  });
+
+  /** The chip's own data: the seats that want a person, fleet-wide. */
+  const chip = $derived(chipState(wire));
 
   /**
    * A covering rail opens onto history, so Back closes what it opened; a rail
@@ -282,15 +323,16 @@
   let lastRail: RailSide | null = hasDom ? railOnTop(history.state) : null;
   let closedUnder: RailSide | null = null;
 
-  /** The projects pane, which is the one rail left: the inspector is gone. */
+  /** The projects rail, opened to STAY: Cmd+Left or the palette's own verb. */
   function openRail() {
-    if (narrow) {
-      // One entry covers the open state: a second opening joins it rather
-      // than stacking a step of its own.
-      if (lastRail === null) {
-        history.pushState(railEntry(history.state), '', location.href);
-        lastRail = 'left';
-      }
+    // A static rail is already over the page; there is nothing to open.
+    if (columned) return;
+    summoned = false;
+    // One entry covers the open state: a second opening joins it rather
+    // than stacking a step of its own.
+    if (lastRail === null) {
+      history.pushState(railEntry(history.state), '', location.href);
+      lastRail = 'left';
     }
     closedUnder = null;
     leftChosen = true;
@@ -298,6 +340,7 @@
 
   function closeRail() {
     leftChosen = false;
+    summoned = false;
     if (railOnTop(history.state) === 'left') {
       history.back();
       return;
@@ -310,6 +353,14 @@
 
   $effect(() => {
     const restore = () => {
+      // Any pop is a navigation: the palette goes with the page it was over,
+      // and the keyboard goes back to where it was before the palette took it.
+      if (paletteOpen) {
+        const back = opener;
+        opener = null;
+        if (back !== null && back.isConnected) back.focus();
+      }
+      paletteOpen = false;
       const landed = railOnTop(history.state);
       if (landed !== null && landed === closedUnder) {
         // The inert entry a close stepped down: dropped here, so it is
@@ -319,14 +370,101 @@
         history.back();
         return;
       }
-      const chosen = chosenAfterPop(history.state, narrow, lastRail, closedUnder);
+      const chosen = chosenAfterPop(history.state, lastRail, closedUnder);
       lastRail = landed;
       closedUnder = null;
       if (chosen === null) return;
       leftChosen = chosen.left;
+      summoned = false;
     };
     addEventListener('popstate', restore);
     return () => removeEventListener('popstate', restore);
+  });
+
+  /**
+   * The palette: Cmd+K's own door, and the magnifier beside the chip where
+   * there is no keyboard. Its entry rides the same history channel as the
+   * rail's, so Android's Back closes what it opened.
+   */
+  let paletteOpen = $state(false);
+  /** Where the keyboard was before the palette took it. */
+  let opener: HTMLElement | null = null;
+
+  function openPalette() {
+    if (paletteOpen) return;
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (railOnTop(history.state) === null) {
+      history.pushState(railEntry(history.state, 'palette'), '', location.href);
+    }
+    paletteOpen = true;
+  }
+
+  function closePalette() {
+    paletteOpen = false;
+    const back = opener;
+    opener = null;
+    if (back !== null && back.isConnected) back.focus();
+    if (railOnTop(history.state) === 'palette') history.back();
+  }
+
+  /**
+   * The palette's own peek: the palette closes and its history entry becomes
+   * the RAIL's, rather than leaving a step under a step.
+   *
+   * Closing first and opening after would queue a `history.back()` that
+   * resolves only after `openRail` has pushed - the pop would then land on
+   * the entry beneath, the push would sit as an unreachable forward entry,
+   * and one Back would leave the page instead of closing the rail.
+   */
+  function handOffToRail(): void {
+    paletteOpen = false;
+    if (railOnTop(history.state) === 'palette') {
+      history.replaceState(railEntry(history.state), '', location.href);
+      lastRail = 'left';
+    }
+    openRail();
+  }
+
+  /**
+   * The rail's keyboard doors: Cmd+Left (or Ctrl+Left) opens the peek and
+   * closes it again, and Escape closes it. Both stand down while a field has
+   * the keyboard - Cmd+Left is the caret's own key and Escape belongs to
+   * whatever the reader is typing in.
+   */
+  $effect(() => {
+    const onkey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (paletteOpen) closePalette();
+        else openPalette();
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (paletteOpen) {
+          closePalette();
+          return;
+        }
+        if (typing || !leftShown) return;
+        event.preventDefault();
+        closeRail();
+        return;
+      }
+      if (event.key !== 'ArrowLeft' || !(event.metaKey || event.ctrlKey)) return;
+      if (typing) return;
+      // The column is already shown; there is nothing to toggle over it.
+      if (columned) return;
+      event.preventDefault();
+      if (overlaid) closeRail();
+      else openRail();
+    };
+    window.addEventListener('keydown', onkey);
+    return () => window.removeEventListener('keydown', onkey);
   });
 
   // One clock for the page: every age and every countdown reads against the
@@ -352,37 +490,89 @@
   });
 </script>
 
-<div class="app" class:left-shown={leftShown} class:left-hidden={!leftShown}>
-  <Rail home={wire} current={slot} {now} {connection} {notice} onclose={() => closeRail()} />
+<div
+  class="app"
+  class:rail-static={columned}
+  class:rail-open={overlaid && !columned}
+  class:rail-peek={peekOnly}
+>
+  <!-- The scrim a summoned rail closes on. It is a click-catcher rather than
+       a control: Escape is its keyboard door and the rail's own close chip
+       is the visible one, so presentation is the honest role. -->
+  <div class="scrim" role="presentation" onclick={() => closeRail()}></div>
+  <Rail
+    home={wire}
+    current={slot}
+    {now}
+    {connection}
+    {notice}
+    mode={railMode}
+    onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}
+    onenter={summon}
+    onleave={unsummon}
+  />
+  <Palette
+    open={paletteOpen}
+    {wire}
+    {slot}
+    {connection}
+    sessionId={facts?.sessionId ?? null}
+    onclose={() => closePalette()}
+    onpeek={columned ? null : () => handOffToRail()}
+  />
 
   <main class="chat">
     <div class="sess">
-      <!-- The wordmark, the way home: the home's own brand a size down so the
-           session's name still leads, in a real anchor so the keyboard reaches
-           it, the URL stays real and the router follows it in place. The
-           hairline is what separates the app's brand from the seat's own. -->
-      <a class="brand" href="/" title="home">
-        <Brand name={mark} />
-        <span class="word">forge</span>
-      </a>
-      <span class="mastsep" aria-hidden="true"></span>
-      <!-- The handle to each column lives with the title, so a folded column
-           leaves no edge behind and its control stays reachable. -->
-      <button
-        class="rail-tog tog-l"
-        type="button"
-        title="projects"
-        aria-label="projects"
+      <!-- The chip: the brand's own mark as the face of the one projects
+           control. It counts seats that want a PERSON - a question, a
+           permission, a died turn, never a mere change - and its click is
+           smart: exactly one, and it is not an error, goes straight to that
+           seat; several, or any failure among them, goes to the home page to
+           pick; none goes home too, from a quiet `projects` word. A real
+           anchor, so keyboard, middle-click and new-tab all behave. Hover
+           summons the rail as the peek. -->
+      <a
+        class="needchip"
+        class:calm={chip.state === 'none' && notice === null}
+        class:bad={chip.state === 'failed'}
+        href={chip.href}
+        title={notice ?? chip.label}
+        aria-label={notice === null ? chip.label : `${chip.label}, ${notice}`}
         aria-expanded={leftShown}
-        onclick={() => (leftShown ? closeRail() : openRail())}
+        onpointerenter={(event) => {
+          if (event.pointerType === 'mouse') summon();
+        }}
+        onpointerleave={(event) => {
+          if (event.pointerType === 'mouse') unsummon();
+        }}
       >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg
-        >
+        <Brand name={mark} class="ch-mk" />
+        <!-- The connection's own line lives in the rail footer, and the rail
+             may be away: the chip is the page's visible pane element, so the
+             stale read states itself here too. -->
+        {#if notice !== null}
+          <span class="dot warn ch-nd" aria-hidden="true"></span>
+        {/if}
+        {#if chip.state === 'none'}
+          <span class="ch-w">projects</span>
+        {:else if chip.state === 'failed'}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
+          <Icon name="x" class="ch-ic" />
+        {:else}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
+          <span class="ch-n">{chip.count}</span>
+        {/if}
+      </a>
+      <!-- The palette's door where there is no keyboard (a coarse pointer
+           only): the same palette Cmd+K opens. -->
+      <button
+        class="pal-btn"
+        type="button"
+        title="search seats and commands (Cmd+K)"
+        aria-label="search seats and commands"
+        onclick={() => openPalette()}
+      >
+        <Icon name="search" class="ic" />
       </button>
       <span class="dot {seat.mark}"></span>
       <!-- **The name leads and the org qualifies it** (#1707): the org shows
