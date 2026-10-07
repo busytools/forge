@@ -73,6 +73,36 @@ pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<Stri
     args
 }
 
+/// Normalize the profile's own crash marker before a spawn, so a launch
+/// opens exactly the tabs it is given.
+///
+/// **Chromium restores the last session's tabs whenever that marker says the
+/// previous run crashed**, and it stays "Crashed" under our closes - measured
+/// 2026-10-07: SIGTERM against Brave leaves `exit_type: Crashed` - so every
+/// Open's relaunch resurrected the window before it and the tabs piled up
+/// (Ved's four-tab window: two carried pages and two blanks). The marker is
+/// written the way a clean exit writes it (`Normal`, `exited_cleanly`), with
+/// everything else in the file preserved; a file that cannot be parsed is
+/// left alone rather than clobbered.
+fn mark_clean_shutdown(profile: &Path) {
+    let prefs = profile.join("Default/Preferences");
+    let Ok(text) = std::fs::read_to_string(&prefs) else { return };
+    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Some(profile_prefs) =
+        parsed.get_mut("profile").and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if profile_prefs.get("exit_type").and_then(serde_json::Value::as_str) == Some("Normal") {
+        return;
+    }
+    profile_prefs.insert("exit_type".to_owned(), serde_json::Value::String("Normal".to_owned()));
+    profile_prefs.insert("exited_cleanly".to_owned(), serde_json::Value::Bool(true));
+    if let Ok(serialized) = serde_json::to_string(&parsed) {
+        let _ = std::fs::write(&prefs, serialized);
+    }
+}
+
 /// One launch, as `DevToolsActivePort` records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivePort {
@@ -241,6 +271,7 @@ async fn launch_with(
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
     forget_launch(profile);
+    mark_clean_shutdown(profile);
 
     let mut command = tokio::process::Command::new(binary);
     for arg in launch_args(profile, headed, page) {
@@ -664,6 +695,45 @@ mod tests {
 
         std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
         assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
+    }
+
+    /// **A launch must not resurrect the last session's tabs.** Chromium
+    /// restores them whenever the profile's own marker says the last run
+    /// crashed, and its marker is normalized here before every spawn - a
+    /// launch opens exactly the tabs it is given (Ved's four-tab window,
+    /// 2026-10-07).
+    #[test]
+    fn a_launch_normalizes_the_crash_marker_so_tabs_do_not_accumulate() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        // A fresh profile has no prefs at all, which is not an error: there
+        // is no marker to normalize.
+        mark_clean_shutdown(dir.path());
+        assert!(!dir.path().join("Default/Preferences").exists());
+
+        std::fs::create_dir_all(dir.path().join("Default")).expect("a Default profile");
+        let prefs = dir.path().join("Default/Preferences");
+        std::fs::write(
+            &prefs,
+            br#"{"profile": {"exit_type": "Crashed", "name": "Person 1"}, "other": 7}"#,
+        )
+        .expect("prefs");
+        mark_clean_shutdown(dir.path());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&prefs).expect("prefs read"))
+                .expect("prefs are JSON");
+        assert_eq!(parsed["profile"]["exit_type"], serde_json::json!("Normal"), "{parsed}");
+        assert_eq!(parsed["profile"]["exited_cleanly"], serde_json::json!(true), "{parsed}");
+        assert_eq!(parsed["profile"]["name"], serde_json::json!("Person 1"), "everything else stays");
+        assert_eq!(parsed["other"], serde_json::json!(7), "{parsed}");
+
+        // A file that is not JSON must not be clobbered by the normalizer.
+        std::fs::write(&prefs, b"not json at all").expect("prefs");
+        mark_clean_shutdown(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(&prefs).expect("prefs read"),
+            "not json at all",
+            "a prefs file this cannot parse is left exactly as it was",
+        );
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since
