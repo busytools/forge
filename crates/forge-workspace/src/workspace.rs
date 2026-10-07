@@ -5345,8 +5345,14 @@ impl Workspace {
         // `pending_asks` reads it - and without this a held draft leaves
         // the seat `Running`, which is what kept the client's
         // lifecycle-driven needs mark quiet while the dock sat unanswered
-        // (#1758).
-        if blocked || self.has_slack_draft(slot) { L::Attention } else { L::Running }
+        // (#1758). **The browser hand-off is the same shape** - its own
+        // registry, its own read - and the same silence without it (Ved,
+        // 2026-10-07).
+        if blocked || self.has_slack_draft(slot) || self.has_browser_hand_off(slot) {
+            L::Attention
+        } else {
+            L::Running
+        }
     }
 
     /// Whether `slot` is holding a parked Slack draft. The workspace's own
@@ -5354,6 +5360,13 @@ impl Workspace {
     /// draft visible to `session_activity` when the set itself is empty.
     fn has_slack_draft(&self, slot: &SessionSlot) -> bool {
         self.slack_drafts.lock().values().any(|(owner, _, _)| owner == slot)
+    }
+
+    /// Whether `slot` is holding a parked browser hand-off, read exactly as
+    /// the draft above: its own registry, so a held hand-off reaches
+    /// `session_activity` and every needs mark the lifecycle drives.
+    fn has_browser_hand_off(&self, slot: &SessionSlot) -> bool {
+        self.browser_handoffs.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
     /// `entry` projected to the wire shape with `activity` derived.
@@ -11983,6 +11996,42 @@ mod worker_activity_tests {
             ws.session_activity(&bystander),
             L::Running,
             "another seat's draft is not this seat's news",
+        );
+    }
+
+    /// A parked browser hand-off is a pending interaction like any other:
+    /// the seat waits on a person, so the lifecycle says `Attention` - every
+    /// needs mark draws from this. Ved, live round 2026-10-07: the hand-off
+    /// dock waited while the rail and the tabs stayed quiet. Same shape as
+    /// the parked draft's arm, registry read and all.
+    #[tokio::test]
+    async fn a_parked_browser_hand_off_reads_as_attention() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-handoff");
+        let domain = ws.register_domain_session(seat.clone(), None);
+        domain.lock().turn_pending = true;
+        assert_eq!(ws.session_activity(&seat), L::Running, "the control, as for the draft");
+
+        let handoff = forge_primitives::browser::HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: "solve the CAPTCHA".to_owned(),
+            context: None,
+        };
+        let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff);
+
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Attention,
+            "a held hand-off is a person's to answer, not a running turn's",
+        );
+
+        let bystander = SessionSlot::from_str_for_test("w-bystander2");
+        let other = ws.register_domain_session(bystander.clone(), None);
+        other.lock().turn_pending = true;
+        assert_eq!(
+            ws.session_activity(&bystander),
+            L::Running,
+            "another seat's hand-off is not this seat's news",
         );
     }
 
