@@ -586,7 +586,11 @@ describe('the app grid', () => {
   it('marks the chip while the page shows a stale read', () => {
     const body = draw({ notice: 'the socket dropped; showing the last read' });
     expect(body, 'the stale state vanished with the rail away').toContain('ch-nd');
-    expect(body, 'and its words are on the chip').toContain('showing the last read');
+    // The NAME, not just the title: the cross is decorative and the tone is
+    // colour, so the line has to reach the accessible label itself.
+    expect(body, 'the stale line is not in the accessible name').toContain(
+      'aria-label="1 seat needs you, the socket dropped; showing the last read"',
+    );
   });
 
   /**

@@ -470,6 +470,65 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **The folded rail keeps its pointer door, whatever the stored mode.** A
+   * static preference at a folded width must still answer the chip's hover:
+   * the guard is the fold, not the preference - and nothing else in the
+   * suite dispatches this pointer.
+   */
+  it('summons the folded rail on the chip hover', async () => {
+    matchMediaTo(true);
+    await open(sessionFixture);
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the folded rail opened by itself',
+    ).not.toContain('rail-open');
+
+    document
+      .querySelector('.needchip')
+      ?.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' }));
+    flushSync();
+    expect(
+      document.querySelector('.app')?.className ?? '',
+      'the folded rail ignored the chip hover',
+    ).toContain('rail-open');
+  });
+
+  /**
+   * **A Back returns the keyboard where the palette took it**: the pop path
+   * restores focus the same way Escape and Cmd+K do.
+   */
+  it('returns the keyboard to the opener when a Back closes the palette', async () => {
+    await open(sessionFixture);
+    const chip = document.querySelector<HTMLElement>('.needchip');
+    chip?.focus();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    expect(document.querySelector('.pal'), 'Cmd+K drew no palette').not.toBeNull();
+
+    history.back();
+    await until(() => document.querySelector('.pal') === null);
+    expect(document.activeElement, 'the pop left the keyboard nowhere').toBe(chip);
+  });
+
+  /**
+   * **Escape's route consumes its own entry**: one Back after an
+   * Escape-closed palette must not find a stranded step - the same class R1
+   * named, through the other door.
+   */
+  it('consumes the palette entry when Escape closes it', async () => {
+    await open(sessionFixture);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+    flushSync();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await until(() => document.querySelector('.pal') === null);
+
+    const left = (): string | undefined =>
+      (history.state as { forgeRail?: string } | null)?.forgeRail;
+    await until(() => left() === undefined);
+    expect(left(), "Escape's route stranded its entry").toBeUndefined();
+  });
+
+  /**
    * **The answering role is declared when, and only when, the page can
    * answer.** The dock that answers a prompt lives in the composer, so a page
    * without one must subscribe as an observer: a client counted as able to

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { FORGE_COMMANDS } from '../composer/forge-commands';
@@ -929,6 +931,31 @@ describe("the palette's rows", () => {
     expect(doings).toContain('close this seat');
     const home = sections[4]?.rows.find((row) => row.label === 'go home');
     expect(home?.href, 'the home doing is a href').toBe('/');
+  });
+
+  /**
+   * **The table is commands.rs's, and this reading keeps them equal.** The
+   * client's copy is static so the box opens without a round trip; a static
+   * copy drifts silently, so the pin reads the Rust side.
+   */
+  it('keeps the command table equal to commands.rs', () => {
+    const rust = readFileSync(
+      new URL('../../../crates/forge-server/src/commands.rs', import.meta.url),
+      'utf8',
+    );
+    const names = [...rust.matchAll(/name:\s*"(\/[a-z]+)"/g)].map((match) => match[1] ?? '');
+    expect(names.length, 'the Rust table parsed to nothing').toBeGreaterThan(0);
+    expect(
+      FORGE_COMMANDS.map((command) => command.name),
+      'the client table drifted from commands.rs',
+    ).toEqual(names);
+  });
+
+  /** A logged-out seat reads asleep, the same way a sleeping one does. */
+  it('reads a logged-out seat as asleep', () => {
+    const wire = withHome({ agents: [agent('gone', { lifecycle: 'LoggedOut' })] });
+    const row = paletteRows(wire, LEAD)[0]?.rows[0];
+    expect(row?.detail, 'a logged-out seat did not read asleep').toContain('asleep');
   });
 });
 
