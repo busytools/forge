@@ -1,14 +1,8 @@
 fn main() {
-    // **CEF claims NSApplication before tauri (through tao) touches it**, and
-    // its own subprocesses re-enter this binary here; both live in the
-    // bootstrap, which must be the first thing that runs. The identifier
-    // names the app-data directory CEF's profile hangs off, the same one the
-    // browser host resolves later.
-    #[cfg(all(desktop, target_os = "macos"))]
-    {
-        let context: tauri::Context = tauri::generate_context!();
-        forge_client::browser::cef::bootstrap(context.config().identifier.as_str());
-    }
-
+    // **The engine is the vendored Chromium again** (CEF was measured out
+    // 2026-10-07: its windowed runtime drops agent input in the background
+    // and wedges the pinned driver's click - see `chromium::show` for the
+    // hand-off's own window). The CEF bootstrap and its module stay for a
+    // later engine, dormant.
     forge_client::run();
 }

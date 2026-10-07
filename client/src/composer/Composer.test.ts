@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { openTakeover } from '../browser/host';
+import { showBrowser } from '../browser/host';
 import { takeover } from '../browser/takeover.svelte';
 
 /**
@@ -15,8 +15,8 @@ vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
-    // No engine in tests: the dock hears the refusal and says the view could
-    // not be opened.
+    // No window in tests: a raise that fails says so on the dock.
+    showBrowser: vi.fn(() => Promise.resolve(false)),
     openTakeover: vi.fn(() => Promise.reject(new Error('no engine'))),
     closeTakeover: vi.fn(() => Promise.resolve()),
     takeoverState: vi.fn(() => Promise.resolve({ active: false, native: false })),
@@ -4272,17 +4272,18 @@ describe('the dock', () => {
     expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
   });
 
-  /** **There is no second door.** The dock's Open brings the in-app view up,
-   * and the headed window the fallback used to raise is gone with the
-   * machinery the takeover replaced. */
-  it('opens the in-app takeover', async () => {
-    vi.mocked(openTakeover).mockResolvedValueOnce(undefined);
+  /** **The window, not an overlay** (Ved, 2026-10-07): Open raises the
+   * person's own browser over the profile the agents drive. */
+  it('opens the browser window', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce(true);
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    await vi.waitFor(() => expect(takeover.active, 'the screen is the browser').toBe(true));
+    await vi.waitFor(() =>
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledTimes(1),
+    );
 
-    expect(openTakeover, 'the view the approval is for').toHaveBeenCalledTimes(1);
+    expect(takeover.active, 'and the screen is untouched').toBe(false);
   });
 
   /** The bar's Done is the dock's own answer: the dock arms it while its
@@ -4295,12 +4296,13 @@ describe('the dock', () => {
     );
   });
 
-  /** A view that will not open says so rather than opening anything else. */
-  it('says the view could not be opened when the shell refuses', async () => {
+  /** A window that will not open says so rather than pretending. */
+  it('says the window could not be opened when the raise fails', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    vi.mocked(showBrowser).mockResolvedValueOnce(false);
 
     action('Open browser').click();
-    await vi.waitFor(() => expect(drawn()).toContain('The browser view could not be opened here'));
+    await vi.waitFor(() => expect(drawn()).toContain('The browser window could not be opened'));
 
     expect(takeover.active, 'and nothing took the screen').toBe(false);
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);

@@ -110,9 +110,8 @@ pub struct BrowserHost {
     paths: Result<StackPaths, String>,
     /// Every `chromium::ensure` runs under this, whichever context asks for
     /// one: a burst of first calls launches ONE browser rather than two onto
-    /// one profile. (macOS has nothing to launch: the browser is CEF, in
-    /// this process.)
-    #[cfg(not(all(desktop, target_os = "macos")))]
+    /// one profile - and a hand-off's `show` racing a first call cannot leave
+    /// two browsers on one profile either.
     launch: Mutex<()>,
     /// The browser's own context, shared by every session.
     default: Mutex<Option<Arc<Context>>>,
@@ -145,7 +144,6 @@ impl BrowserHost {
     pub fn new(paths: StackPaths) -> Self {
         Self {
             paths: Ok(paths),
-            #[cfg(not(all(desktop, target_os = "macos")))]
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
@@ -162,7 +160,6 @@ impl BrowserHost {
     pub fn unavailable(why: String) -> Self {
         Self {
             paths: Err(why),
-            #[cfg(not(all(desktop, target_os = "macos")))]
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
@@ -321,32 +318,14 @@ impl BrowserHost {
 
     /// The live browser, launched when nothing is up.
     async fn active_browser(&self, paths: &StackPaths) -> Result<chromium::ActivePort, String> {
-        // **On macOS the browser IS the client's own.** CEF renders inside
-        // this window and its CDP is where the sessions' driver attaches -
-        // there is no second browser to launch and nothing to find again.
-        #[cfg(all(desktop, target_os = "macos"))]
-        {
-            let _ = paths;
-            let port = cef::debug_port();
-            if port == 0 {
-                return Err("the client's own browser is not up".to_owned());
-            }
-            // **Bounded wait, not one probe.** CEF's DevTools server comes up
-            // asynchronously after initialize, and a single probe right after
-            // boot raced it - a transient that read as "no browser".
-            for _ in 0..50 {
-                if let Some(path) = chromium::probe_identity(port).await {
-                    return Ok(chromium::ActivePort { port, path, pid: None });
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            return Err(format!("nothing answers as a browser on 127.0.0.1:{port}"));
-        }
-        #[cfg(not(all(desktop, target_os = "macos")))]
-        {
-            let _launching = self.launch.lock().await;
-            chromium::ensure(&chromium::chrome_binary(&paths.stack), &paths.profile).await
-        }
+        // **The vendored Chromium, headless, one browser for the client.**
+        // CEF was measured out on 2026-10-07: its windowed runtime drops
+        // CDP-dispatched input whenever the window is not frontmost, and the
+        // pinned driver's click wedges on its target bookkeeping - full
+        // playwright parity wins over the native view (see `chromium::show`
+        // for how the person sees it).
+        let _launching = self.launch.lock().await;
+        chromium::ensure(&chromium::browser_binary(&paths.stack), &paths.profile).await
     }
 
     /// The named contexts this host holds, oldest name first, for its own
@@ -367,6 +346,28 @@ impl BrowserHost {
         rows
     }
 
+    /// Bring the browser up VISIBLY for a hand-off's Open: the person's own
+    /// browser window, over the same profile the agents drive.
+    ///
+    /// Serialized with every other launch, so a show racing a first call
+    /// cannot leave two browsers on one profile. This is the client's own
+    /// act and answers the core nothing: the hand-off's answer is Done or
+    /// Not now, and never the window itself.
+    pub async fn show(&self) -> Result<chromium::ActivePort, String> {
+        let paths = self.paths.clone()?;
+        let _launching = self.launch.lock().await;
+        chromium::show(&chromium::browser_binary(&paths.stack), &paths.profile).await
+    }
+
+    /// Take the window back down: the browser closes, and the next agent
+    /// call relaunches it headless over the same profile. **The hand-off is
+    /// not answered by this** - Done or Not now is.
+    pub async fn hide(&self) -> Result<(), String> {
+        let paths = self.paths.clone()?;
+        chromium::hide(&paths.profile).await;
+        Ok(())
+    }
+
     /// Bring the in-app browser view up over the client's window: the
     /// approved takeover.
     ///
@@ -380,9 +381,10 @@ impl BrowserHost {
         let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
         let emitter = app.clone();
         let kept = std::sync::Arc::clone(&self.last_frame);
-        // **The desktop draws the browser itself**, so its session carries
-        // input without frames; the platforms that draw frames ask for them.
-        let with_frames = !cfg!(all(desktop, target_os = "macos"));
+        // **The takeover draws frames everywhere** (CEF was measured out):
+        // the hand-off's own window is the native surface now, and the
+        // in-app view is the stream.
+        let with_frames = true;
         let started = screencast::start(&endpoint, with_frames, move |frame| {
             let mut held = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *held = Some(frame.clone());
@@ -423,7 +425,9 @@ impl BrowserHost {
         self.paths.clone()?;
         Ok(TakeoverState {
             active: self.takeover_up.load(std::sync::atomic::Ordering::Acquire),
-            native: cfg!(all(desktop, target_os = "macos")),
+            // The frames path is the picture everywhere again (CEF retired):
+            // the native surface is the hand-off's own browser window.
+            native: false,
         })
     }
 
@@ -615,6 +619,21 @@ pub async fn browser_takeover_state(
     host: tauri::State<'_, Arc<BrowserHost>>,
 ) -> Result<TakeoverState, String> {
     host.takeover_state().await
+}
+
+/// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
+/// the core: the window is the client's act, and Done or Not now is the
+/// answer.
+#[tauri::command]
+pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
+    host.show().await.map(|_| ())
+}
+
+/// Take the hand-off's window back down; the next agent call relaunches the
+/// browser headless over the same profile.
+#[tauri::command]
+pub async fn browser_hide(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
+    host.hide().await
 }
 
 /// The page the browser is showing, for the takeover's bar.

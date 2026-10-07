@@ -1,6 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
+  import { showBrowser } from '../browser/host';
   import { takeover } from '../browser/takeover.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -529,8 +530,13 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    void takeover.open().catch(() => {
-      raiseFailedFor = id;
+    // **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
+    // runs headless until this moment, and Open raises the person's own
+    // browser over the profile the agents drive.
+    void showBrowser().then((raised) => {
+      if (!raised) {
+        raiseFailedFor = id;
+      }
     });
   }
 
@@ -820,8 +826,8 @@
     <div class="d-q">{ask.request.reason}</div>
     <div class="desc">
       {raiseFailed
-        ? 'The browser view could not be opened here - act in the client that has it open, then press Done.'
-        : 'Open the browser view to act; the session waits, with no timeout, until Done or Not now.'}
+        ? 'The browser window could not be opened - act where the browser is up, then press Done.'
+        : 'Open browser raises the window over the profile the session drives; until then the browser is headless. The session waits, with no timeout, until Done or Not now.'}
     </div>
   {/if}
 

@@ -106,12 +106,31 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the in-app browser view up over the client's window: a hand-off's
- * Open, and nothing else.
+ * Bring the browser up visibly, which is what a hand-off's Open asks for:
+ * the person's own browser window over the profile the agents drive
+ * (headless until then).
  *
- * **Rejects while no engine is compiled into the shell.** The approved
- * takeover is in-app; a click that cannot deliver it says so rather than
- * opening some other browser the person did not ask for.
+ * **Answers whether a browser was really raised.** `false` outside the shell
+ * and on a failed raise - an unvendored build, a host that cannot start -
+ * and the caller draws that truth rather than claiming a window is up. A
+ * dock that said the browser is up over a raise that never happened would
+ * have the person press Done and tell the session they acted.
+ */
+export async function showBrowser(): Promise<boolean> {
+  if (!canHost()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_show');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bring the in-app browser view up over the client's window: the takeover
+ * the frames path draws (the surface kept for the platforms whose browsers
+ * cannot have a window of their own).
  */
 export async function openTakeover(): Promise<void> {
   if (!canHost()) throw new Error('this page is not the client');

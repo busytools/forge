@@ -4525,6 +4525,16 @@ impl Workspace {
                     // Same shape as the Slack arm above: the guard already
                     // refused one that is not waiting, so a `false` here is a
                     // resolve that landed between the two.
+                    // **Who answered is the log's business**: hand-offs were
+                    // seen resolving by themselves in a live round
+                    // (2026-10-07), and nothing named the hand that sent it.
+                    tracing::debug!(
+                        event_name = "browser_hand_off_answered",
+                        key = ?key,
+                        id = %id,
+                        done,
+                        "a client answered a parked browser hand-off"
+                    );
                     let ending = if done {
                         forge_primitives::browser::HandOffEnding::Done
                     } else {

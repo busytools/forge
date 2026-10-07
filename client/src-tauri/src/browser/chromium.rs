@@ -32,18 +32,22 @@ pub fn chrome_binary(stack: &Path) -> PathBuf {
 /// The argument list one launch runs with.
 ///
 /// `profile` is the browser's own directory, which is what carries logins,
-/// cookies and the HTTP cache across everything. **Always headless**: the only
-/// visible surface is the client's own takeover, so a browser that looks like
-/// an automation tool never appears on the person's screen.
-pub fn launch_args(profile: &Path) -> Vec<String> {
+/// cookies and the HTTP cache across everything. `headed` is the hand-off's
+/// own window: the default is **headless** - the browser is seen only when
+/// the person says Open - and the headed launch is the same launch without
+/// that flag, against the person's installed browser when one is there (Ved,
+/// 2026-10-07: it must look like a real browser, not an automation tool).
+pub fn launch_args(profile: &Path, headed: bool) -> Vec<String> {
     let mut args = vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
         // find again.
         "--remote-debugging-port=0".to_owned(),
         format!("--user-data-dir={}", profile.display()),
-        "--headless".to_owned(),
     ];
+    if !headed {
+        args.push("--headless".to_owned());
+    }
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
         // nothing worth a keychain entry, while reaching for one raises a
@@ -212,6 +216,12 @@ const STDERR_TAIL: usize = 4096;
 /// launch never depends on what a previous one left behind - and a browser
 /// that looks like an automation tool never appears on their screen.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
+    launch_with(binary, profile, false).await
+}
+
+/// The same launch with `headed` asked for: the hand-off's own window,
+/// brought up by [`show`].
+async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<ActivePort, String> {
     if !binary.is_file() {
         return Err(format!(
             "the vendored browser is not there at {} - run `just vendor-browser-stack`",
@@ -225,7 +235,7 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
     forget_launch(profile);
 
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile) {
+    for arg in launch_args(profile, headed) {
         command.arg(arg);
     }
     command
@@ -270,6 +280,12 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
         if let Some(active) = verified(profile).await {
             if let Some(pid) = pid {
                 let _ = std::fs::write(pid_file(profile), pid.to_string());
+            }
+            // Written only now, with the browser answering: `show` reads it as
+            // "a window is up", and a marker for a launch that failed is a
+            // claim nobody can check.
+            if headed {
+                let _ = std::fs::write(windowed_marker(profile), b"");
             }
             return Ok(ActivePort { pid, ..active });
         }
@@ -331,11 +347,146 @@ fn pid_file(profile: &Path) -> PathBuf {
     profile.join("browser.pid")
 }
 
+/// The person's installed Brave, when it is there: **the browser forge
+/// drives, headless and headed alike** (Ved, 2026-10-07) - a real browser
+/// rather than the automation-branded bundle, and the vendored Chromium
+/// stays only as the fallback for a machine without one.
+pub fn brave_binary() -> Option<PathBuf> {
+    let path = PathBuf::from("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser");
+    path.is_file().then_some(path)
+}
+
+/// The binary every launch uses: the installed Brave first, the vendored
+/// Chromium when there is none.
+pub fn browser_binary(stack: &Path) -> PathBuf {
+    brave_binary().unwrap_or_else(|| chrome_binary(stack))
+}
+
+/// The marker a headed launch leaves in the profile: the port file says
+/// nothing about a window, and this is what makes "is a window up"
+/// answerable.
+fn windowed_marker(profile: &Path) -> PathBuf {
+    profile.join("windowed")
+}
+
+/// Whether the running launch is the headed one.
+pub fn launched_windowed(profile: &Path) -> bool {
+    windowed_marker(profile).is_file()
+}
+
+/// Bring the browser up VISIBLY, for a hand-off's Open: the person's own
+/// browser when one is installed, the vendored binary otherwise.
+///
+/// **A window is a launch flag, not something a running browser can be
+/// told**, so the running headless launch is closed and the same profile is
+/// relaunched headed. The cost is the relaunch itself: open driver
+/// transports die with the old browser and rebuild on the next call, and the
+/// current page reloads - the profile keeps logins and cookies. A window
+/// already up is answered as it is; nothing here can reach the OS focus.
+pub async fn show(vendored: &Path, profile: &Path) -> Result<ActivePort, String> {
+    if launched_windowed(profile)
+        && let Some(active) = verified(profile).await
+    {
+        return Ok(active);
+    }
+    if let Some(port) = read_active_port(profile).map(|active| active.port) {
+        close(profile, port).await;
+    }
+    let binary = brave_binary().unwrap_or_else(|| vendored.to_owned());
+    launch_with(&binary, profile, true).await
+}
+
+/// Take the window back down: the browser is closed, and the next agent call
+/// relaunches it headless over the same profile. The hand-off is NOT answered
+/// by this - Done or Not now is - so a person who closes the window and walks
+/// away leaves the session parked exactly as it was.
+pub async fn hide(profile: &Path) {
+    if let Some(active) = read_active_port(profile) {
+        close(profile, active.port).await;
+    }
+}
+
+/// Close the browser on `profile`, so a relaunch is not a second browser onto
+/// one profile.
+///
+/// **The LISTENER is the truth and the pid file is a hint.** The pid a launch
+/// wrote describes a process that may since have exited - a dead pid, or a
+/// recycled one belonging to something else entirely - so killing it blindly
+/// is the exact outcome the pid file exists to avoid. So the pid is killed
+/// only when it holds THIS port; otherwise, what holds the port is - by the
+/// PORT and never by a pattern or a name, because this machine runs other
+/// browsers and one of them belongs to the person sitting at it. **And only
+/// after the port answers AS this profile's launch**: a port the launch let go
+/// and something else took over is a stranger, and the wires go without a
+/// kill.
+async fn close(profile: &Path, port: u16) {
+    if !answers_as(profile, port).await {
+        forget_launch(profile);
+        return;
+    }
+    let listeners = port_pids(port).await;
+    if listeners.is_empty() {
+        return;
+    }
+    let named = std::fs::read_to_string(pid_file(profile))
+        .ok()
+        .and_then(|written| written.trim().parse::<u32>().ok());
+    match named.filter(|pid| listeners.contains(pid)) {
+        Some(pid) => {
+            kill_pid(pid, false).await;
+            if !port_frees(port).await {
+                kill_pid(pid, true).await;
+            }
+        }
+        None => {
+            for pid in &listeners {
+                kill_pid(*pid, false).await;
+            }
+            if !port_frees(port).await {
+                for pid in &listeners {
+                    kill_pid(*pid, true).await;
+                }
+            }
+        }
+    }
+    if port_frees(port).await {
+        forget_launch(profile);
+    }
+}
+
+/// Whatever holds `port`.
+async fn port_pids(port: u16) -> Vec<u32> {
+    let Ok(listed) = tokio::process::Command::new("lsof")
+        .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+        .output()
+        .await
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&listed.stdout)
+        .split_whitespace()
+        .filter_map(|pid| pid.parse().ok())
+        .collect()
+}
+
+/// Wait, bounded, for the port a closing browser holds to stop answering.
+/// `false` when it never let go, which is what escalates the kill.
+async fn port_frees(port: u16) -> bool {
+    for _ in 0..20 {
+        if !probe(port).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// Drop the wires a launch leaves. Called by a launch about to take them
 /// over.
 fn forget_launch(profile: &Path) {
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let _ = std::fs::remove_file(pid_file(profile));
+    let _ = std::fs::remove_file(windowed_marker(profile));
 }
 
 /// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
@@ -397,7 +548,7 @@ mod tests {
     /// machine, once per ask, and a headless browser has nobody to answer it.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"));
+        let args = launch_args(Path::new("/tmp/forge-profile"), false);
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
