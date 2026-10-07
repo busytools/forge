@@ -56,10 +56,12 @@ pub(crate) struct TakeRecord<'a> {
 ///
 /// Measured on the maintainer's live store (2026-10-06, ten takes,
 /// read-only): 10.3 MB in total, median 226 KB, mean 1.03 MB, worst
-/// 7.68 MB. 400 takes is around 90 MB typical and about 3 GB if every
-/// take were the worst case, which is the price of a shelf wide enough
-/// for a bench to score against.
-const RETAINED_TAKES: usize = 400;
+/// 7.68 MB - a mean take is about half a minute of audio. The cap is
+/// the bench's run time as much as its disk, since a run scores the
+/// whole store: 100 takes is roughly an hour of speech, around a minute
+/// of wall clock per run at the measured rate, and about 55 MB typical
+/// (770 MB if every take were the worst case).
+const RETAINED_TAKES: usize = 100;
 
 /// The unix-millisecond stamp a take directory is named by, as
 /// `take-<13 digits>`: sortable, and 13 digits holds until the year
