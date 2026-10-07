@@ -173,6 +173,12 @@ describe('the incident key', () => {
     const next = rateLimitNoticeKey({ rateLimitType: 'five_hour', resetsAt: RESETS_AT + 18_000 });
     expect(next).not.toBe(first);
   });
+
+  it('keeps two types apart at the same reset instant', () => {
+    const fiveHour = rateLimitNoticeKey({ rateLimitType: 'five_hour', resetsAt: RESETS_AT });
+    const sevenDay = rateLimitNoticeKey({ rateLimitType: 'seven_day', resetsAt: RESETS_AT });
+    expect(sevenDay, 'the window type is part of the incident').not.toBe(fiveHour);
+  });
   it('stands on its own when the frame names neither window nor reset', () => {
     expect(rateLimitNoticeKey({ status: 'rejected' })).toBe('rate-limit:any:none');
   });
