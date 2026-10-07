@@ -358,7 +358,7 @@ async fn launch_with(
             let because =
                 if said.is_empty() { String::new() } else { format!("; it said: {said}") };
             return Err(format!(
-                "the vendored browser did not answer on its port within {} s{because}",
+                "the browser did not answer on its port within {} s{because}",
                 LAUNCH_TIMEOUT.as_secs(),
             ));
         }

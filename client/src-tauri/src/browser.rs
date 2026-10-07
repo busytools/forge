@@ -11,8 +11,8 @@
 //! session that opened it and kept in [`profiles`].
 //!
 //! The pieces:
-//! - [`chromium`] - where the vendored Chromium is, how it is launched, and
-//!   how a launch is found again after a restart.
+//! - [`chromium`] - where the machine's browser is found, how it is launched,
+//!   and how a launch is found again after a restart.
 //! - [`profiles`] - which names are usable, who owns one, and what it
 //!   reopens from.
 //! - [`driver`] - upstream `@playwright/mcp` as a child process, spoken to as
@@ -293,7 +293,7 @@ impl BrowserHost {
 
     /// The live browser, launched when nothing is up.
     async fn active_browser(&self, paths: &StackPaths) -> Result<chromium::ActivePort, String> {
-        // **The vendored Chromium, headless, one browser for the client.**
+        // **The machine's own browser, headless, one browser for the client.**
         // CEF was measured out on 2026-10-07: its windowed runtime drops
         // CDP-dispatched input whenever the window is not frontmost, and the
         // pinned driver's click wedges on its target bookkeeping - full

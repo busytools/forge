@@ -10,10 +10,10 @@
 //! ```
 //!
 //! What it proves is the whole client half of the pipe in one go: the
-//! vendored Chromium launches against a profile nobody has used, the vendored
-//! driver attaches to it over CDP, and upstream's own `browser_navigate` and
-//! `browser_snapshot` answer through the host - which is exactly what an ask
-//! from a session rides.
+//! machine's own browser launches against a data directory nobody has used,
+//! the vendored driver attaches to it over CDP, and upstream's own
+//! `browser_navigate` and `browser_snapshot` answer through the host - which
+//! is exactly what an ask from a session rides.
 
 mod support;
 

@@ -67,6 +67,15 @@ need tar
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# The browser is the machine's own now, and a `browser/` tree from when one
+# was vendored is removed here: `bundle.resources` globs the whole stack, so
+# a leftover would keep packing a Chromium nothing can launch into every
+# release.
+if [ -d "$STACK/browser" ]; then
+    echo "[..] removing the stale vendored browser tree"
+    find "$STACK/browser" -depth -delete
+fi
+
 # Fail on bytes that are not the pinned ones. A partial download and a
 # tampered one look the same here, and both must not reach the bundle.
 verify_sha256() {
