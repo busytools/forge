@@ -169,8 +169,10 @@
             >
               {#if row.running}
                 <span class="ring"></span>
-              {:else}
+              {:else if row.completed}
                 <Icon name="check" class="ok" />
+              {:else}
+                <Icon name="x" class="bad" />
               {/if}
               <span class="nm lead">{row.name}</span>
               <span class="n">{row.label}</span>

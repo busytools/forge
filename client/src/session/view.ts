@@ -372,6 +372,8 @@ export interface MonitorStripRow {
   /** The monitor's own tool_use_id, which is what the row is keyed by. */
   id: string;
   running: boolean;
+  /** Whether it ENDED well: `completed` only, never `stopped` or `timed_out`. */
+  completed: boolean;
   name: string;
   label: string;
   command: string;
@@ -1265,6 +1267,10 @@ export function monitorRows(monitors: MonitorRecord[], now: number): MonitorStri
   return monitors.map((monitor) => ({
     id: monitor.tool_use_id,
     running: monitor.status === 'running',
+    // Only `completed` is a success: the wire folds failed, killed and
+    // stopped into `stopped`, so anything else must not wear the green
+    // check - the terminal's own row draws them red for the same reason.
+    completed: monitor.status === 'completed',
     name: monitor.description,
     label: monitorLabel(monitor, now),
     command: monitor.command,

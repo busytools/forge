@@ -717,18 +717,32 @@ describe('the monitors the strip draws', () => {
           output_file: null,
           ended_at: null,
         },
+        {
+          tool_use_id: 'm3',
+          task_id: null,
+          description: 'done',
+          command: 'true',
+          persistent: false,
+          timeout_ms: 0,
+          status: 'completed',
+          output_file: null,
+          ended_at: null,
+        },
       ],
       0,
     );
     expect(rows[0]).toEqual({
       id: 'm1',
       running: true,
+      completed: false,
       name: 'ci-watch',
       label: 'persistent',
       command: 'gh run watch',
     });
     expect(rows[1]?.running, 'a settled monitor does not read as live').toBe(false);
+    expect(rows[1]?.completed, 'a timed-out watch did not complete').toBe(false);
     expect(rows[1]?.label).toBe('timed out');
+    expect(rows[2]?.completed, 'a completed watch did').toBe(true);
   });
 
   it('draws an age only when the record stated an instant', () => {

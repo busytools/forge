@@ -38,6 +38,7 @@ const MONITORS: MonitorStripRow[] = [
   {
     id: 'm1',
     running: true,
+    completed: false,
     name: 'ci-watch',
     label: 'persistent',
     command: 'gh run watch 18234567',
@@ -45,9 +46,18 @@ const MONITORS: MonitorStripRow[] = [
   {
     id: 'm2',
     running: false,
+    completed: true,
     name: 'log-tail',
-    label: 'stopped 2m',
+    label: 'completed 2m',
     command: 'tail -f forge.log',
+  },
+  {
+    id: 'm3',
+    running: true,
+    completed: false,
+    name: 'deps',
+    label: 'persistent',
+    command: 'npm outdated',
   },
 ];
 
@@ -193,17 +203,53 @@ describe("the monitors row's interaction state machine", () => {
     toggle()?.click();
     flushSync();
 
-    expect(rows(), 'one row per monitor').toHaveLength(2);
+    expect(rows(), 'one row per monitor').toHaveLength(3);
     expect(rows()[0]?.querySelector('.ring'), 'a running monitor wears the ring').not.toBeNull();
-    expect(rows()[1]?.querySelector('.ic.ok'), 'a settled one wears the check').not.toBeNull();
+    expect(rows()[1]?.querySelector('.ic.ok'), 'a completed one wears the check').not.toBeNull();
     expect(rows()[1]?.classList.contains('settled')).toBe(true);
+    expect(rows()[2]?.querySelector('.ring'), 'and the second running one its ring').not.toBeNull();
     expect(rows()[0]?.querySelector('.nm')?.textContent?.trim()).toBe('ci-watch');
     expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('persistent');
     const subs = [...document.querySelectorAll<HTMLElement>('.sg-sub')];
     expect(subs.map((sub) => sub.textContent?.trim())).toEqual([
       '$ gh run watch 18234567',
       '$ tail -f forge.log',
+      '$ npm outdated',
     ]);
+  });
+
+  it('counts only the running monitors on the toggle', () => {
+    draw();
+    // Two of the three run, so a count read off the wrong side reads one.
+    expect(toggle()?.textContent).toContain('2 running');
+  });
+
+  /**
+   * **A settled monitor's mark is picked by OUTCOME.** Only `completed` is
+   * a success: the wire folds a failed or killed watch into `stopped`, and
+   * a stopped or timed-out watch drawing the green check would read as one
+   * that ended well.
+   */
+  it('draws a failed ending, not a check, for stopped and timed-out watches', () => {
+    draw([
+      { id: 's1', running: false, completed: false, name: 'stopped', label: 'stopped 1m', command: 'a' },
+      {
+        id: 't1',
+        running: false,
+        completed: false,
+        name: 'timed-out',
+        label: 'timed out 1m',
+        command: 'b',
+      },
+      { id: 'c1', running: false, completed: true, name: 'completed', label: 'completed 1m', command: 'c' },
+    ]);
+    toggle()?.click();
+    flushSync();
+
+    expect(rows()[0]?.querySelector('.ic.bad'), 'a stopped watch wears the failed mark').not.toBeNull();
+    expect(rows()[0]?.querySelector('.ic.ok'), 'never the green check').toBeNull();
+    expect(rows()[1]?.querySelector('.ic.bad'), 'so does a timed-out one').not.toBeNull();
+    expect(rows()[2]?.querySelector('.ic.ok'), 'only a completed one wears the check').not.toBeNull();
   });
 
   it('holds when the pointer enters the panel over a sub-line, not a row', () => {
