@@ -611,7 +611,7 @@
    */
   function stop(): void {
     try {
-      void connection.dispatch({ cancel: { key: slot } });
+      void connection.dispatch({ cancel: { key: slot } }, slot);
     } catch (error) {
       // A closed socket has nothing to stop, and the control goes with the
       // turn that would have drawn it - but the click did nothing and that is
@@ -635,9 +635,12 @@
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
-      void connection.dispatch({
-        prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
-      });
+      void connection.dispatch(
+        {
+          prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+        },
+        slot,
+      );
     } catch {
       // A closed socket throws rather than answering, and it is the one
       // channel left: the words stay in the box rather than going with a

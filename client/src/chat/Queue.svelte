@@ -130,7 +130,7 @@
     // Fire-and-forget like the composer's send: the answer rides the stream,
     // and the row leaves when the core says it left - `cancelled: false` means
     // the CLI had already taken it, and its own `started` frame settles it.
-    void connection.dispatch({ cancel_queued_prompt: { key: slot, uuid } });
+    void connection.dispatch({ cancel_queued_prompt: { key: slot, uuid } }, slot);
   }
 
   /** The box this pile hands the keyboard back to, on the page both live under. */

@@ -225,9 +225,12 @@
     if (asked.has(key)) return;
     asked.add(key);
     try {
-      void open.dispatch({
-        spawn_project: { project_name: seatSlot.project, launch_settings: {} },
-      });
+      void open.dispatch(
+        {
+          spawn_project: { project_name: seatSlot.project, launch_settings: {} },
+        },
+        seatSlot,
+      );
     } catch (error) {
       // A closed socket has nothing to start: the seat keeps drawing its
       // not-running state, which is the truth about it - and the click did

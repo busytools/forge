@@ -1102,6 +1102,37 @@ describe('the reader own words before the core has them', () => {
   });
 
   /**
+   * A retry refused at the socket gets its one telling from the echo row -
+   * the reason plus the way back - so the retry hands dispatch no seat and no
+   * notice line joins it (the round-1 find): two phrasings of one loss read
+   * as two losses.
+   */
+  it('tells a refused retry once, through the echo row', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+
+    // The socket closes under the retry: dispatch throws like the real one,
+    // and what it was called with is what says whether a notice was asked for.
+    let handed: unknown[] = [];
+    server.connection.dispatch = (...args: unknown[]) => {
+      handed = args;
+      throw new Error('the socket is not open');
+    };
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    expect(drawn(), 'the row says why').toContain('not sent · the socket is closed');
+    expect(handed, 'the command alone, no seat handed over').toHaveLength(1);
+  });
+
+  /**
    * The retry reads the seat, not the turn this page happens to be drawing.
    *
    * The record is written once per painted frame, so a turn-start frame can be

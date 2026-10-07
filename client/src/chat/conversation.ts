@@ -30,6 +30,7 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
 import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
+import { onRefusal } from '../refusals';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -770,9 +771,24 @@ export class Chat {
         this.ask(null);
       }
     });
+    // A dispatch refused before it left the browser draws its line here: the
+    // command's own seat is the column it was sent from, so a line for another
+    // seat belongs to that seat's conversation, not this one.
+    const stopRefusals = onRefusal((line) => {
+      if (line.seat !== subjectKey({ session: this.slot })) return;
+      // `appendOnce`: the same line twice in a row is one row, so two Enters
+      // on a dead socket draw the refusal once.
+      this.appendOnce({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'warning',
+        text: line.text,
+      });
+    });
     this.running = () => {
       stopMessages();
       stopStatus();
+      stopRefusals();
       this.clearRetry();
       this.running = null;
     };
