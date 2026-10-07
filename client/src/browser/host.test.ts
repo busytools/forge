@@ -16,16 +16,46 @@ const invoke = vi.hoisted(() => vi.fn((): Promise<unknown> => Promise.resolve(un
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
 import {
+  answerPart,
   browserUsed,
+  bytesOf,
   canHost,
   closeProfile,
   hideBrowser,
   hostTheBrowser,
   listProfiles,
   showBrowser,
+  type HostReply,
 } from './host';
 import type { BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
+
+/**
+ * The mapping from what the shell's host returns to what the socket sends,
+ * on its own so it can be asserted without a Tauri process: the base64 the
+ * host carries is what has to become the bytes of a binary frame, and every
+ * screenshot rides it.
+ */
+describe('what the host answered', () => {
+  it('turns a text part into a text part and an image into its bytes', () => {
+    const reply: HostReply = {
+      parts: [
+        { type: 'text', text: 'navigated' },
+        { type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' },
+      ],
+    };
+    expect(reply.parts.map(answerPart)).toEqual([
+      { type: 'text', text: 'navigated' },
+      { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) },
+    ]);
+  });
+
+  /** The bytes of a base64 string, which is what a binary frame carries. */
+  it('decodes the base64 the host carries', () => {
+    expect(bytesOf('')).toEqual(new Uint8Array([]));
+    expect(bytesOf('AP8Q')).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
+  });
+});
 
 // **The marker the real shell carries.** Without it `canHost()` answers
 // false and every call short-circuits before the invoke - which is the
@@ -79,6 +109,53 @@ describe('the shell command names', () => {
     });
     expect(canHost(), 'the phone is not a browser client yet').toBe(false);
     if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
+  });
+
+  /** **The failure arm.** The shell rejects a failed call with the driver's
+   * own sentence, and the handler must answer that back rather than let it
+   * throw into the socket route - a thrown handler is a park, and the model
+   * is left waiting on a call that already failed. */
+  it('answers a failed call with its reason', async () => {
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    invoke.mockRejectedValueOnce('no browser to drive: install Brave or Google Chrome');
+    hostTheBrowser(connection);
+
+    const ask: BrowserAsk = {
+      seat: { org: 'o', project: 'p', label: 'l' },
+      tool: 'browser_navigate',
+      args: {},
+      id: 9,
+    };
+    const answer = await asked(ask);
+
+    expect(answer, 'the reason is the answer, not a throw').toEqual({
+      error: 'no browser to drive: install Brave or Google Chrome',
+    });
+  });
+
+  /** Registration is undoable, and unregistering twice is not a mistake. */
+  it('unregisters the handler it registered', () => {
+    let asked: ((ask: BrowserAsk) => Promise<unknown>) | null = null;
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => {
+          asked = null;
+        };
+      },
+    } as unknown as Connection;
+    const stop = hostTheBrowser(connection);
+
+    stop();
+    expect(asked, 'the handler is gone after the unsubscribe').toBeNull();
+    stop();
+    expect(asked, 'and unregistering twice is not a mistake').toBeNull();
   });
 
   it('and the ask rides browser_call with its seat, its tool and its args', async () => {
