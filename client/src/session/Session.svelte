@@ -290,9 +290,11 @@
   let graced: ReturnType<typeof setTimeout> | null = null;
 
   function summon() {
-    // Only the hover mode summons; a static rail is already there, and a
-    // closed one opens by Cmd+Left or the palette, not by a pointer crossing.
-    if (railMode !== 'hover') return;
+    // **The fold decides, not the stored preference.** Wherever the rail is
+    // not the column - the hover mode, or a static rail folded by the width -
+    // the chip's hover summons it; a mouse-only reader at a folded width has
+    // no other pointer door.
+    if (columned) return;
     if (graced !== null) clearTimeout(graced);
     graced = null;
     summoned = true;
@@ -400,6 +402,24 @@
   }
 
   /**
+   * The palette's own peek: the palette closes and its history entry becomes
+   * the RAIL's, rather than leaving a step under a step.
+   *
+   * Closing first and opening after would queue a `history.back()` that
+   * resolves only after `openRail` has pushed - the pop would then land on
+   * the entry beneath, the push would sit as an unreachable forward entry,
+   * and one Back would leave the page instead of closing the rail.
+   */
+  function handOffToRail(): void {
+    paletteOpen = false;
+    if (railOnTop(history.state) === 'palette') {
+      history.replaceState(railEntry(history.state), '', location.href);
+      lastRail = 'left';
+    }
+    openRail();
+  }
+
+  /**
    * The rail's keyboard doors: Cmd+Left (or Ctrl+Left) opens the peek and
    * closes it again, and Escape closes it. Both stand down while a field has
    * the keyboard - Cmd+Left is the caret's own key and Escape belongs to
@@ -492,7 +512,7 @@
     {connection}
     sessionId={facts?.sessionId ?? null}
     onclose={() => closePalette()}
-    onpeek={columned ? null : () => openRail()}
+    onpeek={columned ? null : () => handOffToRail()}
   />
 
   <main class="chat">
@@ -507,11 +527,11 @@
            summons the rail as the peek. -->
       <a
         class="needchip"
-        class:calm={chip.state === 'none'}
+        class:calm={chip.state === 'none' && notice === null}
         class:bad={chip.state === 'failed'}
         href={chip.href}
-        title={chip.label}
-        aria-label={chip.label}
+        title={notice ?? chip.label}
+        aria-label={notice === null ? chip.label : `${chip.label}, ${notice}`}
         aria-expanded={leftShown}
         onpointerenter={(event) => {
           if (event.pointerType === 'mouse') summon();
@@ -521,6 +541,12 @@
         }}
       >
         <Brand name={mark} class="ch-mk" />
+        <!-- The connection's own line lives in the rail footer, and the rail
+             may be away: the chip is the page's visible pane element, so the
+             stale read states itself here too. -->
+        {#if notice !== null}
+          <span class="dot warn ch-nd" aria-hidden="true"></span>
+        {/if}
         {#if chip.state === 'none'}
           <span class="ch-w">projects</span>
         {:else if chip.state === 'failed'}

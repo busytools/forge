@@ -638,6 +638,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   display: flex; }
 .needchip .ch-mk svg { width: 14px; height: 14px; display: block; }
 .needchip .ch-tri { width: 9px; height: 9px; flex: 0 0 9px; }
+.needchip .ch-nd { width: 9px; height: 9px; flex: 0 0 9px; }
 .needchip .ch-ic { width: 13px; height: 13px; }
 .needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
   background: rgba(224,104,62,.08); }

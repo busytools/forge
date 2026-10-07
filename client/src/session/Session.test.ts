@@ -52,9 +52,16 @@ function untouched(): Connection {
   };
 }
 
-const draw = (props: { wire?: HomeWire; slot?: SessionSlot } = {}): string =>
+const draw = (
+  props: { wire?: HomeWire; slot?: SessionSlot; notice?: string | null } = {},
+): string =>
   render(Session, {
-    props: { slot: props.slot ?? LEAD, connection: untouched(), wire: props.wire ?? homeWire },
+    props: {
+      slot: props.slot ?? LEAD,
+      connection: untouched(),
+      wire: props.wire ?? homeWire,
+      notice: props.notice ?? null,
+    },
   }).body;
 
 /**
@@ -567,6 +574,18 @@ describe('the app grid', () => {
     expect(body, 'the default was not the column').toContain('rail-static');
     expect(body, 'the pin floats the rail').toContain('float the rail on hover');
     expect(body, 'the rail grew a close again').not.toContain('close the projects rail');
+  });
+
+  /**
+   * **A stale read states itself on the chip.** The connection's own line
+   * lives in the rail's footer, and the rail may be away or folded - the
+   * chip is the page's visible pane element, so the line rides it too
+   * rather than vanishing with the rail.
+   */
+  it('marks the chip while the page shows a stale read', () => {
+    const body = draw({ notice: 'the socket dropped; showing the last read' });
+    expect(body, 'the stale state vanished with the rail away').toContain('ch-nd');
+    expect(body, 'and its words are on the chip').toContain('showing the last read');
   });
 
   /**
