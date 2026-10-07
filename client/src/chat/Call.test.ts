@@ -28,6 +28,24 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
 const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
+/** An MCP call, as the fold hands it to the row. */
+const mcp = (name: string, text: string): ToolLeaf => ({
+  id: 'toolu_mcp',
+  row: { kind: 'browser' },
+  name,
+  title: 'browser: https://example.org',
+  command: null,
+  status: 'completed',
+  note: null,
+  body: [{ kind: 'text', text }],
+  mutation: null,
+  decision: null,
+  forge: null,
+  skill: null,
+  image: null,
+  imageNote: null,
+});
+
 describe('the row one call draws', () => {
   /**
    * **The row carries the fold's own name, not the wire id.** Two id-less
@@ -68,6 +86,37 @@ describe('the row one call draws', () => {
 
     expect(drawn, 'the skill is drawn as markdown').toContain('<h1>');
     expect(drawn, 'and the launch line draws nowhere').not.toContain('Launching skill');
+  });
+
+  /**
+   * **An MCP result is markdown, one style for every call.** Ved, live round
+   * 2026-10-07: an expanded browser call showed its words raw - headings and
+   * fences as themselves. A local command's OUTPUT is not prose and stays the
+   * terminal box; an MCP result is what a server wrote, and servers write
+   * markdown.
+   */
+  it('renders an MCP result as markdown, not as a terminal box', () => {
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_mcp',
+        open: true,
+        call: mcp('mcp__playwright__browser_navigate', '### Page\n- Page URL: https://example.org'),
+      },
+    }).body;
+
+    expect(drawn, 'the result renders as markdown, structure and all').toContain('<h3>');
+    expect(drawn, 'and no raw heading survives').not.toContain('### Page');
+  });
+
+  it('keeps a local command output in its terminal box', () => {
+    const drawn = render(Call, {
+      props: { k: 'b1', open: true, call: backgrounded(null) },
+    }).body;
+
+    expect(drawn, 'command output stays a terminal box').toContain('class="term"');
+    expect(drawn, 'and is not reflowed as prose').toContain(
+      'Command running in background with ID',
+    );
   });
 
   it('draws the picture a call read only while the row is open', () => {

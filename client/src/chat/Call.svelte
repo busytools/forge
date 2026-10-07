@@ -7,7 +7,7 @@
   import Decision from './Decision.svelte';
   import Forge from './Forge.svelte';
   import Call from './Call.svelte';
-  import { iconOf } from './families';
+  import { iconOf, isBrowserTool, mcpParts } from './families';
   import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
   import Prose from './Prose.svelte';
@@ -579,6 +579,13 @@
         {#if piece.detail !== ''}<div class="d">{piece.detail}</div>{/if}
       </div>
     {:else if asProse}
+      <Prose text={piece.text} preserveLines />
+    {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
+      <!-- **An MCP result is markdown, one style for every call.** What a
+           server wrote arrives as markdown - headings, lists, fences - and
+           drew raw as itself until this branch (Ved, live round 2026-10-07).
+           A local command's OUTPUT is not prose and stays the terminal box
+           below. -->
       <Prose text={piece.text} preserveLines />
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />
