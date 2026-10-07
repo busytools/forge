@@ -41,6 +41,7 @@
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -403,6 +404,8 @@ interface Frame {
   max_retries?: unknown;
   retry_delay_ms?: unknown;
   error_status?: unknown;
+  /** The snapshot a `rate_limit_event` carries: status, window type, reset, overage. */
+  rate_limit_info?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
@@ -1867,6 +1870,24 @@ export function fold(
         if (run !== null && rewriteHook(key, hookRun(frame))) continue;
         pending.push({ tag: 'hook', key, run: hookRun(frame) });
         continue;
+      }
+      continue;
+    }
+
+    // A rate-limit window's state transition, as the terminal draws it: one
+    // notice per incident - the window's type and its reset bucket - so a
+    // later frame in the same window rewrites this line rather than stacking
+    // beside it, and a new window opens one of its own. Allowed and unknown
+    // statuses draw nothing, which is the terminal's own neutral rather than
+    // a drop (`app/events/rate_limit.rs` routes them to no notice).
+    if (frame.type === 'rate_limit_event') {
+      const info = obj(frame.rate_limit_info);
+      const status = str(info, 'status');
+      if (status === 'allowed_warning' || status === 'rejected') {
+        upsertNotice(rateLimitNoticeKey(info), {
+          severity: status === 'rejected' ? 'error' : 'warning',
+          text: formatRateLimitSummary(info),
+        });
       }
       continue;
     }
