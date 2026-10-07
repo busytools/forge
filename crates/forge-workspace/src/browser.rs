@@ -220,7 +220,7 @@ impl BrowserRelay {
         };
         let (reply, answer) = oneshot::channel();
         let request = BrowserRequest { id, seat: seat.clone(), tool: tool.to_owned(), args, reply };
-        let sent = to_host.send(request);
+        let routed = to_host.send(request);
         // **Which connection an ask went to, and whether it went at all**:
         // a parked ask says nothing on its own, and this pair of ids is what
         // names the host a stall is sitting on.
@@ -230,10 +230,10 @@ impl BrowserRelay {
             host = host_id,
             tool = %tool,
             slot = %seat.display(),
-            sent = sent.is_ok(),
+            sent = routed.is_ok(),
             "a browser ask went to the host",
         );
-        if sent.is_err() {
+        if routed.is_err() {
             self.forget_the_dead();
             tracing::debug!(
                 event_name = "browser_host_gone",
