@@ -3,22 +3,20 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { browserWindowUp, openTakeover, showBrowser } from '../browser/host';
+import { openTakeover } from '../browser/host';
 import { takeover } from '../browser/takeover.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
- * here: outside the shell the real one always answers false, which only ever
- * proved the could-not line.
+ * here: outside the shell the real one always rejects, which only ever proved
+ * the could-not line.
  */
 vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
-    showBrowser: vi.fn(actual.showBrowser),
-    browserWindowUp: vi.fn(() => Promise.resolve(false)),
-    // No engine in tests, which is the fallback path: the dock hears the
-    // refusal and reaches for the headed window it has always had.
+    // No engine in tests: the dock hears the refusal and says the view could
+    // not be opened.
     openTakeover: vi.fn(() => Promise.reject(new Error('no engine'))),
     closeTakeover: vi.fn(() => Promise.resolve()),
     takeoverActive: vi.fn(() => Promise.resolve(false)),
@@ -4267,19 +4265,17 @@ describe('the dock', () => {
     expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
   });
 
-  /** **The takeover first, the headed window only as the fallback**: with an
-   * engine present the dock's Open brings the view up and never a window. */
-  it('opens the in-app takeover when the engine answers', async () => {
+  /** **There is no second door.** The dock's Open brings the in-app view up,
+   * and the headed window the fallback used to raise is gone with the
+   * machinery the takeover replaced. */
+  it('opens the in-app takeover', async () => {
     vi.mocked(openTakeover).mockResolvedValueOnce(undefined);
-    vi.mocked(showBrowser).mockClear();
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
     await vi.waitFor(() => expect(takeover.active, 'the screen is the browser').toBe(true));
 
     expect(openTakeover, 'the view the approval is for').toHaveBeenCalledTimes(1);
-    expect(showBrowser, 'and no window was raised beside it').not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(drawn()).toContain('The browser window is up.'));
   });
 
   /** The bar's Done is the dock's own answer: the dock arms it while its
@@ -4292,76 +4288,15 @@ describe('the dock', () => {
     );
   });
 
-  /** Open is the client's own act, and **its claim follows its answer**:
-   * outside the shell nothing raises, so the dock says so rather than
-   * claiming "the browser is up" over a click that did nothing. */
-  it('says the browser could not be raised when nothing raised it', async () => {
+  /** A view that will not open says so rather than opening anything else. */
+  it('says the view could not be opened when the shell refuses', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    // The takeover refuses (no engine) and the headed fallback answers a hop
-    // later; the line lands when both have.
-    await vi.waitFor(() => expect(drawn()).toContain('could not be raised here'));
+    await vi.waitFor(() => expect(drawn()).toContain('The browser view could not be opened here'));
 
-    expect(drawn(), 'no false "up"').not.toContain('The browser window is up.');
+    expect(takeover.active, 'and nothing took the screen').toBe(false);
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
-  });
-
-  /** **A raise that answered true is the claim the dock may make**: the real
-   * window is up, and the line says so rather than the could-not. */
-  it('says the browser is up once a raise really raised it', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(true);
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-
-    action('Open browser').click();
-    await vi.waitFor(() =>
-      expect(drawn(), 'the claim follows the raise that answered').toContain(
-        'The browser window is up.',
-      ),
-    );
-    expect(drawn()).not.toContain('could not be raised here');
-  });
-
-  /** A window already up is said, not offered again: Open over one cannot do
-   * what it says, so the button goes and the line says the window is up. */
-  it('does not offer Open over a window already up', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-
-    await vi.waitFor(() => {
-      expect(drawn(), 'the up line lands when the read answers').toContain(
-        'The browser window is up.',
-      );
-    });
-    expect(drawn(), 'and the button that cannot serve is gone').not.toContain('Open browser');
-  });
-
-  /** **The read must not freeze in the up case.** The record replaces the ask
-   * on every frame and the id stays the same, so a read that caches by id
-   * would stop asking after its first true. */
-  it('re-reads whether a window is up whenever the ask is replaced', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
-    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(1));
-
-    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
-    flushSync();
-
-    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(2));
-  });
-
-  /** And the other direction: a window closed while the dock is up stops
-   * being claimed, so Open comes back as the door that can serve. */
-  it('stops claiming the window is up when a later read says it is not', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
-    const open_ = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-    await vi.waitFor(() => expect(drawn()).toContain('The browser window is up.'));
-
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(false);
-    open_.page.record = record({ pending_asks: [browserHandOffAsk()] });
-    flushSync();
-
-    await vi.waitFor(() => expect(drawn()).toContain('Open browser'));
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {

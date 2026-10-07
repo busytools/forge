@@ -13,19 +13,11 @@ vi.mock('./host', async (importOriginal) => {
     closeTakeover: vi.fn(() => Promise.resolve()),
     takeoverActive: vi.fn(() => Promise.resolve(false)),
     takeoverInput: vi.fn(() => Promise.resolve()),
-    onTakeoverFrame: vi.fn(() => Promise.resolve(() => {})),
     takeoverFrame: vi.fn(() => Promise.resolve(null)),
   };
 });
 
-import {
-  closeTakeover,
-  onTakeoverFrame,
-  openTakeover,
-  takeoverActive,
-  takeoverFrame,
-  takeoverInput,
-} from './host';
+import { closeTakeover, openTakeover, takeoverActive, takeoverFrame, takeoverInput } from './host';
 
 function draw(address = '127.0.0.1:8790') {
   const target = document.createElement('div');
@@ -44,6 +36,8 @@ const click = (el: Element | null | undefined): void => {
 afterEach(() => {
   vi.mocked(openTakeover).mockClear();
   vi.mocked(closeTakeover).mockClear();
+  vi.mocked(takeoverFrame).mockReset();
+  vi.mocked(takeoverFrame).mockResolvedValue(null);
   takeover.active = false;
   takeover.asking = null;
 });
@@ -108,7 +102,7 @@ describe('the takeover', () => {
 
     await takeover.open();
     expect(takeover.active, 'an engine that answered is').toBe(true);
-    expect(openTakeover).toHaveBeenCalledWith(44);
+    expect(openTakeover, 'the shell needs no geometry from the page').toHaveBeenCalledWith();
   });
 
   it('re-draws the screen a reloaded window was on', async () => {
@@ -117,22 +111,20 @@ describe('the takeover', () => {
     expect(takeover.active, 'the shell still held the view').toBe(true);
   });
 
-  /** A frame lands on the canvas at the PAGE's own pixel size, and the events
-   *  that follow go back down the same connection in the page's coordinates. */
-  async function withFrame(): Promise<{ target: HTMLElement; frame: (size: number) => void }> {
-    let deliver: ((frame: { data: string; width: number; height: number }) => void) | null = null;
-    vi.mocked(onTakeoverFrame).mockImplementationOnce((fn) => {
-      deliver = fn;
-      return Promise.resolve(() => {});
-    });
+  /** A frame the shell holds, which the screen's own beat reads: the canvas
+   *  lands at the PAGE's own pixel size, and the events that follow go back
+   *  down the same connection in the page's coordinates. */
+  function withFrame(): { target: HTMLElement; frame: (size: number) => void } {
+    const holder: { current: { data: string; width: number; height: number } | null } = {
+      current: null,
+    };
+    vi.mocked(takeoverFrame).mockImplementation(() => Promise.resolve(holder.current));
     takeover.active = true;
     const shown = draw();
-    await vi.waitFor(() => expect(deliver).not.toBeNull());
     return {
       target: shown.target,
       frame: (size: number) => {
-        deliver?.({ data: 'aGk=', width: size, height: size });
-        flushSync();
+        holder.current = { data: 'aGk=', width: size, height: size };
       },
     };
   }
@@ -154,19 +146,22 @@ describe('the takeover', () => {
   });
 
   it("draws a frame at the page's own pixel size", async () => {
-    const shown = await withFrame();
+    const shown = withFrame();
     shown.frame(800);
 
-    const canvas = shown.target.querySelector('canvas');
-    expect(canvas?.width, 'the backing store is the page').toBe(800);
-    expect(canvas?.height).toBe(800);
+    await vi.waitFor(() => {
+      const canvas = shown.target.querySelector('canvas');
+      expect(canvas?.width, 'the backing store is the page, read on the beat').toBe(800);
+    });
+    expect(shown.target.querySelector('canvas')?.height).toBe(800);
   });
 
   it("forwards a click in the page's coordinates, and typing too", async () => {
-    const shown = await withFrame();
+    const shown = withFrame();
     shown.frame(800);
     const canvas = shown.target.querySelector('canvas');
     if (!(canvas instanceof HTMLCanvasElement)) throw new Error('no canvas');
+    await vi.waitFor(() => expect(canvas.width, 'the frame is on the canvas').toBe(800));
     // jsdom lays nothing out; the drawn box is the page scaled into a stage.
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
       left: 20,

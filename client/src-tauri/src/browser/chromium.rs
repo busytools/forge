@@ -32,20 +32,18 @@ pub fn chrome_binary(stack: &Path) -> PathBuf {
 /// The argument list one launch runs with.
 ///
 /// `profile` is the browser's own directory, which is what carries logins,
-/// cookies and the HTTP cache across everything. Headless unless `windowed`
-/// is asked for: a window is what a hand-off's Open needs, and it is a
-/// relaunch rather than a flag the running browser can be told.
-pub fn launch_args(profile: &Path, windowed: bool) -> Vec<String> {
+/// cookies and the HTTP cache across everything. **Always headless**: the only
+/// visible surface is the client's own takeover, so a browser that looks like
+/// an automation tool never appears on the person's screen.
+pub fn launch_args(profile: &Path) -> Vec<String> {
     let mut args = vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
         // find again.
         "--remote-debugging-port=0".to_owned(),
         format!("--user-data-dir={}", profile.display()),
+        "--headless".to_owned(),
     ];
-    if !windowed {
-        args.push("--headless".to_owned());
-    }
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
         // nothing worth a keychain entry, while reaching for one raises a
@@ -64,20 +62,6 @@ pub fn launch_args(profile: &Path, windowed: bool) -> Vec<String> {
         "about:blank".to_owned(),
     ]);
     args
-}
-
-/// The marker a windowed launch leaves in the profile, and what makes "is a
-/// window already up" answerable at all: the port file says nothing about
-/// visibility, and an older launch has no marker - which is a headless one,
-/// because that was the only kind there was.
-fn windowed_marker(profile: &Path) -> PathBuf {
-    profile.join("windowed")
-}
-
-/// Whether the running launch has a window (or unknown, for one that left no
-/// marker, which reads the same for [`show`]'s purpose).
-pub fn launched_windowed(profile: &Path) -> bool {
-    windowed_marker(profile).is_file()
 }
 
 /// One launch, as `DevToolsActivePort` records it.
@@ -212,11 +196,6 @@ const STDERR_TAIL: usize = 4096;
 /// launch never depends on what a previous one left behind - and a browser
 /// that looks like an automation tool never appears on their screen.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, false).await
-}
-
-/// The same, with the window asked for: what a hand-off's Open needs.
-async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<ActivePort, String> {
     if !binary.is_file() {
         return Err(format!(
             "the vendored browser is not there at {} - run `just vendor-browser-stack`",
@@ -230,7 +209,7 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
     forget_launch(profile);
 
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile, windowed) {
+    for arg in launch_args(profile) {
         command.arg(arg);
     }
     command
@@ -276,12 +255,6 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
             if let Some(pid) = pid {
                 let _ = std::fs::write(pid_file(profile), pid.to_string());
             }
-            // Written only now, with the browser answering: `show` reads it
-            // as "a window is up", and a marker for a launch that failed is a
-            // claim nobody can check.
-            if windowed {
-                let _ = std::fs::write(windowed_marker(profile), b"");
-            }
             return Ok(ActivePort { pid, ..active });
         }
         if tokio::time::Instant::now() >= deadline {
@@ -310,7 +283,7 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
 }
 
 /// The browser to talk to: the one already running on `profile`, launched if
-/// there is none. A relaunch follows the marker, so visibility survives it.
+/// there is none.
 pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     if let Some(active) = verified(profile).await {
         return Ok(active);
@@ -337,98 +310,16 @@ pub async fn answers_as(profile: &Path, port: u16) -> bool {
     active.port == port && probe_identity(port).await.as_deref() == Some(active.path.as_str())
 }
 
-/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's own
-/// control.
-///
-/// A window is a launch flag, not something a running browser can be told, so
-/// this relaunches headed when the running one is headless (or unknown) and
-/// answers the live launch when a window is already up. **The relaunch costs
-/// what the toggle's own line says**: every open driver's transport dies with
-/// the old browser, named contexts reopen from their saved cookies and tabs
-/// on their next call (a context rebuilds its driver when the call after a
-/// browser change finds the old one stale), and the shared context's open
-/// tabs do not come back.
-///
-/// A window already up is NOT raised: nothing here can reach the OS focus,
-/// and a button that quietly did nothing would be worse than one that says
-/// the window is up.
-pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    if launched_windowed(profile)
-        && let Some(active) = verified(profile).await
-    {
-        return Ok(active);
-    }
-    if let Some(port) = read_active_port(profile).map(|active| active.port) {
-        close(profile, port).await;
-    }
-    launch_with(binary, profile, true).await
-}
-
 /// The id a launch left, so a later client can close what it did not start.
 fn pid_file(profile: &Path) -> PathBuf {
     profile.join("browser.pid")
 }
 
-/// Close the browser on `profile`, so a relaunch is not a second browser onto
-/// one profile.
-///
-/// **The LISTENER is the truth and the pid file is a hint.** The pid a launch
-/// wrote describes a process that may since have exited - a dead pid, or a
-/// recycled one belonging to something else entirely - so killing it blindly
-/// is the exact outcome the pid file exists to avoid. So the pid is killed
-/// only when it holds THIS port; otherwise, what holds the port is - by the
-/// PORT and never by a pattern or a name, because this machine runs other
-/// browsers and one of them belongs to the person sitting at it. **And only
-/// after the port answers AS this profile's launch**: a port the launch let go
-/// and something else took over is a stranger, and the wires go without a
-/// kill. The wires go only once the port is really free, because a port file
-/// deleted under a live browser is a launch nothing can ever find again.
-async fn close(profile: &Path, port: u16) {
-    if !answers_as(profile, port).await {
-        // Nothing on that port is this profile's launch - a browser that died
-        // and a stranger on the port, or a profile no launch touched. The
-        // wires name a launch that is gone; nothing else here is ours.
-        forget_launch(profile);
-        return;
-    }
-    let listeners = port_pids(port).await;
-    if listeners.is_empty() {
-        // Our launch answers and nothing owns the port: a moment rather than a
-        // state, and the wires stay - they still name a browser that is up.
-        return;
-    }
-    let named = std::fs::read_to_string(pid_file(profile))
-        .ok()
-        .and_then(|written| written.trim().parse::<u32>().ok());
-    match named.filter(|pid| listeners.contains(pid)) {
-        Some(pid) => {
-            kill_pid(pid, false).await;
-            if !port_frees(port).await {
-                kill_pid(pid, true).await;
-            }
-        }
-        None => {
-            for pid in &listeners {
-                kill_pid(*pid, false).await;
-            }
-            if !port_frees(port).await {
-                for pid in &listeners {
-                    kill_pid(*pid, true).await;
-                }
-            }
-        }
-    }
-    if port_frees(port).await {
-        forget_launch(profile);
-    }
-}
-
-/// Drop the wires a launch leaves. Called only once nothing answers - and by
-/// a launch about to take them over.
+/// Drop the wires a launch leaves. Called by a launch about to take them
+/// over.
 fn forget_launch(profile: &Path) {
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let _ = std::fs::remove_file(pid_file(profile));
-    let _ = std::fs::remove_file(windowed_marker(profile));
 }
 
 /// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
@@ -438,33 +329,6 @@ async fn kill_pid(pid: u32, hard: bool) {
         kill.arg("-9");
     }
     let _ = kill.arg(pid.to_string()).status().await;
-}
-
-/// Whatever holds `port`.
-async fn port_pids(port: u16) -> Vec<u32> {
-    let Ok(listed) = tokio::process::Command::new("lsof")
-        .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
-        .output()
-        .await
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&listed.stdout)
-        .split_whitespace()
-        .filter_map(|pid| pid.parse().ok())
-        .collect()
-}
-
-/// Wait, bounded, for the port a closing browser holds to stop answering.
-/// `false` when it never let go, which is what escalates the kill.
-async fn port_frees(port: u16) -> bool {
-    for _ in 0..20 {
-        if !probe(port).await {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    false
 }
 
 #[cfg(test)]
@@ -511,12 +375,13 @@ mod tests {
     /// Chrome for Testing 155 writes no port file and nothing can find the
     /// launch again - carries the profile that keeps logins, opens a page
     /// (because a browser with no tab makes the first navigation depend on
-    /// the driver inventing one), and **never reaches for the OS keychain**:
-    /// that dialog is raised at whoever is at the machine, once per ask, and
-    /// a headless browser has nobody to answer it.
+    /// the driver inventing one), runs **headless** (a window is the
+    /// automation-looking surface the takeover replaced), and **never reaches
+    /// for the OS keychain**: that dialog is raised at whoever is at the
+    /// machine, once per ask, and a headless browser has nobody to answer it.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"), false);
+        let args = launch_args(Path::new("/tmp/forge-profile"));
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
@@ -533,35 +398,6 @@ mod tests {
             args.contains(&"--password-store=basic".to_owned()),
             "and the store behind the mock is the plain one: {args:?}",
         );
-    }
-
-    /// **A windowed launch is the same launch without `--headless`** - so a
-    /// hand-off's Open shows the browser the host already drives rather than
-    /// something else - and it still never reaches for the keychain.
-    #[test]
-    fn a_windowed_launch_drops_the_headless_flag_and_nothing_else() {
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false);
-        let windowed = launch_args(Path::new("/tmp/forge-profile"), true);
-
-        assert!(!windowed.contains(&"--headless".to_owned()), "{windowed:?}");
-        assert!(windowed.contains(&"--use-mock-keychain".to_owned()), "{windowed:?}");
-        assert!(windowed.contains(&"--password-store=basic".to_owned()), "{windowed:?}");
-        let without: Vec<&String> = headless.iter().filter(|arg| *arg != "--headless").collect();
-        assert_eq!(
-            windowed.iter().collect::<Vec<&String>>(),
-            without,
-            "the window is the one flag: everything else stays identical",
-        );
-    }
-
-    /// The marker, and its absence: an older launch left none and that is a
-    /// headless one, because headless was the only kind there was.
-    #[test]
-    fn the_marker_is_what_says_a_window_is_up() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        assert!(!launched_windowed(dir.path()), "no marker is no window");
-        std::fs::write(windowed_marker(dir.path()), b"").expect("the marker");
-        assert!(launched_windowed(dir.path()), "the marker is the window");
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since

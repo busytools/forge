@@ -320,31 +320,13 @@ impl BrowserHost {
         rows
     }
 
-    /// Bring the browser up visibly, which is what a hand-off's Open asks for.
+    /// Bring the in-app browser view up over the client's window: the
+    /// approved takeover.
     ///
-    /// Serialized with every other launch, so a show racing a first call
-    /// cannot leave two browsers on one profile. This is the client's own
-    /// act and answers the core nothing: the hand-off's answer is Done or
-    /// Not now, and never the window itself.
-    pub async fn show(&self) -> Result<chromium::ActivePort, String> {
-        let paths = self.paths.clone()?;
-        let _launching = self.launch.lock().await;
-        chromium::show(&chromium::chrome_binary(&paths.stack), &paths.profile).await
-    }
-
-    /// Bring the in-app browser view up over the client's window, under the
-    /// bar the web side draws: the approved takeover.
-    ///
-    /// `bar_px` is how much of the top the bar occupies - the frames are the
-    /// whole page and the web side sizes them into what is left. The browser
-    /// is brought up first (a person waiting on a cold launch is the one wait
-    /// worth removing), then a CDP session of our own starts the screencast
-    /// and streams frames as `browser_frame` events.
-    pub async fn takeover_open(
-        &self,
-        _bar_px: f64,
-        app: &tauri::AppHandle,
-    ) -> Result<(), String> {
+    /// The browser is brought up first (a person waiting on a cold launch is
+    /// the one wait worth removing), then a CDP session of our own starts the
+    /// screencast and keeps the latest frame for the view to read.
+    pub async fn takeover_open(&self, app: &tauri::AppHandle) -> Result<(), String> {
         let paths = self.paths.clone()?;
         let active = self.active_browser(&paths).await?;
         let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
@@ -396,22 +378,6 @@ impl BrowserHost {
     pub async fn current_frame(&self) -> Result<Option<screencast::Frame>, String> {
         self.paths.clone()?;
         Ok(self.last_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
-    }
-
-    /// Whether a WINDOW is up on the browser this client hosts.
-    ///
-    /// The marker a headed launch leaves, plus a browser still answering as
-    /// that launch: a marker alone outlives a browser that died, and a dock
-    /// that trusted it would refuse a raise that was the right thing to do.
-    pub async fn window_up(&self) -> Result<bool, String> {
-        let paths = self.paths.clone()?;
-        if !chromium::launched_windowed(&paths.profile) {
-            return Ok(false);
-        }
-        let Some(active) = chromium::read_active_port(&paths.profile) else {
-            return Ok(false);
-        };
-        Ok(chromium::answers_as(&paths.profile, active.port).await)
     }
 
     /// The browser's own context: one, cached, whose driver builds and
@@ -504,30 +470,13 @@ pub async fn browser_call(
     host.call(&seat, &tool, args).await.map(|parts| BrowserReply { parts })
 }
 
-/// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
-/// the core: the window is the client's act, and Done or Not now is the
-/// answer.
-#[tauri::command]
-pub async fn browser_show(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<(), String> {
-    host.show().await.map(|_| ())
-}
-
-/// Whether a browser window is already up, for a dock's own line: a button
-/// that says Open over a window already open is a click that does nothing.
-#[tauri::command]
-pub async fn browser_window(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bool, String> {
-    host.window_up().await
-}
-
-/// Bring the in-app browser view up over the client's window, under the bar
-/// the web side draws.
+/// Bring the in-app browser view up over the client's window.
 #[tauri::command]
 pub async fn browser_takeover_open(
     host: tauri::State<'_, Arc<BrowserHost>>,
     app: tauri::AppHandle,
-    bar_px: f64,
 ) -> Result<(), String> {
-    host.takeover_open(bar_px, &app).await
+    host.takeover_open(&app).await
 }
 
 /// One input event into the live view (`Input.dispatchMouseEvent`,

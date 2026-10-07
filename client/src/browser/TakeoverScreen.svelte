@@ -9,7 +9,7 @@
    * keyboard events go back down the same connection, mapped into the page's
    * coordinates. The bar, the way back and Done are the web side's.
    */
-  import { onTakeoverFrame, takeoverFrame, takeoverInput, type TakeoverFrame } from './host';
+  import { takeoverFrame, takeoverInput, type TakeoverFrame } from './host';
   import { modifiers, toPage } from './input';
   import { takeover } from './takeover.svelte';
 
@@ -82,21 +82,21 @@
 
   $effect(() => {
     image.onload = () => draw();
-    let stop: (() => void) | null = null;
-    let gone = false;
-    // What is current first - the stream may have delivered before this
-    // screen could listen - then every frame after it.
-    void takeoverFrame().then((held) => {
-      if (held !== null) show(held);
-    });
-    void onTakeoverFrame(show).then((off) => {
-      if (gone) off();
-      else stop = off;
-    });
-    return () => {
-      gone = true;
-      stop?.();
+    // **Read the current frame on a beat rather than trust a pushed event.**
+    // The shell keeps the last frame, so the worst case is one beat of lag;
+    // the event path between the two processes is the one piece that has
+    // been observed to go missing, and a screen that asks cannot miss.
+    let last = '';
+    const tick = (): void => {
+      void takeoverFrame().then((held) => {
+        if (held === null || held.data === last) return;
+        last = held.data;
+        show(held);
+      });
     };
+    tick();
+    const beat = setInterval(tick, 200);
+    return () => clearInterval(beat);
   });
 
   /** A client point in the page's pixels, and the geometry that mapped it. */

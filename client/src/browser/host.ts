@@ -106,56 +106,17 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the browser up visibly, which is what a hand-off's Open asks for.
+ * Bring the in-app browser view up over the client's window: a hand-off's
+ * Open, and nothing else.
  *
- * **Answers whether a browser was really raised.** `false` outside the shell
- * and on a failed raise - an unvendored build, a host that cannot start -
- * and the caller draws that truth rather than claiming a window is up. A
- * dock that said "The browser is up" over a raise that never happened would
- * have the person press Done and tell the session they acted.
+ * **Rejects while no engine is compiled into the shell.** The approved
+ * takeover is in-app; a click that cannot deliver it says so rather than
+ * opening some other browser the person did not ask for.
  */
-export async function showBrowser(): Promise<boolean> {
-  if (!canHost()) return false;
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Whether a browser window is already up.
- *
- * A dock asks before offering to open one: a button that says Open over a
- * window already open is a click that cannot do what it says - nothing can
- * raise another application's window - so the dock says the window is up
- * instead. `false` outside the shell, where nothing was raised.
- */
-export async function browserWindowUp(): Promise<boolean> {
-  if (!canHost()) return false;
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<boolean>('browser_window');
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Bring the in-app browser view up over the client's window, under the bar
- * the web side draws (`barPx` is how much of the top the bar takes).
- *
- * **Rejects while no engine is compiled into the shell**, which is what sends
- * the dock to its headed fallback - the approved takeover is in-app, and a
- * click that cannot deliver it says so rather than opening a window the
- * person did not ask for.
- */
-export async function openTakeover(barPx: number): Promise<void> {
+export async function openTakeover(): Promise<void> {
   if (!canHost()) throw new Error('this page is not the client');
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_takeover_open', { barPx });
+  await invoke('browser_takeover_open');
 }
 
 /** One input event into the live view, as CDP wants it. */
@@ -173,22 +134,12 @@ export interface TakeoverFrame {
 }
 
 /**
- * Hear the live view's frames. Answers a function that stops listening, and
- * does nothing outside the shell, where no view exists.
- */
-export async function onTakeoverFrame(fn: (frame: TakeoverFrame) => void): Promise<() => void> {
-  if (!canHost()) return () => {};
-  const { listen } = await import('@tauri-apps/api/event');
-  const stop = await listen<TakeoverFrame>('browser_frame', (event) => fn(event.payload));
-  return () => void stop();
-}
-
-/**
- * The current frame, for a screen that just mounted.
+ * The frame the shell holds, which the view reads on its own beat.
  *
- * **The first frame of a static page is also its last**, and the stream may
- * have delivered it before the screen could listen - so the screen asks for
- * what is current rather than depending on the next one arriving.
+ * **A pull, not a push.** The first frame of a static page is also its last,
+ * and the event path across the process boundary is the piece observed to go
+ * missing - so the screen asks for what is current rather than depending on
+ * the next one arriving.
  */
 export async function takeoverFrame(): Promise<TakeoverFrame | null> {
   if (!canHost()) return null;

@@ -11,9 +11,6 @@
 
 import { closeTakeover, openTakeover, takeoverActive } from './host';
 
-/** How much of the top the bar takes, so the engine's view fills the rest. */
-export const TAKEOVER_BAR_PX = 44;
-
 /** The hand-off the bar's Done would answer. */
 export interface Asking {
   /** The hand-off's id, so the bar draws Done only while that one is up. */
@@ -30,11 +27,11 @@ class Takeover {
    * Open the view.
    *
    * Rejects with why when no engine is compiled into the shell; the dock
-   * hears that and falls back to the headed window it has always had, so a
-   * failed takeover is a working browser rather than an empty screen.
+   * hears that and says the view could not be opened, rather than claiming a
+   * browser this client does not have.
    */
   async open(): Promise<void> {
-    await openTakeover(TAKEOVER_BAR_PX);
+    await openTakeover();
     this.active = true;
   }
 

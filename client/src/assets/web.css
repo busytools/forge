@@ -1038,10 +1038,8 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
 
 /* The takeover: the whole window is the browser, and the bar is the only
-   forge on it. **The bar is exactly TAKEOVER_BAR_PX tall**
-   (`browser/takeover.svelte.ts`), because the shell's engine view is placed
-   under that much of the top - one number, one place. The stage below is
-   covered natively by the engine; the sheet draws nothing in it. */
+   forge on it. The stage draws the shell's frames on a canvas, sized to the
+   browser's own viewport - the page IS the stage, and the bar sits above it. */
 .takeover { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column;
   background: var(--bg); }
 .takeover .bar { display: flex; align-items: center; gap: 12px; padding: 0 10px; flex: none;

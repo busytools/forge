@@ -1,13 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import {
-    canHost,
-    closeContext,
-    listContexts,
-    showBrowser,
-    whyText,
-    type ContextRow,
-  } from '../browser/host';
+  import { canHost, closeContext, listContexts, whyText, type ContextRow } from '../browser/host';
   import type { Connection } from '../socket';
 
   /**
@@ -20,11 +13,16 @@
    * its list opening in place (the mockup Ved settled, 2026-10-06). When the
    * surviving strip lands, this mounts into it unchanged.
    *
-   * Three controls live here and each is the person's, never a session's:
-   * **Take over** (the force override, where a click can honestly serve it),
-   * **Show browser** (the visible toggle - a headed relaunch, whose cost the
-   * list states), and a context row's **close** (which is what makes a
-   * context whose owning session is gone recoverable).
+   * Two controls live here and each is the person's, never a session's:
+   * **Take over** (the force override, where a click can honestly serve it)
+   * and a context row's **close** (which is what makes a context whose
+   * owning session is gone recoverable).
+   *
+   * **No visible toggle lives here any more.** Seeing the browser is the
+   * hand-off's own Open, which shows it inside this app; a control that
+   * raised an operating-system window was the machinery that replacement
+   * retired, and a second door to a different browser is a lie about which
+   * one the sessions drive.
    *
    * The contexts are the CLIENT's own state - it owns the drivers - so the
    * row reads them from the host it runs in, never from the server.
@@ -282,27 +280,6 @@
           </button>
         {/if}
       </div>
-
-      {#if capable}
-        <!-- The visible toggle: the app's own Chromium comes up as a window.
-             A window is a launch flag, so this is a relaunch, and the cost
-             rides the control where the decision is read. -->
-        <div class="bz-it bz-window">
-          <span class="nm">window</span>
-          <button
-            type="button"
-            class="bz-take bz-show"
-            onclick={() => void showBrowser()}
-            onkeydown={esc}
-          >
-            Show browser
-          </button>
-        </div>
-        <div class="bz-cost">
-          Showing the browser restarts it: named contexts reopen from their saved cookies and tabs
-          on their next call; the shared context's open tabs do not come back.
-        </div>
-      {/if}
 
       {#each contexts as row (row.name)}
         <div class="bz-it">

@@ -251,7 +251,7 @@ describe('the browser segment', () => {
   it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
     const shown = show(false, true);
     click(toggle(shown.target));
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
     if (control === null) throw new Error('no control');
 
     // Tabbing from the toggle into a control: a bubbling focusout whose
@@ -285,7 +285,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -299,7 +299,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-takeover');
     if (control === null) throw new Error('no control');
     control.focus();
 
