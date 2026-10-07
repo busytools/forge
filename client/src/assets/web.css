@@ -2352,16 +2352,23 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .cand:hover .go { color: var(--accent); }
 
 /* The comparison table: the rule's own working, drawn as a table because
-   that is what it is - one row per model, one column per axis. The wrap
-   owns the horizontal scroll on a narrow screen, so the page itself never
-   scrolls sideways. */
+   that is what it is - one row per model, one column per axis. The columns
+   are fixed so the geometry holds still when a cell's content changes - the
+   in-use row's file name, the pick row's control - rather than the table
+   re-laying itself out under the reader each time the model changes. */
 .models .cmp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   margin: 20px 0 8px; }
 .models .cmp-head .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
 .models .cmp-head .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .models .cmp-wrap { border: 1px solid var(--line); border-radius: var(--r);
   background: rgba(13,17,26,.4); }
-.models table.cmp { width: 100%; border-collapse: collapse; }
+.models table.cmp { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.models .cmp thead th:nth-child(1) { width: 24%; }
+.models .cmp thead th:nth-child(2) { width: 11%; }
+.models .cmp thead th:nth-child(3) { width: 11%; }
+.models .cmp thead th:nth-child(4) { width: 19%; }
+.models .cmp thead th:nth-child(5) { width: 35%; }
+.models .cmp td.rule .chip { margin-left: 10px; white-space: normal; }
 .models .cmp caption { text-align: left; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); padding: 10px 13px; border-bottom: 1px solid var(--line); }
 .models .cmp th, .models .cmp td { text-align: left; font-family: var(--mono);
@@ -2373,8 +2380,6 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .cmp th[scope="row"] { color: var(--text); font-size: var(--fs-data); font-weight: 400; }
 .models .cmp tr.base { background: rgba(27,33,48,.35); }
 .models .cmp tr.pick { background: rgba(130,199,107,.06); }
-.models .cmp .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
-  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 @media (pointer: coarse) {
   /* A button and an input already take the 44 from the shared rule; these are

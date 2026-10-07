@@ -18,6 +18,7 @@
     checkLine,
     comparison,
     entryUrl,
+    inUseLicense,
     inUseRowFacts,
     installLine,
     modelChip,
@@ -258,7 +259,6 @@
               <th scope="col">error</th>
               <th scope="col">licence</th>
               <th scope="col">the rule</th>
-              <th scope="col"><span class="sr">actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -266,8 +266,8 @@
               <th scope="row">{update.file}</th>
               <td>{speedLabel(update.current.speed_x)}</td>
               <td>{update.current.fleurs_en_wer}%</td>
-              <td colspan="2">this is what is running now</td>
-              <td></td>
+              <td>{inUseLicense(wire.in_use, update.role)}</td>
+              <td>this is what is running now</td>
             </tr>
             {#each comparison(update) as row (row.variant)}
               <tr class:pick={row.recommended}>
@@ -275,8 +275,8 @@
                 <td>{row.speed ?? 'not measured'}</td>
                 <td>{row.error ?? 'not measured'}</td>
                 <td>{row.license ?? 'no licence on the feed'}</td>
-                <td>{row.verdict}</td>
-                <td>
+                <td class="rule">
+                  {row.verdict}
                   {#if row.recommended}
                     {#if update.role === 'transcribing' && pinnedTranscribing}
                       <!-- A pinned role refuses the load by name, so the row

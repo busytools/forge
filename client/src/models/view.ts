@@ -604,6 +604,15 @@ export function updateWhy(): string {
   return 'Every English model the feed measured on both axes, fastest first. The rule takes the first that beats the model in use on both - speed and error - and the rows under it say which axis each one loses on.';
 }
 
+/**
+ * The licence the model in use carries, for the comparison table's baseline
+ * row. The row draws a licence like every other row; the words saying it is
+ * what runs live in the rule column.
+ */
+export function inUseLicense(inUse: InUseModel[], role: ModelRole): string {
+  return inUse.find((model) => model.role === role)?.facts.license ?? 'no licence on the feed';
+}
+
 /** When one result ran, as the row's own line. */
 export function resultWhen(result: BenchResult): string | null {
   const at = clock(result.at);

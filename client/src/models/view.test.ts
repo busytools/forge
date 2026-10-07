@@ -16,6 +16,7 @@ import {
   clock,
   entryUrl,
   installLine,
+  inUseLicense,
   inUseRowFacts,
   languagesLabel,
   modelChip,
@@ -403,6 +404,16 @@ describe('the in-use rows', () => {
 
     expect(facts.pinned[0]).toEqual({ text: '1.56 GB', hl: true });
     expect(facts.measured).toEqual([{ text: 'transcribe.cpp' }, { text: 'not in the feed' }]);
+  });
+
+  /**
+   * The comparison table's baseline row is the in-use model, and it draws a
+   * licence in the licence column like every other row; with no row for the
+   * role it says so rather than leaving the cell empty.
+   */
+  it('carries the in-use licence for the table', () => {
+    expect(inUseLicense([inUse()], 'transcribing')).toBe('Apache-2.0');
+    expect(inUseLicense([], 'transcribing')).toBe('no licence on the feed');
   });
 });
 

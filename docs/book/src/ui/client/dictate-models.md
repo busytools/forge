@@ -25,7 +25,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role, its file, the facts the spec declares - size, quant, parameters, digest, licence - the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal with the control that takes it | `check`, `updates` |
+| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - one line per proposal with the control that takes it, and the comparison table under it | `check`, `updates` |
 | Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
 
@@ -65,6 +65,19 @@ pressable: the candidate's comparison against the model in use, then the
 install or activation the rule above would draw. The bench that scores a
 candidate on this machine's own recordings is the piece that is not built,
 and the line says so rather than leaving a reader to look for it.
+
+**The comparison table is the rule's own working**, one row per model and
+one column per axis. Its columns are fixed widths, so the geometry holds
+still as the state changes under it - the in-use row's file name, the pick's
+control - rather than the table re-laying itself out while it is being read.
+The baseline row is the model in use: it draws its licence like every row
+does, and the words saying it is what runs sit in the rule column. Every
+candidate is read against that baseline - speed and error as `vs` pairs, the
+licence as the feed spells it, and the rule's verdict: `recommended`, `also
+beats both, but slower`, `slower than this`, `no more accurate`, or a verdict
+this client is older than. The pick's control is drawn beside its verdict
+rather than in a last column of its own, so a row's action is labelled by the
+cell it sits in.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no button to press and nothing
