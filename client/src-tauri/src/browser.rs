@@ -164,6 +164,16 @@ impl BrowserHost {
         args: Value,
     ) -> Result<Vec<ReplyPart>, String> {
         let (profile, args) = take_profile(args)?;
+        // **The shell's own entry, so a parked ask and a never-arrived one
+        // stop looking alike.** Measured live 2026-10-07: a call parked with
+        // no line like this on every inspected build, and nothing in the
+        // client said whether the ask had reached the Rust side at all. This
+        // is the host's own routing, not the session's work - the level is
+        // INFO for the same reason "the browser is up on port" is.
+        tauri_plugin_log::log::info!(
+            "a browser tool call reached the host (event_name browser_call_entered, seat {seat}, \
+             tool {tool}, profile {profile:?})"
+        );
         // A name that cannot be a profile is decided before anything else: no
         // directory, no lock and no browser is consulted to answer it.
         if let Some(name) = profile.as_deref()
