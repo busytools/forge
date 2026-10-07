@@ -22,6 +22,7 @@
     connected,
     connection,
     notice,
+    sessionNotice = null,
     onconnect,
   }: {
     route: Route;
@@ -42,6 +43,12 @@
      * a stopped connection is the shell's line on every route, not a notice.
      */
     notice: string | null;
+    /**
+     * The same line for a session page, which draws it in its rail footer:
+     * the shell's strip is in-flow, and a session page is `100dvh`, so the
+     * strip there is a page that scrolls. `null` on every other route.
+     */
+    sessionNotice?: string | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
@@ -94,7 +101,13 @@
          missing column from a quiet one. It is also where the composer's
          presence decides whether this client can answer the prompts it
          shows; absent it, the seat is subscribed as an observer. -->
-    <Session slot={route.slot} {connection} wire={home.wire} mark={settings.mark}>
+    <Session
+      slot={route.slot}
+      {connection}
+      wire={home.wire}
+      mark={settings.mark}
+      notice={sessionNotice}
+    >
       {#snippet conversation(props)}
         <Chat {...props} />
       {/snippet}

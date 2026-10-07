@@ -2,6 +2,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import Router from './Router.svelte';
@@ -37,6 +38,9 @@ function untouched(): Connection {
     store: refuse,
     settings: refuse,
     skew: refuse,
+    // The rail's footer reads the protocol pair as it RENDERS, so this one
+    // answers: refusing it would be refusing the page, not the connection.
+    serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
     close: refuse,
   };

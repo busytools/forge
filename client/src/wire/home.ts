@@ -78,6 +78,13 @@ export interface CronEntry {
   kind: unknown;
   prompt: string;
   description?: string;
+  /**
+   * The worker label the cron was created by, which is what decides the seat
+   * that reads it: `None` targets the project lead, so a row keeps the lead's
+   * set or its own label's - never the other's. The same ownership rule the
+   * connector subscriptions carry.
+   */
+  team_role?: string | null;
   created_at: WireTime;
   /** When it is next due, which is the fact the session's schedules section states. */
   next_fire: WireTime;
@@ -93,6 +100,13 @@ export interface AgentRow {
   pending_depth: number;
   last_activity: WireTime | null;
   reason: string | null;
+  /**
+   * When the seat's newest turn ended in failure, filtered per view: `null`
+   * once this view has shown the seat since the failure, or while it is
+   * showing it now. A row that carries it is drawing a failure the reader
+   * has not been shown.
+   */
+  failed_turn: WireTime | null;
   /**
    * The seat's OWN working tree, which is not the project's.
    *
@@ -243,6 +257,10 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      // A server old enough not to state the failure - the floor included -
+      // leaves the field out, and it must read as `null` rather than as a
+      // failure.
+      failed_turn: agent.failed_turn ?? null,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else
       // in it to narrow and a shape test over the object would discriminate

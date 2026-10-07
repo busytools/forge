@@ -149,6 +149,16 @@ impl Workspace {
         self.record_spawn_failure(slot, message);
     }
 
+    /// Stamp a slot's failed-turn record the way an errored `Result`
+    /// does, so a cross-crate test can read the row the surface builds.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn record_failed_turn_for_test(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().failed_turn_at = Some(at);
+        }
+    }
+
     /// Push one update onto the fan-out, so a test can watch a view react
     /// to the core without driving a session. Test-only.
     #[cfg(any(test, feature = "testing"))]

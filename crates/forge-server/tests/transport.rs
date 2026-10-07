@@ -245,6 +245,41 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     assert!(data.get("projects").is_some(), "the home snapshot carries its projects: {data}");
 }
 
+/// Showing a seat spends the marks the home carries for it - the diamond
+/// and the failure mark both clear by showing the seat - so the home is
+/// re-sent as part of the attach. Without it the row keeps a spent mark
+/// until the next unrelated redraw, which can be half a minute away.
+#[tokio::test]
+async fn showing_a_seat_re_sends_the_home_the_connection_holds() {
+    let (url, _fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        subject,
+        Subject::Home,
+        "and the attach re-sends the home, because showing the seat spent its marks",
+    );
+}
+
 /// The queue is a fact about the seat, so the read has to carry it: a client
 /// that attached mid-queue - a fresh load, a refresh, a seat switch - has
 /// nothing else to draw the waiting prompts from, and two attached clients
@@ -905,6 +940,10 @@ fn a_reporting_seat(fleet: &Fleet, reading: ContextUsage) -> mpsc::UnboundedRece
         ViewFacts {
             session_id: Some(SessionId::new("reporting")),
             context: Some(reading),
+            // A snapshot of none, so these cases read one ask apiece: the
+            // unreported-MCP ask is a test's own subject where it appears,
+            // and here it would ride every read as an extra command.
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
             ..ViewFacts::default()
         },
     );
@@ -981,6 +1020,9 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
         ViewFacts {
             session_id: Some(SessionId::new("already-reporting")),
             context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            // Reported too, so the ONLY silence this window can hear is the
+            // reading's own: the MCP twin is the next test's subject.
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
             ..ViewFacts::default()
         },
     );
@@ -1004,6 +1046,82 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
     // waiting, and a probe wrongly fired lands a scheduling hop after the ask.
     let command = next_agent_command(&mut asked, 250).await;
     assert!(command.is_none(), "a seat that reports a reading is not probed again: {command:?}");
+}
+
+/// The MCP snapshot is the context reading's twin (#1844): it exists only once
+/// the bridge has answered one, the terminal's connect paths are what asked
+/// before, and a seat only a client watches would otherwise report `mcp: None`
+/// for the life of its session. The usage reading is seeded, so the ONLY ask
+/// this read can fire is the MCP one.
+#[tokio::test]
+async fn a_seat_a_client_opens_with_no_mcp_snapshot_asks_the_core_for_one() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("no-mcp-yet")),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            ..ViewFacts::default()
+        },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["mcp"].is_null(),
+        "precondition: the seat reports no MCP snapshot, which is the state that draws no row: {data}",
+    );
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetMcpSnapshot { .. })),
+        "a seat a client opened reports no MCP snapshot, so the bridge is asked for one: {command:?}",
+    );
+}
+
+/// The other half, as for the reading: a seat that already reports a snapshot
+/// is not asked again - an empty set included, which is a snapshot carrying
+/// none rather than no snapshot.
+#[tokio::test]
+async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("already-reported")),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
+            ..ViewFacts::default()
+        },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["mcp"]["servers"].is_array(),
+        "precondition: the seat reports a snapshot, so there is nothing to ask for: {data}",
+    );
+
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(command.is_none(), "a seat that reports a snapshot is not asked again: {command:?}");
 }
 
 /// A turn finishing on a seat a page is holding is the moment its reading
@@ -1991,21 +2109,22 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
         if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
-            let SessionUpdate::WorkChanged { key, work, pr, closes } = *update else {
+            let SessionUpdate::WorkChanged { key, work, git, pr, closes } = *update else {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
             assert_eq!(work.changed, Some(1), "and carries the count the edit made");
-            moved = Some((work, pr, closes));
+            moved = Some((work, git, pr, closes));
             break;
         }
     }
-    let (work, pr, closes) = moved.expect("a held seat's moved tree reaches the client");
+    let (work, git, pr, closes) = moved.expect("a held seat's moved tree reaches the client");
 
     // The differential: what the update carried is what a read answers, for
-    // all three fields. A fresh page learns the tree from the read alone, so
-    // an update that disagreed with it would draw one row and then correct
-    // itself into another.
+    // every field - the tree behind the row's depth included, which is the
+    // one the pushed path derives rather than forwards. A fresh page learns
+    // the tree from the read alone, so an update that disagreed with it
+    // would draw one row and then correct itself into another.
     let mut reader = connect(&url).await;
     send(
         &mut reader,
@@ -2021,6 +2140,11 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
         serde_json::to_value(&work).expect("encode"),
         data["work"],
         "the pushed row is the row the record answers",
+    );
+    assert_eq!(
+        serde_json::to_value(&git).expect("encode"),
+        data["git"],
+        "and the tree behind the row's depth the seat pushes is the one its read answers",
     );
     assert_eq!(
         serde_json::to_value(&pr).expect("encode"),
@@ -2169,7 +2293,11 @@ fn a_scan(
     use forge_primitives::git_diff::{GitDiffSnapshot, GitDiffStats, LayerState, RepoGate};
     let (pr, closes) = match with_pr {
         Some((number, closing)) => (
-            Some(GitPrInfo { number, url: format!("https://example.test/pull/{number}") }),
+            Some(GitPrInfo {
+                number,
+                url: format!("https://example.test/pull/{number}"),
+                draft: false,
+            }),
             vec![GitIssueRef { number: closing, url: format!("https://example.test/{closing}") }],
         ),
         None => (None, Vec::new()),
@@ -3037,6 +3165,12 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     )
     .await;
     snapshot_answering(&mut watched).await;
+    // The attach answers with the home too - showing the seat spends the
+    // marks the home's rows carry - and the re-send is part of the
+    // subscribe's own answer, consumed here so the turn's frames below are
+    // read against a clean stream.
+    let (subject, ..) = snapshot_answering(&mut watched).await;
+    assert_eq!(subject, Subject::Home, "the attach's home re-send");
 
     // The control: a connection that watches the home and no seat. The
     // fleet's classification is what keeps the conversation off this

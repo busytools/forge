@@ -80,6 +80,10 @@ describe('the home the floor sends', () => {
     expect(home.agents[0]?.lifecycle).toBe('Running');
     expect(home.agents[0]?.pending).toBe('question');
     expect(home.agents[0]?.work?.gate).toBe('in_repo');
+    // A floor server names no failure at all, and an absent field must read
+    // as `null` rather than as a failure: `undefined !== null` is the one
+    // that made every row draw the cross when the fallback was missing.
+    expect(home.agents[0]?.failed_turn, 'a floor server names no failure').toBeNull();
     expect(home.accounts.loading[0]?.state).toBe('ready');
     expect(home.dictate.snapshot.models[0]?.state).toBe('ready');
     expect(home.forge_version_short, 'the build the home names').toBe('1.0.112+abc1234');
@@ -121,8 +125,19 @@ describe('the session the floor sends', () => {
 
   it('reads the work, the pull request and the issues it closes', () => {
     expect(held.work).toEqual({ branch: 'protocol-4', changed: 3, gate: 'in_repo' });
-    expect(held.pr).toEqual({ number: 1234, url: 'https://example.test/pull/1234' });
+    expect(held.pr).toEqual({
+      number: 1234,
+      url: 'https://example.test/pull/1234',
+      draft: false,
+    });
     expect(held.closes).toEqual([{ number: 1200, url: 'https://example.test/issues/1200' }]);
+    // A v4 record carries no git field at all: the tree reads as nothing to
+    // state rather than as a missing read.
+    expect(held.git, 'a record without git did not read as an empty tree').toEqual({
+      defaultBranch: null,
+      worktree: null,
+      ahead: null,
+    });
   });
 
   it('reads the conversation it was handed', () => {

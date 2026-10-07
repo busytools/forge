@@ -36,7 +36,7 @@ use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
 use crate::transport::conversation::Held;
 use crate::transport::envelope::Subject;
-use crate::work::{WorkState, work_from_scan};
+use crate::work::{WorkState, git_work_view, work_from_scan};
 
 /// The seat the fixture surface is populated for.
 ///
@@ -176,6 +176,10 @@ pub struct AgentWire {
     pub pending_depth: usize,
     pub last_activity: Option<std::time::SystemTime>,
     pub reason: Option<String>,
+    /// When the seat's newest turn ended in failure, filtered by what has
+    /// been shown: `None` once the seat has been shown since the failure,
+    /// or while it is being shown now.
+    pub failed_turn: Option<std::time::SystemTime>,
     /// The seat's own tree, `None` for a seat forge holds no directory for.
     ///
     /// Read through the same shared cache the project rows use, so a lead's
@@ -194,6 +198,7 @@ impl From<&AgentRow> for AgentWire {
             pending_depth: row.pending_depth,
             last_activity: row.last_activity,
             reason: row.reason.clone(),
+            failed_turn: row.failed_turn,
             work: None,
         }
     }
@@ -406,6 +411,15 @@ pub struct SessionWire {
     /// changed, and the gate. The changed files themselves ride `diff`
     /// below.
     pub work: WorkState,
+    /// The tree behind the git row's depth: the uncommitted files with
+    /// their marks and counts, the branch's chain ahead of its default
+    /// with the commits that produced it, and which branch that is.
+    ///
+    /// What the row above cannot say: a branch and a count tell a reader
+    /// nothing about WHAT is working, and this is what a hover over the
+    /// row draws. The content read below carries the same layers with
+    /// hunks, for the surface that reviews them.
+    pub git: forge_primitives::git_diff::GitWorkView,
     /// The open pull request this seat's branch is on, and the issues it
     /// closes.
     ///
@@ -913,6 +927,7 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
             // is the one the hold just read, and the seat's loop keeps it
             // fresh for as long as somebody is showing it.
             request_context_usage_if_unreported(surface, slot);
+            request_mcp_snapshot_if_unreported(surface, slot);
             Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
         }
         // The pool's own report, scanned here rather than carried in another
@@ -953,6 +968,36 @@ fn request_context_usage_if_unreported(surface: &ViewSurface, slot: &SessionSlot
     }
 }
 
+/// Ask the core for an MCP snapshot on `slot` when the seat reports none.
+///
+/// The snapshot exists only once the bridge has answered one, and only the
+/// terminal's connect, poll and `/mcp` paths ask for it. A client subscribing
+/// to a seat is that same act, so the ask belongs on the read that encodes the
+/// subject: a seat only a client watches would otherwise report `mcp: None`
+/// for the life of its session, and the strip's MCP row would never draw.
+///
+/// Guarded on the reading rather than on the ask having happened, so a seat
+/// that already reports one - an empty set included, which is a snapshot
+/// carrying none rather than no snapshot - is not probed again by every
+/// subscribe, reconnect and second tab. The answer arrives as
+/// [`SessionUpdate::McpSnapshot`](crate::SessionUpdate::McpSnapshot) on the
+/// stream the subscriber is already reading. A seat replacement clears the
+/// snapshot, which is the one re-ask this guard makes on its own: the field
+/// reads `None` again and the next read asks.
+fn request_mcp_snapshot_if_unreported(surface: &ViewSurface, slot: &SessionSlot) {
+    if surface.mcp_servers(slot).is_some() {
+        return;
+    }
+    if let Err(error) = surface.refresh_mcp_snapshot(slot) {
+        tracing::debug!(
+            event_name = "mcp_snapshot_request_failed",
+            %error,
+            slot = %slot.display(),
+            "a seat a client reads reports no MCP snapshot and its ask was not requested",
+        );
+    }
+}
+
 /// The home's record, from the reads a home-scoped view makes.
 ///
 /// Async because a row's work state is a filesystem read, cached by the
@@ -988,13 +1033,19 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     // the project's path for a lead, the worktree for a git worker. A seat
     // forge holds no directory for keeps `None` rather than borrowing the
     // project's read, which is what the cell's blank has to mean.
+    //
+    // The live snapshot filters the failure mark by what has been shown:
+    // the same facts the diamond rides, read once for both.
+    let live = crate::live::Live::lock(&state.live).snapshot();
     let mut agent_rows = Vec::with_capacity(agents.all().len());
     for agent in agents.all() {
         let work = match roster.cwd_for(&agent.slot) {
             Some(cwd) => Some(state.work.snapshot(&agent.slot, cwd.as_path()).await),
             None => None,
         };
-        agent_rows.push(AgentWire { work, ..AgentWire::from(agent) });
+        let mut row = AgentWire { work, ..AgentWire::from(agent) };
+        row.failed_turn = row.failed_turn.and_then(|at| live.failed_mark(&agent.slot, at));
+        agent_rows.push(row);
     }
 
     HomeWire {
@@ -1053,15 +1104,12 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
         ),
         agents: agent_rows,
-        unseen: {
-            let live = crate::live::Live::lock(&state.live).snapshot();
-            agents
-                .all()
-                .iter()
-                .map(|row| row.slot.clone())
-                .filter(|slot| live.unseen.is_unseen(slot))
-                .collect()
-        },
+        unseen: agents
+            .all()
+            .iter()
+            .map(|row| row.slot.clone())
+            .filter(|slot| live.unseen.is_unseen(slot))
+            .collect(),
         projects,
     }
 }
@@ -1128,6 +1176,10 @@ async fn session(
     // does not name.
     let held = surface.work(slot, cwd).await;
     let work = work_from_scan(&held.diff, &held.cwd);
+    // The tree behind the row's depth, from the same held scan and through
+    // the same constructor the pushed frame goes through - one derivation,
+    // so a client that applies the update lands on the record's own answer.
+    let git = git_work_view(&held.diff);
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
@@ -1208,6 +1260,7 @@ async fn session(
             }
         },
         work,
+        git,
         pr: held.diff.pr,
         closes: held.diff.closes,
         diff,
@@ -1641,6 +1694,12 @@ mod tests {
                 .env_remove("GIT_DIR")
                 .env_remove("GIT_WORK_TREE")
                 .env_remove("GIT_COMMON_DIR")
+                // The dates are pinned because the record now carries the
+                // branch's commit chain, and a sha covers the commit's
+                // timestamps: unpinned, every run minted a different sha and
+                // the fixture could not hold one.
+                .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
+                .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
                 .arg("-C")
                 .arg(path)
                 .args(args)
@@ -1770,6 +1829,7 @@ mod tests {
         diff.pr = Some(forge_primitives::git::GitPrInfo {
             number: 1249,
             url: "https://example.test/pull/1249".to_owned(),
+            draft: false,
         });
         diff.closes = vec![forge_primitives::git::GitIssueRef {
             number: 1215,
@@ -2349,13 +2409,20 @@ mod tests {
             serde_json::to_value(&held.diff.closes).expect("encode"),
             "and the issues it closes",
         );
+        assert_eq!(
+            encoded["git"],
+            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff)).expect("encode"),
+            "and the tree behind the row's depth",
+        );
     }
 
     /// A scan as the terminal's inspector reads it: one branch, one worktree
-    /// layer, one PR and one closing issue.
+    /// layer, one chain ahead, one PR and one closing issue. Both depth
+    /// layers are populated so the record-vs-constructor guard covers both
+    /// axes - a derivation omitting either reddens.
     fn scanned() -> GitDiffSnapshot {
-        use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-        use forge_primitives::git_diff::{GitDiffStats, LayerState, RepoGate};
+        use forge_primitives::git::{GitBranch, GitCommit, GitIssueRef, GitPrInfo};
+        use forge_primitives::git_diff::{GitBranchAhead, GitDiffStats, LayerState, RepoGate};
         GitDiffSnapshot {
             branch: GitBranch::Named("worktree-pr".to_owned()),
             pushed_sha: Some("abc123".to_owned()),
@@ -2368,8 +2435,26 @@ mod tests {
                 total_added: 9,
                 total_removed: 2,
             }),
-            branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 1249, url: "https://example.test/pull/1249".to_owned() }),
+            branch_ahead: LayerState::Populated(GitBranchAhead {
+                commit_count: 1,
+                stats: GitDiffStats {
+                    files: Vec::new(),
+                    total_files: 0,
+                    total_added: 0,
+                    total_removed: 0,
+                },
+                commits: vec![GitCommit {
+                    sha: "a1b2c3d".to_owned(),
+                    subject: "the branch's own commit".to_owned(),
+                    stats: GitDiffStats::default(),
+                    time: 1_766_000_000,
+                }],
+            }),
+            pr: Some(GitPrInfo {
+                number: 1249,
+                url: "https://example.test/pull/1249".to_owned(),
+                draft: false,
+            }),
             closes: vec![GitIssueRef {
                 number: 1215,
                 url: "https://example.test/issues/1215".to_owned(),

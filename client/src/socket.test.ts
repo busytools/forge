@@ -317,6 +317,9 @@ describe('the connection', () => {
 
     await until(() => conn.settings() !== null, 'the greeting to land');
     expect(conn.skew()).toBeNull();
+    // The number is kept whether or not it skews: the footer draws both
+    // sides of the pair, so a match is a fact to show.
+    expect(conn.serverProtocol()).toBe(PROTOCOL_VERSION);
   });
 
   /**
@@ -334,6 +337,7 @@ describe('the connection', () => {
 
     await until(() => conn.skew() === null, 'the skew to clear');
     expect(conn.status(), 'the live connection was disturbed by a later greeting').toBe('open');
+    expect(conn.serverProtocol(), 'the pair followed the later greeting').toBe(PROTOCOL_VERSION);
   });
 
   /**

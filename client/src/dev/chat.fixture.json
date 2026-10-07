@@ -796,5 +796,152 @@
       "key": "field-notes",
       "value": "mentions anywhere · mentions only"
     }
+  ],
+  "schedules": [
+    { "id": "c-1", "key": "rules sweep", "value": "in 27d · recurring" },
+    { "id": "c-2", "key": "plugin audit", "value": "in 27d · one-shot" }
+  ],
+  "mcp": [
+    {
+      "name": "forge",
+      "k": "forge · session",
+      "v": "4 tools",
+      "tools": ["roster", "session", "agents", "processes"],
+      "command": "node /opt/mcp-servers/forge-server.js",
+      "reason": null,
+      "synthetic": false
+    },
+    {
+      "name": "context7",
+      "k": "context7 · sdk",
+      "v": "2 tools",
+      "tools": ["query-docs", "resolve-library-id"],
+      "command": "npx -y @upstash/context7-mcp",
+      "reason": null,
+      "synthetic": false
+    },
+    {
+      "name": "vercel",
+      "k": "vercel · session",
+      "v": "needs sign-in",
+      "tools": [],
+      "command": null,
+      "reason": "OAuth token expired",
+      "synthetic": false
+    }
+  ],
+  "tree": {
+    "label": "web-home-layout · 2 commits · PR #1203 · dirty",
+    "head": "the project's tree",
+    "ahead": {
+      "count": 2,
+      "base": "main",
+      "commits": [
+        {
+          "sha": "a1b2c3d",
+          "subject": "the strip's panel measures its own caps",
+          "stats": {
+            "files": [
+              {
+                "path": "client/src/session/view.ts",
+                "added": 12,
+                "removed": 4,
+                "status": "modified"
+              }
+            ],
+            "totalFiles": 1,
+            "totalAdded": 12,
+            "totalRemoved": 4
+          },
+          "time": 1767222000
+        },
+        {
+          "sha": "d4e5f6a",
+          "subject": "the tree states what it is",
+          "stats": null,
+          "time": 1767100000
+        }
+      ],
+      "stats": {
+        "files": [
+          {
+            "path": "client/src/session/view.ts",
+            "added": 12,
+            "removed": 4,
+            "status": "modified"
+          },
+          {
+            "path": "client/src/chat/GitSegment.svelte",
+            "added": 3,
+            "removed": 0,
+            "status": "added"
+          }
+        ],
+        "totalFiles": 2,
+        "totalAdded": 15,
+        "totalRemoved": 4
+      }
+    },
+    "uncommitted": {
+      "files": [
+        {
+          "path": "client/src/session/view.ts",
+          "added": 12,
+          "removed": 4,
+          "status": "modified"
+        },
+        {
+          "path": "client/src/chat/GitSegment.svelte",
+          "added": 3,
+          "removed": 0,
+          "status": "added"
+        }
+      ],
+      "totalFiles": 2,
+      "totalAdded": 15,
+      "totalRemoved": 4
+    },
+    "pr": {
+      "number": 1203,
+      "url": "https://example.test/pull/1203",
+      "draft": false,
+      "closes": "#1200"
+    },
+    "gate": null
+  },
+  "taskList": [
+    {
+      "id": "t1",
+      "status": "in_progress",
+      "display": "Redesigning the session page's rows",
+      "subject": "Redesign the session page against the TUI's structure",
+      "owner": "lead",
+      "meta": "in progress · 2h"
+    },
+    {
+      "id": "t2",
+      "status": "blocked",
+      "display": "Decide the subagent card's collapse rule",
+      "subject": "Decide the subagent card's collapse rule",
+      "owner": "lead",
+      "meta": "blocked on a design call"
+    },
+    {
+      "id": "t3",
+      "status": "completed",
+      "display": "Merge the layout pass",
+      "subject": "Merge the layout pass",
+      "owner": "steward",
+      "meta": "completed"
+    }
+  ],
+  "monitors": [
+    {
+      "id": "m1",
+      "running": true,
+      "name": "ci-watch",
+      "label": "persistent",
+      "command": "gh run watch 18234567"
+    }
   ]
 }

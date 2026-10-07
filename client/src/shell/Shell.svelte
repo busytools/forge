@@ -218,6 +218,17 @@
       : skewMessage(skew),
   );
 
+  /**
+   * The same notice, for a session page: it draws the line in its rail
+   * footer - where the build facts live - rather than take the strip. The
+   * strip is an in-flow row, and an in-flow row above a page declared
+   * `100dvh` is a page that scrolls: the stray window scrollbar Ved saw over
+   * the chat's own. The door's copy stands down the same way.
+   */
+  const sessionNotice = $derived(
+    route.name !== 'session' ? null : (skewLine ?? (stale ? staleLine : null)),
+  );
+
   /** The notice the door draws for itself: a skew being read, never a refusal. */
   const doorNotice = $derived(
     skew === null || connectionStatus === 'mismatched' ? null : skewMessage(skew),
@@ -288,11 +299,11 @@
     <p class="opening">Opening {displayAddress(address)}...</p>
   </main>
 {:else}
-  {#if skewLine}
+  {#if skewLine && sessionNotice === null}
     <!-- A refusal is an alert, because the connection stopped; a skew that
          is being read is a status, because the page behind it is live. -->
     <p class="stale" role={connectionStatus === 'mismatched' ? 'alert' : 'status'}>{skewLine}</p>
-  {:else if stale}
+  {:else if stale && sessionNotice === null}
     <!-- A live region rather than a landmark: the pages below each carry the
          page's own `main`, and a second one would be a second page. -->
     <p class="stale" role="status">{staleLine}</p>
@@ -306,6 +317,7 @@
     {failure}
     {connection}
     notice={doorNotice}
+    {sessionNotice}
     connected={connection !== null}
     onconnect={connect}
   />

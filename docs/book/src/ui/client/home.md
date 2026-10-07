@@ -71,12 +71,15 @@ row reads without colour:
 | Needs you | `needs` | a question or a permission prompt is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
 | Failed | `failed` | setup or the run hit a fatal error |
+| Turn failed | `failed` | the newest turn ended in failure, and the seat has not been opened since |
 | Asleep | `asleep` | the subprocess is gone, or `/logout` took it |
 | Never started | `never` | nothing has ever run in this project |
 
 A project that cannot start draws its refusal in the row's `what` column
 rather than a state of its own. A row that failed carries its reason as a
-line under it.
+line under it; a failed TURN has no reason text of its own (the failure's
+words are in the seat's conversation), so its line is the words `a turn
+failed`, and its mark goes the moment the seat is opened.
 
 ## The states the page can be in
 
@@ -145,9 +148,10 @@ difference is the cost of holding a seat rather than re-reading it on
 every return, filed as #1439.
 
 Two things the home subject carries and this page does not draw are the
-schedules a project holds and the account a row chips. Both belong to
-surfaces that do not exist yet - the inspector's schedules section and the
-launchpad's account walk - and neither is a gap in this page.
+schedules a project holds and the account a row chips. Each is drawn
+elsewhere: the schedules on the session page's strip, whose schedules row
+keeps the seat's own set (a cron names the seat that created it), and the
+account on the launchpad's account walk. Neither is a gap in this page.
 
 ## The two widths
 

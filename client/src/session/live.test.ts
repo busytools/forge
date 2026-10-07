@@ -29,6 +29,8 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
 import { get, writable } from 'svelte/store';
 
 import { cronNames } from '../chat/cron-names.svelte';
+import { git } from '../chat/git.svelte';
+import { installResizeObserver } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
@@ -61,6 +63,10 @@ vi.mock('../chat/conversation', async (importOriginal) => {
  * identity rather than by key, and a Slack target narrowed against an object
  * the socket never sends.
  */
+// The column's list is `virtua`'s, and a Router-mounted page draws it: jsdom
+// has no ResizeObserver to offer it.
+installResizeObserver();
+
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /** A forge that answers the two subjects a session page watches. */
@@ -85,6 +91,21 @@ async function stubServer(session: unknown) {
       const message = JSON.parse(text(data)) as Subscribe;
       if (message.kind === 'unsubscribe') {
         gone.push(message);
+        return;
+      }
+      // The column pages for its history on the way up, so a stub that never
+      // answers holds it in its loading state and nothing under the header
+      // draws - the strip and the queue included.
+      if (message.kind === 'more') {
+        const turns = (session as { conversation: { turns: unknown[] } }).conversation.turns;
+        socket.send(
+          JSON.stringify({
+            kind: 'page',
+            conversation: LEAD,
+            turns,
+            cursor: null,
+          } satisfies ServerMessage),
+        );
         return;
       }
       if (message.kind !== 'subscribe') return;
@@ -202,7 +223,9 @@ describe('the session page over a socket', () => {
   it('draws the seat record the server answered with', async () => {
     await open(sessionFixture);
 
-    expect(sections(), 'the seat record never reached the page').toContain('git');
+    // The tree row is the page's own reader of the record, so its store
+    // holding the fixture's branch is the record reaching the page.
+    expect(git.strip()?.label, 'the seat record never reached the page').toContain('worktree-pr');
     const facts = document.querySelector('.sess .facts');
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
   });
@@ -289,7 +312,17 @@ describe('the session page over a socket', () => {
    * in the suite renders it.
    */
   it('reaches the page through the Router a session URL lands on', async () => {
-    server = await stubServer(sessionFixture);
+    // A queued prompt rides the record, and this is the one arrangement where
+    // the pile has no home of its own: the page handing its column the queue
+    // snippet is the whole of what draws it, so dropping that prop would
+    // silently stop drawing the pile everywhere.
+    server = await stubServer({
+      ...sessionFixture,
+      state: {
+        ...sessionFixture.state,
+        queue: [{ uuid: 'q1', source: 'you', text: 'a queued prompt' }],
+      },
+    });
     connection = connect(server.url);
     app = mount(Router, {
       target: document.body,
@@ -307,16 +340,24 @@ describe('the session page over a socket', () => {
     });
     await settle();
 
-    expect(sections()).toContain('git');
-    expect(drawn()).toContain('aria-label="inspector"');
+    expect(git.strip()?.label, 'the URL-reached page drew no seat record').toContain('worktree-pr');
+    expect(document.querySelector('.sess .nm')?.textContent, 'the page drew its seat').toBe('proj');
+    expect(
+      document.querySelector('.pile .qcard .w')?.textContent,
+      'the queued row did not reach the column through the page',
+    ).toBe('a queued prompt');
   });
+
+  /* The queue-above-strip order is pinned where the column itself draws it:
+     `Chat.test.ts` mounts the chat with a queue snippet and reads the two
+     rows' document order. */
 
   /**
    * **The narrow bands are page state now, not checkboxes**, and jsdom has no
    * `matchMedia` at all, so both rails take the wide default in every other
    * test. This is the one case that sees the state the sheet folds by.
    */
-  it('folds both rails away below the width they stop being columns at', async () => {
+  it('folds the rail away below the width it stops being a column at', async () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
@@ -324,8 +365,7 @@ describe('the session page over a socket', () => {
     // own state is the assertion, and its class is how that state is stated.
     const app = document.querySelector('.app')?.className ?? '';
     expect(app, 'the rail ignored a narrow page').toContain('left-hidden');
-    expect(app).toContain('right-hidden');
-    expect(document.querySelector('.rail-tog.tog-r')?.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('.rail-tog.tog-r'), 'the inspector handle is gone').toBeNull();
   });
 
   /**
@@ -359,22 +399,26 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * **The count is the property.** A seat's subscription belongs to the client
-   * rather than to the page showing it, so a visit, a leave and a return is
-   * ONE subscribe and no unsubscribe - where a subscription owned by the page
-   * makes a subscribe and an unsubscribe on every leg. Everything else here is
-   * what that buys; this is the number it is bought with.
+   * **The count is the property, and it is a pair per visit.** The
+   * subscription follows the page - a held one reads as a SHOWING seat to
+   * the server, and showing spends the marks a seat earns - so a visit, a
+   * leave and a return is a subscribe, an unsubscribe and a subscribe. What
+   * the client keeps is the record, which is what the return draws from.
    */
-  it('subscribes a seat once across a visit, a leave and a return', async () => {
+  it('subscribes on each visit and gives the seat back between them', async () => {
     await open(sessionFixture);
     expect(seatSubscribes(), 'precondition: the first visit subscribed the seat').toBe(1);
 
     await leave();
+    // The leave sends its unsubscribe over a real socket, so the frame has
+    // a hop to make before the server has it.
+    await settle();
+    expect(server?.gone.length, 'the leave took the seat away from the socket').toBe(1);
+
     revisit();
     await settle();
 
-    expect(seatSubscribes(), 'the return subscribed the seat a second time').toBe(1);
-    expect(server?.gone, 'the leave took the seat away from the socket').toEqual([]);
+    expect(seatSubscribes(), 'the return subscribed the seat again').toBe(2);
   });
 
   /**
@@ -389,7 +433,9 @@ describe('the session page over a socket', () => {
     revisit();
     flushSync();
 
-    expect(sections(), 'the return drew nothing until the server answered again').toContain('git');
+    expect(git.strip()?.label, 'the return drew nothing until the server answered again').toContain(
+      'worktree-pr',
+    );
   });
 
   /**
@@ -413,7 +459,10 @@ describe('the session page over a socket', () => {
       server?.received[1]?.answering,
       'the escalation did not declare the answering role',
     ).toBe(true);
-    expect(server?.gone, 'the escalation gave a subscription back').toEqual([]);
+    // The leave between the visits gave the seat back (the subscription
+    // follows the page), and the escalation is the return's own subscribe -
+    // so the one unsubscribe here is the leave's, not the escalation's.
+    expect(server?.gone.length, 'the escalation gave a subscription back of its own').toBe(1);
   });
 });
 
@@ -424,13 +473,6 @@ function matchMediaTo(matches: boolean): void {
     addEventListener: () => {},
     removeEventListener: () => {},
   });
-}
-
-/** The `data-k` of every section the page drew, in the order it drew them. */
-function sections(): string[] {
-  return [...document.querySelectorAll('[data-k^="sec-"]')].map(
-    (el) => el.getAttribute('data-k')?.slice('sec-'.length) ?? '',
-  );
 }
 
 /**
@@ -608,6 +650,7 @@ function drivable(refused = false): Driveable {
     store: () => undefined,
     settings: () => null,
     skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
     land: (message) => {
@@ -881,29 +924,47 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * **A page leaving a seat is the page leaving, not the seat ending.** The
-   * record and the frames arriving after the reader has gone stay with the
-   * seat, which is the whole change: a subscription owned by the page re-reads
-   * the seat on the way back in, and one owned by the client draws what it
-   * held.
+   * **A page leaving gives its subscription back, and the record it held
+   * stays.** A held subscription reads as a SHOWING seat to the server, and
+   * showing spends every mark the seat earns - the failure mark and the
+   * diamond both - so the subscription follows the page while the record
+   * stays for the return to draw until the return's own subscribe answers
+   * with the whole seat.
    */
-  it('keeps the seat after the last reader has gone', () => {
+  it('gives the subscription back when the last reader leaves, keeping the record', () => {
+    const connection = drivable();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD));
+    away.stop();
+    expect(connection.unsubscribes(), 'the leave gave the seat back').toBe(1);
+
+    const back = watch(connection);
+    expect(connection.subscribes(), 'and the return subscribed it again').toBe(2);
+    expect(back.read().wire, 'the held record draws until the answer lands').not.toBeNull();
+    back.stop();
+    expect(connection.unsubscribes(), 'the second leave gives it back too').toBe(2);
+  });
+
+  /**
+   * A replacement frame for a seat nobody is showing stays out of the
+   * socket. The ask would be an unsubscribe-then-subscribe pair, and the
+   * subscribe re-attaches a seat no page is showing: the server reads it
+   * as shown - spending the marks every reader would get - with no counter
+   * here owning it. The return's own subscribe answers with the whole
+   * record, which covers everything the away ask was for.
+   */
+  it('asks nothing for an away seat when a replacement frame lands', () => {
     const connection = drivable();
     const away = watch(connection);
     away.land(snapshotOf(LEAD));
     away.stop();
     const asked = connection.reads();
 
-    connection.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    connection.land(updateOf(occupant('new-occupant')));
 
-    const back = watch(connection);
-    expect(
-      back.read().wire?.conversation.turns,
-      'a frame that landed while nobody was showing the seat was lost',
-    ).toHaveLength(1);
-    expect(connection.reads(), 'the return asked the server for the seat again').toBe(asked);
-    expect(connection.subscribes(), 'the return subscribed the seat a second time').toBe(1);
-    back.stop();
+    expect(connection.reads(), 'the away replacement frame asked the server again').toBe(asked);
+    expect(connection.subscribes(), 'and it re-subscribed an away seat').toBe(1);
+    expect(connection.unsubscribes(), 'and it gave one back to do it').toBe(1);
   });
 
   /**

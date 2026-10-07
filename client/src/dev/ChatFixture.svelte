@@ -1,9 +1,15 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
   import { connectors } from '../chat/connectors.svelte';
+  import { git } from '../chat/git.svelte';
+  import { mcp } from '../chat/mcp.svelte';
+  import { monitors } from '../chat/monitors.svelte';
   import { processes } from '../chat/processes.svelte';
+  import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
   import type { ServerMessage } from '../protocol';
+  import type { GitStrip, McpRow, MonitorStripRow, TaskStripRow } from '../session/view';
   import { backgroundTaskFrom, processesFrom, subagentCardFrom } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -27,6 +33,11 @@
    * It is not a fallback. The page is loaded through a dynamic import behind
    * the DEV guard, so nothing ships that a page could draw in a server's
    * absence, and `fixture.test.ts` builds the app and fails if one does.
+   *
+   * **The connection answers every method the strip's rows read**, the
+   * browser row's role included: a row that reads one the fixture does not
+   * answer throws at mount, and the whole column takes the fault with it.
+   * `ChatFixture.test.ts` mounts this file and fails when that happens.
    */
 
   /** The canned page, and the seat it is answered for. */
@@ -44,6 +55,16 @@
     background_tasks?: unknown[];
     /** The seat's own connector subscriptions, already in row shape. */
     connectors?: { kind: 'gotify' | 'slack'; id: string; key: string; value: string }[];
+    /** The project's schedules, already in row shape. */
+    schedules?: { id: string; key: string; value: string }[];
+    /** The session's MCP servers, already in row shape. */
+    mcp?: McpRow[];
+    /** The seat's working tree, already in strip shape. */
+    tree?: GitStrip;
+    /** The project's tasks, already in row shape. */
+    taskList?: TaskStripRow[];
+    /** The session's monitors, already in row shape. */
+    monitors?: MonitorStripRow[];
   }
 
   /**
@@ -82,6 +103,11 @@
           listening = null;
         };
       },
+      // The browser row reads the role as it draws and subscribes to it -
+      // without these the whole strip throws on the /fixture route.
+      browserRole: () => false,
+      onBrowserRole: () => () => undefined,
+      takeBrowserRole: () => undefined,
       onStatus: () => () => undefined,
       store: () => undefined,
       settings: () => null,
@@ -261,6 +287,17 @@
       // strip's third row reads this store, and nothing else here would fill
       // it.
       connectors.sync(page.connectors ?? null);
+      // The project's schedules, seeded the same way: the strip's fourth row
+      // reads this store, and nothing else here would fill it.
+      schedules.sync(page.schedules ?? null);
+      // The session's MCP servers, seeded the same way: the strip's fifth row
+      // reads this store, and nothing else here would fill it.
+      mcp.sync(page.mcp ?? null);
+      // The tree, the tasks and the monitors, seeded the same way: the last
+      // three rows read these stores, and nothing else here would fill them.
+      git.sync(page.tree ?? null);
+      tasks.sync(page.taskList ?? null);
+      monitors.sync(page.monitors ?? null);
       // Every four seconds a turn lands below the reader, which is the case
       // the column's scroll behaviour is for.
       canned.stop = canned.held.every(4000);

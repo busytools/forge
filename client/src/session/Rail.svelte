@@ -29,6 +29,7 @@
     current,
     now,
     connection,
+    notice = null,
     onclose,
   }: {
     home: HomeWire;
@@ -37,6 +38,9 @@
     now: number;
     /** What a row's close chip acts through, and what moves the reader after it. */
     connection: Connection;
+    /** The connection's own line - a protocol skew or a reconnect - drawn
+     *  over the versions, where the build facts live. */
+    notice?: string | null;
     /** Brings the header's handle back, which the collapsed rail has covered. */
     onclose: () => void;
   } = $props();
@@ -46,7 +50,7 @@
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.
    */
-  const foot = $derived(railFooter(home, current));
+  const foot = $derived(railFooter(home, current, connection.serverProtocol()));
 
   /**
    * Close one row's seat. The command the row sends and where the reader
@@ -151,6 +155,9 @@
        key-hint line, and a second `.foot` would take that rule's mono and its
        size with it. -->
   <div class="rfoot">
+    {#if notice !== null}
+      <div class="notice" role="status">{notice}</div>
+    {/if}
     {#if foot.account !== null}
       <div class="who">
         <span class="led {foot.account.tone}"></span>
@@ -180,8 +187,16 @@
       </div>
     {/if}
     <div class="vers">
-      <div class="v">forge v{foot.versions.forge}</div>
-      <div class="v">socket v{foot.versions.socket}</div>
+      <!-- The pair, both sides stated: a mismatch is then a difference the
+           reader sees here, with the notice above naming what to run. -->
+      <div class="v" class:skewed={foot.versions.skewed}>
+        <span class="vt">server {`v${foot.versions.serverForge}`}</span>
+        <span class="vs">{`\u{b7} socket v${foot.versions.serverProtocol ?? '\u{2014}'}`}</span>
+      </div>
+      <div class="v" class:skewed={foot.versions.skewed}>
+        <span class="vt">client {`v${foot.versions.clientForge}`}</span>
+        <span class="vs">{`\u{b7} socket v${foot.versions.clientProtocol}`}</span>
+      </div>
       {#if foot.versions.claude !== null}
         <div class="v">
           <!-- The space between the version and the arrow is part of the row,

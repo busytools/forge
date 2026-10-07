@@ -572,11 +572,24 @@ export function leafOf(
   abandoned = false,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
+  // A backgrounded call is held open by its TASK fact and nothing else: the
+  // terminal clears its background roster before a resume's sweep, so a task
+  // with no live frames behind it fails like every other open call, and an
+  // input-keyed exemption would leave exactly the #1836 spinner standing for
+  // a backgrounded call killed mid-launch.
   const settled =
     task !== undefined && (task.backgrounded || task.status !== 'in_progress')
       ? task.status
       : settledBy(result, abandoned);
   const forge = forgeCardOf(name, input, result);
+  const drawn = drawnBody(name, body, result, settled === 'failed' || settled === 'killed');
+  // A settled failure with nothing to open onto says so in words: the summary
+  // carries no text mark of its own, so the tone alone would be the state's
+  // only carrier, and the chevron would open an empty body (#1836, rule 22).
+  const shown =
+    drawn.length === 0 && (settled === 'failed' || settled === 'killed')
+      ? [{ kind: 'text' as const, text: 'no result' }]
+      : drawn;
   return {
     id,
     row: rowOf(name),
@@ -597,7 +610,7 @@ export function leafOf(
     command: field(input, 'command')?.trim() || null,
     status: settled,
     note: task?.backgrounded === true ? task.note : null,
-    body: drawnBody(name, body, result, settled === 'failed' || settled === 'killed'),
+    body: shown,
     mutation: marksOf(name, input, body, record),
     decision: decisionOf(name, input, result),
     forge,

@@ -690,9 +690,7 @@
       // An empty box hands up to the queue: the pile takes the keyboard, and
       // its own down comes back here. Only when the box is empty - a draft
       // uses up and down for its own lines.
-      const queue = field
-        ?.closest('.composer')
-        ?.querySelector<HTMLElement>('.pile [role="listbox"]');
+      const queue = field?.closest('.app')?.querySelector<HTMLElement>('.pile [role="listbox"]');
       if (queue !== null && queue !== undefined) {
         event.preventDefault();
         queue.focus();

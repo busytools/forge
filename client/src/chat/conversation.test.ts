@@ -239,6 +239,42 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * The review activity notice is the same line one origin over (#1776): a
+   * worker's review turn ended, the core batched the tally into the
+   * reviewer's session, and no transcript row holds it - the terminal draws
+   * it as an info line and this store is the page's only place to draw one.
+   */
+  it('draws the review activity notice as a line of its own', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      review_activity_notice: {
+        key: LEAD,
+        branch: 'feat',
+        waiting: 1,
+        message: 'review #1 · 1 replied',
+      },
+    });
+
+    const row = get(chat.value).turns.at(-1);
+    expect(JSON.stringify(row?.messages), 'the notice text is drawn').toContain(
+      'review #1 · 1 replied',
+    );
+    expect(JSON.stringify(row?.messages), 'as the core own line, at info').toContain(
+      'forge_notice',
+    );
+
+    // A notice with no words is the same rule as the empty core line: nothing.
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    const before = drawn();
+    server.update({ review_activity_notice: { key: LEAD, branch: 'feat', waiting: 1 } });
+    expect(drawn(), 'a wordless notice is not drawn').toBe(before);
+  });
+
+  /**
    * A seat with no turn yet is the ordinary state, and a line that joins the
    * turn it arrived in has nothing to join there - so the core's own line is
    * the one `system` frame that opens a row. Held back, it would be dropped:

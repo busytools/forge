@@ -1,6 +1,6 @@
 /**
- * What the inspector's own builders were asked to do, in the order they were
- * asked.
+ * What the client's own fold builders were asked to do, in the order they
+ * were asked.
  *
  * A module rather than a prop, for the reason the chat's list double needs one:
  * the counter has to live inside a `vi.mock` factory, which is hoisted above

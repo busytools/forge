@@ -23,7 +23,7 @@ use forge_agent::env::file_index::start_change_watch;
 use forge_agent::env::processes::SCAN_STALENESS;
 use forge_primitives::SessionSlot;
 use forge_primitives::git::{GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::GitDiffSnapshot;
+use forge_primitives::git_diff::{GitDiffSnapshot, GitWorkView};
 
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
@@ -98,6 +98,24 @@ pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
     WorkState { branch, changed, gate }
 }
 
+/// The tree behind a row's depth, as both the record and its frames carry it:
+/// the two layers a row draws, with `Clean` and `ScanFailed` both reading as
+/// nothing to state - which is what the layer means, and the row above still
+/// carries the gate that says which.
+pub fn git_work_view(diff: &GitDiffSnapshot) -> GitWorkView {
+    let worktree = match &diff.worktree {
+        forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.clone()),
+        forge_primitives::git_diff::LayerState::Clean
+        | forge_primitives::git_diff::LayerState::ScanFailed => None,
+    };
+    let ahead = match &diff.branch_ahead {
+        forge_primitives::git_diff::LayerState::Populated(chain) => Some(chain.clone()),
+        forge_primitives::git_diff::LayerState::Clean
+        | forge_primitives::git_diff::LayerState::ScanFailed => None,
+    };
+    GitWorkView { default_branch: diff.default_branch.clone(), worktree, ahead }
+}
+
 /// A seat's last scan of its working tree, and when it was taken.
 ///
 /// Held whole rather than as the row alone, because the next scan takes the
@@ -161,6 +179,7 @@ fn reads_again(read_at: Option<Instant>, dirty: bool, now: Instant, window: Dura
 #[derive(Clone, PartialEq)]
 struct Announced {
     work: WorkState,
+    git: GitWorkView,
     pr: Option<GitPrInfo>,
     closes: Vec<GitIssueRef>,
 }
@@ -169,6 +188,7 @@ impl Announced {
     fn of(held: &WorkSnapshot) -> Self {
         Self {
             work: work_from_scan(&held.diff, &held.cwd),
+            git: git_work_view(&held.diff),
             pr: held.diff.pr.clone(),
             closes: held.diff.closes.clone(),
         }
@@ -648,6 +668,7 @@ fn spawn_work_watch(
             workspace.update_tx.send(SessionUpdate::WorkChanged {
                 key: slot.clone(),
                 work: row.work.clone(),
+                git: row.git.clone(),
                 pr: row.pr.clone(),
                 closes: row.closes.clone(),
             });

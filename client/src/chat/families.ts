@@ -3,8 +3,8 @@
  *
  * **This vocabulary is the fold's, and it is the only one.** The grouping was
  * the server's until it moved here, and the table below is that table moved
- * rather than a second naming of it: the chat and the inspector describe the
- * same tool with the same word or they describe it two ways.
+ * rather than a second naming of it: every row of the chat describes the same
+ * tool with the same word or they describe it two ways.
  *
  * A family is a concept and a glyph is one rendering of it, so the sprite a
  * row draws is chosen here from the family and never stored beside it.

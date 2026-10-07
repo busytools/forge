@@ -116,7 +116,7 @@
 <div class="page">
 
   <h1>Queued prompts - every variant</h1>
-  <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the pinned thinking bar, the queue pile, then the dock or the box - the bar, the box and the dock are <span class="mono">web-session.html</span>'s shipped shapes lifted as-is, and the pile is new here. Every tile draws the real states; the timings under
+  <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the queue pile above the pinned thinking bar, then the dock or the box - the bar, the box and the dock are <span class="mono">web-session.html</span>'s shipped shapes lifted as-is, and the pile is new here. Every tile draws the real states; the timings under
   <span class="mono">The wire</span> are the measured ones.</p>
   <div class="legend">
     <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span></span>
@@ -174,9 +174,9 @@ function foot(tile, spec) {
   el.className = 'tile';
   el.innerHTML =
     `<div class="tcap">${spec.cap}</div>
+     <div class="qwrap"><div class="qcount"></div><div class="qstack"></div></div>
      <div class="strip"><div class="ti"><span class="ring"></span><span>12s</span><span class="sep">&#183;</span>
        <span>1.2k&#8593; 340&#8595;</span><span class="sep">&#183;</span><span>91% cached</span></div></div>
-     <div class="qwrap"><div class="qcount"></div><div class="qstack"></div></div>
      <div class="mslot"></div>`;
   const n = spec.items.length, cur = spec.cur ?? -1;
   const stack = el.querySelector('.qstack');

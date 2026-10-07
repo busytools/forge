@@ -5,15 +5,16 @@
  *
  * Pure, so a test can build a session by hand. Nothing here recomputes a state
  * the server already decided: a row's lifecycle, a monitor's status and a
- * server's connection state all arrive in the record, and a section is drawn
- * only when the record has something behind it - a section that is always
- * there says nothing when it is empty.
+ * server's connection state all arrive in the record, and a row appears only
+ * when there is something behind it - a row that is always there says nothing
+ * when it is empty.
  *
- * Four of the seven sections do not read the seat's own record. A project's
- * tasks, its schedules and the connector views are keyed by PROJECT on the
- * home's snapshot, and the home is the subscription the shell already holds
- * for the rest of the app.
+ * Some rows do not read the seat's own record. A project's tasks and its
+ * schedules are keyed by PROJECT on the home's snapshot, and the home is the
+ * subscription the shell already holds for the rest of the app.
  */
+
+import type { Snippet } from 'svelte';
 
 import {
   artifactLabel,
@@ -27,11 +28,17 @@ import {
   whenOf,
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
-import { PROTOCOL_VERSION } from '../protocol';
+import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import type { McpServer, MonitorRecord, SessionHeader, SessionRecord } from './wire';
+import type {
+  FileStatusWire,
+  McpServer,
+  MonitorRecord,
+  SessionHeader,
+  SessionRecord,
+} from './wire';
 
 /** The facts the header states, and the class the mode's chip carries. */
 export interface Facts {
@@ -94,56 +101,104 @@ export interface RailProject {
   why: { line: string; bad: boolean } | null;
 }
 
-/** The git section's rows. */
-export interface GitView {
-  summary: string;
-  /** `PR #N`, when the branch is on one. */
-  pr: number | null;
-  /** What that pull request closes, as one line. */
-  closes: string | null;
-  /** Why there is no branch to show, when the tree could not be read. */
+/** One changed file as a strip row draws it. */
+export interface StripFile {
+  path: string;
+  status: FileStatusWire;
+  added: number;
+  removed: number;
+}
+
+/** One file list's rows and totals, as a panel section draws them. */
+export interface GitStats {
+  files: StripFile[];
+  totalFiles: number;
+  totalAdded: number;
+  totalRemoved: number;
+}
+
+/** The seat's working tree, as the strip's row draws it. */
+export interface GitStrip {
+  /** The toggle's own line: the branch, how far it runs, what moved and
+   *  whether the tree is dirty - or where the tree is not. */
+  label: string;
+  /** What the tree IS - the project's, or a worker's worktree - which is the
+   *  first thing a reader looking at a fleet needs to know. */
+  head: string;
+  /** The branch's chain ahead of its default, when it has one: each commit
+   *  with the files it changed and when it landed, and the range's own
+   *  totals. */
+  ahead: {
+    count: number;
+    base: string | null;
+    commits: { sha: string; subject: string; stats: GitStats | null; time: number }[];
+    stats: GitStats | null;
+  } | null;
+  /** The uncommitted layer, with its marks and counts. */
+  uncommitted: GitStats | null;
+  /** The open pull request, whether it is a draft, and what it closes. */
+  pr: { number: number; url: string; draft: boolean; closes: string } | null;
+  /** Why the tree could not be read, when it could not. */
   gate: string | null;
-  /**
-   * Whether the section opens on first draw.
-   *
-   * The section itself is drawn for every seat with a working tree, the way
-   * the server draws it: a branch and a count are worth stating even with
-   * nothing under them, and the one read whose absence would read as "this
-   * seat has no repository" is the whole section, not its body. It opens only
-   * when there is a body to open on, or a clean tree on no pull request would
-   * lead the inspector with an open section and nothing under it.
-   */
-  open: boolean;
 }
 
-/** One row of a section body: a key, a value, and how the value is weighted. */
-export interface Kv {
-  k: string;
-  v: string;
-  /** The value carries the accent: what a row means rather than what it is. */
-  accent?: boolean;
+/** A file's mark: the letter the terminal's rail draws, and its tone. */
+export function markOf(status: FileStatusWire): { letter: string; klass: string } {
+  switch (status) {
+    case 'added':
+      return { letter: 'A', klass: 'ok' };
+    case 'deleted':
+      return { letter: 'D', klass: 'bad' };
+    case 'renamed':
+      return { letter: 'R', klass: 'mark' };
+    case 'copied':
+      return { letter: 'C', klass: 'mark' };
+    case 'typechange':
+      return { letter: 'T', klass: 'mark' };
+    case 'unmerged':
+      return { letter: '!', klass: 'bad' };
+    case 'untracked':
+      return { letter: 'U', klass: 'warn' };
+    case 'modified':
+      return { letter: 'M', klass: 'mark' };
+  }
 }
 
-/** One task as its row draws it. */
-export interface TaskRow {
-  klass: string;
+/** One task, as the strip's row draws it. */
+export interface TaskStripRow {
+  /** The task's own id, which is what the row is keyed by. */
+  id: string;
+  /** Where the task is, which the row's own mark draws. */
+  status: Task['status'];
+  /** The row's own text: the active form while one runs, else the subject. */
+  display: string;
   subject: string;
   owner: string | null;
+  /** The facts beside the owner: how far along, what it produced, how long. */
   meta: string;
 }
 
-/** One schedule as its row draws it. */
-export interface ScheduleRow {
+/** One MCP server, as the strip's row draws it. */
+export interface McpRow {
+  /** The server's name, which is what a row is keyed by. */
+  name: string;
+  /** The line the row leads with: the name, and the scope it is configured in. */
   k: string;
+  /** What the row says beside it: tool count, or why it is not up. */
   v: string;
-}
-
-/** The MCP section, as its rows draw it. */
-export interface McpView {
-  summary: string;
-  rows: Kv[];
-  /** Why the read failed, when it did: an empty list alone cannot say. */
-  error: string | null;
+  /** The tools the server offers when it is connected, as its status depth. */
+  tools: string[];
+  /** What backs a subprocess-backed server, when its config names one: the
+   *  command it runs, or the URL it reaches. */
+  command: string | null;
+  /** The failure reason a Failed read carries, shown as the detail line. */
+  reason: string | null;
+  /**
+   * Whether this row stands for the READ rather than a server: an empty read
+   * that failed draws as itself, and a toggle must not count it as a server
+   * the session has.
+   */
+  synthetic: boolean;
 }
 
 /**
@@ -171,6 +226,15 @@ export interface ConversationProps {
   reason: string | null;
   slot: SessionSlot;
   connection: Connection;
+  /**
+   * The waiting prompts, drawn at the column's foot above the pinned row.
+   *
+   * The queue's DATA is the page's - it owns the record - but its PLACE is
+   * here, between the turns and the strip: what is waiting reads against
+   * what is running, and the strip stays right above the box. A snapshot
+   * rather than props, because the chat must not reach for the record.
+   */
+  queue?: Snippet;
 }
 
 /** What the composer is handed, and what its own task writes against. */
@@ -192,6 +256,9 @@ export interface ComposerProps {
  */
 export function railMark(state: RowState): string {
   if (state.kind === 'unseen') return 'unseen';
+  // A failed turn draws the failure mark, the terminal's own answer: its
+  // cross replaces the state glyph until the seat is opened.
+  if (state.kind === 'failed-turn') return 'failed';
   if (state.kind === 'never-started') return 'off';
   switch (state.lifecycle) {
     case 'Running':
@@ -303,9 +370,13 @@ export function seatState(home: HomeWire, slot: SessionSlot): SeatState {
   };
 }
 
-/** One monitor as its card draws it. */
-export interface MonitorView {
+/** One monitor, as the strip's row draws it. */
+export interface MonitorStripRow {
+  /** The monitor's own tool_use_id, which is what the row is keyed by. */
+  id: string;
   running: boolean;
+  /** Whether it ENDED well: `completed` only, never `stopped` or `timed_out`. */
+  completed: boolean;
   name: string;
   label: string;
   command: string;
@@ -401,6 +472,9 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;
   if (state.kind === 'unseen') return 1;
+  // A failed turn is the seat's own version of a needed person, so it ranks
+  // with the attention states rather than with the completions.
+  if (state.kind === 'failed-turn') return 0;
   if (state.kind === 'never-started') return 2;
   switch (state.lifecycle) {
     case 'Attention':
@@ -425,6 +499,10 @@ export function rankOf(state: RowState, pending: 'question' | 'permission' | nul
  * the client's own words.
  */
 export function failedLine(row: Row): string | null {
+  // A failed turn states itself: the row carries no reason text for it -
+  // the failure's own words are in the seat's conversation - so the line
+  // is the word alone.
+  if (row.state.kind === 'failed-turn') return 'a turn failed';
   if (row.state.kind !== 'lifecycle') return null;
   const lifecycle = row.state.lifecycle;
   if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
@@ -526,28 +604,83 @@ export function railGroups(
 }
 
 /**
- * The git section: the branch the seat's tree is on and what moved in it, the
- * pull request that tree belongs to, and why there is no branch when there is
- * not one.
+ * The seat's tree as the strip's row draws it: the branch and what moved on
+ * the toggle, the pull request and the reason the tree could not be read in
+ * the list.
  *
  * The files a diff holds are not here: the socket carries the tree's STATE -
  * the branch and the count - and the heavier scan that lists files and counts
- * their lines is not on this record, so the section states what the record
- * holds rather than drawing an empty list under it.
+ * their lines is not on this record, so the row states what the record holds
+ * rather than drawing an empty list under it.
  */
-export function gitSection(record: SessionRecord): GitView {
-  const { branch, files } = placeOf(record.work);
+export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | null {
+  const { branch } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
+  const view = record.git;
+  const uncommitted = view.worktree;
+  const changed = record.work.changed;
+  // The toggle reads the tree at a glance: where the branch is, how many
+  // commits it runs ahead, the PR if it is on one - and `dirty` only when
+  // the tree is, an absence being the clean word.
+  const label = [
+    branch,
+    view.ahead !== null && view.ahead.count > 0
+      ? `${view.ahead.count} commit${view.ahead.count === 1 ? '' : 's'}`
+      : null,
+    record.pr !== null ? `PR #${record.pr.number}` : null,
+    changed !== null && changed > 0 ? 'dirty' : null,
+  ]
+    .filter((part) => part !== null)
+    .join(' \u{b7} ');
+  const clean = uncommitted === null && view.ahead === null && record.pr === null;
+  // The default arrives as its remote-tracking ref (`origin/main`); compare
+  // the plain name, the way the terminal's own row does, so a checked-out
+  // `main` in a clone is recognised as the default rather than as work.
+  const base = view.defaultBranch?.replace(/^origin\//, '') ?? null;
+  const onDefault = gate === null && branch !== null && base !== null && branch === base;
+  // The default branch with nothing on it has no state a row could state:
+  // it is where work lands, not work. A dirty default branch still draws -
+  // there is something to see.
+  if (onDefault && clean) return null;
   return {
-    summary: [branch, files].filter((part) => part !== null).join(' \u{b7} '),
-    pr: record.pr === null ? null : record.pr.number,
-    closes:
-      record.closes.length === 0
+    label: label === '' ? 'no branch' : label,
+    head: headOf(record.state.scan_cwd, slot),
+    ahead:
+      view.ahead === null
         ? null
-        : record.closes.map((issue) => `#${issue.number}`).join(' '),
+        : {
+            count: view.ahead.count,
+            base: view.defaultBranch,
+            commits: view.ahead.commits,
+            stats: view.ahead.stats,
+          },
+    uncommitted,
+    pr:
+      record.pr === null
+        ? null
+        : {
+            number: record.pr.number,
+            url: record.pr.url,
+            draft: record.pr.draft,
+            closes: record.closes.map((issue) => `#${issue.number}`).join(' '),
+          },
     gate,
-    open: gate !== null || record.pr !== null || files !== null,
   };
+}
+
+/**
+ * What the tree IS: a worker's worktree names itself off the path the
+ * worktrees live under, and everything else is the seat's own tree - the
+ * project's when the seat is the lead, a worker's otherwise.
+ */
+function headOf(scanCwd: string, slot: SessionSlot): string {
+  const marker = '/.claude/worktrees/';
+  const at = scanCwd.indexOf(marker);
+  if (at !== -1) {
+    const name = scanCwd.slice(at + marker.length).replace(/\/+$/, '');
+    return name === '' ? 'a worktree' : `worktree \u{b7} ${name}`;
+  }
+  return slot.label === 'lead' ? "the project's tree" : "a worker's tree";
 }
 
 /** The project this seat belongs to on the home's snapshot. */
@@ -664,7 +797,21 @@ export interface RailFooter {
   figures: FooterFigure[];
   /** A window-billed account's windows, in the shape the chip already draws. */
   windows: AccountWindow[];
-  versions: { forge: string; socket: number; claude: string | null; update: string | null };
+  /**
+   * The pair the footer draws, side by side: what the server is and what it
+   * speaks, beside what this client is and what it speaks. A mismatch is
+   * then a difference the reader sees rather than a notice they have to
+   * decode - and `skewed` is that difference, stated once.
+   */
+  versions: {
+    serverForge: string;
+    serverProtocol: number | null;
+    clientForge: string;
+    clientProtocol: number;
+    skewed: boolean;
+    claude: string | null;
+    update: string | null;
+  };
 }
 
 /**
@@ -691,14 +838,22 @@ const UNPROBED = '$-';
  * to which account serves this project, and the terminal names the seat's
  * bound account instead.
  */
-export function railFooter(home: HomeWire, slot: SessionSlot): RailFooter {
+export function railFooter(
+  home: HomeWire,
+  slot: SessionSlot,
+  /** The greeting's protocol, or `null` before one lands. The rail always
+   *  passes the live number; a test that does not care may leave it out. */
+  serverProtocol: number | null = null,
+): RailFooter {
   const versions = {
-    forge: home.forge_version_short,
-    // What this app speaks on the socket, beside the two builds it binds: the
-    // client and a server that disagrees on it refuse each other (socket.ts
-    // checks the greeting), so the number is worth reading before a mismatch
-    // does.
-    socket: PROTOCOL_VERSION,
+    serverForge: home.forge_version_short,
+    // The greeting's own number beside this client's, because the two are
+    // what a mismatch IS: `socket.ts` checks them against each other, and
+    // the footer is where a reader sees both before one has to say so.
+    serverProtocol,
+    clientForge: CLIENT_VERSION,
+    clientProtocol: PROTOCOL_VERSION,
+    skewed: serverProtocol !== null && serverProtocol !== PROTOCOL_VERSION,
     claude: home.cli_version?.installed ?? null,
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
   };
@@ -737,31 +892,32 @@ function money(amount: unknown): string {
 }
 
 /**
- * The tasks section: what the project holds, in the order a person reads them
- * rather than the order the store returns them.
+ * The project's tasks, as the strip's row draws them: in the order a person
+ * reads them rather than the order the store returns them.
  */
-export function tasksSection(tasks: Task[]): { summary: string; rows: TaskRow[] } {
-  const done = tasks.filter((task) => task.status === 'completed').length;
+export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
+  // The seat's own slice, scoped the way the terminal scopes its TASKS
+  // section: a lead takes the top-level rows - its campaign board - and a
+  // worker only the rows it owns. The whole set stays the home's read.
+  const mine =
+    slot.label === 'lead'
+      ? tasks.filter((task) => task.parent === null)
+      : tasks.filter((task) => task.owner?.label === slot.label);
   const rank: Record<string, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
-  const ordered = [...tasks].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
-  return {
-    summary: `${done} of ${tasks.length}`,
-    rows: ordered.map((task) => ({
-      klass: taskClass(task.status),
-      subject: task.subject,
-      owner: task.owner === null ? null : task.owner.label,
-      // The owner is drawn beside these, as their own cell: the terminal
-      // splits them, and a `·`-joined string could not weight them apart.
-      meta: taskMeta(task),
-    })),
-  };
-}
-
-function taskClass(status: string): string {
-  if (status === 'in_progress') return 'tk now';
-  if (status === 'completed') return 'tk done';
-  if (status === 'blocked') return 'tk blocked';
-  return 'tk';
+  const ordered = [...mine].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+  return ordered.map((task) => ({
+    id: task.id,
+    status: task.status,
+    // A running row leads with its active form, the terminal's own rule: an
+    // empty one falls back to the subject rather than drawing bare.
+    display:
+      task.status === 'in_progress' && task.active_form !== null && task.active_form !== ''
+        ? task.active_form
+        : task.subject,
+    subject: task.subject,
+    owner: task.owner === null ? null : task.owner.label,
+    meta: taskMeta(task),
+  }));
 }
 
 /**
@@ -775,24 +931,47 @@ function taskMeta(task: Task): string {
   return parts.join(' \u{b7} ');
 }
 
-/** The schedules section: the crons that fire into this project, and when. */
-export function schedulesSection(
-  crons: CronEntry[],
-  now: number,
-): { summary: string; rows: ScheduleRow[] } {
-  return {
-    summary: `${crons.length}`,
-    rows: crons.map((cron) => ({
-      k: cronLabel(cron),
-      v: `${untilOf(cron.next_fire, now)} \u{b7} ${kindOf(cron.kind)}`,
-    })),
-  };
-}
-
 /** What a schedule is called: its own description, else the prompt's first line. */
 function cronLabel(cron: CronEntry): string {
   if (cron.description !== undefined && cron.description !== '') return cron.description;
   return cron.prompt.split('\n')[0] ?? '';
+}
+
+/** One schedule, as the strip's row draws it. */
+export interface SeatScheduleRow {
+  /** The cron's own id: what the row is KEYED by, since two schedules can
+   *  share a description, or a first prompt line, and a row keyed by the
+   *  drawn words throws on exactly that pair. */
+  id: string;
+  /** The line the row leads with: the description, else the prompt's first line. */
+  key: string;
+  /** What the row says beside it: when it is next due, and its kind. */
+  value: string;
+}
+
+/**
+ * The project's schedules, as the seat's strip row draws them.
+ *
+ * **Ownership is `team_role`**: a cron names the worker label it was created
+ * by, and `None` targets the project lead - so the lead's page reads the None
+ * set and a worker's page reads its own label's, the same rule the connector
+ * row beside it applies. The countdown reads against the page's one clock, so
+ * the caller re-reads as that clock moves.
+ */
+export function seatScheduleRows(
+  home: HomeWire,
+  slot: SessionSlot,
+  now: number,
+): SeatScheduleRow[] {
+  const crons = projectOf(home, slot)?.crons ?? [];
+  const mine = crons.filter((cron) =>
+    slot.label === 'lead' ? (cron.team_role ?? null) === null : cron.team_role === slot.label,
+  );
+  return mine.map((cron) => ({
+    id: cron.id,
+    key: cronLabel(cron),
+    value: `${untilOf(cron.next_fire, now)} \u{b7} ${kindOf(cron.kind)}`,
+  }));
 }
 
 /** `CronKind` is externally tagged, so its variant name is the key. */
@@ -808,6 +987,7 @@ function kindOf(kind: unknown): string {
 export function untilOf(at: { secs_since_epoch: number } | null, now: number): string {
   if (at === null) return 'due now';
   const remaining = at.secs_since_epoch - Math.floor(now / 1000);
+  if (remaining <= 0) return 'due now';
   if (remaining <= 59) return 'in a minute';
   if (remaining < 3600) return `in ${Math.floor(remaining / 60)}m`;
   if (remaining < 86_400) return `in ${Math.floor(remaining / 3600)}h`;
@@ -986,21 +1166,65 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
   };
 }
 
-/** The MCP section, or `null` when the session has no read behind it. */
-export function mcpSection(record: SessionRecord): McpView | null {
-  const servers = record.mcp;
-  if (servers === null) return null;
-  if (servers.servers.length === 0 && servers.error === null) return null;
-  return {
-    // A read that failed carries an empty list, so the summary says which of
-    // the two it is looking at rather than reporting nothing configured.
-    summary: servers.servers.length === 0 ? 'failed' : `${servers.servers.length}`,
-    rows: servers.servers.map((server) => ({
-      k: `${server.name} \u{b7} ${scopeLabel(server)}`,
-      v: mcpState(server),
-    })),
-    error: servers.error,
-  };
+/**
+ * The session's MCP servers, as the strip's row draws them: one row per
+ * server, carrying the status depth (its tools, what backs it, the failure
+ * reason) so the panel shows as much of a server as the wire has.
+ *
+ * A read that FAILED carries an empty list - and that is a state of its own,
+ * not "nothing configured" - so the failure draws as a row naming it.
+ */
+export function mcpRows(record: SessionRecord | null): McpRow[] {
+  const servers = record?.mcp ?? null;
+  if (servers === null) return [];
+  if (servers.servers.length === 0) {
+    return servers.error === null
+      ? []
+      : [
+          {
+            name: 'mcp-read',
+            k: 'servers',
+            v: 'failed',
+            tools: [],
+            command: null,
+            reason: servers.error.trim() === '' ? null : servers.error.trim(),
+            synthetic: true,
+          },
+        ];
+  }
+  return servers.servers.map((server) => ({
+    name: server.name,
+    k: `${server.name} \u{b7} ${scopeLabel(server)}`,
+    v: mcpState(server),
+    tools: mcpTools(server),
+    command: mcpCommand(server),
+    reason: server.error?.trim() ? server.error.trim() : null,
+    synthetic: false,
+  }));
+}
+
+/** The tools a server offers, as its status depth names them. */
+function mcpTools(server: McpServer): string[] {
+  return array(server.tools).flatMap((entry) => {
+    const held = isRecord(entry) ? entry : {};
+    const name = held['name'];
+    return typeof name === 'string' && name !== '' ? [name] : [];
+  });
+}
+
+/**
+ * What backs a server, from its config blob: the command a stdio server runs
+ * (its argv joined), or the URL a remote one reaches. `null` for a config
+ * that names neither, which is the in-process case.
+ */
+function mcpCommand(server: McpServer): string | null {
+  if (!isRecord(server.config)) return null;
+  const url = server.config['url'];
+  if (typeof url === 'string' && url !== '') return url;
+  const command = server.config['command'];
+  if (typeof command !== 'string' || command === '') return null;
+  const args = array(server.config['args']).map((arg) => String(arg));
+  return [command, ...args].join(' ');
 }
 
 /**
@@ -1021,10 +1245,10 @@ export function mcpState(server: McpServer): string {
   switch (server.status) {
     case 'connected':
       return server.tools === undefined ? 'connected' : toolSummary(server.tools.length);
-    case 'failed': {
-      const error = server.error?.trim() ?? '';
-      return error === '' ? 'failed' : error;
-    }
+    case 'failed':
+      // The reason is the row's own line beneath, not this cell: the terminal
+      // draws it once, and a cell carrying it again would say it twice.
+      return 'failed';
     case 'needs-auth':
       return 'needs sign-in';
     case 'pending':
@@ -1051,21 +1275,19 @@ export function memoryLabel(bytes: number): string {
   return `${Math.floor(bytes / GB)}.${Math.floor((bytes % GB) / (GB / 10))} GB`;
 }
 
-/** The monitors section, as its cards draw it. */
-export function monitorsSection(
-  monitors: MonitorRecord[],
-  now: number,
-): { summary: string; rows: MonitorView[] } {
-  const running = monitors.filter((monitor) => monitor.status === 'running').length;
-  return {
-    summary: `${running} running`,
-    rows: monitors.map((monitor) => ({
-      running: monitor.status === 'running',
-      name: monitor.description,
-      label: monitorLabel(monitor, now),
-      command: monitor.command,
-    })),
-  };
+/** The session's monitors, as the strip's row draws them. */
+export function monitorRows(monitors: MonitorRecord[], now: number): MonitorStripRow[] {
+  return monitors.map((monitor) => ({
+    id: monitor.tool_use_id,
+    running: monitor.status === 'running',
+    // Only `completed` is a success: the wire folds failed, killed and
+    // stopped into `stopped`, so anything else must not wear the green
+    // check - the terminal's own row draws them red for the same reason.
+    completed: monitor.status === 'completed',
+    name: monitor.description,
+    label: monitorLabel(monitor, now),
+    command: monitor.command,
+  }));
 }
 
 /**

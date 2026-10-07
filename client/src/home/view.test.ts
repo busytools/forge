@@ -142,6 +142,7 @@ function agent(
   label: string,
   lifecycle: Lifecycle,
   work: WorkState | null = null,
+  failedTurn: WireTime | null = null,
 ): AgentRow {
   return {
     slot: { org, project, label },
@@ -152,6 +153,7 @@ function agent(
     pending_depth: 0,
     last_activity: null,
     reason: null,
+    failed_turn: failedTurn,
     work,
   };
 }
@@ -197,6 +199,7 @@ const LEAD_ROW: Row = {
   pending: null,
   reason: null,
   lastActivity: null,
+  failedTurn: null,
 };
 
 describe('the fleet the snapshot describes', () => {
@@ -481,6 +484,30 @@ describe('the cells the reshape made drawable', () => {
       kind: 'lifecycle',
       lifecycle: 'Idle',
     });
+  });
+
+  /**
+   * A failed turn is the row saying "look at this", and the terminal draws
+   * it over both the spinner and the unseen diamond. A row reading the
+   * lifecycle alone would draw the seat as idle and say nothing.
+   */
+  it('marks a seat whose newest turn failed, over every other promotion', () => {
+    const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
+    const failed = leadOf(homeView(withAgentRow({ failed_turn: at }), ''));
+
+    expect(failed.state).toEqual({ kind: 'failed-turn' });
+    expect(failed.failedTurn).toEqual(at);
+    expect(markOf(failed.state)).toEqual({ class: 'failed', dot: 'bad' });
+
+    // Over the spinner a backgrounded task promotes and over the diamond a
+    // completion promotes: the failure is the thing to act on.
+    const slot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    const busy: HomeWire = {
+      ...homeWire,
+      agents: [{ ...AGENT, failed_turn: at, has_background_work: true }],
+      unseen: [slot],
+    };
+    expect(leadOf(homeView(busy, '')).state).toEqual({ kind: 'failed-turn' });
   });
 
   /**
