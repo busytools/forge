@@ -581,12 +581,16 @@
     {:else if asProse}
       <Prose text={piece.text} preserveLines />
     {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
-      <!-- **An MCP result is markdown, one style for every call.** What a
-           server wrote arrives as markdown - headings, lists, fences - and
-           drew raw as itself until this branch (Ved, live round 2026-10-07).
-           A local command's OUTPUT is not prose and stays the terminal box
-           below. -->
-      <Prose text={piece.text} preserveLines />
+      <!-- **An MCP result is markdown, one style for every call, the peer
+           card's own.** What a server wrote arrives as markdown - headings,
+           lists, fences - and drew raw as itself until this branch (Ved,
+           live round 2026-10-07); forced line breaks stayed until the next
+           one, where he asked the browser's body to read like peer messaging
+           (Ved, same round: the browser body "should follow the same styles
+           like peer messaging does"). Soft breaks flow; a fence is where
+           literal lines live. A local command's OUTPUT is not prose and
+           stays the terminal box below. -->
+      <Prose text={piece.text} />
     {:else if asCode(piece) !== null}
       <Code path={call.title} text={piece.text} />
     {:else}

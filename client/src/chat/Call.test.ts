@@ -108,6 +108,25 @@ describe('the row one call draws', () => {
     expect(drawn, 'and no raw heading survives').not.toContain('### Page');
   });
 
+  /**
+   * **The peer card's own voice.** Ved, same round: a browser call's body
+   * "should follow the same styles like peer messaging does" - peers flow
+   * their soft breaks, and the browser's body does too now; literal lines
+   * are a fence's business.
+   */
+  it("flows an MCP result's soft breaks like a peer message", () => {
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_flow',
+        open: true,
+        call: mcp('mcp__playwright__browser_navigate', 'first line\nsecond line'),
+      },
+    }).body;
+
+    expect(drawn, 'both lines reach the reader').toContain('first line');
+    expect(drawn, 'and they flow rather than drawing as forced breaks').not.toContain('<br>');
+  });
+
   it('keeps a local command output in its terminal box', () => {
     const drawn = render(Call, {
       props: { k: 'b1', open: true, call: backgrounded(null) },
