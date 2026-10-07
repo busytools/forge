@@ -6,7 +6,8 @@
 
   /**
    * The working-tree row in the strip above the composer: the branch this
-   * seat's tree is on, what moved in it, and the pull request it belongs to.
+   * seat's tree is on, what moved in it, the pull request it belongs to, and
+   * why the tree could not be read when it could not.
    *
    * It was the inspector's first section because the working tree is the
    * first thing a person looks for, and the one read whose absence reads as

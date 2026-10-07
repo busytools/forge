@@ -79,8 +79,10 @@ describe('the release the client names itself by', () => {
     // The stamp is the server's own shape (`+<short sha>`); the RELEASE half
     // stays the manifest's number, which is what a reinstall is named by.
     expect(releaseOf(CLIENT_VERSION)).toBe(clientRelease());
-    expect(CLIENT_VERSION, 'the stamp is not the server-shaped one').toMatch(
-      /^[0-9.]+\+[0-9a-f]+$/,
+    // A build with no git to stamp from falls back to the bare release,
+    // which the define documents - so either shape is a real build.
+    expect(CLIENT_VERSION, 'the version is neither stamped nor bare').toMatch(
+      /^[0-9.]+(\+[0-9a-f]+)?$/,
     );
   });
 });

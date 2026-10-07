@@ -17,8 +17,8 @@ import type { SessionSlot } from '../wire/types';
 import { freeze } from '../chat/testing/frozen';
 
 /**
- * Every builder the inspector reaches through is wrapped, so what one arriving
- * frame costs is a count rather than an impression.
+ * Every builder the record's readers reach through is wrapped, so what one
+ * arriving frame costs is a count rather than an impression.
  *
  * The wrappers live in the mock factories because that is the only place a
  * module's exports can be replaced, and they record into `./testing/counts`
@@ -252,13 +252,6 @@ describe('what one arriving frame costs the page', () => {
     expect(MESSAGES, 'the capture carries no conversation').toBeGreaterThan(0);
   });
 
-  /**
-   * **A pushed walk reaches the strip's row without a re-read of the seat.**
-   * The walk is the page's own loop sending what the process scan found; the
-   * row's store reads it off the record the frame moves, so the claim is both
-   * halves: the store took the walk, and nothing asked the server to fold the
-   * transcript again.
-   */
   /**
    * **The record and the home reach the row stores, which no unit test can
    * see.** The builders are pinned in view.test and each segment draws what

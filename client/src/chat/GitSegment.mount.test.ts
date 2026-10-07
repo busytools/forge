@@ -273,10 +273,6 @@ describe("the tree row's interaction state machine", () => {
   });
 
   /**
-   * A clean tree on no pull request states its branch and has nothing to open:
-   * the toggle must not hold a door onto an empty panel.
-   */
-  /**
    * **A commit's own files are depth.** The chain says what the branch ran
    * as; what each commit CHANGED is on demand under its row - on hover,
    * on focus, and on a tap, since a touch has no hover to give.

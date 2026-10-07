@@ -5,9 +5,9 @@
  * project's working tree is one record on both surfaces, and a second shape
  * for it is the drift the wire's own comments warn about.
  *
- * Half of the inspector's nine sections are not on this record and are read
- * from the home's snapshot instead - a project's tasks and its schedules, and
- * the connector views. They are keyed by PROJECT there, which is the grain the
+ * Half of the strip's rows are not on this record and are read from the
+ * home's snapshot instead - a project's tasks and its schedules, and the
+ * connector views. They are keyed by PROJECT there, which is the grain the
  * home needs; a session subscribes to the home beside its own seat and picks
  * its project out.
  */

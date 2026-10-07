@@ -288,7 +288,7 @@
       // One entry covers the open state: a second opening joins it rather
       // than stacking a step of its own.
       if (lastRail === null) {
-        history.pushState(railEntry(history.state, 'left'), '', location.href);
+        history.pushState(railEntry(history.state), '', location.href);
         lastRail = 'left';
       }
     }

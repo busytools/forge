@@ -94,9 +94,9 @@ an arriving frame costs the inspector. Two things about it are deliberate:
   reads it off a frame, and `dev/fixture.test.ts` fails the build if the
   marker reaches the bundle - so the file has to carry the marker to be
   covered by that check at all.
-- **The inspector is the only thing it may serve.** The stubbing is safe
-  because the inspector reads no payload: it counts frames and reads a
-  dispatch's tool name. Anything that draws the words - the conversation
-  column - or that pays for the bytes on the way in, the socket's own
-  `JSON.parse` included, would measure a conversation far smaller than the one
-  this file claims to be. Take a fresh capture for those.
+- **A counter is the most it may serve.** The stubbing is safe because a
+  counter reads no payload: it counts frames and reads a dispatch's tool name.
+  Anything that draws the words - the conversation column - or that pays for
+  the bytes on the way in, the socket's own `JSON.parse` included, would
+  measure a conversation far smaller than the one this file claims to be.
+  Take a fresh capture for those.
