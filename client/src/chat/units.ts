@@ -584,6 +584,18 @@ function taskNotificationOf(text: string): string | null {
   return summary === '' ? null : summary;
 }
 
+/**
+ * Whether a frame is the CLI's nudge after a response with no visible output.
+ *
+ * The harness asks the MODEL to continue; nobody typed it and the terminal
+ * draws the raw bracket, where the page draws its own line (#1858). Keyed on
+ * the opening sentence alone: a reworded tail still recognizes, and a
+ * reworded head falls through to the raw draw - the frame is never lost.
+ */
+function noOutputNudge(text: string): boolean {
+  return text.trim().startsWith('[Your previous response had no visible output.');
+}
+
 /** The harness's own line about an image, or null for every other text. */
 function imageNoteOf(text: string): string | null {
   const held = text.trim();
@@ -1957,6 +1969,20 @@ export function fold(
               kind: 'notice',
               key: keyOf(at, frame, blockAt),
               notice: { severity: 'info', text: taskEnd },
+            });
+            continue;
+          }
+          // The harness nudging the model after an invisible response: the
+          // page's own line, never the raw bracket (#1858). A bracket this
+          // does not recognize falls through and draws as itself.
+          if (noOutputNudge(stripped)) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: {
+                severity: 'info',
+                text: 'no visible output - the harness asked the agent to continue',
+              },
             });
             continue;
           }
