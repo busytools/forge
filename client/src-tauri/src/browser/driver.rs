@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn a_missing_storage_state_is_created_empty_and_an_existing_one_is_kept() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let state = dir.path().join("contexts/alpha.json");
+        let state = dir.path().join("profiles/alpha.json");
 
         ensure_storage_state(&state).expect("the missing file is created");
         let written = std::fs::read_to_string(&state).expect("the storage state is there");

@@ -226,9 +226,7 @@ describe('the browser segment', () => {
     vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
     click(shown.target.querySelector('.bz-close'));
 
-    expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith(
-      'hunt',
-    );
+    expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith('hunt');
     await vi.waitFor(() => {
       expect(shown.target.textContent).toContain('no browser profile is open under hunt');
     });

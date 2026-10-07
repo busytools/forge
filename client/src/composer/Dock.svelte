@@ -518,7 +518,8 @@
   let raiseWhy = $state<string | null>(null);
   const raiseFailed = $derived(
     ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
-      ? (raiseWhy ?? 'The browser window could not be opened - act where the browser is up, then press Done.')
+      ? (raiseWhy ??
+          'The browser window could not be opened - act where the browser is up, then press Done.')
       : null,
   );
 

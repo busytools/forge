@@ -11,7 +11,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const invoke = vi.hoisted(() => vi.fn(async (): Promise<unknown> => undefined));
+const invoke = vi.hoisted(() => vi.fn((): Promise<unknown> => Promise.resolve(undefined)));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
@@ -61,7 +61,7 @@ describe('the shell command names', () => {
     expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
   });
 
-  it('and the phone does not claim the capability before its phase', async () => {
+  it('and the phone does not claim the capability before its phase', () => {
     const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
     Object.defineProperty(window.navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)',
@@ -72,7 +72,7 @@ describe('the shell command names', () => {
   });
 
   it('and the ask rides browser_call with its seat, its tool and its args', async () => {
-    let asked: ((ask: BrowserAsk) => Promise<unknown>) | null = null;
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
     const connection = {
       onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
         asked = fn;
@@ -88,7 +88,7 @@ describe('the shell command names', () => {
       args: { url: 'https://example.com' },
       id: 7,
     } as unknown as BrowserAsk;
-    const answer = await asked?.(ask);
+    const answer = await asked(ask);
 
     expect(invoke, 'the ask names the command and carries the call').toHaveBeenLastCalledWith(
       'browser_call',
