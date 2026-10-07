@@ -2732,6 +2732,25 @@ describe('the rate-limit windows', () => {
     );
   });
 
+  it('keeps the loudest line when the same window walks back', () => {
+    // The terminal's no-downgrade guard (`upsert_turn_notice` refuses a lower
+    // stage): a window that flips from rejected back to a warning keeps the
+    // line it already drew, where a fresh warning would soften "Rate limit
+    // reached" to "Approaching".
+    const units = fold([
+      windowed({ status: 'rejected', utilization: 0.99 }),
+      windowed({ status: 'allowed_warning', utilization: 0.8 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'the loudest stage holds').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
   it('opens a fresh line when the window resets', () => {
     const units = fold([
       windowed({ status: 'rejected' }),

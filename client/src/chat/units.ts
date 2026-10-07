@@ -1268,6 +1268,13 @@ function noticeSeverity(value: unknown): NoticeSeverity {
 }
 
 /**
+ * The rank a notice key sits at, the terminal's own `NoticeStage` order
+ * (`Warning < Rejected < PlanLimitTurnError`): a later stage may rewrite the
+ * line already drawn, a lower one may not.
+ */
+const NOTICE_STAGE = { warning: 0, rejected: 1 } as const;
+
+/**
  * The terminal's own words for a retry classification, so the two views name
  * the same failure the same way (`app/events/api_retry.rs`'s `error_label`).
  */
@@ -1605,6 +1612,8 @@ export function fold(
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+  /** The stage each notice key sits at, so a walk-back cannot soften a line. */
+  const noticeStages = new Map<string, number>();
 
   /**
    * Hang a skill's body on the call that loaded it.
@@ -1652,13 +1661,19 @@ export function fold(
   };
 
   /**
-   * Rewrite the retry line this turn already drew, or open it.
+   * Rewrite the line this key already drew, or open it.
    *
-   * A retry run reports every attempt it makes and the row is the RUN, so a
-   * later frame replaces its own line - the shape the terminal's deduped turn
-   * notice draws, and why a storm is one row rather than fifty.
+   * A run reports every step it takes and the row is the RUN, so a later frame
+   * replaces its own line - the shape the terminal's deduped turn notice
+   * draws, and why a storm is one row rather than fifty. **A lower stage
+   * never replaces a higher one**: the same guard `upsert_turn_notice` keeps,
+   * so a window that walks back from rejected to a warning holds the line it
+   * already drew.
    */
-  const upsertNotice = (key: string, notice: Notice): void => {
+  const upsertNotice = (key: string, stage: number, notice: Notice): void => {
+    const held = noticeStages.get(key);
+    if (held !== undefined && stage < held) return;
+    noticeStages.set(key, stage);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit?.kind !== 'notice' || unit.key !== key) continue;
@@ -1790,7 +1805,7 @@ export function fold(
         const delay = typeof frame.retry_delay_ms === 'number' ? frame.retry_delay_ms : null;
         if (attempt !== null && cap !== null && delay !== null) {
           const status = typeof frame.error_status === 'number' ? frame.error_status : null;
-          upsertNotice('api-retry', {
+          upsertNotice('api-retry', NOTICE_STAGE.warning, {
             severity: 'warning',
             text: `API retry after ${retryLabel(frame.error)}${status === null ? '' : ` HTTP ${status}`}`,
             chip: `attempt ${attempt} / ${cap}`,
@@ -1884,10 +1899,15 @@ export function fold(
       const info = obj(frame.rate_limit_info);
       const status = str(info, 'status');
       if (status === 'allowed_warning' || status === 'rejected') {
-        upsertNotice(rateLimitNoticeKey(info), {
-          severity: status === 'rejected' ? 'error' : 'warning',
-          text: formatRateLimitSummary(info),
-        });
+        const rejected = status === 'rejected';
+        upsertNotice(
+          rateLimitNoticeKey(info),
+          rejected ? NOTICE_STAGE.rejected : NOTICE_STAGE.warning,
+          {
+            severity: rejected ? 'error' : 'warning',
+            text: formatRateLimitSummary(info),
+          },
+        );
       }
       continue;
     }
