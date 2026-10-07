@@ -46,8 +46,12 @@
 
   const shown = $derived.by(() => {
     const q = needle.trim().toLowerCase();
+    // A row that cannot act is not offered: the peek needs a rail to open
+    // and the copy needs an occupant to copy, and a row that silently does
+    // nothing reads as a broken control.
     const match = (row: PaletteRow) =>
       (onpeek !== null || row.doing !== 'peek') &&
+      (sessionId !== null || row.doing !== 'copy') &&
       (q === '' || `${row.label} ${row.detail}`.toLowerCase().includes(q));
     return paletteRows(wire, slot)
       .map((section) => ({ title: section.title, rows: section.rows.filter(match) }))
@@ -122,8 +126,10 @@
       return;
     }
     if (row.doing === 'peek') {
+      // The handler owns the whole move: it closes the palette AND turns the
+      // palette's own history entry into the rail's, so one Back closes the
+      // rail rather than a step landing under a step.
       if (onpeek === null) return;
-      onclose();
       onpeek();
       return;
     }

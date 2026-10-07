@@ -32,6 +32,7 @@ function stub() {
 function draw(
   over: {
     connection?: Connection;
+    sessionId?: string | null;
     onclose?: () => void;
     onpeek?: (() => void) | null;
   } = {},
@@ -45,7 +46,7 @@ function draw(
       wire: homeWire,
       slot: LEAD,
       connection: over.connection ?? stub().connection,
-      sessionId: 'd4f70669-1f2a-4c88',
+      sessionId: over.sessionId !== undefined ? over.sessionId : 'd4f70669-1f2a-4c88',
       onclose: over.onclose ?? closed,
       onpeek: over.onpeek !== undefined ? over.onpeek : peeked,
     },
@@ -147,6 +148,13 @@ describe('the command palette', () => {
     draw({ onpeek: null });
     type('peek at the fleet');
     expect(rows(), 'a peek row survived with nothing to open').toHaveLength(0);
+  });
+
+  /** And a seat with no occupant offers no copy, for the same reason. */
+  it('drops the copy doing where there is no occupant', () => {
+    draw({ sessionId: null });
+    type('copy the session id');
+    expect(rows(), 'a copy row survived with nothing to copy').toHaveLength(0);
   });
 
   /**
