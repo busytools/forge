@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -911,8 +912,14 @@ describe("the palette's rows", () => {
     const leadRow = sections[1]?.rows.find((row) => row.label === 'lead');
     expect(leadRow?.lead, 'the lead is the row the cursor starts on').toBe(true);
     expect(leadRow?.href).toBe('/session/TestOrg/proj/lead');
-    // The command rows send exactly what the composer sends.
-    const compact = sections[3]?.rows.find((row) => row.label === '/compact');
+    // The command rows are the composer's own table, whole: a command the
+    // box offers cannot be missing here, and nothing extra rides along.
+    const commands = sections[3]?.rows ?? [];
+    expect(
+      commands.map((row) => row.label),
+      'the palette and the box disagree on the command set',
+    ).toEqual(FORGE_COMMANDS.map((command) => command.name));
+    const compact = commands.find((row) => row.label === '/compact');
     expect(compact?.text, 'a command row carries its prompt text').toBe('/compact');
     const doings = sections[4]?.rows.map((row) => row.label) ?? [];
     expect(doings).toContain('peek at the fleet');

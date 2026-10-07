@@ -28,6 +28,7 @@ import {
   whenOf,
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
+import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
@@ -217,57 +218,15 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
     },
     {
       title: 'commands',
-      rows: [
-        {
-          id: 'cmd-compact',
-          kind: 'command',
-          label: '/compact',
-          detail: 'compact the conversation',
-          text: '/compact',
-        },
-        {
-          id: 'cmd-diff',
-          kind: 'command',
-          label: '/diff',
-          detail: "this tree's diff",
-          text: '/diff',
-        },
-        {
-          id: 'cmd-model',
-          kind: 'command',
-          label: '/model',
-          detail: 'show or set the model',
-          text: '/model',
-        },
-        {
-          id: 'cmd-mode',
-          kind: 'command',
-          label: '/mode',
-          detail: 'show or set the permission mode',
-          text: '/mode',
-        },
-        {
-          id: 'cmd-new',
-          kind: 'command',
-          label: '/new',
-          detail: 'start a new session here',
-          text: '/new',
-        },
-        {
-          id: 'cmd-resume',
-          kind: 'command',
-          label: '/resume',
-          detail: 'resume an earlier session',
-          text: '/resume',
-        },
-        {
-          id: 'cmd-usage',
-          kind: 'command',
-          label: '/usage',
-          detail: 'the token and cost pool',
-          text: '/usage',
-        },
-      ],
+      // The composer's own table, not a second copy of it: a command the box
+      // offers is a command the palette offers, or neither.
+      rows: FORGE_COMMANDS.map((command) => ({
+        id: `cmd-${command.name.replace('/', '')}`,
+        kind: 'command' as const,
+        label: command.name,
+        detail: command.description,
+        text: command.name,
+      })),
     },
     {
       title: 'doings',
