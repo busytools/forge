@@ -132,14 +132,29 @@ pub fn run() {
             app.manage(host);
             Ok(())
         })
-        .run(context);
+        .build(context);
 
-    if let Err(err) = run {
-        let line = format!("forge client failed to start: {err}");
-        record(log_file.as_deref(), &line);
-        eprintln!("{line}");
-        std::process::exit(1);
-    }
+    let app = match run {
+        Ok(app) => app,
+        Err(err) => {
+            let line = format!("forge client failed to start: {err}");
+            record(log_file.as_deref(), &line);
+            eprintln!("{line}");
+            std::process::exit(1);
+        }
+    };
+
+    // **CEF's work rides this loop.** Tauri fires `MainEventsCleared` every
+    // turn, and CEF is pumped there - the one place the client's own loop
+    // and Chromium's meet.
+    app.run(move |_handle, event| {
+        #[cfg(all(desktop, target_os = "macos"))]
+        if let tauri::RunEvent::MainEventsCleared = event {
+            browser::cef::pump();
+        }
+        #[cfg(not(all(desktop, target_os = "macos")))]
+        let _ = event;
+    });
 }
 
 /// The version an update check found, or `None` when this build is current.

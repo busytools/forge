@@ -22,6 +22,8 @@
 //! tool name and arguments, the driver runs them, and the answer is the parts
 //! it returned.
 
+#[cfg(all(desktop, target_os = "macos"))]
+pub mod cef;
 pub mod chromium;
 pub mod contexts;
 pub mod custom;

@@ -40,6 +40,23 @@ futures-util = "0.3"
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
+# **The browser, in-process.** CEF is the real Chromium rendered as a native
+# view inside the client window; its CDP endpoint is what the sessions'
+# driver attaches to. macOS first - the other platforms keep the vendored
+# path until they follow.
+[target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "154.4.0", features = ["build-util"] }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
+
 # The payloads and answers the Android commands hand to the Kotlin plugin.
 [target.'cfg(target_os = "android")'.dependencies]
 serde = { version = "1", features = ["derive"] }
