@@ -60,6 +60,7 @@ pub fn run() {
             browser::browser_takeover_open,
             browser::browser_takeover_close,
             browser::browser_takeover_state,
+            browser::browser_takeover_input,
             check_update,
             install_update,
             restart_app
@@ -74,7 +75,8 @@ pub fn run() {
         browser::browser_window,
         browser::browser_takeover_open,
         browser::browser_takeover_close,
-        browser::browser_takeover_state
+        browser::browser_takeover_state,
+        browser::browser_takeover_input
     ]);
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
@@ -93,6 +95,7 @@ pub fn run() {
         browser::browser_takeover_open,
         browser::browser_takeover_close,
         browser::browser_takeover_state,
+        browser::browser_takeover_input,
         check_update,
         install_update
     ]);

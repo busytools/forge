@@ -12,10 +12,18 @@ vi.mock('./host', async (importOriginal) => {
     openTakeover: vi.fn(() => Promise.resolve()),
     closeTakeover: vi.fn(() => Promise.resolve()),
     takeoverActive: vi.fn(() => Promise.resolve(false)),
+    takeoverInput: vi.fn(() => Promise.resolve()),
+    onTakeoverFrame: vi.fn(() => Promise.resolve(() => {})),
   };
 });
 
-import { closeTakeover, openTakeover, takeoverActive } from './host';
+import {
+  closeTakeover,
+  onTakeoverFrame,
+  openTakeover,
+  takeoverActive,
+  takeoverInput,
+} from './host';
 
 function draw(address = '127.0.0.1:8790') {
   const target = document.createElement('div');
@@ -105,5 +113,74 @@ describe('the takeover', () => {
     vi.mocked(takeoverActive).mockResolvedValueOnce(true);
     await takeover.sync();
     expect(takeover.active, 'the shell still held the view').toBe(true);
+  });
+
+  /** A frame lands on the canvas at the PAGE's own pixel size, and the events
+   *  that follow go back down the same connection in the page's coordinates. */
+  async function withFrame(): Promise<{ target: HTMLElement; frame: (size: number) => void }> {
+    let deliver: ((frame: { data: string; width: number; height: number }) => void) | null = null;
+    vi.mocked(onTakeoverFrame).mockImplementationOnce((fn) => {
+      deliver = fn;
+      return Promise.resolve(() => {});
+    });
+    takeover.active = true;
+    const shown = draw();
+    await vi.waitFor(() => expect(deliver).not.toBeNull());
+    return {
+      target: shown.target,
+      frame: (size: number) => {
+        deliver?.({ data: 'aGk=', width: size, height: size });
+        flushSync();
+      },
+    };
+  }
+
+  it("draws a frame at the page's own pixel size", async () => {
+    const shown = await withFrame();
+    shown.frame(800);
+
+    const canvas = shown.target.querySelector('canvas');
+    expect(canvas?.width, 'the backing store is the page').toBe(800);
+    expect(canvas?.height).toBe(800);
+  });
+
+  it("forwards a click in the page's coordinates, and typing too", async () => {
+    const shown = await withFrame();
+    shown.frame(800);
+    const canvas = shown.target.querySelector('canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) throw new Error('no canvas');
+    // jsdom lays nothing out; the drawn box is the page scaled into a stage.
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 20,
+      top: 60,
+      width: 400,
+      height: 400,
+      right: 420,
+      bottom: 460,
+      x: 20,
+      y: 60,
+      toJSON: () => ({}),
+    });
+
+    canvas.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: 220, clientY: 260, bubbles: true }),
+    );
+    expect(takeoverInput, 'the click maps to the page, not the screen').toHaveBeenLastCalledWith(
+      'Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: 400, y: 400, buttons: 1, button: 'left', clickCount: 1 },
+    );
+
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true }));
+    expect(takeoverInput, 'a key goes down the same way').toHaveBeenLastCalledWith(
+      'Input.dispatchKeyEvent',
+      { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 0, text: 'a' },
+    );
+
+    const before = vi.mocked(takeoverInput).mock.calls.length;
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(
+      vi.mocked(takeoverInput).mock.calls.length,
+      "Escape is the way back, not the page's key",
+    ).toBe(before);
   });
 });

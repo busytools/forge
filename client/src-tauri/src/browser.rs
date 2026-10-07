@@ -26,11 +26,13 @@ pub mod chromium;
 pub mod contexts;
 pub mod custom;
 pub mod driver;
+pub mod screencast;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tauri::Emitter as _;
 use tauri::Manager as _;
 
 use contexts::{Context, DriverStart, Named, Seat};
@@ -100,12 +102,6 @@ impl StackPaths {
     }
 }
 
-/// Why the takeover cannot open yet: the engine seam. The Mac draws the view
-/// with a CEF embed and Android with its own WebView; neither is compiled in
-/// yet, and a dock that was told "open" must hear the reason rather than see
-/// an empty screen - it falls back to the headed window it has always had.
-const TAKEOVER_ENGINE_ABSENT: &str = "the in-app browser view is not built into this client yet";
-
 /// The host: the browser's own context, the named ones, and where everything
 /// lives.
 pub struct BrowserHost {
@@ -118,6 +114,8 @@ pub struct BrowserHost {
     default: Mutex<Option<Arc<Context>>>,
     /// The named contexts, by name.
     named: Mutex<HashMap<String, Arc<Named>>>,
+    /// The takeover's live view, when one is up.
+    live: Mutex<Option<screencast::Live>>,
 }
 
 impl BrowserHost {
@@ -127,6 +125,7 @@ impl BrowserHost {
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
+            live: Mutex::new(None),
         }
     }
 
@@ -139,6 +138,7 @@ impl BrowserHost {
             launch: Mutex::new(()),
             default: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
+            live: Mutex::new(None),
         }
     }
 
@@ -324,28 +324,57 @@ impl BrowserHost {
     /// Bring the in-app browser view up over the client's window, under the
     /// bar the web side draws: the approved takeover.
     ///
-    /// **The engine seam.** `bar_px` is how much of the top the web side's bar
-    /// occupies, so the engine's view fills exactly what is left. Until an
-    /// engine is compiled in this answers [`TAKEOVER_ENGINE_ABSENT`], and the
-    /// dock falls back to the headed window - the browser itself is brought up
-    /// first either way, because a person waiting on a cold launch is the one
-    /// wait worth removing.
-    pub async fn takeover_open(&self, _bar_px: f64) -> Result<(), String> {
+    /// `bar_px` is how much of the top the bar occupies - the frames are the
+    /// whole page and the web side sizes them into what is left. The browser
+    /// is brought up first (a person waiting on a cold launch is the one wait
+    /// worth removing), then a CDP session of our own starts the screencast
+    /// and streams frames as `browser_frame` events.
+    pub async fn takeover_open(
+        &self,
+        _bar_px: f64,
+        app: &tauri::AppHandle,
+    ) -> Result<(), String> {
         let paths = self.paths.clone()?;
-        let _active = self.active_browser(&paths).await?;
-        Err(TAKEOVER_ENGINE_ABSENT.to_owned())
+        let active = self.active_browser(&paths).await?;
+        let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
+        let emitter = app.clone();
+        let live = screencast::start(&endpoint, move |frame| {
+            let _ = emitter.emit("browser_frame", frame);
+        })
+        .await?;
+        let mut held = self.live.lock().await;
+        if let Some(previous) = held.take() {
+            previous.stop();
+        }
+        *held = Some(live);
+        Ok(())
     }
 
     /// Take the view back down. Idempotent: back, Done and a reloaded window
     /// may each ask.
     pub async fn takeover_close(&self) -> Result<(), String> {
-        self.paths.clone().map(|_| ())
+        self.paths.clone()?;
+        if let Some(live) = self.live.lock().await.take() {
+            live.stop();
+        }
+        Ok(())
     }
 
     /// Whether the shell is holding a takeover up - what a reloaded window
     /// reads to re-draw the screen it was on.
     pub async fn takeover_active(&self) -> Result<bool, String> {
-        self.paths.clone().map(|_| false)
+        self.paths.clone()?;
+        Ok(self.live.lock().await.is_some())
+    }
+
+    /// One input event into the live view, as CDP wants it.
+    pub async fn takeover_input(&self, method: &str, params: Value) -> Result<(), String> {
+        let held = self.live.lock().await;
+        let Some(live) = held.as_ref() else {
+            return Err("no takeover is up".to_owned());
+        };
+        live.input(method, params);
+        Ok(())
     }
 
     /// Whether a WINDOW is up on the browser this client hosts.
@@ -470,13 +499,25 @@ pub async fn browser_window(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<
 }
 
 /// Bring the in-app browser view up over the client's window, under the bar
-/// the web side draws. Answers why while no engine is compiled in.
+/// the web side draws.
 #[tauri::command]
 pub async fn browser_takeover_open(
     host: tauri::State<'_, Arc<BrowserHost>>,
+    app: tauri::AppHandle,
     bar_px: f64,
 ) -> Result<(), String> {
-    host.takeover_open(bar_px).await
+    host.takeover_open(bar_px, &app).await
+}
+
+/// One input event into the live view (`Input.dispatchMouseEvent`,
+/// `Input.dispatchKeyEvent`, `Input.insertText`), with its params.
+#[tauri::command]
+pub async fn browser_takeover_input(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    method: String,
+    params: Value,
+) -> Result<(), String> {
+    host.takeover_input(&method, params).await
 }
 
 /// Take the view back down.
@@ -582,18 +623,22 @@ mod tests {
         );
     }
 
-    /// The engine seam: a host whose directories did not resolve answers that
-    /// before anything else, closing is idempotent, and nothing is held up.
+    /// A host whose directories did not resolve answers that before anything
+    /// else, closing is idempotent, nothing is held up, and input with no view
+    /// names that rather than vanishing.
     #[tokio::test]
     async fn a_takeover_on_an_unavailable_host_answers_the_reason_and_holds_nothing() {
         let host = BrowserHost::unavailable("the browser stack was never vendored".to_owned());
         assert_eq!(
-            host.takeover_open(44.0).await,
+            host.takeover_close().await,
             Err("the browser stack was never vendored".to_owned()),
             "the missing directories answer first",
         );
-        assert!(host.takeover_close().await.is_ok(), "closing is idempotent");
-        assert!(!host.takeover_active().await.unwrap_or(true), "nothing is held up");
+        assert_eq!(
+            host.takeover_input("Input.insertText", serde_json::json!({ "text": "x" })).await,
+            Err("no takeover is up".to_owned()),
+            "with no view, input says so rather than vanishing",
+        );
     }
 
     /// A host nothing has named holds no contexts, and answers the strip with

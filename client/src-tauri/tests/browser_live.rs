@@ -370,3 +370,49 @@ async fn a_killed_browser_does_not_wedge_its_context() {
     browser.reap();
     assert!(!parts.is_empty(), "the recovery navigate answers with something");
 }
+
+/// **The takeover's view delivers a frame from the browser the drivers
+/// drive.** The screencast opens its own CDP session against the same
+/// launcher's browser and the same profile; a whole frame arriving with the
+/// page's own size is the primitive the in-app view stands on.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn the_takeover_view_delivers_a_frame() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+
+    let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
+    let (frames, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let live = forge_client::browser::screencast::start(&endpoint, move |frame| {
+        let _ = frames.send(frame);
+    })
+    .await
+    .expect("the view opens on the running browser");
+
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(20), seen.recv())
+        .await
+        .expect("a frame arrives inside the bound")
+        .expect("the stream is alive");
+    live.stop();
+    browser.reap();
+    assert!(!frame.data.is_empty(), "the frame carries a whole image");
+    assert!(
+        frame.width > 0 && frame.height > 0,
+        "with the page's own size: {}x{}",
+        frame.width,
+        frame.height,
+    );
+}

@@ -158,6 +158,31 @@ export async function openTakeover(barPx: number): Promise<void> {
   await invoke('browser_takeover_open', { barPx });
 }
 
+/** One input event into the live view, as CDP wants it. */
+export async function takeoverInput(method: string, params: unknown): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_takeover_input', { method, params });
+}
+
+/** One frame of the live view, as the shell's `browser_frame` event carries it. */
+export interface TakeoverFrame {
+  data: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Hear the live view's frames. Answers a function that stops listening, and
+ * does nothing outside the shell, where no view exists.
+ */
+export async function onTakeoverFrame(fn: (frame: TakeoverFrame) => void): Promise<() => void> {
+  if (!canHost()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  const stop = await listen<TakeoverFrame>('browser_frame', (event) => fn(event.payload));
+  return () => void stop();
+}
+
 /** Take the view back down. Idempotent, and silent outside the shell. */
 export async function closeTakeover(): Promise<void> {
   if (!canHost()) return;
