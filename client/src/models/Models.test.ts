@@ -44,6 +44,8 @@ function open(
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
     onarm: () => void;
+    onupdate: (variant: string) => void;
+    updated: string | null;
     refusal: string | null;
   }> = {},
 ) {
@@ -61,6 +63,8 @@ function open(
       onbench: handlers.onbench ?? (() => {}),
       onbenchstop: handlers.onbenchstop ?? (() => {}),
       onarm: handlers.onarm ?? (() => {}),
+      onupdate: handlers.onupdate ?? (() => {}),
+      updated: handlers.updated ?? null,
       refusal: handlers.refusal ?? null,
     },
   });
@@ -101,7 +105,8 @@ describe('the models page as it draws', () => {
     expect(html).toContain('Granite Speech 5.0 470M TurboCTC');
     expect(html).toContain('388.8\u{d7} vs 72.9\u{d7}');
     expect(html).toContain('FLEURS-en 4.61 vs 5.08');
-    expect(html).toContain('make it the transcribing model');
+    expect(html).toContain('The fastest English model on the feed that beats the model in use');
+    expect(html).toContain('Update to this model');
   });
 
   /**
@@ -421,6 +426,171 @@ describe('the models page as it draws', () => {
     expect(download, 'a pinned role lost its download control').not.toBeUndefined();
   });
 
+  /**
+   * The benchmark section: what can be scored, the marks that say what each
+   * row IS, and the control that starts a run.
+   */
+  it('lists what can be benched, marks it, and dispatches a run', () => {
+    const runs: { target: BenchTarget; tier: BenchTier }[] = [];
+    const running = {
+      ...modelsWire,
+      bench: {
+        state: 'running',
+        target: {
+          file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
+          role: 'transcribing',
+          pinned: false,
+        },
+        tier: 'consensus',
+        clip: 4,
+        clips: 15,
+        so_far: 0.5,
+      },
+    } as DictateModelsWire;
+    const host = open(running, { onbench: (target, tier) => runs.push({ target, tier }) });
+
+    expect(host.textContent).toContain('benching cohere-transcribe-03-2026-Q4_K_M.gguf');
+    expect(host.textContent).toContain('clip 4 of 15');
+    expect(host.textContent).toContain('50% agreed so far');
+
+    const stop = [...host.querySelectorAll('button')].find((c) =>
+      c.textContent?.includes('stop the bench'),
+    );
+    expect(stop, 'the running bench offers no stop').not.toBeUndefined();
+
+    // The list says what each row is: the model in use, the feed's pick.
+    const rows = [...host.querySelectorAll('.models .list li')].filter(
+      (li) => li.querySelector('.bench-row') !== null,
+    );
+    const marked = rows.map((li) => li.textContent ?? '');
+    expect(marked.find((text) => text.includes('cohere-transcribe-03-2026-Q4_K_M.gguf'))).toContain(
+      'in use',
+    );
+    expect(
+      marked.find((text) => text.includes('granite-speech-5.0-470m-turboctc-Q4_K_M.gguf')),
+    ).toContain('recommended');
+
+    const benchButtons = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((c) =>
+      c.textContent?.includes('bench it'),
+    );
+    expect(benchButtons.length).toBeGreaterThan(0);
+    benchButtons[0]?.click();
+    flushSync();
+    expect(runs.map((run) => run.tier)).toEqual(['consensus']);
+  });
+
+  /** What a finished run measured, with its corpus named. */
+  it('draws a saved bench result with its own numbers', () => {
+    const host = open({
+      ...modelsWire,
+      results: [
+        {
+          target: {
+            file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
+            role: 'transcribing',
+            pinned: false,
+          },
+          tier: 'consensus',
+          metrics: {
+            clips: 15,
+            audio_seconds: 156.7,
+            wall_seconds: 3.4,
+            xrt_wall: 45.7,
+            term_accuracy: null,
+            wer: 0.036,
+            matched: [9, 15],
+            stages_ms: {
+              model_load_ms: 398,
+              resample_ms: 12,
+              mel_ms: 4,
+              encode_ms: 1470,
+              decode_ms: 664,
+              normalize_ms: 1006,
+            },
+          },
+          at: '2026-10-06T19:11:38Z',
+          corpus: { clips: 15, audio_seconds: 156, sha256: 'a414db2a' },
+        },
+      ],
+    });
+
+    expect(host.textContent).toContain('45.7\u{d7} realtime');
+    expect(host.textContent).toContain('WER 3.6%');
+    expect(host.textContent).toContain('9 of 15 matched a baseline');
+    expect(host.textContent).toContain('your takes + the fixtures');
+    expect(host.textContent).toContain('15 clips');
+    expect(host.textContent).toContain('encode 1470ms');
+    expect(host.textContent).toContain('this is the model in use');
+
+    // A result for ANOTHER model says what it would take to compare: a run of
+    // the model in use over the same corpus - never a comparison invented
+    // across two different corpora.
+    const other = open({
+      ...modelsWire,
+      results: [
+        {
+          target: {
+            file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+            role: 'transcribing',
+            pinned: false,
+          },
+          tier: 'consensus',
+          metrics: {
+            clips: 30,
+            audio_seconds: 313.4,
+            wall_seconds: 7.2,
+            xrt_wall: 43.3,
+            term_accuracy: null,
+            wer: 0.147,
+            matched: [3, 30],
+            stages_ms: {
+              model_load_ms: 122,
+              resample_ms: 9,
+              mel_ms: 3,
+              encode_ms: 2011,
+              decode_ms: 900,
+              normalize_ms: 1200,
+            },
+          },
+          at: '2026-10-07T01:20:38Z',
+          corpus: { clips: 30, audio_seconds: 313, sha256: 'bbbb' },
+        },
+      ],
+    });
+    expect(other.textContent).toContain(
+      'no run of cohere-transcribe-03-2026-Q4_K_M.gguf over this same corpus to compare with yet',
+    );
+  });
+
+  /** The read-aloud set: not recorded draws the passage and the arming. */
+  it('offers the read-aloud set once and its passage', () => {
+    let arms = 0;
+    const host = open(modelsWire, { onarm: () => (arms += 1) });
+
+    expect(host.textContent).toContain('the read-aloud set is not recorded yet');
+    expect(host.textContent).toContain('I want the forge session to pick up where it left off.');
+    const arm = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('record the passage next time I dictate'),
+    );
+    expect(arm, 'the arming control did not draw').not.toBeUndefined();
+    arm?.click();
+    flushSync();
+    expect(arms).toBe(1);
+  });
+
+  /** An armed set says so, with the passage, instead of the prompt. */
+  it('draws the armed read-aloud set', () => {
+    const host = open({
+      ...modelsWire,
+      read_aloud: { ...modelsWire.read_aloud, armed: true },
+    });
+
+    expect(host.textContent).toContain(
+      'armed: the next take you dictate becomes the read-aloud set',
+    );
+    expect(host.textContent).not.toContain('the read-aloud set is not recorded yet');
+  });
+
   /** A refused action is drawn in the core's own words, at the page's top. */
   it('draws a refused action in the words the core sent', () => {
     const host = open(modelsWire, {
@@ -552,6 +722,65 @@ describe('the models route as it draws', () => {
       },
     ]);
     expect(forge.refreshed, 'the press did not ask for the re-read').toEqual([MODELS]);
+  });
+
+  /**
+   * **One press, a whole update.** The page chains the two core actions it
+   * already has - download when the variant is not here, then load it - and
+   * says so when the role runs it. Each step is answered by the wire's own
+   * state, never by a timer.
+   */
+  it('updates to a recommended model: install, swap, and a completion line', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: { ...modelsWire, installed: [] } });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.status button')].find((c) =>
+      c.textContent?.includes('Update to this model'),
+    );
+    expect(button, 'the update control did not draw').not.toBeUndefined();
+    button?.click();
+    flushSync();
+    expect(forge.dispatched).toEqual([
+      { dictate_install: { variant: 'granite-speech-5.0-470m-turboctc' } },
+    ]);
+
+    // The download lands: the record arrives, and the page loads it.
+    const record = {
+      variant: 'granite-speech-5.0-470m-turboctc',
+      file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+      url: 'https://huggingface.co/handy-computer/granite-gguf/resolve/main/x.gguf',
+      size: 279_000_000,
+      facts: { quant: 'Q4_K_M', params: 470_000_000, license: 'Apache-2.0', runtime: null },
+      at: '2026-10-07T02:00:00Z',
+    };
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: { ...modelsWire, installed: [record] },
+    });
+    await tick();
+    expect(forge.dispatched[1]).toEqual({
+      dictate_activate: { role: 'transcribing', file: record.file },
+    });
+
+    // The swap lands: the role runs it, and the page says the update is done.
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        installed: [record],
+        in_use: modelsWire.in_use.map((model) =>
+          model.role === 'transcribing' ? { ...model, file: record.file } : model,
+        ),
+      },
+    });
+    await tick();
+    expect(host.textContent).toContain('update completed');
+    expect(host.textContent).toContain('granite-speech-5.0-470m-turboctc-Q4_K_M.gguf is now');
   });
 
   /**

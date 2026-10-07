@@ -22,6 +22,7 @@
     resultFacts,
     resultVerdict,
     resultWhen,
+    updateWhy,
     roleWord,
     rowAction,
     search,
@@ -50,6 +51,8 @@
     onbench,
     onbenchstop,
     onarm,
+    onupdate,
+    updated = null,
     refusal = null,
     mark = null,
   }: {
@@ -61,6 +64,8 @@
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
     onarm: () => void;
+    onupdate: (variant: string) => void;
+    updated?: string | null;
     refusal?: string | null;
     mark?: string | null;
   } = $props();
@@ -87,7 +92,7 @@
   const building = $derived(activateLine(wire.activate));
   const benchState = $derived(wire.bench);
   const bench = $derived(benchLine(wire.bench));
-  const targets = $derived(benchTargets(wire.in_use, wire.installed));
+  const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates));
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -153,6 +158,14 @@
   {/if}
   {#if download !== null}{@render op(download)}{/if}
   {#if building !== null}{@render op(building)}{/if}
+  {#if updated !== null}
+    <div class="status" role="status">
+      <span class="dot ok"></span>
+      <span class="t">update completed</span>
+      <span class="spacer"></span>
+      <span class="when">{updated} is now the transcribing model</span>
+    </div>
+  {/if}
 
   <section class="block">
     <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
@@ -225,13 +238,21 @@
         <span class="when">replaces the {roleWord(update.role)} model</span>
         <span class="spacer"></span>
         {@render control(update.candidate)}
+        <button
+          class="chip"
+          type="button"
+          disabled={busy}
+          onclick={() => onupdate(update.candidate.variant)}
+          title="download it if needed, then load it as the {roleWord(update.role)} model"
+          >Update to this model</button
+        >
         <span class="detail">
           {@render facts(updateFacts(update))}
         </span>
         <span class="detail">
-          On the feed's own measurements it does more audio per second and makes fewer word errors
-          than the model in use. That is measured upstream, not here - bench it below to see what it
-          does on your own recordings, and only then make it the {roleWord(update.role)} model.
+          {updateWhy(update)} The feed measured it upstream; bench it below to score it on your own recordings,
+          or update now - it downloads, loads while the current model keeps running, and says so when
+          it is done.
         </span>
       </div>
     {/each}
@@ -322,28 +343,30 @@
         </p>
       {:else}
         <ul class="list" aria-label="Models a bench can run">
-          {#each targets as target (`${target.role}/${target.file}`)}
+          {#each targets as row (`${row.target.role}/${row.target.file}`)}
             <li>
               <span class="bench-row">
-                <span class="nm">{target.file}</span>
-                <span class="col">{benchRoleWord(target.role)}</span>
-                {#if target.pinned}<span class="col">pinned by [dictate]</span>{/if}
+                <span class="nm">{row.target.file}</span>
+                <span class="col">{benchRoleWord(row.target.role)}</span>
+                {#if row.current}<span class="chip">in use</span>{/if}
+                {#if row.recommended}<span class="chip">recommended</span>{/if}
+                {#if row.target.pinned}<span class="col">pinned by [dictate]</span>{/if}
               </span>
-              {#if benchState.state === 'running' && benchState.target.file === target.file}
+              {#if benchState.state === 'running' && benchState.target.file === row.target.file}
                 <button class="chip" type="button" onclick={onbenchstop}>stop the bench</button>
               {:else}
                 <button
                   class="chip"
                   type="button"
                   disabled={busy}
-                  onclick={() => onbench(target, 'consensus')}>bench it</button
+                  onclick={() => onbench(row.target, 'consensus')}>bench it</button
                 >
                 {#if wire.read_aloud.recorded}
                   <button
                     class="chip"
                     type="button"
                     disabled={busy}
-                    onclick={() => onbench(target, 'read_aloud')}>score the read-aloud</button
+                    onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
                   >
                 {/if}
               {/if}

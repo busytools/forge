@@ -100,6 +100,7 @@ describe('the band card', () => {
           onbench: () => {},
           onbenchstop: () => {},
           onarm: () => {},
+          onupdate: () => {},
         },
       }),
     );

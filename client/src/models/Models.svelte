@@ -79,6 +79,73 @@
     act({ dictate_deactivate: { role } });
   }
 
+  /**
+   * The update flow, as the page knows it: the variant being updated to, and
+   * the file once the download has landed.
+   *
+   * One press means download (when it is not here yet) and then load - the
+   * two existing core actions chained, with their own states drawn as they
+   * move: the progress line while bytes move, the loading line while the
+   * engine builds, and a line saying so when the model is in use.
+   */
+  let updating = $state<{ variant: string; file: string | null } | null>(null);
+  let updated = $state<string | null>(null);
+
+  function updateTo(variant: string): void {
+    const wire = read.wire;
+    updated = null;
+    refusal = null;
+    const record = wire?.installed.find((model) => model.variant === variant);
+    if (record !== undefined) {
+      // Already on this machine: the update is the activation itself.
+      updating = { variant, file: record.file };
+      act({ dictate_activate: { role: 'transcribing', file: record.file } });
+      return;
+    }
+    updating = { variant, file: null };
+    act({ dictate_install: { variant } });
+  }
+
+  // The chain moves on the core's own pushes: a download that finished makes
+  // the record, and the record is what the activation is about. A press is
+  // answered by the wire's own states, never by a timer.
+  $effect(() => {
+    const chain = updating;
+    const wire = read.wire;
+    if (chain === null || wire === null) return;
+    if (chain.file === null) {
+      // Waiting on the download: a failure clears the chain and leaves its
+      // own failed line standing.
+      if (wire.install.state === 'failed') {
+        updating = null;
+        return;
+      }
+      if (wire.install.state !== 'idle') return;
+      const record = wire.installed.find((model) => model.variant === chain.variant);
+      // No record yet: the push carrying it has not landed.
+      if (record === undefined) return;
+      if (wire.in_use.some((model) => model.file === record.file)) {
+        updated = record.file;
+        updating = null;
+        return;
+      }
+      updating = { variant: chain.variant, file: record.file };
+      act({ dictate_activate: { role: 'transcribing', file: record.file } });
+      return;
+    }
+    if (wire.activate.state === 'failed') {
+      updating = null;
+      return;
+    }
+    if (wire.activate.state !== 'idle') return;
+    // Idle, and the role runs the file: the swap landed.
+    const current = wire.in_use.find((model) => model.role === 'transcribing');
+    if (current?.file === chain.file) {
+      updated = chain.file;
+      updating = null;
+    }
+  });
+
   function bench(target: BenchTarget, tier: BenchTier): void {
     act({ dictate_bench: { target, tier } });
   }
@@ -110,6 +177,8 @@
     onbench={bench}
     onbenchstop={benchStop}
     onarm={arm}
+    onupdate={updateTo}
+    {updated}
     {refusal}
     {mark}
   />

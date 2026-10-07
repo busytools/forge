@@ -424,6 +424,7 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        onupdate: () => {},
       },
     }).body;
     expect(html, 'the feed drew, so axe saw it').toContain('update available');
@@ -453,6 +454,7 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        onupdate: () => {},
       },
     }).body;
     expect(html).toContain('downloading');
@@ -481,6 +483,7 @@ describe('axe over the rendered pages', () => {
         onbench: () => {},
         onbenchstop: () => {},
         onarm: () => {},
+        onupdate: () => {},
       },
     }).body;
     expect(html).toContain('dictation is off');

@@ -435,25 +435,56 @@ export function tierWord(tier: BenchTier): string {
   }
 }
 
+/** One row of the bench list: the target, and what the page knows about it. */
+export interface BenchRow {
+  target: BenchTarget;
+  /** The variant the feed calls it, where one is known - the join a
+   * recommendation matches on. */
+  variant: string | null;
+  /** This is the model its role runs right now. */
+  current: boolean;
+  /** The feed proposes this model for one of the roles. */
+  recommended: boolean;
+}
+
 /**
  * The models a bench can run, from what the page holds: the roles' models
- * that are loaded, and the installed set.
+ * that are loaded, and the installed set. Each row says whether it is the
+ * model in use and whether the feed recommends it, so a run is read against
+ * what it would replace.
  *
  * A model in use that has not loaded is left out - the bench loads its own
  * engine from the file, and a control over a file that is not there yet
  * would fail where the page could have pointed at the progress instead.
  */
-export function benchTargets(inUse: InUseModel[], installed: InstalledModel[]): BenchTarget[] {
-  const rows: BenchTarget[] = inUse
+export function benchTargets(
+  inUse: InUseModel[],
+  installed: InstalledModel[],
+  updates: ModelUpdate[],
+): BenchRow[] {
+  const rows: BenchRow[] = inUse
     .filter((model) => model.state === 'ready')
     .map((model) => ({
-      file: model.file,
-      role: model.role === 'normalization' ? 'cleanup' : model.role,
-      pinned: model.from.from === 'config',
+      target: {
+        file: model.file,
+        role: model.role === 'normalization' ? 'cleanup' : model.role,
+        pinned: model.from.from === 'config',
+      },
+      variant: model.catalogue?.variant ?? null,
+      current: true,
+      recommended: false,
     }));
   for (const record of installed) {
-    if (rows.some((row) => row.file === record.file)) continue;
-    rows.push({ file: record.file, role: 'transcribing', pinned: false });
+    if (rows.some((row) => row.target.file === record.file)) continue;
+    rows.push({
+      target: { file: record.file, role: 'transcribing', pinned: false },
+      variant: record.variant,
+      current: false,
+      recommended: false,
+    });
+  }
+  for (const row of rows) {
+    row.recommended = updates.some((update) => update.candidate.variant === row.variant);
   }
   return rows;
 }
@@ -501,7 +532,11 @@ export function benchLine(bench: BenchState): OpLine | null {
  */
 export function resultFacts(result: BenchResult): FactPart[] {
   const metrics = result.metrics;
-  const parts: FactPart[] = [{ text: `${metrics.xrt_wall.toFixed(1)}\u{d7} realtime`, hl: true }];
+  const stages = metrics.stages_ms;
+  const parts: FactPart[] = [
+    { text: `${metrics.xrt_wall.toFixed(1)}\u{d7} realtime`, hl: true },
+    { text: `${metrics.wall_seconds.toFixed(1)}s wall` },
+  ];
   if (metrics.term_accuracy !== null) {
     parts.push({ text: `term accuracy ${Math.round(metrics.term_accuracy * 100)}%`, hl: true });
   }
@@ -515,7 +550,26 @@ export function resultFacts(result: BenchResult): FactPart[] {
   parts.push({
     text: `${metrics.clips} clips \u{b7} ${Math.round(metrics.audio_seconds)}s of audio`,
   });
+  // Where the wall time went, so two runs can be compared past the totals.
+  parts.push({
+    text: `load ${stages.model_load_ms}ms \u{b7} encode ${stages.encode_ms}ms \u{b7} decode ${stages.decode_ms}ms \u{b7} cleanup ${stages.normalize_ms}ms`,
+  });
   return parts;
+}
+
+/** Why the feed proposes one candidate, in the rule's own terms. */
+export function updateWhy(update: ModelUpdate): string {
+  const candidate = update.candidate;
+  const speed =
+    candidate.speed === null
+      ? null
+      : `${speedLabel(candidate.speed.xrt_wall)} vs ${speedLabel(update.current.speed_x)} realtime on ${candidate.speed.machine}`;
+  const error =
+    candidate.wer === null
+      ? null
+      : `${candidate.wer.err_pct}% vs ${update.current.fleurs_en_wer}% word error, ${candidate.wer.dataset.toUpperCase()}-${candidate.wer.language}`;
+  const both = [speed, error].filter((part) => part !== null).join(', and ');
+  return `The fastest English model on the feed that beats the model in use on both axes - ${both} - under a licence you can run.`;
 }
 
 /** When one result ran, as the row's own line. */
