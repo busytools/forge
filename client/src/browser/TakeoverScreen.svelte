@@ -10,7 +10,7 @@
    * coordinates. The bar, the way back and Done are the web side's.
    */
   import { takeoverFrame, takeoverInput, type TakeoverFrame } from './host';
-  import { modifiers, toPage } from './input';
+  import { keyStroke, modifiers, toPage } from './input';
   import { takeover } from './takeover.svelte';
 
   let { address = '' }: { address?: string } = $props();
@@ -77,7 +77,7 @@
       if (el.width !== held.width) el.width = held.width;
       if (el.height !== held.height) el.height = held.height;
     }
-    image.src = `data:image/png;base64,${held.data}`;
+    image.src = `data:image/jpeg;base64,${held.data}`;
   }
 
   $effect(() => {
@@ -87,15 +87,20 @@
     // the event path between the two processes is the one piece that has
     // been observed to go missing, and a screen that asks cannot miss.
     let last = '';
+    let inFlight = false;
     const tick = (): void => {
-      void takeoverFrame().then((held) => {
-        if (held === null || held.data === last) return;
-        last = held.data;
-        show(held);
-      });
+      if (inFlight) return;
+      inFlight = true;
+      void takeoverFrame()
+        .then((held) => {
+          if (held === null || held.data === last) return;
+          last = held.data;
+          show(held);
+        })
+        .finally(() => (inFlight = false));
     };
     tick();
-    const beat = setInterval(tick, 200);
+    const beat = setInterval(tick, 80);
     return () => clearInterval(beat);
   });
 
@@ -138,12 +143,14 @@
     // Escape is the way back, above any page that wants it.
     if (event.key === 'Escape') return;
     event.preventDefault();
+    const stroke = keyStroke(event.key);
     void takeoverInput('Input.dispatchKeyEvent', {
       type,
       key: event.key,
       code: event.code,
       modifiers: modifiers(event),
-      ...(type === 'keyDown' && event.key.length === 1 ? { text: event.key } : {}),
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      ...(type === 'keyDown' && stroke.text !== undefined ? { text: stroke.text } : {}),
     });
   }
 </script>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { modifiers, toPage } from './input';
+import { keyStroke, modifiers, toPage } from './input';
 
 describe('the input mapping', () => {
   const stage = { left: 40, top: 84, width: 400, height: 300 };
@@ -38,5 +38,41 @@ describe('the input mapping', () => {
     expect(modifiers({ altKey: false, ctrlKey: true, metaKey: false, shiftKey: false })).toBe(2);
     expect(modifiers({ altKey: false, ctrlKey: false, metaKey: true, shiftKey: false })).toBe(4);
     expect(modifiers({ altKey: true, ctrlKey: true, metaKey: true, shiftKey: true })).toBe(15);
+  });
+
+  describe('the key mapping', () => {
+    /**
+     * **An acting key needs its CODE.** Enter with only `key`/`code` arrives
+     * at the page as a no-op - key and code alone are enough only for a text
+     * key, which carries its own `text`.
+     */
+    it('a character key types itself, with its code', () => {
+      expect(keyStroke('a')).toEqual({ windowsVirtualKeyCode: 65, text: 'a' });
+      expect(keyStroke('A')).toEqual({ windowsVirtualKeyCode: 65, text: 'A' });
+      expect(keyStroke(' ')).toEqual({ windowsVirtualKeyCode: 32, text: ' ' });
+      expect(keyStroke('7')).toEqual({ windowsVirtualKeyCode: 55, text: '7' });
+    });
+
+    it('Enter carries the carriage return a form needs', () => {
+      expect(keyStroke('Enter')).toEqual({ windowsVirtualKeyCode: 13, text: '\r' });
+    });
+
+    it('the acting keys carry their codes and no text', () => {
+      expect(keyStroke('Backspace')).toEqual({ windowsVirtualKeyCode: 8 });
+      expect(keyStroke('Tab')).toEqual({ windowsVirtualKeyCode: 9 });
+      expect(keyStroke('ArrowLeft')).toEqual({ windowsVirtualKeyCode: 37 });
+      expect(keyStroke('ArrowUp')).toEqual({ windowsVirtualKeyCode: 38 });
+      expect(keyStroke('ArrowRight')).toEqual({ windowsVirtualKeyCode: 39 });
+      expect(keyStroke('ArrowDown')).toEqual({ windowsVirtualKeyCode: 40 });
+      expect(keyStroke('Home')).toEqual({ windowsVirtualKeyCode: 36 });
+      expect(keyStroke('End')).toEqual({ windowsVirtualKeyCode: 35 });
+      expect(keyStroke('PageUp')).toEqual({ windowsVirtualKeyCode: 33 });
+      expect(keyStroke('PageDown')).toEqual({ windowsVirtualKeyCode: 34 });
+      expect(keyStroke('Delete')).toEqual({ windowsVirtualKeyCode: 46 });
+    });
+
+    it('an unknown key is sent as itself, with no code invented', () => {
+      expect(keyStroke('F5')).toEqual({ windowsVirtualKeyCode: 0 });
+    });
   });
 });

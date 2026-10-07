@@ -13,13 +13,19 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// How many pre-attach input messages are held. The real window is a
+/// handshake's length; the cap only bounds a stream nothing will ever flush.
+const HELD_INPUT_CAP: usize = 256;
+
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-/// One frame as the view draws it: a whole PNG in base64, with the page's own
-/// pixel size so input can be mapped back into it.
+/// One frame as the view draws it: a whole JPEG in base64 (the view's mime is
+/// `image/jpeg`), with the page's own pixel size so input can be mapped back
+/// into it. JPEG rather than PNG because a retina-size PNG is megabytes per
+/// frame, and the encode cost lands on the same browser the person is using.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Frame {
     pub data: String,
@@ -67,6 +73,12 @@ pub async fn start(
     let session = tokio::spawn(async move {
         let id = || ids.fetch_add(1, Ordering::Relaxed);
         let mut page: Option<String> = None;
+        // **Input that arrives before the page attach is held, not dropped.**
+        // The view's own first act is the viewport override, and the attach
+        // handshake is still in flight when it lands - dropping it would
+        // leave the page at the browser's default size, which the person
+        // sees as a pixelated image stretched across the stage.
+        let mut held: Vec<Value> = Vec::new();
 
         let attach = json!({
             "id": id(),
@@ -86,11 +98,19 @@ pub async fn start(
                 },
                 out = from_callers.recv() => match out {
                     Some(message) => {
-                        let Some(page) = page.as_deref() else { continue };
+                        let Some(attached) = page.as_deref() else {
+                            // Drop-newest at the cap: the earliest messages
+                            // (the override) are the ones that must survive.
+                            if held.len() < HELD_INPUT_CAP {
+                                held.push(message);
+                            }
+                            continue;
+                        };
                         let method = message.get("method").cloned().unwrap_or(Value::Null);
                         let params = message.get("params").cloned().unwrap_or(json!({}));
                         let message = json!({
-                            "id": id(), "method": method, "params": params, "sessionId": page,
+                            "id": id(), "method": method, "params": params,
+                            "sessionId": attached,
                         });
                         if sink.send(Message::Text(message.to_string().into())).await.is_err() {
                             break;
@@ -119,9 +139,20 @@ pub async fn start(
                         ("Runtime.runIfWaitingForDebugger", json!({})),
                         (
                             "Page.startScreencast",
-                            json!({ "format": "png", "quality": 80, "everyNthFrame": 1 }),
+                            json!({ "format": "jpeg", "quality": 70, "everyNthFrame": 1 }),
                         ),
                     ] {
+                        let message = json!({
+                            "id": id(), "method": method, "params": params,
+                            "sessionId": session_id,
+                        });
+                        if sink.send(Message::Text(message.to_string().into())).await.is_err() {
+                            return;
+                        }
+                    }
+                    for message in held.drain(..) {
+                        let method = message.get("method").cloned().unwrap_or(Value::Null);
+                        let params = message.get("params").cloned().unwrap_or(json!({}));
                         let message = json!({
                             "id": id(), "method": method, "params": params,
                             "sessionId": session_id,

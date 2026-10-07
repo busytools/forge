@@ -186,7 +186,29 @@ describe('the takeover', () => {
     canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true }));
     expect(takeoverInput, 'a key goes down the same way').toHaveBeenLastCalledWith(
       'Input.dispatchKeyEvent',
-      { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 0, text: 'a' },
+      {
+        type: 'keyDown',
+        key: 'a',
+        code: 'KeyA',
+        modifiers: 0,
+        windowsVirtualKeyCode: 65,
+        text: 'a',
+      },
+    );
+
+    canvas.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }),
+    );
+    expect(takeoverInput, 'Enter goes as the key a form submits on').toHaveBeenLastCalledWith(
+      'Input.dispatchKeyEvent',
+      {
+        type: 'keyDown',
+        key: 'Enter',
+        code: 'Enter',
+        modifiers: 0,
+        windowsVirtualKeyCode: 13,
+        text: '\r',
+      },
     );
 
     const before = vi.mocked(takeoverInput).mock.calls.length;

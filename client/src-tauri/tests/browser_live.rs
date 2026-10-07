@@ -410,9 +410,68 @@ async fn the_takeover_view_delivers_a_frame() {
     browser.reap();
     assert!(!frame.data.is_empty(), "the frame carries a whole image");
     assert!(
+        frame.data.starts_with("/9j/"),
+        "the frame is a JPEG (FF D8 FF), the one mime the view decodes",
+    );
+    assert!(
         frame.width > 0 && frame.height > 0,
         "with the page's own size: {}x{}",
         frame.width,
         frame.height,
     );
+}
+
+/// **The view's own first act is an input, and it beats the attach.** Sent
+/// immediately after the stream opens, the viewport override lands while the
+/// page attach handshake is still in flight; a stream that dropped it would
+/// leave the page at the browser's default size, which the person sees as a
+/// pixelated image stretched across the stage.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn an_input_sent_before_the_page_attaches_still_lands() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        profile: dir.path().join("profile"),
+        output: dir.path().join("output"),
+        contexts: dir.path().join("contexts"),
+    };
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+
+    let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
+    let live = forge_client::browser::screencast::start(&endpoint, |_| {})
+        .await
+        .expect("the view opens on the running browser");
+    live.input(
+        "Emulation.setDeviceMetricsOverride",
+        json!({ "width": 900, "height": 700, "deviceScaleFactor": 1, "mobile": false }),
+    );
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let parts = host
+            .call(&seat(), "browser_evaluate", json!({ "function": "() => window.innerWidth" }))
+            .await
+            .unwrap_or_else(|why| panic!("the page could not be asked its width: {why}"));
+        let text = text_of(&parts);
+        let width: Option<i64> =
+            text.split(|c: char| !c.is_ascii_digit()).find_map(|run| run.parse().ok());
+        if width == Some(900) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the input sent before the attach never landed; the page is still {text}",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    live.stop();
+    browser.reap();
 }

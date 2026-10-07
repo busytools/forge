@@ -45,3 +45,44 @@ export function modifiers(event: {
     (event.shiftKey ? 8 : 0)
   );
 }
+
+/**
+ * The CDP code for a key that ACTS rather than types. Key and code alone
+ * deliver a text key (its own `text` carries it) but reach the page as a
+ * no-op for these - Enter without its code never submits a form.
+ */
+const ACTING_KEYS: Record<string, number> = {
+  Enter: 13,
+  Backspace: 8,
+  Tab: 9,
+  Delete: 46,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+};
+
+/**
+ * What CDP needs beyond `key` and `code` for one keystroke: the Windows
+ * virtual key code every key carries, and the `text` only a typing key
+ * generates - a character types itself, and Enter types a carriage return,
+ * which is what a form reads as submit.
+ */
+export function keyStroke(key: string): { windowsVirtualKeyCode: number; text?: string } {
+  const acting = ACTING_KEYS[key];
+  if (acting !== undefined) {
+    return key === 'Enter'
+      ? { windowsVirtualKeyCode: acting, text: '\r' }
+      : { windowsVirtualKeyCode: acting };
+  }
+  if (key.length === 1) {
+    return { windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0), text: key };
+  }
+  // A key this map has never met goes as itself: CDP takes it, and inventing
+  // a code for it would be a guess the page would act on.
+  return { windowsVirtualKeyCode: 0 };
+}
