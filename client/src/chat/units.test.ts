@@ -515,6 +515,37 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([bare])), 'a summary-less envelope is not claimed').toEqual(['user']);
   });
 
+  it('draws the invisible-output nudge as the page own line, never the bracket', () => {
+    // The harness asks the MODEL to continue after a response with no visible
+    // output - a marked frame nobody typed - and the terminal draws the raw
+    // bracket; the page draws its own line (#1858).
+    const nudge = heard(
+      [
+        text(
+          '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
+    const units = fold([nudge]);
+
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    const [row] = units;
+    expect(
+      row?.kind === 'notice' ? row.notice.text : '',
+      'the page own words, not the raw bracket',
+    ).toBe('no visible output - the harness asked the agent to continue');
+
+    // A bracket this does not recognize falls through: with the stamp it
+    // draws as the raw marked line, the shape it had before.
+    const odd = heard([text('[Some other bracketed sentence entirely.]')], { isSynthetic: true });
+    const [held] = fold([odd]);
+    expect(
+      held?.kind === 'notice' ? held.notice.text : '',
+      'an unknown bracket draws as itself',
+    ).toContain('[Some other bracketed sentence entirely.]');
+  });
+
   it("hangs the harness's image note on the call that read the picture", () => {
     // The image rides the Read call's own result; the note arrives right after
     // as a user frame. On that call's row it is the picture's caption; as the
@@ -794,6 +825,11 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(refused)).toEqual(['notice']);
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.severity : '').toBe('error');
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.text : '').toContain('Usage: /resume');
+
+    // The third level: a line this PAGE authors may carry it (the rate-limit
+    // explainer), where the wire's own NoticeSeverity has only two.
+    const warned = fold([line('warning')]);
+    expect(warned[0]?.kind === 'notice' ? warned[0].notice.severity : '').toBe('warning');
 
     // A severity word this page does not know is not a failure: the line is
     // still drawn, and it says so quietly rather than shouting.
@@ -2680,5 +2716,91 @@ describe("the CLI's retry line", () => {
       notice?.kind === 'notice' ? notice.notice.sub : null,
       'milliseconds read as themselves',
     ).toBe('retrying in 250ms');
+  });
+});
+
+describe('the rate-limit windows', () => {
+  /**
+   * One `rate_limit_event` frame, as the wire shapes it. The reset sits long
+   * past, so the countdown those words end on is "now" forever - the pins
+   * below stay exact without a faked clock.
+   */
+  const windowed = (info: Record<string, unknown>): unknown => ({
+    type: 'rate_limit_event',
+    rate_limit_info: { resetsAt: 1_741_280_000, rateLimitType: 'five_hour', ...info },
+    uuid: 'r-limit',
+    session_id: 's-1',
+  });
+
+  const noticed = (units: Unit[]) => units.filter((unit) => unit.kind === 'notice');
+
+  it("draws a window closing as a warning line, in the terminal's words", () => {
+    const units = fold([windowed({ status: 'allowed_warning', utilization: 0.91 })]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a closing window is a warning').toBe('warning');
+    expect(notice?.text, "the terminal's own words, so the two views agree").toBe(
+      "Approaching rate limit, you've used 91% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('upgrades the same window to an error in place, rather than stacking', () => {
+    // The key is the window, not the status: a window that escalates from
+    // warning to rejected rewrites the line it already drew.
+    const units = fold([
+      windowed({ status: 'allowed_warning' }),
+      windowed({ status: 'rejected', utilization: 0.99 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a rejected window is an error').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('keeps the loudest line when the same window walks back', () => {
+    // The terminal's no-downgrade guard (`upsert_turn_notice` refuses a lower
+    // stage): a window that flips from rejected back to a warning keeps the
+    // line it already drew, where a fresh warning would soften "Rate limit
+    // reached" to "Approaching".
+    const units = fold([
+      windowed({ status: 'rejected', utilization: 0.99 }),
+      windowed({ status: 'allowed_warning', utilization: 0.8 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'the loudest stage holds').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('opens a fresh line when the window resets', () => {
+    const units = fold([
+      windowed({ status: 'rejected' }),
+      windowed({ status: 'allowed_warning', resetsAt: 1_741_280_000 + 18_000 }),
+    ]);
+
+    expect(noticed(units), 'a new window is a new incident').toHaveLength(2);
+  });
+
+  it('draws nothing for a window that is allowed or unknown to this build', () => {
+    // The terminal routes both to no notice, and this fold matches rather
+    // than draws a line the other view does not have.
+    const units = fold([
+      said([text('working')]),
+      windowed({ status: 'allowed' }),
+      windowed({ status: 'something_new' }),
+    ]);
+
+    expect(noticed(units)).toHaveLength(0);
+    expect(kinds(units)).toEqual(['text']);
   });
 });

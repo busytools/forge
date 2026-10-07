@@ -42,6 +42,9 @@
 <!-- A landmark, so every part of the page sits inside one. The sheet's
      `.wrap` rule is a class, so this changes nothing it draws. -->
 <main class="wrap">
+  {#if wire.fatal_error !== null}
+    <div class="stopped">forge stopped: {wire.fatal_error}</div>
+  {/if}
   <header class="top">
     <div class="brand">
       <Brand name={mark} />

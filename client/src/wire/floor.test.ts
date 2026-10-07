@@ -87,6 +87,7 @@ describe('the home the floor sends', () => {
     expect(home.accounts.loading[0]?.state).toBe('ready');
     expect(home.dictate.snapshot.models[0]?.state).toBe('ready');
     expect(home.forge_version_short, 'the build the home names').toBe('1.0.112+abc1234');
+    expect(home.fatal_error, 'a floor server names no fatal').toBeNull();
     expect(home.cli_version?.installed).toBe('2.0.0');
   });
 });

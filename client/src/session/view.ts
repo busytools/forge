@@ -28,9 +28,11 @@ import {
   whenOf,
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
+import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
-import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
+import type { AgentRow, CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import type {
   FileStatusWire,
@@ -115,6 +117,197 @@ export interface GitStats {
   totalFiles: number;
   totalAdded: number;
   totalRemoved: number;
+}
+
+/** One row the palette can land on. */
+export interface PaletteRow {
+  id: string;
+  kind: 'seat' | 'command' | 'doing';
+  /** The word the row leads with. */
+  label: string;
+  /** The quiet line beside it: the seat's state, or what the action does. */
+  detail: string;
+  /** Where a seat or the home row goes, as a real href. */
+  href?: string;
+  /** What a command row sends, exactly as the composer sends it. */
+  text?: string;
+  /** Which doing a doing row runs. */
+  doing?: 'peek' | 'copy' | 'close';
+  /** The current project's lead, which is where the cursor starts. */
+  lead?: boolean;
+  /** A seat row's dot class, in the home's own vocabulary. */
+  mark?: string;
+}
+
+export interface PaletteSection {
+  title: string;
+  rows: PaletteRow[];
+}
+
+/** A seat's state in the palette's two or three words. */
+function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
+  if (row.pending !== null) return 'needs you';
+  const state = stateOf(row, unseen);
+  switch (state.kind) {
+    case 'failed-turn':
+      return 'failed';
+    case 'unseen':
+      return 'finished';
+    case 'never-started':
+      return 'never started';
+    case 'lifecycle':
+      switch (state.lifecycle) {
+        case 'Attention':
+          return 'needs you';
+        case 'AuthRequired':
+          return 'sign-in needed';
+        case 'Failed':
+          return 'failed';
+        case 'Running':
+          return 'working';
+        case 'Spawning':
+          return 'starting';
+        case 'Sleeping':
+        case 'LoggedOut':
+          return 'asleep';
+        default:
+          return 'idle';
+      }
+  }
+}
+
+/**
+ * **The palette's rows**: the fleet grouped its own way - the seats that
+ * want a person, the ones working, the ones asleep - then forge's commands,
+ * then the doings. Every seat's state is searchable in its detail line, the
+ * current project's lead carries `lead` (where the cursor starts, so Cmd+K
+ * then Enter lands on it), and a command row's `text` is exactly what the
+ * composer sends.
+ */
+export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[] {
+  const unseen = wire.unseen;
+  // **One rule with the rail's own ranker**: the palette and the rail draw
+  // the same seat two layers apart, so a seat that reads working on the rail
+  // cannot read asleep here. rankOf's 0/1/2 is needs-person / working /
+  // asleep.
+  const rank = (row: AgentRow): number => rankOf(stateOf(row, unseen), row.pending);
+  const wants = (row: AgentRow): boolean => rank(row) === 0;
+  const working = (row: AgentRow): boolean => rank(row) === 1;
+  const seat = (row: AgentRow): PaletteRow => ({
+    id: `${row.slot.org}/${row.slot.project}/${row.label}`,
+    kind: 'seat',
+    label: row.slot.label,
+    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
+    href: hrefForSlot(row.slot),
+    // A project's identity is (org, name): two orgs sharing a project name
+    // would otherwise both wear the chip, and Enter would land in the wrong
+    // one.
+    lead:
+      row.slot.org === slot.org && row.slot.project === slot.project && row.slot.label === 'lead',
+    mark: railMark(stateOf(row, unseen)),
+  });
+  const seats = wire.agents;
+  const sections: PaletteSection[] = [
+    { title: 'needs you', rows: seats.filter(wants).map(seat) },
+    {
+      title: 'working',
+      rows: seats.filter((row) => !wants(row) && working(row)).map(seat),
+    },
+    {
+      title: 'asleep',
+      rows: seats.filter((row) => !wants(row) && !working(row)).map(seat),
+    },
+    {
+      title: 'commands',
+      // The composer's own table, not a second copy of it: a command the box
+      // offers is a command the palette offers, or neither.
+      rows: FORGE_COMMANDS.map((command) => ({
+        id: `cmd-${command.name.replace('/', '')}`,
+        kind: 'command' as const,
+        label: command.name,
+        detail: command.description,
+        text: command.name,
+      })),
+    },
+    {
+      title: 'doings',
+      rows: [
+        {
+          id: 'do-peek',
+          kind: 'doing',
+          label: 'peek at the fleet',
+          detail: 'the projects rail, over this page',
+          doing: 'peek',
+        },
+        {
+          id: 'do-home',
+          kind: 'doing',
+          label: 'go home',
+          detail: 'every project and every seat',
+          href: '/',
+        },
+        {
+          id: 'do-copy',
+          kind: 'doing',
+          label: 'copy the session id',
+          detail: "this seat's occupant",
+          doing: 'copy',
+        },
+        {
+          id: 'do-close',
+          kind: 'doing',
+          label: 'close this seat',
+          detail: 'the session ends; the row stays',
+          doing: 'close',
+        },
+      ],
+    },
+  ];
+  return sections.filter((section) => section.rows.length > 0);
+}
+
+/** The projects chip's state: the seats that want a person, fleet-wide. */
+export interface ChipState {
+  /** `one` goes straight to that seat; everything else goes to the home. */
+  state: 'one' | 'many' | 'failed' | 'none';
+  count: number;
+  /** Where the chip's own click lands, as a real href. */
+  href: string;
+  /** The words a screen reader hears, which is also the title. */
+  label: string;
+}
+
+/**
+ * **The chip counts seats that want a PERSON**: a question, a permission, a
+ * died turn - never a mere change. Exactly one, and it is not an error, is
+ * the one case its click goes straight to that seat; several, or any failure
+ * among them, goes to the home page so the reader picks; none goes home too,
+ * from a quiet `projects` label.
+ */
+export function chipState(wire: HomeWire | null): ChipState {
+  const rows = wire === null ? [] : wire.agents;
+  const wanting = rows.filter((row) => row.pending !== null || row.failed_turn !== null);
+  const failed = wanting.some((row) => row.failed_turn !== null);
+  if (wanting.length === 0) {
+    return { state: 'none', count: 0, href: '/', label: 'projects' };
+  }
+  const said = wanting.length === 1 ? '1 seat needs you' : `${wanting.length} seats need you`;
+  if (failed) {
+    // The cross is aria-hidden and the tone is colour alone, so the failure
+    // must reach the accessible name too.
+    return {
+      state: 'failed',
+      count: wanting.length,
+      href: '/',
+      label: `${said}, one failed`,
+    };
+  }
+  const label = said;
+  const only = wanting[0];
+  if (wanting.length === 1 && only !== undefined) {
+    return { state: 'one', count: 1, href: hrefForSlot(only.slot), label: '1 seat needs you' };
+  }
+  return { state: 'many', count: wanting.length, href: '/', label };
 }
 
 /** The seat's working tree, as the strip's row draws it. */

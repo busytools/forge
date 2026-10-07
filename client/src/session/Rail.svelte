@@ -6,6 +6,7 @@
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
   import { closeSeat, closingSeat } from './close';
+  import type { RailMode } from './rail-mode';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import {
@@ -30,7 +31,10 @@
     now,
     connection,
     notice = null,
-    onclose,
+    mode = 'static',
+    onpin = null,
+    onenter = null,
+    onleave = null,
   }: {
     home: HomeWire;
     /** The seat the page is showing, which is the one row the rail marks. */
@@ -41,8 +45,15 @@
     /** The connection's own line - a protocol skew or a reconnect - drawn
      *  over the versions, where the build facts live. */
     notice?: string | null;
-    /** Brings the header's handle back, which the collapsed rail has covered. */
-    onclose: () => void;
+    /** The rail's presence, which the pin's own word follows. */
+    mode?: RailMode;
+    /** Flips the column and the peek: pinned open, or floating on hover.
+     *  Absent, the pin is not drawn - a harness that reads the list alone. */
+    onpin?: (() => void) | null;
+    /** The pointer arriving here holds a hover-summoned peek open. */
+    onenter?: (() => void) | null;
+    /** And leaving arms its close, the chip's own grace again. */
+    onleave?: (() => void) | null;
   } = $props();
 
   const groups = $derived(railGroups(home, current, now, closingSeat));
@@ -67,21 +78,34 @@
   landmarks with the same implicit name are one landmark to a screen reader,
   and neither can be navigated to by name.
 -->
-<aside class="rail left" aria-label="projects">
+<aside
+  class="rail left"
+  aria-label="projects"
+  onpointerenter={(event) => {
+    if (event.pointerType === 'mouse') onenter?.();
+  }}
+  onpointerleave={(event) => {
+    if (event.pointerType === 'mouse') onleave?.();
+  }}
+>
   <div class="banner">
     <span class="t">projects</span>
     <span class="n ml">{fleetCount(home)}</span>
-    <!-- A rail covering the page carries its own way out: the header handle
-         that opened it is underneath. -->
-    <button
-      class="close"
-      type="button"
-      title="close"
-      aria-label="close the projects rail"
-      onclick={onclose}
-    >
-      <Icon name="x" />
-    </button>
+    <!-- The pin says where the rail is next: pinned open is the column,
+         floating is the hover-summoned peek. There is no close - the rail
+         is always one of the two, and the overlay closes by Esc, a click
+         outside or Back. -->
+    {#if onpin !== null}
+      <button
+        class="pin"
+        type="button"
+        title={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        aria-label={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        onclick={onpin}
+      >
+        <Icon name={mode === 'static' ? 'out' : 'in'} />
+      </button>
+    {/if}
   </div>
   <div class="scroll">
     <!-- One project's block, drawn the same in a folded group and an open

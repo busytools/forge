@@ -356,13 +356,18 @@ is still the port's source for the markup.
 so it is carried rather than derived, and the client draws the state when
 it is handed one.
 
-## Two the snapshot carries and nothing draws
+## The status the snapshot carries, and the frames that draw it
 
-`service_status` and `fatal_error` DO cross on the home subject, and no
-page reads either. So a forge that is exiting or that failed at startup
-draws as a healthy fleet. Dropped on purpose for now rather than by
-oversight: both are a view of their own, and the home's band is not where
-they belong.
+`service_status` and `fatal_error` cross on the home subject. Both now draw
+live: the service report and the core's fatal are keyless frames that ride
+every connection, so each open conversation draws them as they arrive
+rather than reading them back off the snapshot. The home's own
+`fatal_error` row draws above the header - the read a view attaching late
+finds, which for a fatal is the wind-down window before the process goes.
+`service_status`'s field itself stays undrawn: the report is live-only by
+design, and a page opened later has nothing to replay it from. A forge that
+failed at startup draws nothing anywhere - no client ever reached its
+socket, and the connect screen is all there is.
 
 Two more ride the home row and no page in this slice draws them: `crons`,
 which is the inspector's schedules section, and `chip`, which is the

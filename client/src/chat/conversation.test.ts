@@ -10,6 +10,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
+import { refused } from '../refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
 // record should have been replaced throws here as well as in a mounted column.
@@ -272,6 +273,163 @@ describe('the conversation the chat draws', () => {
     const before = drawn();
     server.update({ review_activity_notice: { key: LEAD, branch: 'feat', waiting: 1 } });
     expect(drawn(), 'a wordless notice is not drawn').toBe(before);
+  });
+
+  /**
+   * A connection failure draws its own line, not only the roster row's reason
+   * (#1638): the terminal's answer, the raw why, or the rate-limit explainer
+   * when the accounts are exhausted.
+   */
+  it('draws a connection failure, and the rate-limit explainer for one', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      connection_failed: {
+        key: LEAD,
+        message: 'connection to claude subprocess failed',
+        fatal: true,
+      },
+    });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the why is drawn').toContain(
+      'Connection failed: connection to claude subprocess failed',
+    );
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+
+    server.update({
+      connection_failed: { key: LEAD, message: 'All accounts are exhausted', fatal: false },
+    });
+    expect(drawn(), 'a rate-limited failure draws the explainer instead').toContain(
+      'Waiting for account reset; click another project or wait.',
+    );
+  });
+
+  /**
+   * A dispatch refused before it left the browser draws its line in the seat's
+   * own column, where the click was made (#1638): the socket notes the loss
+   * and this draws it, rather than the console alone.
+   */
+  it('draws a refused dispatch in its seat column, and not another seat one', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    refused({ org: LEAD.org, project: LEAD.project, label: 'somebody-else' });
+    expect(drawn(), 'another seat refusal stays out of this column').not.toContain('Not sent');
+
+    refused(LEAD);
+    expect(drawn(), 'the line is drawn').toContain('Not sent - the connection is down.');
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+    expect(drawn(), 'a warning').toContain('warning');
+
+    const once = drawn();
+    refused(LEAD);
+    expect(drawn(), 'the same line twice in a row is one row').toBe(once);
+  });
+
+  /**
+   * The service status the core watches for the whole install arrives keyless,
+   * so it rides every seat's stream and each open conversation draws it as the
+   * terminal pushes it (#1638) - once per report.
+   */
+  it('draws a service-status report, once per report', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    // A seat-addressed update for ANOTHER seat must stay out: the door
+    // passing keyless updates did not open it to other seats' news.
+    server.update({
+      connection_failed: {
+        key: { org: 'OtherOrg', project: 'other', label: 'lead' },
+        message: 'another seat failure',
+        fatal: false,
+      },
+    });
+    expect(drawn(), "another seat's failure stays out").not.toContain('another seat failure');
+
+    server.update({
+      service_status: { severity: 'warning', message: 'Elevated error rates on the Anthropic API' },
+    });
+    expect(drawn(), 'the report is drawn').toContain('Elevated error rates on the Anthropic API');
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+    expect(drawn(), 'a warning').toContain('"severity":"warning"');
+
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'an error report draws as an error').toContain('"severity":"error"');
+    expect(drawn()).toContain('The API is down');
+
+    const once = drawn();
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(drawn(), 'the same report twice is one row').toBe(once);
+  });
+
+  /**
+   * The core's fatal arrives keyless before the process goes (#1638): every
+   * open conversation draws the line, in the terminal's own words.
+   */
+  it("draws the core's fatal once", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    const fatal = {
+      error: 'connection_failed',
+      message: 'Failed to establish or maintain the Agent SDK bridge connection.',
+    };
+    server.update({ fatal_error: fatal });
+    expect(drawn(), 'the fatal is drawn').toContain(
+      'forge stopped: Failed to establish or maintain the Agent SDK bridge connection.',
+    );
+    expect(drawn(), 'as a failure').toContain('"severity":"error"');
+
+    const once = drawn();
+    server.update({ fatal_error: fatal });
+    expect(drawn(), 'the same fatal twice is one row').toBe(once);
+  });
+
+  /**
+   * The plan-limit next steps ride the turn's own failure (#1638): the
+   * terminal's words and steps, with the core's own message where the
+   * terminal's summary rides - it is not drawn a line above when a
+   * dispatch-side refusal never reached the CLI.
+   */
+  it('adds the next steps to a plan-limited turn, with the core own words', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const notice = {
+      key: LEAD,
+      message: 'Usage limit reached',
+      class: 'plan_limit',
+      terminal_reason: null,
+    };
+    server.update({ turn_error: notice });
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(drawn(), 'the core own words ride the line').toContain('Usage limit reached');
+    expect(drawn(), 'and the steps are drawn').toContain('Next steps');
+    expect(drawn(), 'at the error the terminal draws them').toContain('"severity":"error"');
+
+    // The same incident twice is one line, not two: the terminal upserts.
+    const before = drawn();
+    server.update({ turn_error: notice });
+    expect(drawn(), 'a repeated incident keeps one line').toBe(before);
   });
 
   /**

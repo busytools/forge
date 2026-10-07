@@ -41,6 +41,7 @@
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -403,6 +404,8 @@ interface Frame {
   max_retries?: unknown;
   retry_delay_ms?: unknown;
   error_status?: unknown;
+  /** The snapshot a `rate_limit_event` carries: status, window type, reset, overage. */
+  rate_limit_info?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
@@ -582,6 +585,18 @@ function taskNotificationOf(text: string): string | null {
   if (open === -1 || close === -1) return null;
   const summary = held.slice(open + '<summary>'.length, close).trim();
   return summary === '' ? null : summary;
+}
+
+/**
+ * Whether a frame is the CLI's nudge after a response with no visible output.
+ *
+ * The harness asks the MODEL to continue; nobody typed it and the terminal
+ * draws the raw bracket, where the page draws its own line (#1858). Keyed on
+ * the opening sentence alone: a reworded tail still recognizes, and a
+ * reworded head falls through to the raw draw - the frame is never lost.
+ */
+function noOutputNudge(text: string): boolean {
+  return text.trim().startsWith('[Your previous response had no visible output.');
 }
 
 /** The harness's own line about an image, or null for every other text. */
@@ -1253,13 +1268,23 @@ function beside(sentence: string, word: string | null): string {
 /**
  * The core's own severity word, narrowed where it enters.
  *
- * `NoticeSeverity` on the Rust side is two levels; a word this page does not
- * know reads as an informational line, because a line nobody can classify is
- * not a failure to shout about.
+ * The wire's `NoticeSeverity` is two levels, but a line this page authors
+ * itself may carry the third the notice row draws (the rate-limit explainer
+ * at warning); a word nobody classifies reads as informational, because a
+ * line nobody can classify is not a failure to shout about.
  */
 function noticeSeverity(value: unknown): NoticeSeverity {
-  return value === 'error' ? 'error' : 'info';
+  if (value === 'error') return 'error';
+  if (value === 'warning') return 'warning';
+  return 'info';
 }
+
+/**
+ * The rank a notice key sits at, the terminal's own `NoticeStage` order
+ * (`Warning < Rejected < PlanLimitTurnError`): a later stage may rewrite the
+ * line already drawn, a lower one may not.
+ */
+const NOTICE_STAGE = { warning: 0, rejected: 1 } as const;
 
 /**
  * The terminal's own words for a retry classification, so the two views name
@@ -1599,6 +1624,8 @@ export function fold(
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+  /** The stage each notice key sits at, so a walk-back cannot soften a line. */
+  const noticeStages = new Map<string, number>();
 
   /**
    * Hang a skill's body on the call that loaded it.
@@ -1646,13 +1673,19 @@ export function fold(
   };
 
   /**
-   * Rewrite the retry line this turn already drew, or open it.
+   * Rewrite the line this key already drew, or open it.
    *
-   * A retry run reports every attempt it makes and the row is the RUN, so a
-   * later frame replaces its own line - the shape the terminal's deduped turn
-   * notice draws, and why a storm is one row rather than fifty.
+   * A run reports every step it takes and the row is the RUN, so a later frame
+   * replaces its own line - the shape the terminal's deduped turn notice
+   * draws, and why a storm is one row rather than fifty. **A lower stage
+   * never replaces a higher one**: the same guard `upsert_turn_notice` keeps,
+   * so a window that walks back from rejected to a warning holds the line it
+   * already drew.
    */
-  const upsertNotice = (key: string, notice: Notice): void => {
+  const upsertNotice = (key: string, stage: number, notice: Notice): void => {
+    const held = noticeStages.get(key);
+    if (held !== undefined && stage < held) return;
+    noticeStages.set(key, stage);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit?.kind !== 'notice' || unit.key !== key) continue;
@@ -1784,7 +1817,7 @@ export function fold(
         const delay = typeof frame.retry_delay_ms === 'number' ? frame.retry_delay_ms : null;
         if (attempt !== null && cap !== null && delay !== null) {
           const status = typeof frame.error_status === 'number' ? frame.error_status : null;
-          upsertNotice('api-retry', {
+          upsertNotice('api-retry', NOTICE_STAGE.warning, {
             severity: 'warning',
             text: `API retry after ${retryLabel(frame.error)}${status === null ? '' : ` HTTP ${status}`}`,
             chip: `attempt ${attempt} / ${cap}`,
@@ -1864,6 +1897,29 @@ export function fold(
         if (run !== null && rewriteHook(key, hookRun(frame))) continue;
         pending.push({ tag: 'hook', key, run: hookRun(frame) });
         continue;
+      }
+      continue;
+    }
+
+    // A rate-limit window's state transition, as the terminal draws it: one
+    // notice per incident - the window's type and its reset bucket - so a
+    // later frame in the same window rewrites this line rather than stacking
+    // beside it, and a new window opens one of its own. Allowed and unknown
+    // statuses draw nothing, which is the terminal's own neutral rather than
+    // a drop (`app/events/rate_limit.rs` routes them to no notice).
+    if (frame.type === 'rate_limit_event') {
+      const info = obj(frame.rate_limit_info);
+      const status = str(info, 'status');
+      if (status === 'allowed_warning' || status === 'rejected') {
+        const rejected = status === 'rejected';
+        upsertNotice(
+          rateLimitNoticeKey(info),
+          rejected ? NOTICE_STAGE.rejected : NOTICE_STAGE.warning,
+          {
+            severity: rejected ? 'error' : 'warning',
+            text: formatRateLimitSummary(info),
+          },
+        );
       }
       continue;
     }
@@ -1957,6 +2013,20 @@ export function fold(
               kind: 'notice',
               key: keyOf(at, frame, blockAt),
               notice: { severity: 'info', text: taskEnd },
+            });
+            continue;
+          }
+          // The harness nudging the model after an invisible response: the
+          // page's own line, never the raw bracket (#1858). A bracket this
+          // does not recognize falls through and draws as itself.
+          if (noOutputNudge(stripped)) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: {
+                severity: 'info',
+                text: 'no visible output - the harness asked the agent to continue',
+              },
             });
             continue;
           }

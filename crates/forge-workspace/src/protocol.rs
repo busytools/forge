@@ -1737,7 +1737,13 @@ pub enum SessionUpdate {
         #[serde(skip)]
         initiator: Option<u64>,
     },
-    FatalError(AppError),
+    /// The core's fatal: the app is going away. `message` is what the
+    /// terminal prints on exit - `AppError::user_message()` - so a view that
+    /// draws the line words it the same way without a second copy.
+    FatalError {
+        error: AppError,
+        message: String,
+    },
     /// The catalogue check landed: the models page's whole view, re-read.
     /// Carries no slot - the feed belongs to the machine, not a seat - and
     /// a session page ignores it. Sentinel rows the page draws (the
@@ -1829,7 +1835,7 @@ impl SessionUpdate {
             | Self::PluginsRollbackFailed { .. }
             | Self::WorkerStatusChanged { .. }
             | Self::DictateAvailability { .. }
-            | Self::FatalError(..)
+            | Self::FatalError { .. }
             | Self::DictateModelsChanged { .. } => None,
         }
     }
@@ -2132,7 +2138,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("outcome", outcome)
                 .finish_non_exhaustive(),
-            Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
+            Self::FatalError { error, .. } => {
+                f.debug_struct("FatalError").field("error", error).finish()
+            }
             Self::DictateModelsChanged { models } => f
                 .debug_struct("DictateModelsChanged")
                 .field("in_use", &models.in_use.len())

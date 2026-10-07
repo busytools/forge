@@ -10,6 +10,7 @@
  * refilling on every blip.
  */
 
+import { refused } from './refusals';
 import {
   MORE_TURNS,
   readableProtocol,
@@ -102,7 +103,7 @@ export interface Connection {
    * A caller that dispatches one of the four owes the returned promise an
    * answer: nothing else carries the outcome.
    */
-  dispatch(command: Command): Promise<unknown> | null;
+  dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null;
   /**
    * Ask for older turns of one conversation, answering whether the ask went.
    *
@@ -680,10 +681,18 @@ export function connect(url: string): Connection {
     askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
   }
 
-  function dispatch(command: Command): Promise<unknown> | null {
+  function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
-    if (!isOpen()) throw new Error('the socket is not open');
+    if (!isOpen()) {
+      // The throw is what callers catch and report; this is what the reader
+      // sees: the loss noted for the seat the click was made in (#1638). The
+      // seat is the caller's to state - a command's own payload names its
+      // TARGET, which is another seat for a rail's close - and a dispatch the
+      // caller gives no seat for (a command no column sent) notes nothing.
+      if (at !== undefined) refused(at);
+      throw new Error('the socket is not open');
+    }
 
     const variant = variantOf(command);
     if (!ANSWERS_THROUGH_A_REPLY.has(variant)) {

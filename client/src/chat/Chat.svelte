@@ -228,6 +228,9 @@
     try {
       // Fire-and-forget like the composer's own send: the outcome rides the
       // subscription rather than a reply, so there is nothing to await.
+      // No seat handed over: this retry's refusal is drawn by the echo row
+      // below, with the retry button the reader came here for - a notice line
+      // beside it would tell the same loss twice.
       void connection.dispatch({
         prompt_under: { key: slot, text: held.words, attachments: [], uuid: id, source: 'you' },
       });

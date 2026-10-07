@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
+import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -7,7 +10,9 @@ import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/h
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  chipState,
   compactionFigure,
+  paletteRows,
   copyReason,
   fleetCount,
   gitStrip,
@@ -776,6 +781,181 @@ describe('the tasks the strip draws', () => {
     expect(rows[0]?.owner, 'the owner rides its own cell').toBe('lead');
     expect(rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
     expect(rows[1]?.status).toBe('completed');
+  });
+});
+
+describe('the projects chip', () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * **Never a mere change.** A busy or idle seat counts for nothing; the
+   * chip is only the seats that want a PERSON, and one such seat - with no
+   * failure among them - is the case its click goes straight to it.
+   */
+  it('counts only the seats that want a person', () => {
+    const wire = withHome({
+      agents: [agent('busy'), agent('waiter', { pending: 'permission' })],
+    });
+    expect(chipState(wire), 'a seat that does not want a person counted').toEqual({
+      state: 'one',
+      count: 1,
+      href: '/session/TestOrg/proj/waiter',
+      label: '1 seat needs you',
+    });
+  });
+
+  /** Several, any failure among them, or none: the home is where you pick. */
+  it('goes home for several, for any failure and for none', () => {
+    const many = chipState(
+      withHome({
+        agents: [agent('a', { pending: 'permission' }), agent('b', { pending: 'permission' })],
+      }),
+    );
+    expect(many.state, 'two wanting seats did not read as several').toBe('many');
+    expect(many.href, 'several did not go home').toBe('/');
+    expect(many.label).toBe('2 seats need you');
+
+    const failed = chipState(
+      withHome({
+        agents: [agent('a', { failed_turn: { secs_since_epoch: 1, nanos_since_epoch: 0 } })],
+      }),
+    );
+    expect(failed, 'a lone failure did not go home').toMatchObject({
+      state: 'failed',
+      href: '/',
+      count: 1,
+    });
+    expect(failed.label, 'the failure is not in the accessible name').toBe(
+      '1 seat needs you, one failed',
+    );
+
+    const none = chipState(withHome({ agents: [agent('busy')] }));
+    expect(none, 'a quiet fleet did not read as the calm word').toEqual({
+      state: 'none',
+      count: 0,
+      href: '/',
+      label: 'projects',
+    });
+  });
+});
+
+describe("the palette's rows", () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * A project's identity is (org, name) here as everywhere else: a namesake
+   * in another org must not wear the chip, or Enter lands in the wrong org's
+   * seat.
+   */
+  it('marks the lead by its org and project both', () => {
+    const wire = withHome({
+      agents: [
+        agent('lead', { slot: { org: 'Other', project: 'proj', label: 'lead' } }),
+        agent('lead'),
+      ],
+    });
+    const leads = paletteRows(wire, LEAD)
+      .flatMap((section) => section.rows)
+      .filter((row) => row.lead === true);
+    expect(leads, 'two orgs sharing a project name both wore the chip').toHaveLength(1);
+    expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
+  });
+
+  /**
+   * **The fleet grouped its own way**: the seats that want a person, the ones
+   * working, the ones asleep - then forge's commands, then the doings. The
+   * current project's lead wears `lead`, which is where the cursor starts, so
+   * Cmd+K then Enter lands on it.
+   */
+  it('groups needs-you, working, asleep, commands and doings, in order', () => {
+    // The grouping IS rankOf's: an idle live session ranks as working (the
+    // rail draws it so), and only a sleeping or logged-out one is asleep.
+    const wire = withHome({
+      agents: [
+        agent('waiter', { lifecycle: 'Attention', pending: 'permission' }),
+        agent('runner', { lifecycle: 'Running' }),
+        agent('dozer', { lifecycle: 'Sleeping' }),
+        agent('lead'),
+      ],
+    });
+    const sections = paletteRows(wire, LEAD);
+    expect(sections.map((section) => section.title)).toEqual([
+      'needs you',
+      'working',
+      'asleep',
+      'commands',
+      'doings',
+    ]);
+    expect(sections[0]?.rows.map((row) => row.label)).toEqual(['waiter']);
+    expect(sections[0]?.rows[0]?.mark, 'a needing seat wears the needs mark').toBe('needs');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner', 'lead']);
+    expect(sections[2]?.rows.map((row) => row.label)).toEqual(['dozer']);
+    const leadRow = sections[1]?.rows.find((row) => row.label === 'lead');
+    expect(leadRow?.lead, 'the lead is the row the cursor starts on').toBe(true);
+    expect(leadRow?.href).toBe('/session/TestOrg/proj/lead');
+    // The command rows are the composer's own table, whole: a command the
+    // box offers cannot be missing here, and nothing extra rides along.
+    const commands = sections[3]?.rows ?? [];
+    expect(
+      commands.map((row) => row.label),
+      'the palette and the box disagree on the command set',
+    ).toEqual(FORGE_COMMANDS.map((command) => command.name));
+    const compact = commands.find((row) => row.label === '/compact');
+    expect(compact?.text, 'a command row carries its prompt text').toBe('/compact');
+    const doings = sections[4]?.rows.map((row) => row.label) ?? [];
+    expect(doings).toContain('peek at the fleet');
+    expect(doings).toContain('close this seat');
+    const home = sections[4]?.rows.find((row) => row.label === 'go home');
+    expect(home?.href, 'the home doing is a href').toBe('/');
+  });
+
+  /**
+   * **The table is commands.rs's, and this reading keeps them equal.** The
+   * client's copy is static so the box opens without a round trip; a static
+   * copy drifts silently, so the pin reads the Rust side.
+   */
+  it('keeps the command table equal to commands.rs', () => {
+    const rust = readFileSync(
+      new URL('../../../crates/forge-server/src/commands.rs', import.meta.url),
+      'utf8',
+    );
+    const names = [...rust.matchAll(/name:\s*"(\/[a-z]+)"/g)].map((match) => match[1] ?? '');
+    expect(names.length, 'the Rust table parsed to nothing').toBeGreaterThan(0);
+    expect(
+      FORGE_COMMANDS.map((command) => command.name),
+      'the client table drifted from commands.rs',
+    ).toEqual(names);
+  });
+
+  /** A logged-out seat reads asleep, the same way a sleeping one does. */
+  it('reads a logged-out seat as asleep', () => {
+    const wire = withHome({ agents: [agent('gone', { lifecycle: 'LoggedOut' })] });
+    const row = paletteRows(wire, LEAD)[0]?.rows[0];
+    expect(row?.detail, 'a logged-out seat did not read asleep').toContain('asleep');
   });
 });
 

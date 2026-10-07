@@ -111,7 +111,7 @@ describe('where a close lands the reader', () => {
     const { open, dispatch } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
     expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
-    expect(dispatch).toHaveBeenCalledWith({ close_session: { session_key: LEAD } });
+    expect(dispatch).toHaveBeenCalledWith({ close_session: { session_key: LEAD } }, LEAD);
     expect(location.pathname, 'the landing offered a seat of the closing project').toBe(
       '/session/TestOrg/other/lead',
     );
@@ -197,7 +197,7 @@ describe('closing a seat', () => {
     history.replaceState(null, '', '/session/TestOrg/proj/w1');
     const { open, dispatch } = connection();
     expect(closeSeat(open, home(LEAD, W1), W1, W1, NOW)).toBe(true);
-    expect(dispatch).toHaveBeenCalledWith(command);
+    expect(dispatch).toHaveBeenCalledWith(command, W1);
     expect(location.pathname, 'the reader was left on the seat that closed').toBe(
       '/session/TestOrg/proj/lead',
     );
@@ -207,7 +207,9 @@ describe('closing a seat', () => {
     history.replaceState(null, '', '/session/TestOrg/proj/w2');
     const { open, dispatch } = connection();
     expect(closeSeat(open, home(LEAD, W1, W2), W1, W2, NOW)).toBe(true);
-    expect(dispatch).toHaveBeenCalledWith(command);
+    // The stale seat the reader is on, not the target: a refusal line draws
+    // in the column on screen (the round-1 find), so the close hands over W2.
+    expect(dispatch).toHaveBeenCalledWith(command, W2);
     expect(location.pathname, 'a close elsewhere moved the reader').toBe(
       '/session/TestOrg/proj/w2',
     );

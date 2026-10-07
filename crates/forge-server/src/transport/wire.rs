@@ -1100,8 +1100,10 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
         service_status: surface.service_status().and_then(|issue| serde_json::to_value(issue).ok()),
+        // The words the terminal prints on exit, which is what a client draws:
+        // the serde tag alone is for matching, and nothing matches on this.
         fatal_error: encode(
-            surface.fatal_error().and_then(|error| serde_json::to_value(error).ok()),
+            surface.fatal_error().map(|error| Value::String(error.user_message().to_owned())),
         ),
         agents: agent_rows,
         unseen: agents
@@ -1980,6 +1982,31 @@ mod tests {
         assert!(
             row.get("work").is_some(),
             "the seat's own tree crosses on the row, not the project's read: {row}"
+        );
+    }
+
+    /// The home's fatal carries the words the terminal prints, not the serde
+    /// tag: a view drawing the line words it from the field (#1638).
+    #[tokio::test]
+    async fn a_home_fatal_carries_the_terminals_words() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.set_fatal_error(forge_primitives::error::AppError::ConnectionFailed);
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        assert_eq!(
+            encoded["fatal_error"],
+            serde_json::json!("Failed to establish or maintain the Agent SDK bridge connection."),
+            "the home's fatal is the terminal's own words"
         );
     }
 

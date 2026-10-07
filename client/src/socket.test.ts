@@ -6,10 +6,12 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { connect, type Connection } from './socket';
+import { onRefusal, type Refusal } from './refusals';
 import {
   MIN_PROTOCOL,
   PROTOCOL_VERSION,
   slotOf,
+  subjectKey,
   type ClientMessage,
   type ServerMessage,
   type Subject,
@@ -410,6 +412,40 @@ describe('the connection', () => {
       'the socket is not open',
     );
     expect(conn.more(LEAD), 'a page-ask that went nowhere read as one that went').toBe(false);
+  });
+
+  /**
+   * A refused command draws where the click was made, not only in the console
+   * (#1638): the caller hands over the seat the reader was in, and the line is
+   * noted for that seat - not for the command's own payload, which names
+   * another seat whenever the rail's close targets one.
+   */
+  it('notes a refused command for the seat the caller names', async () => {
+    const { conn } = await connected();
+    const lines: Refusal[] = [];
+    const off = onRefusal((line) => lines.push(line));
+    conn.close();
+
+    expect(() => conn.dispatch({ cancel: { key: LEAD } }, LEAD)).toThrow('the socket is not open');
+    // A dispatch no caller handed a seat for - a command no column sent -
+    // notes nothing: there is no column to draw its refusal in.
+    expect(() => conn.dispatch('dictate_catalogue_check')).toThrow('the socket is not open');
+    // The seat STATED, not the one the command targets: the rail's close
+    // names another project's seat, and the reader is looking at their own.
+    const other: SessionSlot = { org: 'Busytools', project: 'architect', label: 'lead' };
+    expect(() => conn.dispatch({ close_session: { session_key: other } }, LEAD)).toThrow(
+      'the socket is not open',
+    );
+    off();
+
+    expect(lines, 'one line per dispatch the caller seated').toHaveLength(2);
+    expect(lines[0]?.seat, 'keyed by the seat the caller named').toBe(
+      subjectKey({ session: LEAD }),
+    );
+    expect(lines[1]?.seat, 'not by the command target').toBe(subjectKey({ session: LEAD }));
+    expect(lines[0]?.text, 'plain words, not the throw phrasing').toBe(
+      'Not sent - the connection is down.',
+    );
   });
 
   it('asks for more turns of one conversation', async () => {
