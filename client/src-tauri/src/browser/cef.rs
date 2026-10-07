@@ -28,6 +28,28 @@ static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// a port is always named). What the sessions' driver attaches to.
 static DEBUG_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
+/// **CEF's own schedule for the pump.** `on_schedule_message_pump_work` says
+/// when work exists; `pump` runs only when that says so. Calling
+/// `do_message_loop_work` unconditionally per loop turn - the shape this
+/// replaced - spins CrBrowserMain at >50% CPU on an idle client.
+static DUE_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn elapsed_ms() -> u64 {
+    CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// CEF called: work is due after `delay_ms` (<= 0 means now).
+fn note_schedule(delay_ms: i64) {
+    let due = elapsed_ms().saturating_add(delay_ms.max(0) as u64);
+    DUE_MILLIS.store(due, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether CEF's last schedule has come due.
+pub fn due() -> bool {
+    elapsed_ms() >= DUE_MILLIS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The first port nothing holds, from a small private range.
 fn pick_debug_port() -> u16 {
     for port in 9411..9430_u16 {
@@ -44,11 +66,16 @@ pub fn debug_port() -> u16 {
 }
 
 // The process-wide app: the rules every browser this client runs obeys,
-// decided before CEF parses its own command line.
+// decided before CEF parses its own command line - and the schedule the
+// pump obeys.
 wrap_app! {
     pub struct ClientApp;
 
     impl App {
+        fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
+            Some(ClientBrowserProcessHandler::new())
+        }
+
         fn on_before_command_line_processing(
             &self,
             _process_type: Option<&CefString>,
@@ -69,6 +96,17 @@ wrap_app! {
             // page, and a backgrounded renderer would stall their calls.
             cmd.append_switch(Some(&CefString::from("disable-renderer-backgrounding")));
             cmd.append_switch(Some(&CefString::from("disable-backgrounding-occluded-windows")));
+        }
+    }
+}
+
+// CEF's schedule signal, carried into `DUE_MILLIS`.
+wrap_browser_process_handler! {
+    struct ClientBrowserProcessHandler {}
+
+    impl BrowserProcessHandler {
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            note_schedule(delay_ms);
         }
     }
 }
@@ -168,10 +206,14 @@ pub fn bootstrap(identifier: &str) {
     }
 }
 
-/// One turn of CEF's work, run from the client's own loop (tauri's
-/// `RunEvent::MainEventsCleared`).
+/// One turn of CEF's work, run from the client's own loop - **only when
+/// CEF's schedule asked for it.** Anything else is a spin.
 pub fn pump() {
-    if INITIALIZED.load(std::sync::atomic::Ordering::Acquire) {
-        do_message_loop_work();
+    if !INITIALIZED.load(std::sync::atomic::Ordering::Acquire) {
+        return;
     }
+    if !due() {
+        return;
+    }
+    do_message_loop_work();
 }

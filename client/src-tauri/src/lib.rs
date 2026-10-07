@@ -152,19 +152,19 @@ pub fn run() {
         }
     };
 
-    // **CEF's work ticks at a steady beat.** The run loop alone pumps only
-    // when something else wakes it, and CEF's input and paint work then
-    // BATCHES between events - which reads as typing that sticks and pastes
-    // itself together. A timer posts the pump every 8ms, so keys land as
-    // they are typed; the loop's own MainEventsCleared pump stays for the
-    // instant case. A resize keeps the view under the bar.
+    // **CEF's work runs on CEF's own schedule.** The watcher below only
+    // LOOKS at whether the schedule has come due and wakes the loop then -
+    // it never pumps on a cadence of its own, which is what spun
+    // CrBrowserMain at >50% on an idle client. Between due times nothing is
+    // posted and the loop sleeps.
     #[cfg(all(desktop, target_os = "macos"))]
     {
         let ticker = app.handle().clone();
-        std::thread::spawn(move || {
-            while ticker.run_on_main_thread(browser::cef::pump).is_ok() {
-                std::thread::sleep(Duration::from_millis(8));
+        std::thread::spawn(move || loop {
+            if browser::cef::due() && ticker.run_on_main_thread(browser::cef::pump).is_err() {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(4));
         });
     }
 
