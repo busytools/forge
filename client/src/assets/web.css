@@ -990,6 +990,10 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-seg .sg-tog:hover, .sg-seg.open .sg-tog { border-color: var(--line); color: var(--text); }
 .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
 .sg-seg .sg-tog .ic.ok { color: var(--ok); }
+/* The toggle's own line in its own box, so a long one gives way to the
+   strip's nowrap instead of running under the segment beside it. */
+.sg-seg .sg-tog .lab { flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 /* The panel's rows FILL it: no padding of its own, and the hairline drawn as
    an inset outline rather than a border, so every pixel a pointer can cross
    belongs to a row and carries that row's leave. A padded panel leaves strips
@@ -1032,6 +1036,19 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .tx { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
 .sg-list .sg-it .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); flex: none; }
+/* The signed counts: plus green, minus red, wherever a list totals itself. */
+.sg-list .plus { color: var(--ok); }
+.sg-list .minus { color: var(--bad); }
+/* A file's path is the row's body text, not its name: regular colour under
+   the commit subjects' accent. */
+.sg-list .sg-it .nm.path { color: var(--text); font-weight: 500; }
+/* A commit's own files, drawn under the row the reveal is on: a step in
+   from the commit they belong to. */
+.sg-list .sg-cm .sg-head { padding-left: 27px; }
+.sg-list .sg-cm .sg-it { padding-left: 27px; }
+/* The PR row is a real link and reads like every other row: the row's own
+   hover wash is the affordance, not an underline under just one row. */
+.sg-list a.sg-it { text-decoration: none; }
 /* A settled row is kept, not alive: its name drops to the muted tone while
    the check in the mark slot says why it is still here. */
 .sg-list .sg-it.settled .nm { color: var(--muted); }

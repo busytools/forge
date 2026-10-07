@@ -139,7 +139,7 @@ describe('the strip pinned above the box', () => {
       label: 'feat/x \u{b7} 3 files',
       head: "the project's tree",
       ahead: null,
-      files: [],
+      uncommitted: null,
       pr: null,
       gate: null,
     });

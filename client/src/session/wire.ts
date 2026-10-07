@@ -260,16 +260,33 @@ export interface GitFileRecord {
 }
 
 /**
+ * One file list with its totals, as the wire carries a layer's or a
+ * commit's stats: the full counts, and the busiest files up to the scan's
+ * own cap - the count above the list tells the truth either way.
+ */
+export interface GitStatsRecord {
+  files: GitFileRecord[];
+  totalFiles: number;
+  totalAdded: number;
+  totalRemoved: number;
+}
+
+/**
  * The tree behind the git row's depth: the uncommitted files, the
- * branch's chain ahead of its default, and which branch that is.
+ * branch's chain ahead of its default - each commit with the files it
+ * changed - and which branch that is.
  *
  * A `null` layer is nothing to state - a clean tree, an unscanned one -
  * which is the layer's own meaning on the wire.
  */
 export interface GitWorkRecord {
   defaultBranch: string | null;
-  worktree: { files: GitFileRecord[] } | null;
-  ahead: { count: number; commits: { sha: string; subject: string }[] } | null;
+  worktree: GitStatsRecord | null;
+  ahead: {
+    count: number;
+    commits: { sha: string; subject: string; stats: GitStatsRecord | null }[];
+    stats: GitStatsRecord | null;
+  } | null;
 }
 
 /** The axes' vocabularies, as `forge.toml` and the normalizer name them. */
@@ -695,10 +712,40 @@ const FILE_STATUSES: FileStatusWire[] = [
  */
 export function gitFrom(value: unknown): GitWorkRecord {
   const held = record(value);
-  const worktree = held['worktree'];
   const ahead = held['ahead'];
   const aheadHeld = record(ahead);
-  const files = list(record(worktree)['files']).flatMap((entry) => {
+  const commits = list(aheadHeld['commits']).flatMap((entry) => {
+    const commit = record(entry);
+    const sha = text(commit['sha']);
+    return sha === null
+      ? []
+      : [
+          {
+            sha,
+            subject: text(commit['subject']) ?? '',
+            stats: gitStatsFrom(commit['stats']),
+          },
+        ];
+  });
+  return {
+    defaultBranch: text(held['default_branch']),
+    worktree: gitStatsFrom(held['worktree']),
+    ahead:
+      ahead === null || ahead === undefined
+        ? null
+        : {
+            count: number(aheadHeld['commit_count']) ?? commits.length,
+            commits,
+            stats: gitStatsFrom(aheadHeld['stats']),
+          },
+  };
+}
+
+/** One file list with its totals, or `null` where the wire states none. */
+function gitStatsFrom(value: unknown): GitStatsRecord | null {
+  if (value === null || value === undefined) return null;
+  const held = record(value);
+  const files = list(held['files']).flatMap((entry) => {
     const file = record(entry);
     const path = text(file['path']);
     return path === null
@@ -712,18 +759,11 @@ export function gitFrom(value: unknown): GitWorkRecord {
           },
         ];
   });
-  const commits = list(aheadHeld['commits']).flatMap((entry) => {
-    const commit = record(entry);
-    const sha = text(commit['sha']);
-    return sha === null ? [] : [{ sha, subject: text(commit['subject']) ?? '' }];
-  });
   return {
-    defaultBranch: text(held['default_branch']),
-    worktree: worktree === null || worktree === undefined ? null : { files },
-    ahead:
-      ahead === null || ahead === undefined
-        ? null
-        : { count: number(aheadHeld['commit_count']) ?? commits.length, commits },
+    files,
+    totalFiles: number(held['total_files']) ?? files.length,
+    totalAdded: number(held['total_added']) ?? 0,
+    totalRemoved: number(held['total_removed']) ?? 0,
   };
 }
 

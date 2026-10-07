@@ -560,7 +560,12 @@ function seedStrip(on: boolean): void {
           label: 'feat/x \u{b7} 3 files',
           head: "the project's tree",
           ahead: null,
-          files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' as const }],
+          uncommitted: {
+            files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' as const }],
+            totalFiles: 1,
+            totalAdded: 1,
+            totalRemoved: 0,
+          },
           pr: null,
           gate: null,
         }

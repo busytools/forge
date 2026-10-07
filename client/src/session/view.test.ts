@@ -460,21 +460,26 @@ describe('the tree the strip draws', () => {
   });
 
   it('leads with the branch, and carries the tree whole: chains, files, marks', () => {
+    const stats = {
+      files: [
+        { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' as const },
+        { path: 'docs/new.md', added: 3, removed: 0, status: 'added' as const },
+      ],
+      totalFiles: 2,
+      totalAdded: 15,
+      totalRemoved: 4,
+    };
     const strip = gitStrip(
       withGit(
         {
-          worktree: {
-            files: [
-              { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
-              { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
-            ],
-          },
+          worktree: stats,
           ahead: {
             count: 2,
             commits: [
-              { sha: 'a1b2c3d', subject: 'the first commit' },
-              { sha: 'd4e5f6a', subject: 'the second commit' },
+              { sha: 'a1b2c3d', subject: 'the first commit', stats: null },
+              { sha: 'd4e5f6a', subject: 'the second commit', stats: null },
             ],
+            stats,
           },
         },
         {
@@ -484,20 +489,20 @@ describe('the tree the strip draws', () => {
       LEAD,
     );
 
-    expect(strip?.label).toBe('web-home-layout \u{b7} 2 files');
+    expect(strip?.label, 'where the branch runs, what moved and that it is dirty').toBe(
+      'web-home-layout \u{b7} 2 ahead \u{b7} 2 files \u{b7} +15 -4 \u{b7} dirty',
+    );
     expect(strip?.head, 'what the tree IS leads the hover').toBe("the project's tree");
-    expect(strip?.ahead, 'the chain, its count and the branch it is ahead of').toEqual({
+    expect(strip?.ahead, 'the chain, its count, its range and the branch it is ahead of').toEqual({
       count: 2,
       base: 'main',
       commits: [
-        { sha: 'a1b2c3d', subject: 'the first commit' },
-        { sha: 'd4e5f6a', subject: 'the second commit' },
+        { sha: 'a1b2c3d', subject: 'the first commit', stats: null },
+        { sha: 'd4e5f6a', subject: 'the second commit', stats: null },
       ],
+      stats,
     });
-    expect(strip?.files, 'the uncommitted files with their marks').toEqual([
-      { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
-      { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
-    ]);
+    expect(strip?.uncommitted, 'the uncommitted files with their marks and totals').toEqual(stats);
   });
 
   it('states the pull request with its state and what it closes', () => {
@@ -551,13 +556,20 @@ describe('the tree the strip draws', () => {
 
     const dirty = gitStrip(
       withGit(
-        { worktree: { files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }] } },
+        {
+          worktree: {
+            files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+            totalFiles: 1,
+            totalAdded: 1,
+            totalRemoved: 0,
+          },
+        },
         { work: { branch: 'main', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
       ),
       LEAD,
     );
     expect(dirty, 'a dirty default branch went unstated').not.toBeNull();
-    expect(dirty?.files).toHaveLength(1);
+    expect(dirty?.uncommitted?.files).toHaveLength(1);
   });
 
   it('names the worktree a seat is on, and whose tree it is when it is not one', () => {
@@ -590,7 +602,7 @@ describe('the tree the strip draws', () => {
       ),
       LEAD,
     );
-    expect(strip?.label, 'one file reads as one').toBe('feat/x \u{b7} 1 file');
+    expect(strip?.label, 'one file reads as one').toBe('feat/x \u{b7} 1 file \u{b7} dirty');
   });
 
   it('maps every status to the mark the terminal draws for it', () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { markOf } from '../session/view';
+  import { markOf, type GitStats, type StripFile } from '../session/view';
   import { git } from './git.svelte';
   import { panelStyle } from './strip-panel';
 
@@ -30,6 +30,22 @@
   });
 
   const strip = $derived(git.strip());
+
+  /**
+   * The commit whose own files the reveal is showing. Hover and focus set
+   * it, a tap on the row sets it too - the door a finger has, since a
+   * touch has no hover.
+   */
+  let watching = $state<string | null>(null);
+
+  // The reveal goes with the panel: the next open starts quiet.
+  $effect(() => {
+    if (!open) watching = null;
+  });
+
+  /** `N files`, the one-file case spelled out. */
+  const filesWord = (stats: GitStats): string =>
+    stats.totalFiles === 1 ? '1 file' : `${stats.totalFiles} files`;
 
   function hold() {
     if (closing !== null) clearTimeout(closing);
@@ -128,7 +144,7 @@
       }}
     >
       <Icon name="git" />
-      {strip.label}
+      <span class="lab">{strip.label}</span>
     </button>
 
     {#if open}
@@ -142,21 +158,31 @@
           <div class="sg-head">
             {strip.ahead.base === null ? `${said} ahead` : `${said} ahead of ${strip.ahead.base}`}
           </div>
+          {#if strip.ahead.stats !== null && strip.ahead.stats.totalFiles > 0}
+            <div class="sg-head">
+              {`${filesWord(strip.ahead.stats)} \u{b7} `}{@render figures(strip.ahead.stats)}
+            </div>
+          {/if}
           {#each strip.ahead.commits as commit (commit.sha)}
             <button
               type="button"
               class="sg-it"
               title={`${commit.sha} \u{b7} ${commit.subject}`}
               onclick={() => {
-                // No destination behind a commit yet: the row closes the
-                // list and that is the whole of it.
-                open = false;
+                // The door a finger has: a tap reveals the commit's own
+                // files, which is what a hover shows on a pointer.
+                watching = commit.sha;
               }}
               onpointerenter={(event) => {
-                if (hovering(event)) hold();
+                if (!hovering(event)) return;
+                hold();
+                watching = commit.sha;
               }}
               onpointerleave={(event) => {
                 if (hovering(event)) release();
+              }}
+              onfocusin={() => {
+                watching = commit.sha;
               }}
               onfocusout={release}
               onkeydown={(event) => {
@@ -168,42 +194,34 @@
               <span class="sha">{commit.sha}</span>
               <span class="nm lead">{commit.subject}</span>
             </button>
+            {#if watching === commit.sha && commit.stats !== null}
+              <div class="sg-cm">
+                {#if commit.stats.files.length > 0}
+                  <div class="sg-head">
+                    {`${filesWord(commit.stats)} \u{b7} `}{@render figures(commit.stats)}
+                  </div>
+                  {#each commit.stats.files as file (file.path)}
+                    {@render fileRow(file)}
+                  {/each}
+                {:else}
+                  <div class="sg-sub">no files of its own</div>
+                {/if}
+              </div>
+            {/if}
           {/each}
         {/if}
 
-        {#if strip.files.length > 0}
+        {#if strip.uncommitted !== null}
           <div class="sg-head">
-            {`uncommitted \u{b7} ${strip.files.length} file${strip.files.length === 1 ? '' : 's'}`}
+            {`uncommitted \u{b7} ${filesWord(strip.uncommitted)} \u{b7} `}{@render figures(
+              strip.uncommitted,
+            )}
           </div>
-          {#each strip.files as file (file.path)}
-            {@const mark = markOf(file.status)}
-            <button
-              type="button"
-              class="sg-it"
-              title={`${file.path} \u{b7} +${file.added} -${file.removed}`}
-              onclick={() => {
-                // No destination behind a file yet: the diff page is the
-                // later piece.
-                open = false;
-              }}
-              onpointerenter={(event) => {
-                if (hovering(event)) hold();
-              }}
-              onpointerleave={(event) => {
-                if (hovering(event)) release();
-              }}
-              onfocusout={release}
-              onkeydown={(event) => {
-                if (event.key !== 'Escape') return;
-                toToggle();
-                open = false;
-              }}
-            >
-              <span class="fm {mark.klass}">{mark.letter}</span>
-              <span class="nm lead">{file.path}</span>
-              <span class="n">{`+${file.added} -${file.removed}`}</span>
-            </button>
+          {#each strip.uncommitted.files as file (file.path)}
+            {@render fileRow(file)}
           {/each}
+        {:else if strip.gate === null}
+          <div class="sg-head">{`uncommitted \u{b7} clean`}</div>
         {/if}
 
         {#if strip.pr !== null}
@@ -257,3 +275,46 @@
     {/if}
   </span>
 {/if}
+
+<!-- One changed file's row, drawn by both the uncommitted list and a
+     commit's own reveal: the mark, the path, the counts with their signs. -->
+{#snippet fileRow(file: StripFile)}
+  {@const mark = markOf(file.status)}
+  <button
+    type="button"
+    class="sg-it"
+    title={`${file.path} \u{b7} +${file.added} -${file.removed}`}
+    onclick={() => {
+      // No destination behind a file yet: the diff page is the later piece.
+      open = false;
+    }}
+    onpointerenter={(event) => {
+      if (hovering(event)) hold();
+    }}
+    onpointerleave={(event) => {
+      if (hovering(event)) release();
+    }}
+    onfocusout={release}
+    onkeydown={(event) => {
+      if (event.key !== 'Escape') return;
+      toToggle();
+      open = false;
+    }}
+  >
+    <span class="fm {mark.klass}">{mark.letter}</span>
+    <span class="nm lead path">{file.path}</span>
+    <span class="n"
+      ><span class="plus">{`+${file.added}`}</span><span class="minus">{` -${file.removed}`}</span
+      ></span
+    >
+  </button>
+{/snippet}
+
+<!-- A list's totals: the signed counts, plus in green and minus in red. -->
+{#snippet figures(stats: GitStats)}
+  <span class="fg"
+    ><span class="plus">{`+${stats.totalAdded}`}</span><span class="minus"
+      >{` -${stats.totalRemoved}`}</span
+    ></span
+  >
+{/snippet}

@@ -5,7 +5,11 @@
  * when the record moves. A branch is a fact about the seat and not the
  * project, so the row reads the seat's own record and never the home.
  */
-import type { GitStrip } from '../session/view';
+import type { GitStats, GitStrip } from '../session/view';
+
+/** One stats block, copied off the record: the rows are arrays the view mutates never. */
+const statsOf = (stats: GitStats | null): GitStats | null =>
+  stats === null ? null : { ...stats, files: [...stats.files] };
 
 export class Git {
   #strip = $state<GitStrip | null>(null);
@@ -18,8 +22,17 @@ export class Git {
         : {
             ...strip,
             ahead:
-              strip.ahead === null ? null : { ...strip.ahead, commits: [...strip.ahead.commits] },
-            files: [...strip.files],
+              strip.ahead === null
+                ? null
+                : {
+                    ...strip.ahead,
+                    commits: strip.ahead.commits.map((commit) => ({
+                      ...commit,
+                      stats: statsOf(commit.stats),
+                    })),
+                    stats: statsOf(strip.ahead.stats),
+                  },
+            uncommitted: statsOf(strip.uncommitted),
             pr: strip.pr === null ? null : { ...strip.pr },
           };
   }

@@ -101,18 +101,40 @@ export interface RailProject {
   why: { line: string; bad: boolean } | null;
 }
 
+/** One changed file as a strip row draws it. */
+export interface StripFile {
+  path: string;
+  status: FileStatusWire;
+  added: number;
+  removed: number;
+}
+
+/** One file list's rows and totals, as a panel section draws them. */
+export interface GitStats {
+  files: StripFile[];
+  totalFiles: number;
+  totalAdded: number;
+  totalRemoved: number;
+}
+
 /** The seat's working tree, as the strip's row draws it. */
 export interface GitStrip {
-  /** The toggle's own line: the branch and the count of what moved, or where
-   *  the tree is not when there is no branch to name. */
+  /** The toggle's own line: the branch, how far it runs, what moved and
+   *  whether the tree is dirty - or where the tree is not. */
   label: string;
   /** What the tree IS - the project's, or a worker's worktree - which is the
    *  first thing a reader looking at a fleet needs to know. */
   head: string;
-  /** The branch's chain ahead of its default, when it has one. */
-  ahead: { count: number; base: string | null; commits: { sha: string; subject: string }[] } | null;
-  /** The uncommitted files, with their marks and counts. */
-  files: { path: string; status: FileStatusWire; added: number; removed: number }[];
+  /** The branch's chain ahead of its default, when it has one: each commit
+   *  with the files it changed, and the range's own totals. */
+  ahead: {
+    count: number;
+    base: string | null;
+    commits: { sha: string; subject: string; stats: GitStats | null }[];
+    stats: GitStats | null;
+  } | null;
+  /** The uncommitted layer, with its marks and counts. */
+  uncommitted: GitStats | null;
   /** The open pull request, whether it is a draft, and what it closes. */
   pr: { number: number; url: string; draft: boolean; closes: string } | null;
   /** Why the tree could not be read, when it could not. */
@@ -589,10 +611,26 @@ export function railGroups(
 export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | null {
   const { branch, files } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
-  const label = [branch, files].filter((part) => part !== null).join(' \u{b7} ');
   const view = record.git;
-  const worktree = view.worktree === null ? [] : view.worktree.files;
-  const clean = view.worktree === null && view.ahead === null && record.pr === null;
+  const uncommitted = view.worktree;
+  const changed = record.work.changed;
+  // The toggle reads the tree at a glance: where the branch is, how far it
+  // runs, what moved - figures when git's own read has them - and whether
+  // the tree is dirty at all.
+  const figures =
+    uncommitted === null || uncommitted.totalAdded + uncommitted.totalRemoved === 0
+      ? null
+      : `+${uncommitted.totalAdded} -${uncommitted.totalRemoved}`;
+  const label = [
+    branch,
+    view.ahead !== null && view.ahead.count > 0 ? `${view.ahead.count} ahead` : null,
+    files,
+    figures,
+    changed === null ? null : changed === 0 ? 'clean' : 'dirty',
+  ]
+    .filter((part) => part !== null)
+    .join(' \u{b7} ');
+  const clean = uncommitted === null && view.ahead === null && record.pr === null;
   const onDefault =
     gate === null &&
     branch !== null &&
@@ -612,8 +650,9 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
             count: view.ahead.count,
             base: view.defaultBranch,
             commits: view.ahead.commits,
+            stats: view.ahead.stats,
           },
-    files: [...worktree],
+    uncommitted,
     pr:
       record.pr === null
         ? null

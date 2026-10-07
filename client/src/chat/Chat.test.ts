@@ -187,7 +187,7 @@ describe('the chat column as it draws', () => {
       label: 'feat/x',
       head: "the project's tree",
       ahead: null,
-      files: [],
+      uncommitted: null,
       pr: null,
       gate: null,
     });
@@ -220,7 +220,7 @@ describe('the chat column as it draws', () => {
       label: 'feat/x',
       head: "the project's tree",
       ahead: null,
-      files: [],
+      uncommitted: null,
       pr: null,
       gate: null,
     });

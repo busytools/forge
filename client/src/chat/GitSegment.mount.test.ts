@@ -38,14 +38,46 @@ const TREE: GitStrip = {
     count: 2,
     base: 'main',
     commits: [
-      { sha: 'a1b2c3d', subject: 'the first commit' },
-      { sha: 'd4e5f6a', subject: 'the second commit' },
+      {
+        sha: 'a1b2c3d',
+        subject: 'the first commit',
+        stats: {
+          files: [{ path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' }],
+          totalFiles: 1,
+          totalAdded: 12,
+          totalRemoved: 4,
+        },
+      },
+      {
+        sha: 'd4e5f6a',
+        subject: 'the second commit',
+        stats: {
+          files: [{ path: 'docs/new.md', added: 3, removed: 0, status: 'added' }],
+          totalFiles: 1,
+          totalAdded: 3,
+          totalRemoved: 0,
+        },
+      },
     ],
+    stats: {
+      files: [
+        { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
+        { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
+      ],
+      totalFiles: 2,
+      totalAdded: 15,
+      totalRemoved: 4,
+    },
   },
-  files: [
-    { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
-    { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
-  ],
+  uncommitted: {
+    files: [
+      { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
+      { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
+    ],
+    totalFiles: 2,
+    totalAdded: 15,
+    totalRemoved: 4,
+  },
   pr: { number: 1203, url: 'https://example.test/pull/1203', draft: false, closes: '#1200' },
   gate: null,
 };
@@ -202,7 +234,12 @@ describe("the tree row's interaction state machine", () => {
     expect(
       [...document.querySelectorAll('.sg-head')].map((line) => line.textContent?.trim()),
       'each section states what it is',
-    ).toEqual(["the project's tree", '2 commits ahead of main', 'uncommitted \u{b7} 2 files']);
+    ).toEqual([
+      "the project's tree",
+      '2 commits ahead of main',
+      '2 files \u{b7} +15 -4',
+      'uncommitted \u{b7} 2 files \u{b7} +15 -4',
+    ]);
 
     expect(rows(), 'two commits, two files and the pull request').toHaveLength(5);
     expect(
@@ -228,7 +265,9 @@ describe("the tree row's interaction state machine", () => {
     );
     expect(document.querySelector('.sg-sub')?.textContent?.trim()).toBe('closes #1200');
 
-    rows()[0]?.click();
+    // A file row has no destination yet, so picking it closes the list; a
+    // commit row reveals instead, pinned in its own test above.
+    rows()[2]?.click();
     flushSync();
     expect(list(), 'the pick closes the list').toBeNull();
   });
@@ -237,6 +276,44 @@ describe("the tree row's interaction state machine", () => {
    * A clean tree on no pull request states its branch and has nothing to open:
    * the toggle must not hold a door onto an empty panel.
    */
+  /**
+   * **A commit's own files are depth.** The chain says what the branch ran
+   * as; what each commit CHANGED is on demand under its row - on hover,
+   * on focus, and on a tap, since a touch has no hover to give.
+   */
+  it("reveals a commit's own files on hover, focus and tap", () => {
+    draw();
+    toggle()?.click();
+    flushSync();
+
+    const reveal = () => document.querySelector('.sg-cm');
+    const revealed = () => reveal()?.querySelector('.nm.path')?.textContent?.trim();
+    // The commit rows, told from the file rows a reveal draws beside them.
+    const commits = (): HTMLButtonElement[] =>
+      rows().filter((row) => row.querySelector('.sha') !== null);
+    expect(reveal(), 'quiet until a commit row is pointed at').toBeNull();
+
+    // The hover door.
+    commits()[0]?.dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    expect(revealed(), "the hover shows the commit's own files").toBe('client/src/lib.rs');
+    expect(
+      (commits()[0]?.compareDocumentPosition(reveal() as Node) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      'the reveal sits under the row it belongs to',
+    ).not.toBe(0);
+
+    // The tap door, on the other commit: the reveal follows the row.
+    commits()[1]?.click();
+    flushSync();
+    expect(revealed(), "the tap shows that commit's own files").toBe('docs/new.md');
+
+    // The focus door.
+    commits()[0]?.focus();
+    flushSync();
+    expect(revealed(), 'the focus walks the reveal back').toBe('client/src/lib.rs');
+  });
+
   /**
    * A tree with nothing else to state still opens onto its head: whose
    * tree this is is itself a fact, and a toggle holding a door onto
@@ -247,7 +324,7 @@ describe("the tree row's interaction state machine", () => {
       label: 'feat/x',
       head: "a worker's tree",
       ahead: null,
-      files: [],
+      uncommitted: null,
       pr: null,
       gate: null,
     });
@@ -256,6 +333,10 @@ describe("the tree row's interaction state machine", () => {
 
     expect(list(), 'the panel opened').not.toBeNull();
     expect(document.querySelector('.sg-head')?.textContent?.trim()).toBe("a worker's tree");
+    expect(
+      [...document.querySelectorAll('.sg-head')].map((line) => line.textContent?.trim()),
+      'and states the tree is clean',
+    ).toEqual(["a worker's tree", 'uncommitted \u{b7} clean']);
     expect(rows(), 'and holds no rows beyond it').toHaveLength(0);
   });
 });
