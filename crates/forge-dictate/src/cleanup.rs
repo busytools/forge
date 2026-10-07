@@ -86,6 +86,19 @@ const TEXT_TASKS: [&str; 5] = [
     "text-classification",
 ];
 
+/// The architectures this runtime's generator can run: llama.cpp's causal
+/// text models.
+///
+/// **This is a guard, not a preference.** An encoder or encoder-decoder gguf
+/// LOADS and then aborts the process - measured on a t5 grammar-repair build,
+/// which took the whole forge down mid-bench through `ggml_abort`, an abort
+/// no caller can catch - so a candidate whose architecture is not one of
+/// these is not offered at all. A gguf that declares no architecture is not
+/// offered either: the risk is a crash, and an undeclared arch is one nobody
+/// can promise.
+const CAUSAL_ARCHS: [&str; 9] =
+    ["qwen2", "qwen3", "llama", "gemma", "gemma2", "gemma3", "mistral", "phi2", "phi3"];
+
 /// One repo as the listing describes it, before our own filters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Repo {
@@ -299,6 +312,10 @@ pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Erro
             // No quantisation this runtime loads: not a candidate.
             continue;
         }
+        if !runs_here(&blobs) {
+            tracing::debug!(repo = %repo.id, "cleanup feed: a repo the generator cannot run");
+            continue;
+        }
         let languages = declared_languages(blobs.get("cardData"), &repo.language_tags);
         if !languages.is_empty() && !languages.iter().any(|language| language == "en") {
             continue;
@@ -306,6 +323,18 @@ pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Erro
         entries.push(entry_for(&repo, downloads, languages));
     }
     Ok(entries)
+}
+
+/// Whether a blobs answer declares an architecture this runtime's generator
+/// runs. **The declaration must be there**: a candidate with no declared arch
+/// is one nobody can promise, and the failure is a process abort rather than
+/// a refusal.
+fn runs_here(blobs: &Value) -> bool {
+    blobs
+        .get("gguf")
+        .and_then(|gguf| gguf.get("architecture"))
+        .and_then(Value::as_str)
+        .is_some_and(|arch| CAUSAL_ARCHS.contains(&arch))
 }
 
 /// One candidate as a catalogue entry, in the same shape the speech feed's
@@ -417,6 +446,30 @@ mod tests {
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))),
             "a banner or a licence is not a download"
+        );
+    }
+
+    /// **An architecture the generator cannot run is not a candidate, and
+    /// neither is one that declares no architecture.** A t5 build of a
+    /// grammar-repair model LOADS and then aborts the process mid-run
+    /// (`ggml_abort`, measured live), so offering one would be offering a
+    /// crash; silence about the arch is the same risk without a promise.
+    #[test]
+    fn only_an_architecture_this_runtime_runs_is_offered() {
+        let raw = include_str!("../tests/fixtures/hf-blobs.json");
+        let blobs: Value = serde_json::from_str(raw).expect("the capture parses");
+        assert!(runs_here(&blobs), "the s1-mini capture is a qwen3 build");
+
+        for arch in ["t5", "bert", "fireredpunc", "pcs"] {
+            let other: Value = serde_json::from_str(
+                &serde_json::json!({ "gguf": { "architecture": arch } }).to_string(),
+            )
+            .unwrap();
+            assert!(!runs_here(&other), "{arch} must not be offered");
+        }
+        assert!(
+            !runs_here(&serde_json::json!({})),
+            "a blobs answer with no architecture is not a promise either"
         );
     }
 
