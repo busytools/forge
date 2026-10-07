@@ -26,8 +26,16 @@ use crate::catalogue::{
 /// endpoint that answers with the files.
 #[derive(Debug, Clone)]
 pub struct CleanupSource {
-    /// The models listing: `text-normalization` + `gguf`, downloads-sorted.
+    /// The listing up to the first tag: `<listing><tag><listing_tail>`.
     pub listing: String,
+    /// What follows a tag in the query: the gguf filter, the order and the
+    /// page size.
+    pub listing_tail: String,
+    /// The tags a cleanup model's repo carries. **One `filter=` per call
+    /// narrows by AND**, so the union is fetched tag by tag and merged - a
+    /// model whose card says `punctuation` and never says
+    /// `text-normalization` is a cleanup candidate just the same.
+    pub tags: Vec<String>,
     /// URL a repo id is appended to for its blobs: `<blobs_base><id>?blobs=true`.
     pub blobs_base: String,
     /// URL a repo id and file are appended to for the file itself:
@@ -38,9 +46,19 @@ pub struct CleanupSource {
 impl Default for CleanupSource {
     fn default() -> Self {
         Self {
-            listing: "https://huggingface.co/api/models?filter=text-normalization&filter=gguf&\
-                      sort=downloads&direction=-1&limit=100&full=true"
-                .to_owned(),
+            listing: "https://huggingface.co/api/models?filter=".to_owned(),
+            listing_tail: "&filter=gguf&sort=downloads&direction=-1&limit=100&full=true".to_owned(),
+            tags: [
+                "text-normalization",
+                "text-transformation",
+                "punctuation",
+                "truecasing",
+                "asr-postprocessing",
+                "post-processing",
+            ]
+            .iter()
+            .map(|tag| (*tag).to_owned())
+            .collect(),
             blobs_base: "https://huggingface.co/api/models/".to_owned(),
             files_base: "https://huggingface.co/".to_owned(),
         }
@@ -55,12 +73,27 @@ const QUANTS: [&str; 6] = ["F16", "Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_K_S"];
 /// it works, and the listing's tail is full of them.
 const DOWNLOADS_FLOOR: u64 = 100;
 
+/// The task tags a text model carries. A repo that DECLARES one of these is a
+/// text model; a repo that declares some other task is not one, whatever its
+/// other tags say - the union of tags catches a VAE post-processor whose card
+/// says `post-processing` and nothing else. A card that declares no task is
+/// kept, because silence is not a claim.
+const TEXT_TASKS: [&str; 5] = [
+    "text-generation",
+    "text2text-generation",
+    "token-classification",
+    "fill-mask",
+    "text-classification",
+];
+
 /// One repo as the listing describes it, before our own filters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Repo {
     id: String,
     downloads: u64,
     license: Option<String>,
+    /// The task the repo declares, when it declares one.
+    pipeline: Option<String>,
     /// Every `base_model:` target, the quantised and fine-tuned prefixes
     /// stripped, deduplicated in tag order.
     bases: Vec<String>,
@@ -73,6 +106,7 @@ impl Repo {
     fn from_row(row: &Value) -> Option<Self> {
         let id = row.get("id")?.as_str()?.to_owned();
         let downloads = row.get("downloads").and_then(Value::as_u64).unwrap_or_default();
+        let pipeline = row.get("pipeline_tag").and_then(Value::as_str).map(str::to_owned);
         let mut license = None;
         let mut bases: Vec<String> = Vec::new();
         let mut language_tags: Vec<String> = Vec::new();
@@ -92,7 +126,16 @@ impl Repo {
                 language_tags.push(tag.to_owned());
             }
         }
-        Some(Self { id, downloads, license, bases, language_tags })
+        Some(Self { id, downloads, license, pipeline, bases, language_tags })
+    }
+
+    /// Whether the repo's card says it is a text model, on the terms
+    /// [`TEXT_TASKS`] sets out.
+    fn is_text(&self) -> bool {
+        match self.pipeline.as_deref() {
+            Some(task) => TEXT_TASKS.contains(&task),
+            None => true,
+        }
     }
 }
 
@@ -110,7 +153,7 @@ fn candidates(rows: &[Repo]) -> Vec<Repo> {
     let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
     let mut kept: Vec<Repo> = Vec::new();
     let mut claimed: Vec<String> = Vec::new();
-    for row in rows {
+    for row in rows.iter().filter(|row| row.is_text()) {
         let upstream = row.bases.iter().find(|base| corroborates(base, &row.id));
         if let Some(upstream) = upstream {
             if ids.contains(&upstream.as_str()) {
@@ -196,21 +239,43 @@ fn quant_of(name: &str) -> Option<String> {
 
 /// Fetch the cleanup feed. Blocking, like everything else here.
 ///
-/// A repo whose blobs cannot be read is skipped rather than failing the
-/// feed, exactly as a bad document is on the speech side; a listing that
-/// answers nothing is refused, because a page drawn over an empty candidate
-/// list reads the same as a page over a healthy one.
+/// The listing is read once per tag and merged, because one `filter=` per
+/// call is an AND: a repo tagged `punctuation` and never
+/// `text-normalization` would otherwise be invisible. A tag whose listing
+/// cannot be read is skipped - one tag's outage is not the feed's - and a
+/// repo whose blobs cannot be read is skipped too, exactly as a bad document
+/// is on the speech side. A feed that answers nothing at all is refused,
+/// because a page drawn over an empty candidate list reads the same as a
+/// page over a healthy one.
 pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Error> {
     let client = feed_client(&source.listing)?;
-    let listing = get_bounded_text(&client, &source.listing, MAX_RESPONSE_BYTES)?;
-    let rows: Vec<Value> = serde_json::from_str(&listing)
-        .map_err(|error| Error::Catalogue { message: format!("the cleanup listing: {error}") })?;
-    let repos: Vec<Repo> = rows.iter().filter_map(Repo::from_row).collect();
-    if repos.is_empty() {
+    let mut repos: Vec<Repo> = Vec::new();
+    let mut answered = 0_usize;
+    for tag in &source.tags {
+        let url = format!("{}{tag}{}", source.listing, source.listing_tail);
+        let Ok(listing) = get_bounded_text(&client, &url, MAX_RESPONSE_BYTES) else {
+            tracing::debug!(url = %url, "cleanup feed: one tag's listing could not be read");
+            continue;
+        };
+        let Ok(rows) = serde_json::from_str::<Vec<Value>>(&listing) else {
+            continue;
+        };
+        answered += 1;
+        for repo in rows.iter().filter_map(Repo::from_row) {
+            // One repo can carry several of the tags: it is one candidate,
+            // read at the most downloads it was listed with.
+            match repos.iter_mut().find(|seen| seen.id == repo.id) {
+                Some(seen) => seen.downloads = seen.downloads.max(repo.downloads),
+                None => repos.push(repo),
+            }
+        }
+    }
+    if answered == 0 {
         return Err(Error::Catalogue {
-            message: format!("the listing at {} named no repos", source.listing),
+            message: format!("no listing under {} answered", source.listing),
         });
     }
+    repos.sort_by_key(|repo| std::cmp::Reverse(repo.downloads));
 
     let mut entries = Vec::new();
     for repo in candidates(&repos) {

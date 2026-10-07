@@ -682,7 +682,9 @@ impl crate::Workspace {
         #[cfg(any(test, feature = "testing"))]
         if let Some(base) = self.test_catalogue_source.lock().clone() {
             return forge_dictate::cleanup::CleanupSource {
-                listing: format!("{}cleanup", base.entry_base),
+                listing: format!("{}cleanup?filter=", base.entry_base),
+                listing_tail: "&filter=gguf".to_owned(),
+                tags: vec!["text-normalization".to_owned()],
                 blobs_base: format!("{}blobs/", base.entry_base),
                 files_base: format!("{}files/", base.entry_base),
             };
