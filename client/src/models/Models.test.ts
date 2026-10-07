@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { DictateModelsWire, ModelRole } from '../wire/models';
+import type { BenchTarget, BenchTier, DictateModelsWire, ModelRole } from '../wire/models';
 import Models from './Models.svelte';
 import ModelsBody from './ModelsBody.svelte';
 import { fakeConnection, MODELS, modelsWire } from './testing';
@@ -41,6 +41,9 @@ function open(
     oninstall: (variant: string) => void;
     onactivate: (file: string) => void;
     ondeactivate: (role: ModelRole) => void;
+    onbench: (target: BenchTarget, tier: BenchTier) => void;
+    onbenchstop: () => void;
+    onarm: () => void;
     refusal: string | null;
   }> = {},
 ) {
@@ -55,6 +58,9 @@ function open(
       oninstall: handlers.oninstall ?? (() => {}),
       onactivate: handlers.onactivate ?? (() => {}),
       ondeactivate: handlers.ondeactivate ?? (() => {}),
+      onbench: handlers.onbench ?? (() => {}),
+      onbenchstop: handlers.onbenchstop ?? (() => {}),
+      onarm: handlers.onarm ?? (() => {}),
       refusal: handlers.refusal ?? null,
     },
   });
@@ -153,7 +159,8 @@ describe('the models page as it draws', () => {
     }
 
     expect(host.textContent).toContain('parakeet-unified-en-0.6b');
-    expect(host.textContent, 'a row nothing matched was drawn').not.toContain(
+    const results = host.querySelector('[aria-label="Catalogue results"]');
+    expect(results?.textContent, 'a row nothing matched was drawn').not.toContain(
       'granite-speech-5.0-470m-turboctc',
     );
     expect(host.textContent).toContain('English only');
@@ -189,7 +196,11 @@ describe('the models page as it draws', () => {
 
     const sheet = readFileSync('src/assets/web.css', 'utf8');
     const dom = new JSDOM(`<style>${sheet}</style><div class="models">${host.innerHTML}</div>`);
-    const rows = [...dom.window.document.querySelectorAll('.models .list li')];
+    // Only the CANDIDATE list's rows: the bench list draws `li`s too, and
+    // they hold no anchor.
+    const rows = [...dom.window.document.querySelectorAll('.models .list li')].filter(
+      (li) => li.querySelector('.cand') !== null,
+    );
     expect(rows.length, 'the search drew no rows to read').toBeGreaterThan(1);
 
     // The hazard itself, so a reader sees why the rule cannot key on the

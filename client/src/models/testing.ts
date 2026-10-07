@@ -106,6 +106,12 @@ export const modelsWire: DictateModelsWire = modelsFrom({
   ],
   install: { state: 'idle' },
   activate: { state: 'idle' },
+  bench: { state: 'idle' },
+  results: [],
+  read_aloud: {
+    recorded: false,
+    passage: 'I want the forge session to pick up where it left off.',
+  },
   check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
   updates: [
     {

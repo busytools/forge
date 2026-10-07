@@ -68,10 +68,14 @@ pub struct BenchResult {
 const RESULTS_SHOWN: usize = 50;
 
 /// The read-aloud set as the page reads it: whether this machine has one,
-/// and the passage it was read from.
+/// whether one is ARMED for the next take, and the passage it was read from.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadAloudState {
     pub recorded: bool,
+    /// A take is owed to an arming: the next finished take becomes the set.
+    /// Carried so the press that armed it draws something - a control whose
+    /// only effect is a file the page cannot see reads as broken.
+    pub armed: bool,
     pub passage: String,
 }
 
@@ -105,6 +109,12 @@ pub fn config_for(
     };
 
     let mut cfg = base.clone();
+    // **A bench run is not the user's dictation.** Its clips would otherwise
+    // land in the per-take diagnostics store - filling the shelf the bench
+    // itself scores against, so every run grew its own corpus - and a clip
+    // finishing while a read-aloud set was armed would answer the arming.
+    cfg.diagnostics_dir = None;
+    cfg.read_aloud_dir = None;
     match target.role {
         BenchRole::Transcribing => cfg.asr_model = spec,
         BenchRole::Cleanup => cfg.normalizer = Some(spec),
@@ -119,11 +129,16 @@ impl Workspace {
     }
 
     /// The read-aloud set, as the page draws it: whether one exists here,
-    /// and the passage it was read from. The set is the machine's rather
-    /// than the workspace's, so this needs no handle to answer.
+    /// whether one is armed for the next take, and the passage it was read
+    /// from. The set is the machine's rather than the workspace's, so this
+    /// needs no handle to answer.
     pub fn read_aloud_state() -> ReadAloudState {
-        let recorded = read_aloud_dir().is_some_and(|dir| dir.join("passage.txt").is_file());
-        ReadAloudState { recorded, passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned() }
+        let dir = read_aloud_dir();
+        ReadAloudState {
+            recorded: dir.as_ref().is_some_and(|dir| dir.join("passage.txt").is_file()),
+            armed: dir.is_some_and(|dir| dir.join("armed.txt").is_file()),
+            passage: forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned(),
+        }
     }
 
     /// Arm the read-aloud set: the NEXT finished take is stored as the
@@ -373,6 +388,11 @@ mod tests {
         assert!(for_it.asr_model.url.is_empty(), "a bench never fetches");
         assert!(for_it.asr_model.sha256.is_none(), "no digest is published for one");
         assert_eq!(for_it.asr_model.size, 7, "the size is the bytes on disk");
+        assert!(
+            for_it.diagnostics_dir.is_none() && for_it.read_aloud_dir.is_none(),
+            "a bench run must not write takes into the store it scores against, nor answer a \
+             read-aloud arming"
+        );
         assert_eq!(
             for_it.normalizer.as_ref().map(|spec| spec.file.clone()),
             base.normalizer.as_ref().map(|spec| spec.file.clone()),

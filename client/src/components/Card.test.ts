@@ -97,6 +97,9 @@ describe('the band card', () => {
           oninstall: () => {},
           onactivate: () => {},
           ondeactivate: () => {},
+          onbench: () => {},
+          onbenchstop: () => {},
+          onarm: () => {},
         },
       }),
     );

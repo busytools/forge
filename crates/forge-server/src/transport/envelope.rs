@@ -288,6 +288,7 @@ mod tests {
                 results: Vec::new(),
                 read_aloud: forge_workspace::bench::ReadAloudState {
                     recorded: false,
+                    armed: false,
                     passage: String::new(),
                 },
             },

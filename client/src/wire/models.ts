@@ -116,6 +116,79 @@ export type ActivateState =
   | { state: 'failed'; role: ModelRole; file: string; reason: string }
   | { state: 'unknown' };
 
+/** Which slot a bench target runs in. */
+export type BenchRole = 'transcribing' | 'cleanup' | 'other';
+
+/** One model a bench can load. */
+export interface BenchTarget {
+  file: string;
+  role: BenchRole;
+  pinned: boolean;
+}
+
+/** Which clips a run scores against, in the core's own names. */
+export type BenchTier = 'latency' | 'consensus' | 'read_aloud' | 'other';
+
+/** Where one run's time went, summed over its clips. */
+export interface StageTotals {
+  model_load_ms: number;
+  resample_ms: number;
+  mel_ms: number;
+  encode_ms: number;
+  decode_ms: number;
+  normalize_ms: number;
+}
+
+/** What one run measured. */
+export interface BenchMetrics {
+  clips: number;
+  audio_seconds: number;
+  wall_seconds: number;
+  xrt_wall: number;
+  term_accuracy: number | null;
+  wer: number | null;
+  matched: [number, number] | null;
+  stages_ms: StageTotals;
+}
+
+/** What two runs are comparable by. */
+export interface CorpusId {
+  clips: number;
+  audio_seconds: number;
+  sha256: string;
+}
+
+/** One finished bench, kept under what it was about. */
+export interface BenchResult {
+  target: BenchTarget;
+  tier: BenchTier;
+  metrics: BenchMetrics;
+  at: string;
+  corpus: CorpusId;
+}
+
+/** Where the last bench got to, with the same `unknown` rule as [`InstallState`]. */
+export type BenchState =
+  | { state: 'idle' }
+  | {
+      state: 'running';
+      target: BenchTarget;
+      tier: BenchTier;
+      clip: number;
+      clips: number;
+      so_far: number | null;
+    }
+  | { state: 'failed'; target: BenchTarget; reason: string }
+  | { state: 'unknown' };
+
+/** The read-aloud set: whether this machine has one, whether one is armed
+ * for the next take, and its passage. */
+export interface ReadAloudState {
+  recorded: boolean;
+  armed: boolean;
+  passage: string;
+}
+
 /** One catalogue entry, as the candidate rows draw it. */
 export interface CatalogueRow {
   variant: string;
@@ -165,6 +238,9 @@ export interface DictateModelsWire {
   install: InstallState;
   activate: ActivateState;
   installed: InstalledModel[];
+  bench: BenchState;
+  results: BenchResult[];
+  read_aloud: ReadAloudState;
 }
 
 /** The roles the core names. */
@@ -181,6 +257,15 @@ const INSTALL_STATES = ['idle', 'downloading', 'failed'] as const;
 
 /** The activation states the server writes; the fourth is this client's own. */
 const ACTIVATE_STATES = ['idle', 'activating', 'failed'] as const;
+
+/** The bench states the server writes; the fourth is this client's own. */
+const BENCH_STATES = ['idle', 'running', 'failed'] as const;
+
+/** The bench tiers the core names; the fourth is this client's own. */
+const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['latency', 'consensus', 'read_aloud'];
+
+/** The bench roles the core names; the fourth is this client's own. */
+const BENCH_ROLES: Exclude<BenchRole, 'other'>[] = ['transcribing', 'cleanup'];
 
 /**
  * The snapshot as the types above describe it, with every union member
@@ -208,7 +293,41 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
     })),
     install: tagged(data.install, INSTALL_STATES),
     activate: activateFrom(data.activate),
+    bench: benchFrom(data.bench),
+    results: (data.results ?? []).map((result) => ({
+      ...result,
+      target: targetFrom(result.target),
+      tier: narrow(result.tier, BENCH_TIERS, 'other'),
+    })),
+    read_aloud: data.read_aloud ?? { recorded: false, armed: false, passage: '' },
   };
+}
+
+/** One bench target, with the role narrowed the way the wire's roles are. */
+function targetFrom(target: BenchTarget | undefined): BenchTarget {
+  if (target === undefined) {
+    return { file: '', role: 'other', pinned: false };
+  }
+  return { ...target, role: narrow(target.role, BENCH_ROLES, 'other') };
+}
+
+function benchFrom(bench: BenchState | undefined): BenchState {
+  const state: string | undefined = bench?.state;
+  if (typeof state !== 'string' || !(BENCH_STATES as readonly string[]).includes(state)) {
+    return { state: 'unknown' };
+  }
+  const known = bench as BenchState;
+  if (known.state === 'running') {
+    return {
+      ...known,
+      target: targetFrom(known.target),
+      tier: narrow(known.tier, BENCH_TIERS, 'other'),
+    };
+  }
+  if (known.state === 'failed') {
+    return { ...known, target: targetFrom(known.target) };
+  }
+  return known;
 }
 
 function checkFrom(check: CatalogueCheck): CatalogueCheck {

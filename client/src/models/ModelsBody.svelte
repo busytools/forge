@@ -1,18 +1,31 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
-  import type { CatalogueRow, DictateModelsWire, ModelRole } from '../wire/models';
+  import type {
+    BenchTarget,
+    BenchTier,
+    CatalogueRow,
+    DictateModelsWire,
+    ModelRole,
+  } from '../wire/models';
   import {
     activateLine,
     activeSource,
+    benchLine,
+    benchRoleWord,
+    benchTargets,
     candidateFacts,
     checkLine,
     entryUrl,
     inUseRowFacts,
     installLine,
     modelChip,
+    resultFacts,
+    resultVerdict,
+    resultWhen,
     roleWord,
     rowAction,
     search,
+    tierWord,
     updateFacts,
     type FactPart,
   } from './view';
@@ -34,6 +47,9 @@
     oninstall,
     onactivate,
     ondeactivate,
+    onbench,
+    onbenchstop,
+    onarm,
     refusal = null,
     mark = null,
   }: {
@@ -42,6 +58,9 @@
     oninstall: (variant: string) => void;
     onactivate: (file: string) => void;
     ondeactivate: (role: ModelRole) => void;
+    onbench: (target: BenchTarget, tier: BenchTier) => void;
+    onbenchstop: () => void;
+    onarm: () => void;
     refusal?: string | null;
     mark?: string | null;
   } = $props();
@@ -66,6 +85,9 @@
   const transcribing = $derived(wire.in_use.find((model) => model.role === 'transcribing') ?? null);
   const download = $derived(installLine(wire.install));
   const building = $derived(activateLine(wire.activate));
+  const benchState = $derived(wire.bench);
+  const bench = $derived(benchLine(wire.bench));
+  const targets = $derived(benchTargets(wire.in_use, wire.installed));
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -207,10 +229,9 @@
           {@render facts(updateFacts(update))}
         </span>
         <span class="detail">
-          Faster and more accurate than the model in use, on the feed's own test set. Install it,
-          then make it the transcribing model - it loads while the current one keeps running. The
-          bench that scores a candidate on your own recordings is not built yet, so every number
-          here is the feed's own.
+          On the feed's own measurements it does more audio per second and makes fewer word errors
+          than the model in use. That is measured upstream, not here - bench it below to see what it
+          does on your own recordings, and only then make it the {roleWord(update.role)} model.
         </span>
       </div>
     {/each}
@@ -283,20 +304,92 @@
 
   <section class="block">
     <h2 class="hd4">
-      Benchmark <span class="why">score a model on your own recordings</span>
+      Benchmark <span class="why">score a model on this machine's own recordings</span>
     </h2>
 
-    <!-- The RUN is its own piece of work: the corpus it scores against is the
-         takes this machine has recorded plus the read-aloud set, and none of it
-         exists yet. No control here names a run that cannot start. -->
-    <div class="empty">
-      <p class="t">the benchmark is not built yet</p>
-      <p class="d">
-        It will score each candidate on the takes forge has already recorded here, plus a read-aloud
-        set - term accuracy first, speed second - and that score is what decides an update. Until it
-        lands, every number on this page is the feed's own, measured on an m4 max and not on your
-        machine.
+    {#if !wire.enabled}
+      <p class="note">
+        the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the
+        takes forge has recorded here
       </p>
-    </div>
+    {:else}
+      {#if bench !== null}{@render op(bench)}{/if}
+
+      {#if targets.length === 0}
+        <p class="note">
+          nothing here can be benched yet &middot; a model in use or installed lands in this list,
+          and the run loads it from disk
+        </p>
+      {:else}
+        <ul class="list" aria-label="Models a bench can run">
+          {#each targets as target (`${target.role}/${target.file}`)}
+            <li>
+              <span class="bench-row">
+                <span class="nm">{target.file}</span>
+                <span class="col">{benchRoleWord(target.role)}</span>
+                {#if target.pinned}<span class="col">pinned by [dictate]</span>{/if}
+              </span>
+              {#if benchState.state === 'running' && benchState.target.file === target.file}
+                <button class="chip" type="button" onclick={onbenchstop}>stop the bench</button>
+              {:else}
+                <button
+                  class="chip"
+                  type="button"
+                  disabled={busy}
+                  onclick={() => onbench(target, 'consensus')}>bench it</button
+                >
+                {#if wire.read_aloud.recorded}
+                  <button
+                    class="chip"
+                    type="button"
+                    disabled={busy}
+                    onclick={() => onbench(target, 'read_aloud')}>score the read-aloud</button
+                  >
+                {/if}
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <p class="note">
+          the run scores the model's own words against the takes forge has saved here plus the repo
+          fixtures &middot; term accuracy first, speed second - every number measured on this
+          machine
+        </p>
+      {/if}
+
+      {#if wire.read_aloud.armed}
+        <div class="status" role="status">
+          <span class="dot live"></span>
+          <span class="t">armed: the next take you dictate becomes the read-aloud set</span>
+          <span class="spacer"></span>
+          <span class="when">read the passage below aloud, then stop the take</span>
+          <span class="detail passage">{wire.read_aloud.passage}</span>
+        </div>
+      {:else if !wire.read_aloud.recorded}
+        <div class="empty">
+          <p class="t">the read-aloud set is not recorded yet</p>
+          <p class="d">
+            Read this passage aloud once, with the bench armed - it is the only corpus whose words
+            are known, so it is the only one that can score term accuracy:
+          </p>
+          <p class="d passage">{wire.read_aloud.passage}</p>
+          <button class="chip" type="button" disabled={busy} onclick={onarm}
+            >record the passage next time I dictate</button
+          >
+        </div>
+      {/if}
+
+      {#each wire.results as result (`${result.target.role}/${result.target.file}/${result.tier}/${result.corpus.sha256}`)}
+        <div class="status">
+          <span class="dot ok"></span>
+          <span class="t">{result.target.file}</span>
+          <span class="when">{tierWord(result.tier)}</span>
+          <span class="spacer"></span>
+          {#if resultWhen(result) !== null}<span class="when">{resultWhen(result)}</span>{/if}
+          <span class="detail">{@render facts(resultFacts(result))}</span>
+          <span class="detail">{resultVerdict(result, wire.in_use, wire.results)}</span>
+        </div>
+      {/each}
+    {/if}
   </section>
 </main>

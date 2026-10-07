@@ -13,6 +13,12 @@ const SNAPSHOT = {
   check: { state: 'never' },
   updates: [],
   rows: [],
+  install: { state: 'idle' },
+  activate: { state: 'idle' },
+  installed: [],
+  bench: { state: 'idle' },
+  results: [],
+  read_aloud: { recorded: false, armed: false, passage: '' },
 } as unknown as DictateModelsWire;
 
 /** Give a timer a chance to fire, for everything it would have set off to show. */

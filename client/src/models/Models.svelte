@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Command } from '../protocol';
   import type { Connection } from '../socket';
-  import type { ModelRole } from '../wire/models';
+  import type { BenchTarget, BenchTier, ModelRole } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
 
@@ -78,6 +78,18 @@
   function deactivate(role: ModelRole): void {
     act({ dictate_deactivate: { role } });
   }
+
+  function bench(target: BenchTarget, tier: BenchTier): void {
+    act({ dictate_bench: { target, tier } });
+  }
+
+  function benchStop(): void {
+    act('dictate_bench_stop');
+  }
+
+  function arm(): void {
+    act('dictate_read_aloud_arm');
+  }
 </script>
 
 {#if read.refused !== null}
@@ -95,6 +107,9 @@
     oninstall={install}
     onactivate={activate}
     ondeactivate={deactivate}
+    onbench={bench}
+    onbenchstop={benchStop}
+    onarm={arm}
     {refusal}
     {mark}
   />

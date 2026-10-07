@@ -10,6 +10,12 @@ import { modelState } from '../home/view';
 import type {
   ActivateState,
   ActiveFrom,
+  BenchMetrics,
+  BenchResult,
+  BenchRole,
+  BenchState,
+  BenchTarget,
+  BenchTier,
   CatalogueCheck,
   CatalogueRow,
   InstallState,
@@ -403,6 +409,177 @@ export interface InUseFacts {
   measured: FactPart[];
 }
 
+/** The bench's own role word, which is the vocabulary the section uses. */
+export function benchRoleWord(role: BenchRole): string {
+  switch (role) {
+    case 'transcribing':
+      return 'transcribing';
+    case 'cleanup':
+      return 'cleanup';
+    case 'other':
+      return 'model';
+  }
+}
+
+/** The tier's own word, as the section names what a run scores against. */
+export function tierWord(tier: BenchTier): string {
+  switch (tier) {
+    case 'latency':
+      return 'your own takes';
+    case 'consensus':
+      return 'your takes + the fixtures';
+    case 'read_aloud':
+      return 'the read-aloud passage';
+    case 'other':
+      return 'a corpus this client cannot name';
+  }
+}
+
+/**
+ * The models a bench can run, from what the page holds: the roles' models
+ * that are loaded, and the installed set.
+ *
+ * A model in use that has not loaded is left out - the bench loads its own
+ * engine from the file, and a control over a file that is not there yet
+ * would fail where the page could have pointed at the progress instead.
+ */
+export function benchTargets(inUse: InUseModel[], installed: InstalledModel[]): BenchTarget[] {
+  const rows: BenchTarget[] = inUse
+    .filter((model) => model.state === 'ready')
+    .map((model) => ({
+      file: model.file,
+      role: model.role === 'normalization' ? 'cleanup' : model.role,
+      pinned: model.from.from === 'config',
+    }));
+  for (const record of installed) {
+    if (rows.some((row) => row.file === record.file)) continue;
+    rows.push({ file: record.file, role: 'transcribing', pinned: false });
+  }
+  return rows;
+}
+
+/** The bench's line: what is running, or what stopped it. */
+export function benchLine(bench: BenchState): OpLine | null {
+  switch (bench.state) {
+    case 'idle':
+      return null;
+    case 'running': {
+      const percent = bench.clips > 0 ? Math.floor((bench.clip / bench.clips) * 100) : null;
+      const share =
+        bench.so_far === null ? '' : ` \u{b7} ${Math.round(bench.so_far * 100)}% agreed so far`;
+      return {
+        mark: 'live',
+        title: `benching ${bench.target.file}`,
+        detail: `clip ${bench.clip} of ${bench.clips} \u{b7} ${tierWord(bench.tier)}${share}`,
+        percent,
+      };
+    }
+    case 'failed':
+      return {
+        mark: 'failed',
+        title: 'the bench did not finish',
+        detail: `${bench.target.file} \u{b7} ${bench.reason}`,
+        percent: null,
+      };
+    case 'unknown':
+      return {
+        mark: 'off',
+        title: 'the bench state is one this client cannot read',
+        detail: 'this client is older than the forge serving it',
+        percent: null,
+      };
+  }
+}
+
+/**
+ * One result's facts, in the order a reader compares two runs: the speed,
+ * the error figure, the agreement, then what was scored.
+ *
+ * Term accuracy is the headline where a run has one - it is the only
+ * figure scored against words known to be true - and where it does not,
+ * the line says so rather than printing a zero.
+ */
+export function resultFacts(result: BenchResult): FactPart[] {
+  const metrics = result.metrics;
+  const parts: FactPart[] = [{ text: `${metrics.xrt_wall.toFixed(1)}\u{d7} realtime`, hl: true }];
+  if (metrics.term_accuracy !== null) {
+    parts.push({ text: `term accuracy ${Math.round(metrics.term_accuracy * 100)}%`, hl: true });
+  }
+  if (metrics.wer !== null) {
+    parts.push({ text: `WER ${(metrics.wer * 100).toFixed(1)}%` });
+  }
+  if (metrics.matched !== null) {
+    const [agreed, of] = metrics.matched;
+    parts.push({ text: `${agreed} of ${of} matched a baseline` });
+  }
+  parts.push({
+    text: `${metrics.clips} clips \u{b7} ${Math.round(metrics.audio_seconds)}s of audio`,
+  });
+  return parts;
+}
+
+/** When one result ran, as the row's own line. */
+export function resultWhen(result: BenchResult): string | null {
+  const at = clock(result.at);
+  return at === null ? null : `measured ${at}`;
+}
+
+/**
+ * What one result means against the model in use, which is the question a
+ * bench exists to answer.
+ *
+ * **Only two runs over the SAME corpus can be compared** - the identity is
+ * the corpus's own hash, so a take landing between two runs makes them
+ * different corpora and this says so rather than pretending. Term accuracy
+ * decides where both sides have it (the read-aloud tier); otherwise the
+ * agreement share does, and speed is the tie the row already carries.
+ */
+export function resultVerdict(
+  result: BenchResult,
+  inUse: InUseModel[],
+  results: BenchResult[],
+): string {
+  const role = result.target.role === 'cleanup' ? 'normalization' : result.target.role;
+  const current = inUse.find((model) => model.role === role);
+  if (current === undefined) {
+    return 'this role is not running a model right now';
+  }
+  if (current.file === result.target.file) {
+    return 'this is the model in use';
+  }
+  const other = results.find(
+    (row) => row.target.file === current.file && row.corpus.sha256 === result.corpus.sha256,
+  );
+  if (other === undefined) {
+    return `no run of ${current.file} over this same corpus to compare with yet`;
+  }
+  return verdictAgainst(result.metrics, other.metrics);
+}
+
+/** The comparison itself, from two metric sets over one corpus. */
+function verdictAgainst(candidate: BenchMetrics, current: BenchMetrics): string {
+  const speed = `${candidate.xrt_wall.toFixed(1)}\u{d7} vs ${current.xrt_wall.toFixed(1)}\u{d7}`;
+  if (candidate.term_accuracy !== null && current.term_accuracy !== null) {
+    const better = candidate.term_accuracy > current.term_accuracy;
+    const share = `${Math.round(candidate.term_accuracy * 100)}% vs ${Math.round(current.term_accuracy * 100)}% of the passage's terms`;
+    return better
+      ? `ahead of the model in use: ${share} survived, ${speed}`
+      : candidate.term_accuracy < current.term_accuracy
+        ? `behind the model in use: ${share} survived, ${speed}`
+        : `level with the model in use on term accuracy: ${share}, ${speed}`;
+  }
+  if (candidate.matched !== null && current.matched !== null) {
+    const [agreed, of] = candidate.matched;
+    const [agreedNow, ofNow] = current.matched;
+    const share = `${agreed} of ${of} vs ${agreedNow} of ${ofNow} matched a baseline`;
+    if (agreed * ofNow > agreedNow * of)
+      return `agrees with the baselines more often than the model in use (${share}, ${speed})`;
+    if (agreed * ofNow < agreedNow * of)
+      return `agrees with the baselines less often than the model in use (${share}, ${speed})`;
+    return `level with the model in use on agreement (${share}, ${speed})`;
+  }
+  return `no comparable figure against the model in use (${speed})`;
+}
 /**
  * The pinned facts, and what the feed says about the file.
  *

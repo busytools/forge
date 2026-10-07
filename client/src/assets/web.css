@@ -2334,6 +2334,13 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* A row's control sits beside its link, never inside it: an anchor holding a
    button is markup no browser will run. */
 .models .list li > .chip { flex: none; }
+/* The bench list's own row: a name and its role, with the controls beside
+   it - the same li shape the candidate list uses. */
+.models .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+  padding: 9px 0 9px 12px; }
+.models .bench-row .nm { flex: 1 1 auto; }
+.models .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); white-space: nowrap; }
 .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
   color: inherit; text-decoration: none; }
 .models .cand:hover { background: var(--s2); }
