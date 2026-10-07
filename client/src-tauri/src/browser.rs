@@ -323,10 +323,16 @@ impl BrowserHost {
             if port == 0 {
                 return Err("the client's own browser is not up".to_owned());
             }
-            let Some(path) = chromium::probe_identity(port).await else {
-                return Err(format!("nothing answers as a browser on 127.0.0.1:{port}"));
-            };
-            return Ok(chromium::ActivePort { port, path, pid: None });
+            // **Bounded wait, not one probe.** CEF's DevTools server comes up
+            // asynchronously after initialize, and a single probe right after
+            // boot raced it - a transient that read as "no browser".
+            for _ in 0..50 {
+                if let Some(path) = chromium::probe_identity(port).await {
+                    return Ok(chromium::ActivePort { port, path, pid: None });
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            return Err(format!("nothing answers as a browser on 127.0.0.1:{port}"));
         }
         #[cfg(not(all(desktop, target_os = "macos")))]
         {

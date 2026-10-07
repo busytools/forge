@@ -53,6 +53,13 @@ kill -9 "$PID" $HELPERS 2>/dev/null
 sleep 1
 if [ -n "$FAILED" ]; then
     echo "SMOKE FAILED: $FAILED"
+    # **One browser per profile, one client per machine.** A second client's
+    # CEF listens but never serves while another instance holds the profile,
+    # so name the cause rather than letting it read as a broken build.
+    OTHERS=$(ps -eo pid,args | grep "MacOS/forge-client" | grep -v grep | grep -v " $PID " | wc -l | tr -d ' ')
+    if [ "$OTHERS" != "0" ]; then
+        echo "NOTE: $OTHERS other forge-client instance(s) are running - two clients share one browser profile"
+    fi
     exit 1
 fi
 echo "SMOKE OK: the client is up with CEF on 127.0.0.1:$PORT"
