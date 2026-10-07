@@ -534,21 +534,27 @@
           {#if recordingLine !== null}<span class="detail bad">{recordingLine}</span>{/if}
         </div>
       {:else if wire.read_aloud.recordings.length === 0}
-        <div class="empty">
-          <p class="t">the read-aloud set is not recorded yet</p>
-          <p class="d">
-            Read the passage below aloud once and save the recording &middot; a bench over the takes
-            compares two models' words, and this is the one corpus a bench can score on words that
-            are known:
-          </p>
-          <p class="d passage">{wire.read_aloud.passage}</p>
+        <!-- The same card the recording draws, so the empty state and the
+             running one share an edge: a centred box around a passage puts
+             four alignments in one block, and the passage is the thing being
+             read. -->
+        <div class="status" role="status">
+          <span class="dot off"></span>
+          <span class="t">the read-aloud set is not recorded yet</span>
+          <span class="spacer"></span>
           <button class="chip" type="button" disabled={busy} onclick={onrecord}
             >record the passage</button
           >
+          <span class="detail">
+            Read the passage below aloud once and save the recording &middot; a bench over the takes
+            compares two models' words, and this is the one corpus a bench can score on words that
+            are known:
+          </span>
+          <span class="detail passage">{wire.read_aloud.passage}</span>
           {#if wire.read_aloud.error !== null}
-            <p class="d bad">{wire.read_aloud.error}</p>
+            <span class="detail bad">{wire.read_aloud.error}</span>
           {/if}
-          {#if recordingLine !== null}<p class="d bad">{recordingLine}</p>{/if}
+          {#if recordingLine !== null}<span class="detail bad">{recordingLine}</span>{/if}
         </div>
       {:else}
         <p class="note">

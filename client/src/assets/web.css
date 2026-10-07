@@ -2318,9 +2318,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    reached the socket - or the core's, drawn in the error tone. */
 .models .status .detail.bad, .models .empty .d.bad { color: var(--bad); }
 /* The passage is prose somebody reads aloud, so its lines read left to
-   right - a centred paragraph is a poem, not a script. The block keeps the
-   empty box's own centring; only the text inside it moves. */
-.models .empty .d.passage { text-align: left; max-width: 62ch; }
+   right at a measure a voice can hold, not the full width of the card. */
+.models .status .detail.passage { max-width: 84ch; }
 
 /* One recording's row: the length as its own column, the facts beside it
    left-aligned rather than pushed to the far edge - a two-word row stretched
