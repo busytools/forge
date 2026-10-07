@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { browserUsed, closeContext, listContexts, openTakeover } from '../browser/host';
+import { browserUsed, closeProfile, listProfiles, openTakeover } from '../browser/host';
 import { takeover } from '../browser/takeover.svelte';
 import BrowserSegment from './BrowserSegment.svelte';
 
@@ -24,8 +24,8 @@ vi.mock('../browser/host', async (importOriginal) => {
   return {
     ...actual,
     canHost: () => true,
-    listContexts: vi.fn(() => Promise.resolve([])),
-    closeContext: vi.fn(() => Promise.resolve(undefined)),
+    listProfiles: vi.fn(() => Promise.resolve([])),
+    closeProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
     openTakeover: vi.fn(() => Promise.resolve()),
   };
@@ -92,13 +92,13 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe('the browser segment', () => {
-  it('rests as a count and opens onto the role and the contexts', async () => {
+  it('rests as a count and opens onto the role and the profiles', async () => {
     const shown = show();
     await vi.waitFor(() => {
       expect(
         shown.target.querySelector('.bz-tog .n')?.textContent,
         'the resting row names the count once a read has answered',
-      ).toBe('0 contexts');
+      ).toBe('0 profiles');
     });
     expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
       'browser connected',
@@ -111,20 +111,20 @@ describe('the browser segment', () => {
     );
     expect(
       shown.target.textContent,
-      'the shared context is always listed: most sessions drive it',
+      'the shared profile is always listed: most sessions drive it',
     ).toContain('shared');
     await vi.waitFor(() => {
       expect(
         shown.target.textContent,
-        'with no NAMED contexts said plainly, once the read has answered',
-      ).toContain('no named contexts yet');
+        'with no NAMED profiles said plainly, once the read has answered',
+      ).toContain('no named profiles yet');
     });
     shown.stop();
   });
 
   it('waits on the count and the list until a read has answered', () => {
     // A read that has not answered: neither surface may claim a state.
-    vi.mocked(listContexts).mockImplementation(() => new Promise<never>(() => undefined));
+    vi.mocked(listProfiles).mockImplementation(() => new Promise<never>(() => undefined));
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
@@ -133,14 +133,14 @@ describe('the browser segment', () => {
       'the count is not known before a read answers',
     ).toBe('…');
     expect(shown.target.textContent, 'and the list says it is reading').toContain(
-      'reading the contexts…',
+      'reading the profiles…',
     );
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no named contexts yet');
+    ).not.toContain('no named profiles yet');
     shown.stop();
-    vi.mocked(listContexts).mockImplementation(() => Promise.resolve([]));
+    vi.mocked(listProfiles).mockImplementation(() => Promise.resolve([]));
   });
 
   /** Ved, live round 2026-10-07: the row should say whether the browser has
@@ -197,36 +197,36 @@ describe('the browser segment', () => {
     vi.mocked(openTakeover).mockResolvedValue(undefined);
   });
 
-  it('says the read failed rather than claiming there are no contexts', async () => {
+  it('says the read failed rather than claiming there are no profiles', async () => {
     const shown = show(false, true);
-    await vi.waitFor(() => expect(listContexts).toHaveBeenCalledTimes(1));
-    vi.mocked(listContexts).mockRejectedValueOnce('the context list would not read');
+    await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledTimes(1));
+    vi.mocked(listProfiles).mockRejectedValueOnce('the profile list would not read');
 
     click(shown.target.querySelector('.bz-tog'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('the context list would not read');
+      expect(shown.target.textContent).toContain('the profile list would not read');
     });
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no named contexts yet');
+    ).not.toContain('no named profiles yet');
     shown.stop();
   });
 
   it('keeps the row and says why when the close is refused', async () => {
-    vi.mocked(listContexts).mockResolvedValue([
+    vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true },
     ]);
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
 
-    vi.mocked(closeContext).mockRejectedValueOnce('no browser context is open under hunt');
+    vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
     click(shown.target.querySelector('.bz-close'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('no browser context is open under hunt');
+      expect(shown.target.textContent).toContain('no browser profile is open under hunt');
     });
     expect(shown.target.textContent, 'the row is not taken away by a close that failed').toContain(
       'hunt',

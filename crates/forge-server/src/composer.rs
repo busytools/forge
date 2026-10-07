@@ -692,7 +692,7 @@ mod tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::parse_str("0192e1c0-0000-7000-8000-0000000000aa").expect("a uuid"),
             reason: "solve the CAPTCHA".to_owned(),
-            context: Some("job-hunt".to_owned()),
+            profile: Some("job-hunt".to_owned()),
         };
 
         composer.apply(&asked(&slot, question("toolu_q", 0)));

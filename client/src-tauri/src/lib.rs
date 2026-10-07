@@ -53,15 +53,13 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
         tauri::generate_handler![
             browser::browser_call,
-            browser::browser_context_close,
-            browser::browser_contexts,
+            browser::browser_profile_close,
+            browser::browser_profiles,
             browser::browser_takeover_open,
             browser::browser_takeover_close,
             browser::browser_show,
             browser::browser_hide,
-            browser::browser_show,
-        browser::browser_hide,
-        browser::browser_takeover_state,
+            browser::browser_takeover_state,
             browser::browser_takeover_url,
             browser::browser_used,
             browser::browser_takeover_input,
@@ -74,8 +72,8 @@ pub fn run() {
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         browser::browser_call,
-        browser::browser_context_close,
-        browser::browser_contexts,
+        browser::browser_profile_close,
+        browser::browser_profiles,
         browser::browser_takeover_open,
         browser::browser_takeover_close,
         browser::browser_show,
@@ -96,8 +94,8 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
         browser::browser_call,
-        browser::browser_context_close,
-        browser::browser_contexts,
+        browser::browser_profile_close,
+        browser::browser_profiles,
         browser::browser_takeover_open,
         browser::browser_takeover_close,
         browser::browser_show,

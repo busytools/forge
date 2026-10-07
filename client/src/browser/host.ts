@@ -84,7 +84,7 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
 /**
  * The reason a rejected command carried, as a sentence.
  *
- * Exported for the strip's own reads: a failed `listContexts` or a refused
+ * Exported for the strip's own reads: a failed `listProfiles` or a refused
  * close has the shell's own words in its rejection, and a caller that drew
  * anything else would be inventing a reason.
  */
@@ -238,18 +238,18 @@ export async function takeoverUrl(): Promise<string | null> {
 }
 
 /**
- * Close a named context from the client's own UI: the strip's row, acting
- * for the person rather than for a session - the door a context whose
+ * Close a named profile from the client's own UI: the strip's row, acting
+ * for the person rather than for a session - the door a profile whose
  * owning session is gone comes back through.
  */
-export async function closeContext(name: string): Promise<void> {
+export async function closeProfile(name: string): Promise<void> {
   if (!canHost()) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_context_close', { name });
+  await invoke('browser_profile_close', { name });
 }
 
-/** One named context, as the client's own browser strip draws it. */
-export interface ContextRow {
+/** One named profile, as the client's own browser strip draws it. */
+export interface ProfileRow {
   name: string;
   /** The slot of the session that opened it. */
   owner: string;
@@ -258,13 +258,13 @@ export interface ContextRow {
 }
 
 /**
- * The named contexts this client holds, for its own strip.
+ * The named profiles this client holds, for its own strip.
  *
- * The contexts are the client's own state - it owns the drivers - so this is
+ * The profiles are the client's own state - it owns the drivers - so this is
  * the client reading itself, and a page outside the shell holds none.
  */
-export async function listContexts(): Promise<ContextRow[]> {
+export async function listProfiles(): Promise<ProfileRow[]> {
   if (!canHost()) return [];
   const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<ContextRow[]>('browser_contexts');
+  return await invoke<ProfileRow[]>('browser_profiles');
 }

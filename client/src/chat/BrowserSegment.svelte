@@ -3,16 +3,16 @@
   import {
     browserUsed,
     canHost,
-    closeContext,
-    listContexts,
+    closeProfile,
+    listProfiles,
     whyText,
-    type ContextRow,
+    type ProfileRow,
   } from '../browser/host';
   import { takeover } from '../browser/takeover.svelte';
   import type { Connection } from '../socket';
 
   /**
-   * The browser row in the strip above the composer: how many named contexts
+   * The browser row in the strip above the composer: how many named profiles
    * this client holds, and - opened - who owns each, which client drives
    * them, and the controls the person has.
    *
@@ -23,27 +23,21 @@
    *
    * Two controls live here and each is the person's, never a session's:
    * **Take over** (the force override, where a click can honestly serve it)
-   * and a context row's **close** (which is what makes a context whose
+   * and a profile row's **close** (which is what makes a profile whose
    * owning session is gone recoverable).
    *
-   * **No visible toggle lives here any more.** Seeing the browser is the
-   * hand-off's own Open, which shows it inside this app; a control that
-   * raised an operating-system window was the machinery that replacement
-   * retired, and a second door to a different browser is a lie about which
-   * one the sessions drive.
-   *
-   * The contexts are the CLIENT's own state - it owns the drivers - so the
+   * The profiles are the CLIENT's own state - it owns the drivers - so the
    * row reads them from the host it runs in, never from the server.
    */
   let { connection, capable = canHost() }: { connection: Connection; capable?: boolean } = $props();
 
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
-  let contexts = $state<ContextRow[]>([]);
+  let profiles = $state<ProfileRow[]>([]);
   /** Whether the browser has been driven this session up - Ved's activity mark. */
   let used = $state(false);
   /**
-   * What the last read answered. "No contexts yet" is a claim about this
+   * What the last read answered. "No profiles yet" is a claim about this
    * client's own state, and a read that never answered has no state to claim,
    * so the row waits - or says why - rather than asserting one.
    */
@@ -59,12 +53,12 @@
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
   /**
-   * The client's own contexts, read at mount and when the list opens. A
+   * The client's own profiles, read at mount and when the list opens. A
    * failed read keeps whatever the last one answered and says why.
    */
-  async function readContexts(): Promise<void> {
+  async function readProfiles(): Promise<void> {
     try {
-      contexts = await listContexts();
+      profiles = await listProfiles();
       read = 'ready';
       why = null;
     } catch (error) {
@@ -79,7 +73,7 @@
   }
 
   $effect(() => {
-    void readContexts();
+    void readProfiles();
   });
 
   /**
@@ -89,12 +83,12 @@
    */
   let leaving: ReturnType<typeof setTimeout> | null = null;
 
-  /** Open, and read the contexts fresh, which is what every opening does. */
+  /** Open, and read the profiles fresh, which is what every opening does. */
   function hold(): void {
     if (leaving !== null) clearTimeout(leaving);
     leaving = null;
     open = true;
-    void readContexts();
+    void readProfiles();
   }
 
   function arm(): void {
@@ -185,8 +179,8 @@
    * keeps the last count, which something did measure.
    */
   const count = $derived(
-    contexts.length > 0 || read === 'ready'
-      ? `${contexts.length} context${contexts.length === 1 ? '' : 's'}`
+    profiles.length > 0 || read === 'ready'
+      ? `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`
       : read === 'loading'
         ? '…'
         : 'count unknown',
@@ -241,11 +235,11 @@
   }
 
   /** The person's close: saves, frees the name, and the row falls away. */
-  function close(row: ContextRow): void {
-    void closeContext(row.name).then(
-      () => readContexts(),
+  function close(row: ProfileRow): void {
+    void closeProfile(row.name).then(
+      () => readProfiles(),
       (error: unknown) => {
-        // A close the shell refused leaves the context open, and the row says
+        // A close the shell refused leaves the profile open, and the row says
         // so rather than vanishing over a name that is still held.
         read = 'failed';
         why = whyText(error);
@@ -284,7 +278,7 @@
     <div
       class="bz-list"
       role="group"
-      aria-label="the browser's contexts"
+      aria-label="the browser's profiles"
       onpointerenter={(event) => {
         if (hovering(event)) hold();
       }}
@@ -310,8 +304,8 @@
         {/if}
       </div>
 
-      <!-- **The shared context is always there**, and it is the one most
-           sessions drive - listing only named ones read as "no context"
+      <!-- **The shared profile is always there**, and it is the one most
+           sessions drive - listing only named ones read as "no profile"
            while a session was plainly using the browser. -->
       <div class="bz-it">
         {#if capable}
@@ -320,7 +314,7 @@
           <Icon name="x" class="bad" />
         {/if}
         <span class="nm">shared</span>
-        <span class="tx">every session · the browser's own context</span>
+        <span class="tx">every session · the browser's own profile</span>
         {#if capable}
           <button
             type="button"
@@ -334,7 +328,7 @@
         {/if}
       </div>
 
-      {#each contexts as row (row.name)}
+      {#each profiles as row (row.name)}
         <div class="bz-it">
           {#if row.running}
             <span class="ring"></span>
@@ -346,7 +340,7 @@
           <button
             type="button"
             class="bz-take bz-close"
-            aria-label="close the {row.name} context"
+            aria-label="close the {row.name} profile"
             onclick={() => close(row)}
             onkeydown={esc}
           >
@@ -355,11 +349,11 @@
         </div>
       {/each}
       {#if read === 'loading'}
-        <div class="bz-it"><span class="tx">reading the contexts…</span></div>
+        <div class="bz-it"><span class="tx">reading the profiles…</span></div>
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if contexts.length === 0}
-        <div class="bz-it"><span class="tx">no named contexts yet</span></div>
+      {:else if profiles.length === 0}
+        <div class="bz-it"><span class="tx">no named profiles yet</span></div>
       {/if}
     </div>
   {/if}

@@ -20,7 +20,7 @@ mod support;
 use std::path::PathBuf;
 use std::process::Command;
 
-use forge_client::browser::contexts::Seat;
+use forge_client::browser::profiles::Seat;
 use forge_client::browser::driver::Driver;
 use forge_client::browser::{BrowserHost, StackPaths};
 use serde_json::json;
@@ -46,9 +46,9 @@ async fn a_session_drives_a_page() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
 
@@ -56,7 +56,7 @@ async fn a_session_drives_a_page() {
     // and a second start ATTACHES to that launch rather than making another
     // one - one browser for the app, however many times it is ensured.
     let launched = host.start().await.expect("the browser comes up with the app");
-    let browser = Launched::new(launched.pid, launched.port, paths.profile.clone());
+    let browser = Launched::new(launched.pid, launched.port, paths.user_data.clone());
     let attached = host.start().await.expect("a second start attaches");
     assert_eq!(
         attached.port, launched.port,
@@ -157,13 +157,13 @@ async fn the_additions_drive_a_real_page() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
 
     let page = format!("http://127.0.0.1:{port}/");
     host.call(&seat(), "browser_navigate", json!({ "url": page }))
@@ -268,13 +268,13 @@ async fn the_surface_matches_the_drivers_own_tools_list() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
     let endpoint = format!("http://127.0.0.1:{}", active.port);
     let driver = match Driver::start(
         &forge_client::browser::driver::node_path(&paths.stack),
@@ -307,19 +307,19 @@ async fn the_surface_matches_the_drivers_own_tools_list() {
     );
 }
 
-/// **The browser dying under a live driver does not wedge its context.**
+/// **The browser dying under a live driver does not wedge its profile.**
 ///
 /// Round 1's Critical, falsified live: the driver is a node child tied to the
 /// browser only by CDP, so killing the browser closes the socket while the
 /// driver's MCP transport stays OPEN - `is_running()` keeps saying yes, and
 /// every later call re-runs `connectOverCDP` against the endpoint it was
 /// spawned with, which is a CLI argument naming a port nobody listens on any
-/// more. The context has to notice the browser moved: this kills the browser
+/// more. The profile has to notice the browser moved: this kills the browser
 /// by its own pid file and asserts the next call still answers, on a
 /// relaunched browser.
 #[tokio::test]
 #[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
-async fn a_killed_browser_does_not_wedge_its_context() {
+async fn a_killed_browser_does_not_wedge_its_profile() {
     let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
     assert!(
         stack.join("node/bin/node").is_file(),
@@ -328,13 +328,13 @@ async fn a_killed_browser_does_not_wedge_its_context() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
 
     let page = "data:text/html,<h1>alive</h1>";
     host.call(&seat(), "browser_navigate", json!({ "url": page }))
@@ -342,7 +342,7 @@ async fn a_killed_browser_does_not_wedge_its_context() {
         .unwrap_or_else(|why| panic!("the first navigate should run: {why}"));
 
     // The browser dies under the driver: the pid its own launch wrote down.
-    let pid = std::fs::read_to_string(paths.profile.join("browser.pid"))
+    let pid = std::fs::read_to_string(paths.user_data.join("browser.pid"))
         .expect("the launch wrote its pid down")
         .trim()
         .to_owned();
@@ -361,7 +361,7 @@ async fn a_killed_browser_does_not_wedge_its_context() {
         "the killed browser's port stopped answering",
     );
 
-    // The next call must recover: the context notices the browser moved,
+    // The next call must recover: the profile notices the browser moved,
     // drops its driver, and the call relaunches both.
     let parts = host
         .call(&seat(), "browser_navigate", json!({ "url": page }))
@@ -386,13 +386,13 @@ async fn the_takeover_view_delivers_a_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
 
     let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
     let (frames, mut seen) = tokio::sync::mpsc::unbounded_channel();
@@ -437,13 +437,13 @@ async fn an_input_sent_before_the_page_attaches_still_lands() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = StackPaths {
         stack,
-        profile: dir.path().join("profile"),
+        user_data: dir.path().join("user-data"),
         output: dir.path().join("output"),
-        contexts: dir.path().join("contexts"),
+        profiles: dir.path().join("profiles"),
     };
     let host = BrowserHost::new(paths.clone());
     let active = host.start().await.expect("the browser comes up");
-    let browser = Launched::new(active.pid, active.port, paths.profile.clone());
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
 
     let endpoint = format!("ws://127.0.0.1:{}{}", active.port, active.path);
     let live = forge_client::browser::screencast::start(&endpoint, false, |_| {})

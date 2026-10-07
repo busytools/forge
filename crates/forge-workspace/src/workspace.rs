@@ -11637,7 +11637,7 @@ mod worker_activity_tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "solve the CAPTCHA".to_owned(),
-            context: None,
+            profile: None,
         };
         let id = handoff.id;
         let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff);
@@ -12025,7 +12025,7 @@ mod worker_activity_tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "solve the CAPTCHA".to_owned(),
-            context: None,
+            profile: None,
         };
         let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff);
 

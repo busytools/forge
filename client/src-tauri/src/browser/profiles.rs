@@ -1,18 +1,18 @@
-//! Named contexts: what a session means by `context: "name"`.
+//! Named profiles: what a session means by `profile: "name"`.
 //!
 //! **Upstream's driver multiplexes nothing** (measured against the pinned
 //! 0.0.83): attached over CDP it drives the browser's own context, and
-//! `--isolated` makes it create one of its own. So a named context here is a
+//! `--isolated` makes it create one of its own. So a named profile here is a
 //! driver of its own over the one browser, and this module keeps the rules:
 //! which name is usable, who owns it, and what it reopens from.
 //!
 //! **Ownership rides the session that opened it.** The first session to name a
-//! context owns it; another session naming it is refused with the owner's
+//! profile owns it; another session naming it is refused with the owner's
 //! name, until the owner releases it. The browser's own context carries no
 //! name and no owner: every session shares it.
 //!
-//! **Persistence is ours to keep.** Upstream reads a context's storage state
-//! at creation and never writes it back, so a named context saves cookies into
+//! **Persistence is ours to keep.** Upstream reads a profile's storage state
+//! at creation and never writes it back, so a named profile saves cookies into
 //! its storage file and its open tabs as URLs after every call it serves, and
 //! opening it again starts the driver over the saved storage and reopens those
 //! tabs.
@@ -42,9 +42,9 @@ impl fmt::Display for Seat {
     }
 }
 
-/// Where a context's driver comes from whenever it has to be rebuilt: the
+/// Where a profile's driver comes from whenever it has to be rebuilt: the
 /// vendored node and CLI, the browser's CURRENT endpoint, the output
-/// directory, and - for a named context - its storage file.
+/// directory, and - for a named profile - its storage file.
 pub(super) struct DriverStart<'a> {
     pub node: &'a Path,
     pub cli: &'a Path,
@@ -56,11 +56,11 @@ pub(super) struct DriverStart<'a> {
     /// port. The endpoint string alone would compare equal there.
     pub identity: &'a str,
     pub output: &'a Path,
-    /// The named context's storage file; `None` for the browser's own.
+    /// The named profile's storage file; `None` for the browser's own.
     pub storage: Option<&'a Path>,
-    /// The named context's saved tabs, reopened through a driver built fresh:
+    /// The named profile's saved tabs, reopened through a driver built fresh:
     /// a build that skipped them would let the save that follows write the
-    /// empty page over them, so a browser change would eat the context's
+    /// empty page over them, so a browser change would eat the profile's
     /// pages. `None` for the browser's own context, which reopens nothing.
     pub tabs: Option<&'a Path>,
 }
@@ -71,21 +71,21 @@ impl DriverStart<'_> {
     }
 }
 
-/// The driver a context holds, and the browser identity it was built against.
+/// The driver a profile holds, and the browser identity it was built against.
 struct Held {
     identity: String,
     driver: Option<Arc<Driver>>,
 }
 
-/// A context and the driver that serves it.
+/// A profile and the driver that serves it.
 ///
-/// The lock is held across one call: calls to one context run in order, while
-/// different contexts run in parallel over their own drivers.
-pub struct Context {
+/// The lock is held across one call: calls to one profile run in order, while
+/// different profiles run in parallel over their own drivers.
+pub struct Profile {
     held: Mutex<Held>,
 }
 
-impl Context {
+impl Profile {
     pub(super) fn new() -> Self {
         Self { held: Mutex::new(Held { identity: String::new(), driver: None }) }
     }
@@ -101,7 +101,7 @@ impl Context {
         }
     }
 
-    /// One call through this context's driver, rebuilt when it is not there,
+    /// One call through this profile's driver, rebuilt when it is not there,
     /// when it died, or when the browser it was built against moved.
     pub(super) async fn call(
         &self,
@@ -114,7 +114,7 @@ impl Context {
         routed_call(&driver, tool, &args).await
     }
 
-    /// Save the context's cookies and open tabs, through the same lock.
+    /// Save the profile's cookies and open tabs, through the same lock.
     pub(super) async fn save(
         &self,
         start: &DriverStart<'_>,
@@ -147,11 +147,11 @@ impl Context {
 /// same port); a mismatch is the one thing that rebuilds a live-looking
 /// driver.
 ///
-/// **A build reopens the context's saved tabs.** An isolated driver's browser
+/// **A build reopens the profile's saved tabs.** An isolated driver's browser
 /// context is its own, so a rebuilt driver starts on a blank page and the
 /// save that follows every call would write that blank over the saved tabs -
 /// which is why the reopen belongs here, on every build, rather than only on
-/// the attach path: a browser that died under a context is a build too.
+/// the attach path: a browser that died under a profile is a build too.
 async fn live_driver(held: &mut Held, start: &DriverStart<'_>) -> Result<Arc<Driver>, String> {
     if held.identity == start.identity
         && let Some(driver) = held.driver.as_ref()
@@ -168,11 +168,11 @@ async fn live_driver(held: &mut Held, start: &DriverStart<'_>) -> Result<Arc<Dri
     Ok(fresh)
 }
 
-/// A named context: it belongs to the session that opened it, and it keeps
+/// A named profile: it belongs to the session that opened it, and it keeps
 /// where its cookies and its open tabs are saved.
 pub struct Named {
     pub(super) owner: Seat,
-    pub(super) context: Context,
+    pub(super) profile: Profile,
     pub(super) storage: std::path::PathBuf,
     pub(super) tabs: std::path::PathBuf,
 }
@@ -189,20 +189,20 @@ async fn routed_call(driver: &Driver, tool: &str, args: &Value) -> Result<Vec<Re
 }
 
 impl Named {
-    /// The paths and the owner a named context is opened with. **Its driver
-    /// is built on the first call**, not here: a session that names a context
+    /// The paths and the owner a named profile is opened with. **Its driver
+    /// is built on the first call**, not here: a session that names a profile
     /// and then drives it pays for the driver once, and one that names it and
     /// stops pays nothing.
     pub(super) fn open(owner: Seat, name: &str, paths: &StackPaths) -> Self {
         Self {
             owner,
-            context: Context::new(),
-            storage: paths.contexts.join(format!("{name}.json")),
-            tabs: paths.contexts.join(format!("{name}.tabs")),
+            profile: Profile::new(),
+            storage: paths.profiles.join(format!("{name}.json")),
+            tabs: paths.profiles.join(format!("{name}.tabs")),
         }
     }
 
-    /// One call through this context, then its save.
+    /// One call through this profile, then its save.
     ///
     /// The save runs whether the call answered or failed: a failed call can
     /// still have moved the page. A save that fails is the client's own
@@ -213,20 +213,20 @@ impl Named {
         tool: &str,
         args: Value,
     ) -> Result<Vec<ReplyPart>, String> {
-        let outcome = self.context.call(start, tool, args).await;
-        if let Err(why) = self.context.save(start, &self.storage, &self.tabs).await {
-            tauri_plugin_log::log::warn!("a browser context's save failed: {why}");
+        let outcome = self.profile.call(start, tool, args).await;
+        if let Err(why) = self.profile.save(start, &self.storage, &self.tabs).await {
+            tauri_plugin_log::log::warn!("a browser profile's save failed: {why}");
         }
         outcome
     }
 
-    /// Save the context's cookies and its open tabs, without a call.
+    /// Save the profile's cookies and its open tabs, without a call.
     pub(super) async fn save(&self, start: &DriverStart<'_>) -> Result<(), String> {
-        self.context.save(start, &self.storage, &self.tabs).await
+        self.profile.save(start, &self.storage, &self.tabs).await
     }
 }
 
-/// The save itself: the driver writes the context's cookies to its storage
+/// The save itself: the driver writes the profile's cookies to its storage
 /// file and hands back its open tab URLs, which go to the tabs file.
 async fn save(driver: &Driver, storage: &Path, tabs: &Path) -> Result<(), String> {
     let parts = driver
@@ -243,11 +243,11 @@ async fn save(driver: &Driver, storage: &Path, tabs: &Path) -> Result<(), String
     save_tabs(tabs, &urls)
 }
 
-/// Reopen a context's saved tabs through the driver's own tab tool, so the
+/// Reopen a profile's saved tabs through the driver's own tab tool, so the
 /// driver's tab order and current-tab bookkeeping stay its own.
 ///
 /// A tab that will not open is logged and the rest go on: one dead URL is not
-/// a reason to refuse the whole context.
+/// a reason to refuse the whole profile.
 async fn reopen_tabs(driver: &Driver, tabs: &Path) {
     for url in saved_tabs(tabs) {
         if let Err(why) =
@@ -258,22 +258,21 @@ async fn reopen_tabs(driver: &Driver, tabs: &Path) {
     }
 }
 
-/// What a session naming a context gets.
+/// What a session naming a profile gets.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Verdict {
-    /// Drive the context already under that name, which the caller owns.
+    /// Drive the profile already under that name, which the caller owns.
     Drive,
-    /// Open it: no context carries that name yet.
+    /// Open it: no profile carries that name yet.
     Open,
     /// Answer this instead.
     Refuse(String),
 }
 
-/// Why a name cannot be a context, or `None` when it can.
+/// Why a name cannot be a profile, or `None` when it can.
 ///
-/// A context's name becomes a file name under the profile, so it is held to
-/// what is safe there: a name carrying a separator is a name trying to write
-/// somewhere else.
+/// A profile's name becomes a file name, so it is held to what is safe there:
+/// a name carrying a separator is a name trying to write somewhere else.
 pub(super) fn name_refusal(name: &str) -> Option<String> {
     let allowed = !name.is_empty()
         && name.len() <= 64
@@ -282,7 +281,7 @@ pub(super) fn name_refusal(name: &str) -> Option<String> {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     (!allowed).then(|| {
         format!(
-            "'{name}' cannot be a context name: 1 to 64 characters of letters, digits, \
+            "'{name}' cannot be a profile name: 1 to 64 characters of letters, digits, \
              dot, dash or underscore"
         )
     })
@@ -294,13 +293,13 @@ pub(super) fn verdict(name: &str, seat: &Seat, held: Option<&Seat>) -> Verdict {
         None => Verdict::Open,
         Some(owner) if owner == seat => Verdict::Drive,
         Some(owner) => Verdict::Refuse(format!(
-            "the context '{name}' belongs to {owner}; another session attaches to it only \
+            "the profile '{name}' belongs to {owner}; another session attaches to it only \
              after it is released"
         )),
     }
 }
 
-/// The tab URLs saved for a context: one per line, blanks and the browser's
+/// The tab URLs saved for a profile: one per line, blanks and the browser's
 /// own empty page left out, in the order they were saved.
 pub(super) fn saved_tabs(path: &Path) -> Vec<String> {
     let Ok(saved) = std::fs::read_to_string(path) else {
@@ -314,14 +313,14 @@ pub(super) fn saved_tabs(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Save a context's open tabs, one URL per line.
+/// Save a profile's open tabs, one URL per line.
 pub(super) fn save_tabs(path: &Path, urls: &[String]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|why| format!("the context's tab file cannot be written: {why}"))?;
+            .map_err(|why| format!("the profile's tab file cannot be written: {why}"))?;
     }
     std::fs::write(path, urls.join("\n"))
-        .map_err(|why| format!("the context's tab file cannot be written: {why}"))
+        .map_err(|why| format!("the profile's tab file cannot be written: {why}"))
 }
 
 #[cfg(test)]
@@ -341,8 +340,8 @@ mod tests {
         assert_eq!(verdict("hunt", &opener, Some(&opener)), Verdict::Drive);
     }
 
-    /// **The spec's own acceptance: two sessions, one context name, the
-    /// second refused by name.** The refusal carries the context and its
+    /// **The spec's own acceptance: two sessions, one profile name, the
+    /// second refused by name.** The refusal carries the profile and its
     /// owner, since a session reading it has to know which of its calls was
     /// turned away and whose it is.
     #[test]
@@ -356,11 +355,11 @@ mod tests {
         assert!(refusal.contains("Busytools/forge/client-dev"), "{refusal}");
     }
 
-    /// A name that cannot become a file under the profile is refused with the
-    /// rule, rather than sanitised into some other name the session did not
-    /// ask for.
+    /// A name that cannot become a file for the data directory is refused
+    /// with the rule, rather than sanitised into some other name the session
+    /// did not ask for.
     #[test]
-    fn a_name_that_cannot_be_a_context_is_refused_with_the_rule() {
+    fn a_name_that_cannot_be_a_profile_is_refused_with_the_rule() {
         for bad in ["", ".", "..", "a/b", "a b", "job hunt", "caf\u{e9}", "../escape"] {
             let refusal = name_refusal(bad).unwrap_or_else(|| panic!("{bad:?} is refused"));
             assert!(refusal.contains("1 to 64"), "{refusal}");
@@ -372,12 +371,13 @@ mod tests {
         }
     }
 
-    /// The tabs a context reopens from: what was saved, without the blank page
-    /// a browser starts on, and a missing file is a context that saved none.
+    /// The tabs a profile reopens from: what was saved, without the blank
+    /// page a browser starts on, and a missing file is a profile that saved
+    /// none.
     #[test]
     fn saved_tabs_skip_blanks_and_a_missing_file_is_none() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let file = dir.path().join("ctx.tabs");
+        let file = dir.path().join("profile.tabs");
         assert_eq!(saved_tabs(&file), Vec::<String>::new(), "nothing saved yet");
 
         let urls = vec![

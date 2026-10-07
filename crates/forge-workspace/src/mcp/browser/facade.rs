@@ -39,7 +39,7 @@ pub trait BrowserFacade: Send + Sync {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        context: Option<&str>,
+        profile: Option<&str>,
     ) -> Result<HandOffEnding, String>;
 }
 
@@ -71,7 +71,7 @@ impl BrowserFacade for ProdBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        context: Option<&str>,
+        profile: Option<&str>,
     ) -> Result<HandOffEnding, String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the hand-off was staged".to_owned());
@@ -79,7 +79,7 @@ impl BrowserFacade for ProdBrowserFacade {
         let handoff = HandOff {
             id: uuid::Uuid::new_v4(),
             reason: reason.to_owned(),
-            context: context.map(str::to_owned),
+            profile: profile.map(str::to_owned),
         };
         let (id, answer) = workspace.register_browser_hand_off(seat, handoff);
         let guard =
@@ -163,10 +163,10 @@ impl BrowserFacade for MockBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        context: Option<&str>,
+        profile: Option<&str>,
     ) -> Result<HandOffEnding, String> {
         self.seats.lock().push(seat.clone());
-        self.hand_offs.lock().push((reason.to_owned(), context.map(str::to_owned)));
+        self.hand_offs.lock().push((reason.to_owned(), profile.map(str::to_owned)));
         self.hand_off_answer.lock().clone()
     }
 }

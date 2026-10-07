@@ -2,18 +2,18 @@
 //! profile and the drivers, and answers the asks a session's browser tools
 //! send over the socket.
 //!
-//! **One browser, one profile, one driver per context**, and the browser
-//! outlives the client: it is launched detached against a profile under the
-//! app-support directory, so logins and cookies survive a client restart and
-//! a forge restart touches nothing here (spec section 3). The browser's own
-//! context belongs to the profile and is shared by every session; a NAMED
-//! context is a driver of its own over the same browser, owned by the session
-//! that opened it and kept in [`contexts`].
+//! **One browser, one driver for the shared context, one per named
+//! profile**, and the browser outlives the client: it is launched detached
+//! against a data directory under the app-support directory, so logins and
+//! cookies survive a client restart and a forge restart touches nothing here
+//! (spec section 3). The browser's own context is shared by every session; a
+//! NAMED profile is a driver of its own over the same browser, owned by the
+//! session that opened it and kept in [`profiles`].
 //!
 //! The pieces:
 //! - [`chromium`] - where the vendored Chromium is, how it is launched, and
 //!   how a launch is found again after a restart.
-//! - [`contexts`] - which names are usable, who owns one, and what it
+//! - [`profiles`] - which names are usable, who owns one, and what it
 //!   reopens from.
 //! - [`driver`] - upstream `@playwright/mcp` as a child process, spoken to as
 //!   an MCP client.
@@ -25,9 +25,9 @@
 #[cfg(all(desktop, target_os = "macos"))]
 pub mod cef;
 pub mod chromium;
-pub mod contexts;
 pub mod custom;
 pub mod driver;
+pub mod profiles;
 pub mod screencast;
 
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ use std::sync::Arc;
 use tauri::Emitter as _;
 use tauri::Manager as _;
 
-use contexts::{Context, DriverStart, Named, Seat};
+use profiles::{DriverStart, Named, Profile, Seat};
 use driver::ReplyPart;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -48,15 +48,16 @@ use tokio::sync::Mutex;
 pub struct StackPaths {
     /// The vendored tree: node, the driver, the Chromium.
     pub stack: PathBuf,
-    /// The browser's own profile: logins, cookies, the HTTP cache, and the
-    /// `DevToolsActivePort` file a launch writes.
-    pub profile: PathBuf,
+    /// The browser's own data directory - the `--user-data-dir` a launch is
+    /// given: logins, cookies, the HTTP cache, and the `DevToolsActivePort`
+    /// file a launch writes.
+    pub user_data: PathBuf,
     /// Where upstream's own file-writing tools land when a call names no
     /// filename.
     pub output: PathBuf,
-    /// Where a named context keeps its cookies and its open tabs: one pair of
+    /// Where a named profile keeps its cookies and its open tabs: one pair of
     /// files per name.
-    pub contexts: PathBuf,
+    pub profiles: PathBuf,
 }
 
 impl StackPaths {
@@ -97,9 +98,9 @@ impl StackPaths {
         };
         Self {
             stack,
-            profile: data.join("browser/profile"),
+            user_data: data.join("browser/user-data"),
             output: data.join("browser/output"),
-            contexts: data.join("browser/contexts"),
+            profiles: data.join("browser/profiles"),
         }
     }
 }
@@ -113,9 +114,10 @@ pub struct BrowserHost {
     /// one profile - and a hand-off's `show` racing a first call cannot leave
     /// two browsers on one profile either.
     launch: Mutex<()>,
-    /// The browser's own context, shared by every session.
-    default: Mutex<Option<Arc<Context>>>,
-    /// The named contexts, by name.
+    /// The shared profile: the browser's own context, one driver for every
+    /// session that names none.
+    shared: Mutex<Option<Arc<Profile>>>,
+    /// The named profiles, by name.
     named: Mutex<HashMap<String, Arc<Named>>>,
     /// The takeover's live view, when one is up.
     live: Mutex<Option<screencast::Live>>,
@@ -145,7 +147,7 @@ impl BrowserHost {
         Self {
             paths: Ok(paths),
             launch: Mutex::new(()),
-            default: Mutex::new(None),
+            shared: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
             takeover_up: std::sync::atomic::AtomicBool::new(false),
@@ -161,7 +163,7 @@ impl BrowserHost {
         Self {
             paths: Err(why),
             launch: Mutex::new(()),
-            default: Mutex::new(None),
+            shared: Mutex::new(None),
             named: Mutex::new(HashMap::new()),
             live: Mutex::new(None),
             takeover_up: std::sync::atomic::AtomicBool::new(false),
@@ -172,8 +174,8 @@ impl BrowserHost {
 
     /// Run one browser tool for a session.
     ///
-    /// No `context` argument drives the browser's own context. A name drives
-    /// the named context under it, opened on first use by the asking session;
+    /// No `profile` argument drives the browser's own context. A name drives
+    /// the named profile under it, opened on first use by the asking session;
     /// a name another session already holds is refused with the owner's name.
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
@@ -186,11 +188,11 @@ impl BrowserHost {
         tool: &str,
         args: Value,
     ) -> Result<Vec<ReplyPart>, String> {
-        let (context, args) = take_context(args)?;
-        // A name that cannot be a context is decided before anything else: no
+        let (profile, args) = take_profile(args)?;
+        // A name that cannot be a profile is decided before anything else: no
         // directory, no lock and no browser is consulted to answer it.
-        if let Some(name) = context.as_deref()
-            && let Some(refusal) = contexts::name_refusal(name)
+        if let Some(name) = profile.as_deref()
+            && let Some(refusal) = profiles::name_refusal(name)
         {
             return Err(refusal);
         }
@@ -202,9 +204,9 @@ impl BrowserHost {
         let endpoint = format!("http://127.0.0.1:{}", active.port);
         let node = driver::node_path(&paths.stack);
         let cli = driver::cli_path(&paths.stack);
-        match context {
+        match profile {
             None => {
-                let context = self.default_context().await;
+                let shared = self.shared_profile().await;
                 let start = DriverStart {
                     node: &node,
                     cli: &cli,
@@ -214,12 +216,12 @@ impl BrowserHost {
                     storage: None,
                     tabs: None,
                 };
-                let outcome = context.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&paths, &context, active.port, outcome.is_err()).await;
+                let outcome = shared.call(&start, tool, args).await;
+                self.forget_a_dead_browser(&paths, &shared, active.port, outcome.is_err()).await;
                 outcome
             }
             Some(name) => {
-                let named = self.named_context(seat, &name).await?;
+                let named = self.named_profile(seat, &name).await?;
                 let start = DriverStart {
                     node: &node,
                     cli: &cli,
@@ -230,7 +232,7 @@ impl BrowserHost {
                     tabs: Some(&named.tabs),
                 };
                 let outcome = named.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&paths, &named.context, active.port, outcome.is_err())
+                self.forget_a_dead_browser(&paths, &named.profile, active.port, outcome.is_err())
                     .await;
                 outcome
             }
@@ -246,33 +248,33 @@ impl BrowserHost {
     async fn forget_a_dead_browser(
         &self,
         paths: &StackPaths,
-        context: &Context,
+        profile: &Profile,
         port: u16,
         failed: bool,
     ) {
-        if !failed || chromium::answers_as(&paths.profile, port).await {
+        if !failed || chromium::answers_as(&paths.user_data, port).await {
             return;
         }
-        context.drop_driver().await;
+        profile.drop_driver().await;
     }
 
-    /// Close a named context, whoever opened it: the client's own UI acting on
+    /// Close a named profile, whoever opened it: the client's own UI acting on
     /// the row.
     ///
-    /// **The human's door, and no seat.** A session drives only the context it
+    /// **The human's door, and no seat.** A session drives only the profile it
     /// opened - the verdict refuses the rest - but the row is the person's, and
-    /// a context whose owning session is GONE is exactly what this is for.
+    /// a profile whose owning session is GONE is exactly what this is for.
     /// **The save lands before the name is free, and the map's lock is not
     /// held across it**: a save drives the browser and answers on a call's own
     /// clock, while the lock is only for the map. The name goes only once the
-    /// save landed - a close that could not persist keeps the context, so a
+    /// save landed - a close that could not persist keeps the profile, so a
     /// failed save is not also a lost name.
     pub async fn close(&self, name: &str) -> Result<(), String> {
         let paths = self.paths.clone()?;
         let entry = {
             let named = self.named.lock().await;
             let Some(entry) = named.get(name).map(Arc::clone) else {
-                return Err(format!("no browser context is open under '{name}'"));
+                return Err(format!("no browser profile is open under '{name}'"));
             };
             entry
         };
@@ -291,7 +293,7 @@ impl BrowserHost {
         };
         entry.save(&start).await?;
         // Compared before it goes: a name that was re-opened while the save
-        // ran belongs to the new context, not to what was just saved.
+        // ran belongs to the new profile, not to what was just saved.
         let mut named = self.named.lock().await;
         if let Some(held) = named.get(name)
             && Arc::ptr_eq(held, &entry)
@@ -325,21 +327,21 @@ impl BrowserHost {
         // playwright parity wins over the native view (see `chromium::show`
         // for how the person sees it).
         let _launching = self.launch.lock().await;
-        chromium::ensure(&chromium::browser_binary(&paths.stack), &paths.profile).await
+        chromium::ensure(&chromium::browser_binary(&paths.stack), &paths.user_data).await
     }
 
-    /// The named contexts this host holds, oldest name first, for its own
-    /// strip. A context whose driver died but whose name is still held is
+    /// The named profiles this host holds, oldest name first, for its own
+    /// strip. A profile whose driver died but whose name is still held is
     /// listed as not running rather than dropped: the name is owned until it
     /// is released, and a row that vanished would read as released.
-    pub async fn contexts(&self) -> Vec<ContextRow> {
+    pub async fn profiles(&self) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
-        let mut rows: Vec<ContextRow> = named
+        let mut rows: Vec<ProfileRow> = named
             .iter()
-            .map(|(name, entry)| ContextRow {
+            .map(|(name, entry)| ProfileRow {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
-                running: entry.context.is_alive(),
+                running: entry.profile.is_alive(),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -356,7 +358,7 @@ impl BrowserHost {
     pub async fn show(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         let _launching = self.launch.lock().await;
-        chromium::show(&chromium::browser_binary(&paths.stack), &paths.profile).await
+        chromium::show(&chromium::browser_binary(&paths.stack), &paths.user_data).await
     }
 
     /// Take the window back down: the browser closes, and the next agent
@@ -364,7 +366,7 @@ impl BrowserHost {
     /// not answered by this** - Done or Not now is.
     pub async fn hide(&self) -> Result<(), String> {
         let paths = self.paths.clone()?;
-        chromium::hide(&paths.profile).await;
+        chromium::hide(&paths.user_data).await;
         Ok(())
     }
 
@@ -470,47 +472,47 @@ impl BrowserHost {
         Ok(self.last_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
 
-    /// The browser's own context: one, cached, whose driver builds and
-    /// rebuilds itself under its own lock.
+    /// The shared profile: one, cached, whose driver builds and rebuilds
+    /// itself under its own lock.
     ///
-    /// Serialized: a burst of calls arriving on a cold host finds ONE context
+    /// Serialized: a burst of calls arriving on a cold host finds ONE profile
     /// and builds ONE driver, because every call runs through it.
-    async fn default_context(&self) -> Arc<Context> {
-        let mut default = self.default.lock().await;
-        if let Some(context) = default.as_ref() {
-            return Arc::clone(context);
+    async fn shared_profile(&self) -> Arc<Profile> {
+        let mut shared = self.shared.lock().await;
+        if let Some(profile) = shared.as_ref() {
+            return Arc::clone(profile);
         }
-        let context = Arc::new(Context::new());
-        *default = Some(Arc::clone(&context));
-        context
+        let profile = Arc::new(Profile::new());
+        *shared = Some(Arc::clone(&profile));
+        profile
     }
 
-    /// The named context under `name`, opened when it is not there.
+    /// The named profile under `name`, opened when it is not there.
     ///
     /// The map's lock is held across an open, so two sessions naming one fresh
-    /// context race at the verdict rather than both opening: the first opens
+    /// profile race at the verdict rather than both opening: the first opens
     /// and owns it, and the second is refused by the same rule as any other
-    /// attach. A context whose driver died between calls needs nothing here -
+    /// attach. A profile whose driver died between calls needs nothing here -
     /// its next call rebuilds the driver over the saved files.
-    async fn named_context(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
-        if let Some(refusal) = contexts::name_refusal(name) {
+    async fn named_profile(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
+        if let Some(refusal) = profiles::name_refusal(name) {
             return Err(refusal);
         }
         let paths = self.paths.clone()?;
         let mut named = self.named.lock().await;
         let held = named.get(name).map(|entry| &entry.owner);
-        match contexts::verdict(name, seat, held) {
-            contexts::Verdict::Refuse(refusal) => Err(refusal),
-            contexts::Verdict::Drive => {
+        match profiles::verdict(name, seat, held) {
+            profiles::Verdict::Refuse(refusal) => Err(refusal),
+            profiles::Verdict::Drive => {
                 let Some(entry) = named.get(name).map(Arc::clone) else {
-                    return Err(format!("the context '{name}' went away while it was read"));
+                    return Err(format!("the profile '{name}' went away while it was read"));
                 };
                 Ok(entry)
             }
-            contexts::Verdict::Open => {
-                // The saved tabs are reopened by the context's first CALL,
+            profiles::Verdict::Open => {
+                // The saved tabs are reopened by the profile's first CALL,
                 // where its driver is built: opening the name here costs
-                // nothing, and a session that names a context and never
+                // nothing, and a session that names a profile and never
                 // drives it holds no driver at all.
                 let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
                 named.insert(name.to_owned(), Arc::clone(&fresh));
@@ -520,22 +522,22 @@ impl BrowserHost {
     }
 }
 
-/// Take the `context` argument off a call.
+/// Take the `profile` argument off a call.
 ///
-/// It chooses the context and no driver's schema declares it, so it never
-/// reaches a tool. A `context` that is not a name is the call's own mistake,
+/// It chooses the profile and no driver's schema declares it, so it never
+/// reaches a tool. A `profile` that is not a name is the call's own mistake,
 /// answered rather than guessed at.
-fn take_context(mut args: Value) -> Result<(Option<String>, Value), String> {
+fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
     let Some(fields) = args.as_object_mut() else {
         return Ok((None, args));
     };
-    let Some(context) = fields.remove("context") else {
+    let Some(profile) = fields.remove("profile") else {
         return Ok((None, args));
     };
-    match context {
+    match profile {
         Value::Null => Ok((None, args)),
         Value::String(name) => Ok((Some(name), args)),
-        other => Err(format!("`context` is the name of a context, not {other}")),
+        other => Err(format!("`profile` is the name of a profile, not {other}")),
     }
 }
 
@@ -650,9 +652,9 @@ pub async fn browser_used(host: tauri::State<'_, Arc<BrowserHost>>) -> Result<bo
     host.used().await
 }
 
-/// One named context, as the client's own browser strip draws it.
+/// One named profile, as the client's own browser strip draws it.
 #[derive(Debug, serde::Serialize)]
-pub struct ContextRow {
+pub struct ProfileRow {
     /// The name a session drives it by.
     pub name: String,
     /// The slot of the session that opened it, as its refusal prints.
@@ -661,22 +663,22 @@ pub struct ContextRow {
     pub running: bool,
 }
 
-/// The named contexts this host holds, for its own browser strip.
+/// The named profiles this host holds, for its own browser strip.
 ///
-/// The contexts are the CLIENT's own state - it owns the drivers - so this is
+/// The profiles are the CLIENT's own state - it owns the drivers - so this is
 /// the client reading itself, not a server read; the strip needs no new view
 /// surface for it.
 #[tauri::command]
-pub async fn browser_contexts(
+pub async fn browser_profiles(
     host: tauri::State<'_, Arc<BrowserHost>>,
-) -> Result<Vec<ContextRow>, String> {
-    Ok(host.contexts().await)
+) -> Result<Vec<ProfileRow>, String> {
+    Ok(host.profiles().await)
 }
 
-/// Close a named context from the client's own UI: the strip's row, acting
+/// Close a named profile from the client's own UI: the strip's row, acting
 /// for the person rather than for a session.
 #[tauri::command]
-pub async fn browser_context_close(
+pub async fn browser_profile_close(
     host: tauri::State<'_, Arc<BrowserHost>>,
     name: String,
 ) -> Result<(), String> {
@@ -707,17 +709,17 @@ mod tests {
         );
     }
 
-    /// A name that cannot be a context is decided before anything else: no
+    /// A name that cannot be a profile is decided before anything else: no
     /// directory, no lock and no driver is consulted to answer it.
     #[tokio::test]
-    async fn a_bad_context_name_is_refused_before_anything_is_started() {
+    async fn a_bad_profile_name_is_refused_before_anything_is_started() {
         let host =
             BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
         let refused = host
             .call(
                 &seat(),
                 "browser_navigate",
-                json!({ "url": "https://example.com", "context": "a b" }),
+                json!({ "url": "https://example.com", "profile": "a b" }),
             )
             .await;
         let Err(why) = refused else {
@@ -758,14 +760,14 @@ mod tests {
         );
     }
 
-    /// A host nothing has named holds no contexts, and answers the strip with
-    /// an empty list rather than an error: no contexts is a state, not a
+    /// A host nothing has named holds no profiles, and answers the strip with
+    /// an empty list rather than an error: no profiles is a state, not a
     /// failure.
     #[tokio::test]
-    async fn a_fresh_host_holds_no_contexts() {
+    async fn a_fresh_host_holds_no_profiles() {
         let host =
             BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
-        assert!(host.contexts().await.is_empty());
+        assert!(host.profiles().await.is_empty());
     }
 
     /// **The derivation `resolve` makes, apart from the handle.** Everything
@@ -784,15 +786,21 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack"),
             "with nothing vendored, the stack is the checkout the binary was built from",
         );
-        assert!(absent.profile.starts_with(data.path()), "{absent:?}");
+        assert!(absent.user_data.starts_with(data.path()), "{absent:?}");
         assert!(absent.output.starts_with(data.path()), "{absent:?}");
-        assert!(absent.contexts.starts_with(data.path()), "{absent:?}");
+        assert!(absent.profiles.starts_with(data.path()), "{absent:?}");
         assert!(
-            !absent.profile.starts_with(resource.path()),
+            !absent.user_data.starts_with(resource.path()),
             "and none of them hangs off the resource directory: {absent:?}",
         );
-        assert_ne!(absent.profile, absent.output, "the profile is not where output files land");
-        assert_ne!(absent.contexts, absent.profile, "a context's files are not the profile itself");
+        assert_ne!(
+            absent.user_data, absent.output,
+            "the user data dir is not where output files land"
+        );
+        assert_ne!(
+            absent.profiles, absent.user_data,
+            "a profile's files are not the browser's own data dir"
+        );
 
         std::fs::create_dir_all(resource.path().join("browser-stack/node/bin")).expect("dirs");
         std::fs::write(resource.path().join("browser-stack/node/bin/node"), b"").expect("node");
@@ -804,30 +812,30 @@ mod tests {
         );
     }
 
-    /// `context` chooses the context and never reaches a tool; a call without
-    /// one is a call for the browser's own context; and a `context` that is
+    /// `profile` chooses the profile and never reaches a tool; a call without
+    /// one is a call for the browser's own context; and a `profile` that is
     /// not a name is the call's mistake, answered.
     #[test]
-    fn a_context_argument_is_taken_off_and_must_be_a_name() {
+    fn a_profile_argument_is_taken_off_and_must_be_a_name() {
         let (chosen, rest) =
-            take_context(json!({ "url": "https://example.com", "context": "hunt" }))
+            take_profile(json!({ "url": "https://example.com", "profile": "hunt" }))
                 .expect("a name is taken off");
         assert_eq!(chosen, Some("hunt".to_owned()));
         assert_eq!(rest, json!({ "url": "https://example.com" }));
 
         let (none, rest) =
-            take_context(json!({ "url": "https://example.com" })).expect("no context");
+            take_profile(json!({ "url": "https://example.com" })).expect("no profile");
         assert_eq!(none, None);
         assert_eq!(rest, json!({ "url": "https://example.com" }));
 
-        let (none, rest) = take_context(Value::Null).expect("a bare call");
+        let (none, rest) = take_profile(Value::Null).expect("a bare call");
         assert_eq!(none, None);
         assert_eq!(rest, Value::Null);
 
-        let (none, _) = take_context(json!({ "context": null })).expect("null is no context");
+        let (none, _) = take_profile(json!({ "profile": null })).expect("null is no profile");
         assert_eq!(none, None);
 
-        let refused = take_context(json!({ "context": 7 })).expect_err("a number is not a name");
-        assert!(refused.contains("`context` is the name"), "{refused}");
+        let refused = take_profile(json!({ "profile": 7 })).expect_err("a number is not a name");
+        assert!(refused.contains("`profile` is the name"), "{refused}");
     }
 }

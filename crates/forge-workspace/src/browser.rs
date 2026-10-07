@@ -548,7 +548,7 @@ mod tests {
         HandOff {
             id: uuid::Uuid::new_v4(),
             reason: reason.to_owned(),
-            context: Some("hunt".to_owned()),
+            profile: Some("hunt".to_owned()),
         }
     }
 
