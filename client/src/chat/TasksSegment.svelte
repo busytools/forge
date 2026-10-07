@@ -176,7 +176,7 @@
               {:else}
                 <span class="hollow"></span>
               {/if}
-              <span class="nm lead">{row.subject}</span>
+              <span class="nm lead">{row.display}</span>
               {#if row.owner !== null}
                 <span class="n">{row.owner}</span>
               {/if}

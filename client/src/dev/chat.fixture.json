@@ -913,6 +913,7 @@
     {
       "id": "t1",
       "status": "in_progress",
+      "display": "Redesigning the session page's rows",
       "subject": "Redesign the session page against the TUI's structure",
       "owner": "lead",
       "meta": "in progress · 2h"
@@ -920,6 +921,7 @@
     {
       "id": "t2",
       "status": "blocked",
+      "display": "Decide the subagent card's collapse rule",
       "subject": "Decide the subagent card's collapse rule",
       "owner": "lead",
       "meta": "blocked on a design call"
@@ -927,6 +929,7 @@
     {
       "id": "t3",
       "status": "completed",
+      "display": "Merge the layout pass",
       "subject": "Merge the layout pass",
       "owner": "steward",
       "meta": "completed"

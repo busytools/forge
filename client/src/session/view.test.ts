@@ -745,7 +745,7 @@ describe('the tasks the strip draws', () => {
           id: 't2',
           project_name: 'proj',
           subject: 'still going',
-          active_form: null,
+          active_form: 'Going still',
           detail: null,
           status: 'in_progress',
           owner: LEAD,
@@ -759,6 +759,8 @@ describe('the tasks the strip draws', () => {
       LEAD,
     );
     expect(rows[0]?.subject).toBe('still going');
+    expect(rows[0]?.display, 'a running row leads with its active form').toBe('Going still');
+    expect(rows[1]?.display, 'and a settled one keeps its subject').toBe('done already');
     expect(rows[0]?.status, 'in progress leads, and the row draws its own mark').toBe(
       'in_progress',
     );

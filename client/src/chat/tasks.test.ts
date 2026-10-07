@@ -10,6 +10,7 @@ import type { TaskStripRow } from '../session/view';
 const row = (over: Partial<TaskStripRow> = {}): TaskStripRow => ({
   id: 't1',
   status: 'in_progress',
+  display: 'a task',
   subject: 'a task',
   owner: null,
   meta: 'in progress',

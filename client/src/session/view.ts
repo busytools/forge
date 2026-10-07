@@ -170,6 +170,8 @@ export interface TaskStripRow {
   id: string;
   /** Where the task is, which the row's own mark draws. */
   status: Task['status'];
+  /** The row's own text: the active form while one runs, else the subject. */
+  display: string;
   subject: string;
   owner: string | null;
   /** The facts beside the owner: how far along, what it produced, how long. */
@@ -909,6 +911,12 @@ export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
   return ordered.map((task) => ({
     id: task.id,
     status: task.status,
+    // A running row leads with its active form, the terminal's own rule: an
+    // empty one falls back to the subject rather than drawing bare.
+    display:
+      task.status === 'in_progress' && task.active_form !== null && task.active_form !== ''
+        ? task.active_form
+        : task.subject,
     subject: task.subject,
     owner: task.owner === null ? null : task.owner.label,
     meta: taskMeta(task),

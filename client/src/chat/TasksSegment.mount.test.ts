@@ -38,6 +38,7 @@ const TASKS: TaskStripRow[] = [
   {
     id: 't1',
     status: 'in_progress',
+    display: 'Landing the schedules row',
     subject: 'Land the schedules row',
     owner: 'lead',
     meta: 'in progress \u{b7} 2h',
@@ -45,6 +46,7 @@ const TASKS: TaskStripRow[] = [
   {
     id: 't2',
     status: 'blocked',
+    display: 'Port the cmdline rule',
     subject: 'Port the cmdline rule',
     owner: 'builder',
     meta: 'blocked on a design call',
@@ -52,6 +54,7 @@ const TASKS: TaskStripRow[] = [
   {
     id: 't3',
     status: 'completed',
+    display: 'Draw the connector row',
     subject: 'Draw the connector row',
     owner: null,
     meta: 'completed',
@@ -59,6 +62,7 @@ const TASKS: TaskStripRow[] = [
   {
     id: 't4',
     status: 'pending',
+    display: 'Decide the collapse rule',
     subject: 'Decide the collapse rule',
     owner: null,
     meta: 'pending',
@@ -218,8 +222,8 @@ describe("the tasks row's interaction state machine", () => {
     expect(rows()[0]?.querySelector('.ring'), 'in progress wears the live ring').not.toBeNull();
     expect(
       rows()[0]?.querySelector('.nm')?.textContent?.trim(),
-      'the subject leads, in the accent the sibling rows use',
-    ).toBe('Land the schedules row');
+      'a running row leads with its active form, in the accent the sibling rows use',
+    ).toBe('Landing the schedules row');
     expect(
       rows()[0]?.querySelector('.nm')?.classList.contains('lead'),
       'and takes the row, so a long subject elides instead of pushing the owner out',
@@ -255,7 +259,7 @@ describe("the tasks row's interaction state machine", () => {
     expect(
       lit?.querySelector('.nm')?.textContent?.trim(),
       'and it is the row of the task that moved',
-    ).toBe('Land the schedules row');
+    ).toBe('Landing the schedules row');
 
     vi.advanceTimersByTime(6500);
     flushSync();
