@@ -515,6 +515,37 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([bare])), 'a summary-less envelope is not claimed').toEqual(['user']);
   });
 
+  it('draws the invisible-output nudge as the page own line, never the bracket', () => {
+    // The harness asks the MODEL to continue after a response with no visible
+    // output - a marked frame nobody typed - and the terminal draws the raw
+    // bracket; the page draws its own line (#1858).
+    const nudge = heard(
+      [
+        text(
+          '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
+    const units = fold([nudge]);
+
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    const [row] = units;
+    expect(
+      row?.kind === 'notice' ? row.notice.text : '',
+      'the page own words, not the raw bracket',
+    ).toBe('no visible output - the harness asked the agent to continue');
+
+    // A bracket this does not recognize falls through: with the stamp it
+    // draws as the raw marked line, the shape it had before.
+    const odd = heard([text('[Some other bracketed sentence entirely.]')], { isSynthetic: true });
+    const [held] = fold([odd]);
+    expect(
+      held?.kind === 'notice' ? held.notice.text : '',
+      'an unknown bracket draws as itself',
+    ).toContain('[Some other bracketed sentence entirely.]');
+  });
+
   it("hangs the harness's image note on the call that read the picture", () => {
     // The image rides the Read call's own result; the note arrives right after
     // as a user frame. On that call's row it is the picture's caption; as the
