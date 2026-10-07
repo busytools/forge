@@ -748,11 +748,11 @@ async fn commits_in_range(
         };
     // Best-effort: a failed marks walk leaves every file `Modified`
     // rather than failing the chain.
-    let marks =
-        match run_git(cwd, &["log", &cap, "--name-status", "--format=%h%x1f", &range]).await {
-            GitOutput::Ok(raw) => parse_commit_marks(&raw),
-            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => HashMap::new(),
-        };
+    let marks = match run_git(cwd, &["log", &cap, "--name-status", "--format=%h%x1f", &range]).await
+    {
+        GitOutput::Ok(raw) => parse_commit_marks(&raw),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => HashMap::new(),
+    };
 
     let mut commits = Vec::new();
     let mut open: Option<(String, String, u64)> = None;
