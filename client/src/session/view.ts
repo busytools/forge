@@ -184,20 +184,13 @@ function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
  */
 export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[] {
   const unseen = wire.unseen;
-  const wants = (row: AgentRow): boolean => {
-    if (row.pending !== null || row.failed_turn !== null) return true;
-    const state = stateOf(row, unseen);
-    return (
-      state.kind === 'lifecycle' &&
-      (state.lifecycle === 'Attention' ||
-        state.lifecycle === 'AuthRequired' ||
-        state.lifecycle === 'Failed')
-    );
-  };
-  const working = (row: AgentRow): boolean => {
-    const state = stateOf(row, unseen);
-    return state.kind === 'lifecycle' && state.lifecycle === 'Running';
-  };
+  // **One rule with the rail's own ranker**: the palette and the rail draw
+  // the same seat two layers apart, so a seat that reads working on the rail
+  // cannot read asleep here. rankOf's 0/1/2 is needs-person / working /
+  // asleep.
+  const rank = (row: AgentRow): number => rankOf(stateOf(row, unseen), row.pending);
+  const wants = (row: AgentRow): boolean => rank(row) === 0;
+  const working = (row: AgentRow): boolean => rank(row) === 1;
   const seat = (row: AgentRow): PaletteRow => ({
     id: `${row.slot.org}/${row.slot.project}/${row.label}`,
     kind: 'seat',
@@ -213,7 +206,7 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
   });
   const seats = wire.agents;
   const sections: PaletteSection[] = [
-    { title: 'wants you', rows: seats.filter(wants).map(seat) },
+    { title: 'needs you', rows: seats.filter(wants).map(seat) },
     {
       title: 'working',
       rows: seats.filter((row) => !wants(row) && working(row)).map(seat),

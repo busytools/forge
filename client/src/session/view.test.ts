@@ -885,28 +885,30 @@ describe("the palette's rows", () => {
    * current project's lead wears `lead`, which is where the cursor starts, so
    * Cmd+K then Enter lands on it.
    */
-  it('groups wants-you, working, asleep, commands and doings, in order', () => {
+  it('groups needs-you, working, asleep, commands and doings, in order', () => {
+    // The grouping IS rankOf's: an idle live session ranks as working (the
+    // rail draws it so), and only a sleeping or logged-out one is asleep.
     const wire = withHome({
       agents: [
         agent('waiter', { lifecycle: 'Attention', pending: 'permission' }),
         agent('runner', { lifecycle: 'Running' }),
-        agent('sleeper'),
+        agent('dozer', { lifecycle: 'Sleeping' }),
         agent('lead'),
       ],
     });
     const sections = paletteRows(wire, LEAD);
     expect(sections.map((section) => section.title)).toEqual([
-      'wants you',
+      'needs you',
       'working',
       'asleep',
       'commands',
       'doings',
     ]);
     expect(sections[0]?.rows.map((row) => row.label)).toEqual(['waiter']);
-    expect(sections[0]?.rows[0]?.mark, 'a wanting seat wears the needs mark').toBe('needs');
-    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner']);
-    expect(sections[2]?.rows.map((row) => row.label)).toEqual(['sleeper', 'lead']);
-    const leadRow = sections[2]?.rows.find((row) => row.label === 'lead');
+    expect(sections[0]?.rows[0]?.mark, 'a needing seat wears the needs mark').toBe('needs');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner', 'lead']);
+    expect(sections[2]?.rows.map((row) => row.label)).toEqual(['dozer']);
+    const leadRow = sections[1]?.rows.find((row) => row.label === 'lead');
     expect(leadRow?.lead, 'the lead is the row the cursor starts on').toBe(true);
     expect(leadRow?.href).toBe('/session/TestOrg/proj/lead');
     // The command rows send exactly what the composer sends.
