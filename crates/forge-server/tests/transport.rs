@@ -2109,21 +2109,22 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
         if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
-            let SessionUpdate::WorkChanged { key, work, git: _, pr, closes } = *update else {
+            let SessionUpdate::WorkChanged { key, work, git, pr, closes } = *update else {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
             assert_eq!(work.changed, Some(1), "and carries the count the edit made");
-            moved = Some((work, pr, closes));
+            moved = Some((work, git, pr, closes));
             break;
         }
     }
-    let (work, pr, closes) = moved.expect("a held seat's moved tree reaches the client");
+    let (work, git, pr, closes) = moved.expect("a held seat's moved tree reaches the client");
 
     // The differential: what the update carried is what a read answers, for
-    // all three fields. A fresh page learns the tree from the read alone, so
-    // an update that disagreed with it would draw one row and then correct
-    // itself into another.
+    // every field - the tree behind the row's depth included, which is the
+    // one the pushed path derives rather than forwards. A fresh page learns
+    // the tree from the read alone, so an update that disagreed with it
+    // would draw one row and then correct itself into another.
     let mut reader = connect(&url).await;
     send(
         &mut reader,
@@ -2139,6 +2140,11 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
         serde_json::to_value(&work).expect("encode"),
         data["work"],
         "the pushed row is the row the record answers",
+    );
+    assert_eq!(
+        serde_json::to_value(&git).expect("encode"),
+        data["git"],
+        "and the tree behind the row's depth the seat pushes is the one its read answers",
     );
     assert_eq!(
         serde_json::to_value(&pr).expect("encode"),

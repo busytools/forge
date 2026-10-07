@@ -2417,10 +2417,12 @@ mod tests {
     }
 
     /// A scan as the terminal's inspector reads it: one branch, one worktree
-    /// layer, one PR and one closing issue.
+    /// layer, one chain ahead, one PR and one closing issue. Both depth
+    /// layers are populated so the record-vs-constructor guard covers both
+    /// axes - a derivation omitting either reddens.
     fn scanned() -> GitDiffSnapshot {
-        use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-        use forge_primitives::git_diff::{GitDiffStats, LayerState, RepoGate};
+        use forge_primitives::git::{GitBranch, GitCommit, GitIssueRef, GitPrInfo};
+        use forge_primitives::git_diff::{GitBranchAhead, GitDiffStats, LayerState, RepoGate};
         GitDiffSnapshot {
             branch: GitBranch::Named("worktree-pr".to_owned()),
             pushed_sha: Some("abc123".to_owned()),
@@ -2433,7 +2435,21 @@ mod tests {
                 total_added: 9,
                 total_removed: 2,
             }),
-            branch_ahead: LayerState::Clean,
+            branch_ahead: LayerState::Populated(GitBranchAhead {
+                commit_count: 1,
+                stats: GitDiffStats {
+                    files: Vec::new(),
+                    total_files: 0,
+                    total_added: 0,
+                    total_removed: 0,
+                },
+                commits: vec![GitCommit {
+                    sha: "a1b2c3d".to_owned(),
+                    subject: "the branch's own commit".to_owned(),
+                    stats: GitDiffStats::default(),
+                    time: 1_766_000_000,
+                }],
+            }),
             pr: Some(GitPrInfo {
                 number: 1249,
                 url: "https://example.test/pull/1249".to_owned(),

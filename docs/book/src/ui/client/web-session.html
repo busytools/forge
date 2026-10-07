@@ -2456,22 +2456,28 @@ branch main, nothing to commit</div>
           </span>
           <!-- The tree row, sixth: this seat's branch and what moved in it.
                The hover opens on what the tree IS (the project's, or a
-               worker's worktree), then the branch's commit chain ahead of
-               its default (short sha and subject per commit), then the
-               uncommitted files - a status mark, the path, and +N -M - and
-               the pull request as a link with its state and what it closes.
-               On the default branch with nothing on it the row does not draw
-               at all: that is where work lands, not work. Drawn CLOSED here,
+               worker's worktree), then the pull request as a link with its
+               state and what it closes, then the branch's run against its
+               default with the range's totals, the uncommitted files - a
+               status mark, the path, and signed counts - and the commit
+               chain below them, newest first, each with when it landed and
+               its own files on hover, focus or a tap. On the default branch
+               with nothing on it the row does not draw at all: that is where
+               work lands, not work. The toggle reads branch, commits, PR and
+               `dirty` - figures live in the open list. Drawn CLOSED here,
                like its siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-git"/></svg>
-              web-home-layout &#183; 3 files</button>
+              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty</button>
           </span>
-          <!-- The tasks row, seventh: the PROJECT's set, how much of it is
-               done on the toggle, a mark per state in the open list. A task
-               that moved lights its row for a beat - the reveal's own tint -
-               so the change is known without the list being watched. -->
+          <!-- The tasks row, seventh: the seat's own slice of the set - a
+               lead's top-level board, a worker's own rows, the terminal's
+               own scoping - how much of it is done on the toggle, a mark per
+               state in the open list, a running row leading with its active
+               form. A task that moved lights its row for a beat - the
+               reveal's own tint - so the change is known without the list
+               being watched. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-tasks"/></svg>
