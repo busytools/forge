@@ -45,10 +45,11 @@ pub fn run() {
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
     // platforms answer the same commands, so the client's update line is one
-    // surface either way. The browser's commands ride the same handler - a
-    // second `invoke_handler` would replace this one rather than add to it -
-    // and the host itself is the client's on both platforms, so the mobile arm
-    // registers them too.
+    // surface either way. The browser's commands are DESKTOP-ONLY with the
+    // host itself: the phone's engine is its system WebView, a later phase,
+    // and a page that cannot host never claims the capability - while a
+    // registered command set with no host behind it would hold the exclusive
+    // role and fail every ask.
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
         tauri::generate_handler![

@@ -85,7 +85,8 @@ pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<Stri
 /// stable" until its five-second timeout. The clean marker alone was not
 /// enough (measured: Brave restores regardless of `exit_type`), so the
 /// session-restore data is removed as well - the tabs a launch wants are the
-/// ones on its command line, and named profiles reopen their own saved tabs.
+/// ones on its command line, and a named profile's logins live in its own
+/// data directory, which this never touches.
 /// The marker is written the way a clean exit writes it, with everything else
 /// in the file preserved; a prefs file that cannot be parsed is left alone
 /// rather than clobbered.

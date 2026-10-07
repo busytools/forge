@@ -106,10 +106,11 @@ knowing before changing them:
 
 `client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
 driver, `browser_navigate` and `browser_snapshot` - against the vendored
-driver, and `tests/profiles_live.rs` proves the profiles layer: two drivers
-over one browser with separate cookies, and the ownership-release-reopen
-walk. They are `#[ignore]`d because the stack is absent from a fresh
-checkout; run them where it is vendored:
+driver, and `tests/profiles_live.rs` proves the profiles layer: two names are
+two browsers with separate cookies, show raises the named profile's own
+window on its own page, a second session is refused by name, and a profile
+reopened after a close keeps its logins. They are `#[ignore]`d because the
+stack is absent from a fresh checkout; run them where it is vendored:
 
 ```sh
 cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only

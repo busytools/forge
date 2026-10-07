@@ -8,9 +8,9 @@ export default tseslint.config(
   // and the codegen'd assets), which this project has no tsconfig for, and
   // Stryker's sandbox and reports carry bundled .js this project does not own.
   //
-  // `src-tauri/browser-stack/` is the vendored browser: half a gigabyte of
-  // Chrome, node and the driver, none of it this project's code and none of it
-  // covered by a tsconfig.
+  // `src-tauri/browser-stack/` is the vendored driver: node and
+  // @playwright/mcp, none of it this project's code and none of it covered by
+  // a tsconfig.
   {
     ignores: [
       'dist/',

@@ -75,7 +75,7 @@ function untouched(): Connection {
 /**
  * A connection the strip's own segments may read: the browser segment
  * registers a role listener and reads the role as it draws, so this answers
- * those and refuses nothing - the check never presses Take over.
+ * those and refuses nothing - the check never presses override.
  */
 function browserIdle(): Connection {
   return {

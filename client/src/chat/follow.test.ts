@@ -151,7 +151,7 @@ function stub() {
       return () => watchers.delete(fn);
     },
     // The strip's browser segment registers a role listener and reads the
-    // role as it draws; Take over is never pressed here.
+    // role as it draws; override is never pressed here.
     browserRole: () => false,
     onBrowserRole: () => () => undefined,
     takeBrowserRole: () => undefined,

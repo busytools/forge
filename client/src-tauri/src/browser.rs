@@ -15,8 +15,7 @@
 //! The pieces:
 //! - [`chromium`] - where the machine's browser is found, how it is launched,
 //!   and how a launch is found again after a restart.
-//! - [`profiles`] - which names are usable, who owns one, and what it
-//!   reopens from.
+//! - [`profiles`] - which names are usable and who owns one.
 //! - [`driver`] - upstream `@playwright/mcp` as a child process, spoken to as
 //!   an MCP client.
 //!
@@ -300,8 +299,8 @@ impl BrowserHost {
         chromium::ensure(&binary, user_data).await
     }
 
-    /// The named profiles this host holds, oldest name first, for its own
-    /// strip. A profile whose driver died but whose name is still held is
+    /// The named profiles this host holds, by name, for its own strip. A
+    /// profile whose driver died but whose name is still held is
     /// listed as not running rather than dropped: the name is owned until it
     /// is released, and a row that vanished would read as released.
     pub async fn profiles(&self) -> Vec<ProfileRow> {
@@ -414,10 +413,9 @@ impl BrowserHost {
                 Ok(entry)
             }
             profiles::Verdict::Open => {
-                // The saved tabs are reopened by the profile's first CALL,
-                // where its driver is built: opening the name here costs
-                // nothing, and a session that names a profile and never
-                // drives it holds no driver at all.
+                // The browser and its driver wait for the profile's first
+                // CALL: opening the name here costs nothing, and a session
+                // that names a profile and never drives it holds neither.
                 let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
                 named.insert(name.to_owned(), Arc::clone(&fresh));
                 Ok(fresh)

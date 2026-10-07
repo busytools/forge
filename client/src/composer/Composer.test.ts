@@ -7,8 +7,8 @@ import { hideBrowser, showBrowser } from '../browser/host';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
- * here: outside the shell the real one always rejects, which only ever proved
- * the could-not line.
+ * here: outside the shell the real one answers a reason, which only ever
+ * proved the could-not line.
  */
 vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();

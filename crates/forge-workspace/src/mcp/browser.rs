@@ -6,7 +6,7 @@
 //! `target` ref, so the tools register unprefixed, with upstream's own
 //! descriptions and argument schemas - transcribed from `@playwright/mcp`
 //! 0.0.83's `tools/list`, the capture preserved with the V1 spec. Anything
-//! this family added on top (a `context` name, a forced click) would be a
+//! this family added on top (a `profile` name, a forced click) would be a
 //! shape upstream does not have and a prompt that means something else
 //! here.
 //!
