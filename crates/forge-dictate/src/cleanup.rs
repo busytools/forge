@@ -86,18 +86,7 @@ const TEXT_TASKS: [&str; 5] = [
     "text-classification",
 ];
 
-/// The architectures this runtime's generator can run: llama.cpp's causal
-/// text models.
-///
-/// **This is a guard, not a preference.** An encoder or encoder-decoder gguf
-/// LOADS and then aborts the process - measured on a t5 grammar-repair build,
-/// which took the whole forge down mid-bench through `ggml_abort`, an abort
-/// no caller can catch - so a candidate whose architecture is not one of
-/// these is not offered at all. A gguf that declares no architecture is not
-/// offered either: the risk is a crash, and an undeclared arch is one nobody
-/// can promise.
-const CAUSAL_ARCHS: [&str; 9] =
-    ["qwen2", "qwen3", "llama", "gemma", "gemma2", "gemma3", "mistral", "phi2", "phi3"];
+use crate::normalize::CAUSAL_ARCHS;
 
 /// One repo as the listing describes it, before our own filters.
 #[derive(Debug, Clone, PartialEq, Eq)]

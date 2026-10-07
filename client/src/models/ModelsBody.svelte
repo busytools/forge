@@ -31,6 +31,7 @@
     recordingFacts,
     recordingLength,
     resultFacts,
+    resultHeadline,
     resultVerdict,
     resultWhen,
     roleWord,
@@ -363,15 +364,16 @@
               {@render control(candidate.row)}
             </li>
             {#each candidate.results as result (`${result.tier}/${result.corpus.sha256}`)}
-              <li>
-                <span class="rec">
-                  <span class="facts">
-                    {@render facts(resultFacts(result))} &middot; {resultVerdict(
-                      result,
-                      wire.in_use,
-                      wire.results,
-                    )}
-                  </span>
+              <!-- The run belongs to the candidate above it, so it sits
+                   inside that row rather than between two of them: a line of
+                   numbers with no name reads as nobody's. -->
+              <li class="run">
+                <span class="facts">
+                  {@render facts(resultHeadline(result))} &middot; {resultVerdict(
+                    result,
+                    wire.in_use,
+                    wire.results,
+                  )}
                 </span>
               </li>
             {/each}

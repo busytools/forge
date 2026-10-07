@@ -2348,6 +2348,12 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   flex: 1 1 auto; min-width: 0; }
 .models .rec .facts b { color: var(--muted); font-weight: 500; }
+/* A candidate's own runs: one line each, hung under the candidate rather
+   than between two of them, indented so the name above is what it belongs
+   to. */
+.models .list li.run { display: block; padding: 0 12px 9px 26px; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .list li.run b { color: var(--muted); font-weight: 500; }
 
 /* The recording's meter: the same readings the take card's graph draws, at
    this card's own pitch - one bar per past reading, newest last, held at a

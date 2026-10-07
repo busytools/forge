@@ -24,6 +24,19 @@ mod prompt;
 
 pub use prompt::{Context, Structure, Styling};
 
+/// The architectures this stage's generator can run: llama.cpp's causal text
+/// models.
+///
+/// **A guard, not a preference.** An encoder or encoder-decoder gguf loads
+/// and then aborts the process mid-decode (`ggml_abort` on a cross-attention
+/// input a causal decode never sets), and an abort cannot be caught, so the
+/// check is by name and it happens before the load. The cleanup feed reads
+/// this same list to decide what it offers, so a candidate and the file the
+/// load accepts cannot disagree.
+pub const CAUSAL_ARCHS: [&str; 9] =
+    ["qwen2", "qwen3", "llama", "gemma", "gemma2", "gemma3", "mistral", "phi2", "phi3"];
+
+use std::io::{Read as _, Seek as _};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -53,6 +66,24 @@ pub enum NormalizeError {
         #[source]
         source: llama_cpp_2::LlamaModelLoadError,
     },
+
+    /// The file is not a model this stage runs, refused BEFORE the load.
+    ///
+    /// **The check has to happen here, because the alternative is a process
+    /// abort.** llama.cpp loads an encoder-decoder gguf without complaint and
+    /// then asserts inside the first decode on the cross-attention input a
+    /// causal decode never sets - `llm_graph_input_attn_cross::set_input`,
+    /// measured on a t5 build - and a ggml assert aborts rather than
+    /// returning, so nothing can catch it after the load. The architecture is
+    /// read out of the file's own header first, and a file that declares none
+    /// is refused on the same grounds: an undeclared arch is a promise nobody
+    /// can make.
+    #[error(
+        "{} is {arch}, and the normalizer runs {} only",
+        path.display(),
+        CAUSAL_ARCHS.join(", ")
+    )]
+    NotCausal { path: PathBuf, arch: String },
 
     /// A context could not be created for the loaded weights.
     #[error("could not create an inference context: {0}")]
@@ -141,7 +172,21 @@ impl std::fmt::Debug for Normalizer {
 
 impl Normalizer {
     /// Load weights from a GGUF file.
+    ///
+    /// The architecture is checked against [`CAUSAL_ARCHS`] BEFORE the load -
+    /// see [`NormalizeError::NotCausal`] for why that order is the whole
+    /// point of the check.
     pub fn load(path: &Path) -> Result<Self, NormalizeError> {
+        let arch = architecture(path);
+        if !arch.as_deref().is_some_and(|arch| CAUSAL_ARCHS.contains(&arch)) {
+            return Err(NormalizeError::NotCausal {
+                path: path.to_path_buf(),
+                arch: match arch {
+                    Some(arch) => format!("a {arch} model"),
+                    None => "an architecture this file does not declare".to_owned(),
+                },
+            });
+        }
         let backend = backend()?;
         let params = LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS);
         let model = LlamaModel::load_from_file(backend, path, &params)
@@ -262,6 +307,170 @@ struct Session<'a> {
     batch: LlamaBatch<'a>,
     start: i32,
     budget: usize,
+}
+
+/// The architecture a gguf declares, read from the file's own header.
+///
+/// **Read BEFORE the load, and that order is the point.** llama.cpp loads an
+/// encoder-decoder gguf without complaint and asserts inside the first
+/// decode, and a ggml assert aborts the process - so the file has to be
+/// refused while refusing is still possible. `None` when the header is not a
+/// GGUF one, is malformed, or declares nothing, which the caller refuses on
+/// the same grounds as an architecture it cannot run.
+fn architecture(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0_u8; 24];
+    file.read_exact(&mut head).ok()?;
+    if &head[0..4] != b"GGUF" {
+        return None;
+    }
+    let pairs = u64::from_le_bytes(head[16..24].try_into().ok()?);
+    // A header's own count is a claim like any other: the loop ends at the
+    // count, at the first malformed read, and at the file's end.
+    for _ in 0..pairs.min(4096) {
+        let key = read_string(&mut file)?;
+        let kind = read_u32(&mut file)?;
+        if key == "general.architecture" {
+            return (kind == GGUF_STRING).then(|| read_string(&mut file)).flatten();
+        }
+        skip_value(&mut file, kind, 0)?;
+    }
+    None
+}
+
+/// The format's own type tag for a string value.
+const GGUF_STRING: u32 = 8;
+
+fn read_u32(file: &mut std::fs::File) -> Option<u32> {
+    let mut bytes = [0_u8; 4];
+    file.read_exact(&mut bytes).ok()?;
+    Some(u32::from_le_bytes(bytes))
+}
+
+fn read_u64(file: &mut std::fs::File) -> Option<u64> {
+    let mut bytes = [0_u8; 8];
+    file.read_exact(&mut bytes).ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
+/// One length-prefixed utf-8 value, bounded so a corrupt length cannot ask
+/// for an allocation nobody has.
+fn read_string(file: &mut std::fs::File) -> Option<String> {
+    let length = usize::try_from(read_u64(file)?).ok()?;
+    if length > 1 << 20 {
+        return None;
+    }
+    let mut bytes = vec![0_u8; length];
+    file.read_exact(&mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Step over one metadata value, by the format's own type table. Anything
+/// the table does not name ends the walk, which the caller answers with the
+/// same refusal as a malformed header.
+fn skip_value(file: &mut std::fs::File, kind: u32, depth: u32) -> Option<()> {
+    if depth > 4 {
+        return None;
+    }
+    let width = match kind {
+        0 | 1 | 7 => 1_u64,
+        2..=3 => 2,
+        4..=6 => 4,
+        10..=12 => 8,
+        GGUF_STRING => {
+            read_string(file)?;
+            return Some(());
+        }
+        9 => {
+            let element = read_u32(file)?;
+            let count = read_u64(file)?;
+            if count > 1 << 24 {
+                return None;
+            }
+            let element_width = match element {
+                0 | 1 | 7 => Some(1_u64),
+                2..=3 => Some(2),
+                4..=6 => Some(4),
+                10..=12 => Some(8),
+                _ => None,
+            };
+            match element_width {
+                Some(element_width) => {
+                    let bytes = i64::try_from(count.checked_mul(element_width)?).ok()?;
+                    file.seek(std::io::SeekFrom::Current(bytes)).ok()?;
+                }
+                None => {
+                    for _ in 0..count {
+                        skip_value(file, element, depth + 1)?;
+                    }
+                }
+            }
+            return Some(());
+        }
+        _ => return None,
+    };
+    file.seek(std::io::SeekFrom::Current(i64::try_from(width).ok()?)).ok()?;
+    Some(())
+}
+
+#[cfg(test)]
+mod tests_architecture {
+    use super::*;
+
+    /// A gguf header carrying one metadata pair, built by the format's own
+    /// table: magic, version, no tensors, one pair, then the pair.
+    fn header(key: &str, kind: u32, value: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(key.as_bytes());
+        bytes.extend_from_slice(&kind.to_le_bytes());
+        bytes.extend_from_slice(value);
+        bytes
+    }
+
+    /// A string value as the format writes one.
+    fn string(text: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(text.as_bytes());
+        bytes
+    }
+
+    /// **The architecture is read before anything loads**, because the
+    /// failure it guards against is a process abort inside the decode: a t5
+    /// build loads happily and dies on the first cross-attention input.
+    #[test]
+    fn the_architecture_is_read_from_the_header_and_everything_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let t5 = dir.path().join("t5.gguf");
+        std::fs::write(&t5, header("general.architecture", GGUF_STRING, &string("t5"))).unwrap();
+        assert_eq!(architecture(&t5).as_deref(), Some("t5"));
+
+        let qwen = dir.path().join("qwen.gguf");
+        std::fs::write(&qwen, header("general.architecture", GGUF_STRING, &string("qwen3")))
+            .unwrap();
+        assert_eq!(architecture(&qwen).as_deref(), Some("qwen3"));
+
+        // A file that is not a gguf, a header truncated mid-pair, and a
+        // pair that is not the architecture: all read as no declaration.
+        let other = dir.path().join("weights");
+        std::fs::write(&other, b"weights").unwrap();
+        assert_eq!(architecture(&other), None);
+
+        let truncated = dir.path().join("truncated.gguf");
+        let full = header("general.architecture", GGUF_STRING, &string("qwen3"));
+        std::fs::write(&truncated, &full[..20]).unwrap();
+        assert_eq!(architecture(&truncated), None);
+
+        let unrelated = dir.path().join("unrelated.gguf");
+        std::fs::write(&unrelated, header("general.name", GGUF_STRING, &string("x"))).unwrap();
+        assert_eq!(architecture(&unrelated), None);
+    }
 }
 
 #[cfg(test)]

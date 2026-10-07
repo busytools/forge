@@ -379,6 +379,30 @@ export function rowAction(
   return { do: 'install', label: `install ${row.download.quant}` };
 }
 
+/**
+ * One run's headline, for the line under the candidate it belongs to: the
+ * speed, the figure that carries a verdict, and the agreement - and nothing
+ * else.
+ *
+ * The stage timings and the corpus's own shape stay on the bench section's
+ * result card, where a reader is diagnosing one run. Under a candidate they
+ * are the same numbers on every row, which is what turns a comparison into a
+ * wall of figures.
+ */
+export function resultHeadline(result: BenchResult): FactPart[] {
+  const metrics = result.metrics;
+  const parts: FactPart[] = [{ text: `${metrics.xrt_wall.toFixed(1)}\u{d7} realtime`, hl: true }];
+  if (metrics.term_accuracy !== null) {
+    parts.push({ text: `term accuracy ${Math.round(metrics.term_accuracy * 100)}%`, hl: true });
+  } else if (metrics.wer !== null) {
+    parts.push({ text: `WER ${(metrics.wer * 100).toFixed(1)}%` });
+  }
+  if (metrics.matched !== null) {
+    parts.push({ text: `${String(metrics.matched[0])} of ${String(metrics.matched[1])} matched` });
+  }
+  return parts;
+}
+
 /** One operation line: the download's or the activation's, drawn where the page's state is. */
 export interface OpLine {
   mark: string;
