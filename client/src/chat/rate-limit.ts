@@ -32,6 +32,16 @@ function flag(info: Info, key: string): boolean | null {
   return typeof held === 'boolean' ? held : null;
 }
 
+/** A consumed fraction as the terminal prints it: `{:.0}`, ties to even. */
+function percent(utilization: number): number {
+  const value = utilization * 100;
+  const floor = Math.floor(value);
+  const rest = value - floor;
+  if (rest > 0.5) return floor + 1;
+  if (rest < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
 function formatRateLimitType(raw: string): string {
   switch (raw) {
     case 'five_hour':
@@ -125,9 +135,9 @@ export function formatRateLimitSummary(info: Info): string {
   const type = line(info, 'rateLimitType');
   const usage =
     utilization !== null && type !== null
-      ? `you've used ${Math.round(utilization * 100)}% of your ${formatRateLimitType(type)} rate limit`
+      ? `you've used ${percent(utilization)}% of your ${formatRateLimitType(type)} rate limit`
       : utilization !== null
-        ? `you've used ${Math.round(utilization * 100)}% of your rate limit`
+        ? `you've used ${percent(utilization)}% of your rate limit`
         : type !== null
           ? `you've hit your ${formatRateLimitType(type)} rate limit`
           : "you've hit your rate limit";

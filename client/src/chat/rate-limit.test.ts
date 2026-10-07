@@ -121,6 +121,17 @@ describe('the summary, branch for branch with the terminal', () => {
     );
   });
 
+  it('rounds a percentage as the terminal does, ties to even', () => {
+    // Rust's `{:.0}`: 0.125 * 100 is exactly 12.5, which rounds to 12 where
+    // JavaScript's half-up round would say 13.
+    const summary = formatRateLimitSummary({
+      status: 'allowed_warning',
+      utilization: 0.125,
+      rateLimitType: 'five_hour',
+    });
+    expect(summary).toBe("Approaching rate limit, you've used 12% of your 5-hour rate limit.");
+  });
+
   it('states overage use on a rejection that is consuming it', () => {
     at(15_780);
     const summary = formatRateLimitSummary({
@@ -152,7 +163,6 @@ describe('the incident key', () => {
     const next = rateLimitNoticeKey({ rateLimitType: 'five_hour', resetsAt: RESETS_AT + 18_000 });
     expect(next).not.toBe(first);
   });
-
   it('stands on its own when the frame names neither window nor reset', () => {
     expect(rateLimitNoticeKey({ status: 'rejected' })).toBe('rate-limit:any:none');
   });
