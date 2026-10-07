@@ -87,6 +87,36 @@ describe('the boundary', () => {
     expect(ahead.header.effort).toBe('medium');
     expect(ahead.header.permission_mode).toBe('default');
   });
+
+  /**
+   * **The tree degrades where it enters too.** The fixture only ever holds
+   * a complete tree, so nothing else exercises the arms a thinner or newer
+   * server lands on: an unknown status wears the least-alarming class, a
+   * commit list without a count states its own length, and a file the wire
+   * does not name is dropped rather than drawn blank.
+   */
+  it('narrows an unknown status and fills what the tree does not state', () => {
+    const tree = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      git: {
+        default_branch: 'main',
+        worktree: {
+          files: [
+            { path: 'a.rs', added: 1, removed: 0, status: 'quantum' },
+            { added: 2, removed: 0, status: 'added' },
+          ],
+          total_files: 2,
+          total_added: 3,
+          total_removed: 0,
+        },
+        ahead: { commits: [{ sha: 'a1b2c3d', subject: 'one' }] },
+      },
+    });
+    const files = tree.git.worktree?.files ?? [];
+    expect(files[0]?.status, 'a status from the future did not narrow').toBe('modified');
+    expect(files, 'a file the wire did not name was not dropped').toHaveLength(1);
+    expect(tree.git.ahead?.count, 'a commit list without a count did not state its length').toBe(1);
+  });
 });
 
 describe('the header facts', () => {
