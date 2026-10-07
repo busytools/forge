@@ -493,7 +493,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('leaves a call that is still out closed, with the ring for a status', () => {
-    const body = draw(said([use('c1', 'Bash', { command: 'just check' })]));
+    // A call still out belongs to a turn the seat reports as running: a
+    // SETTLED turn's unanswered call is the restart's unterminated one, and
+    // that draws failed (#1836).
+    const body = seatRunning(said([use('c1', 'Bash', { command: 'just check' })]));
 
     // The GROUP opens - the mockup draws a run open - and the call inside it
     // waits to be asked, which is the difference from the terminal: it expands
@@ -502,6 +505,24 @@ describe('one turn, as the page draws it', () => {
     expect(leaf, 'the call is on the page').not.toBe('');
     expect(leaf.slice(0, leaf.indexOf('>')), 'it waits to be asked').not.toContain('open');
     expect(leaf).toContain('<span class="ring"></span>');
+  });
+
+  it('draws a closed turn unanswered call failed, never the ring', () => {
+    // The wiring this fix carries (#1836): a turn the seat has SETTLED
+    // tells its fold so, and the call the frames never answered draws the
+    // failure mark - the restart's row. Dropping that fourth argument at the
+    // mount puts the ring back and leaves the spinner standing.
+    const body = draw(said([use('c1', 'Bash', { command: 'just check' })]));
+
+    const leaf = body.slice(body.indexOf('<details class="leaf"'));
+    expect(leaf, 'the call is on the page').not.toBe('');
+    expect(leaf, 'the call the turn never answered still spins').not.toContain(
+      '<span class="ring"></span>',
+    );
+    expect(leaf, 'the failure mark is the family glyph in the error tone').toContain(
+      '<svg class="ic gl err">',
+    );
+    expect(leaf, 'and the empty body says so in words, not colour alone').toContain('no result');
   });
 
   it('tags the org by the seat the page is drawing, not by the row alone', () => {

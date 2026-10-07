@@ -1382,8 +1382,20 @@ function noticeFields(words: string): {
  * result frame either, because the transcript holds none, so "no result" also
  * means "read from disk". A turn still being written draws a running report
  * from what its frames already carry.
+ *
+ * `ended` is the caller's OTHER half of that fact, and the default says
+ * "unknown": a turn the core reports as settled is a history the CLI has
+ * finished writing, so a call the frames never answered is the restart's
+ * unterminated call and settles failed. The terminal's own resume does the
+ * same (`finalize_turn_runtime_artifacts(Failed)`), where leaving it pending
+ * spins the row forever.
  */
-export function fold(messages: readonly unknown[], self: Self | null = null, live = false): Unit[] {
+export function fold(
+  messages: readonly unknown[],
+  self: Self | null = null,
+  live = false,
+  ended = false,
+): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
@@ -1405,6 +1417,18 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * turn's first call draws red until its own result lands.
    */
   let failedAt: number | null = null;
+  /**
+   * The LAST `result` frame's index, which is where the turn ENDED.
+   *
+   * A call opened before it that never came back is an unterminated call -
+   * the restart case: forge kills and respawns the CLI mid-turn, the replayed
+   * history keeps the call's `tool_use` with no result, and the resumed turn
+   * never answers it. The terminal settles exactly these as failed on its
+   * resume (`finalize_turn_runtime_artifacts(Failed)`, "resumed a tool call
+   * whose result never arrived"), where a fold reading only failing frames
+   * leaves the row spinning forever.
+   */
+  let resultAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
   const tasks = new Map<string, TaskFact>();
   /** The call a task belongs to, which the frames that carry one name. */
@@ -1428,6 +1452,9 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     // result is.
     if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
       failedAt = at;
+    }
+    if (frame.type === 'result') {
+      resultAt = at;
     }
     if (frame.type === 'system') {
       const task = str(frame, 'task_id');
@@ -1692,10 +1719,22 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   for (const [at, frame] of frames.entries()) {
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
-    // Whether this call was open when the turn failed: the ones before that
-    // frame are the ones it abandoned, and a call the CLI opened after it is
-    // one the CLI is still running.
-    const abandoned = failedAt !== null && at < failedAt;
+    // Whether this call was open when the turn ENDED: one before a failing
+    // frame is a call the failure abandoned, one before any result frame is a
+    // call the turn closed on, and - when the caller says the turn's history
+    // is CLOSED - any call the frames never answered, which is the restart's
+    // unterminated call: the resumed turn never brings its result, and a fold
+    // reading only boundaries leaves the row spinning forever. A call opened
+    // after a boundary is one the CLI is still running.
+    //
+    // **One stated divergence from the terminal** (rule 24): its normal
+    // turn-end sweep draws a still-open call COMPLETED, where this settles it
+    // failed. The two can only disagree when a turn ends CLEANLY with a
+    // foreground call unanswered - the interrupted shapes carry an error
+    // result, where both sides already say failed - and failed is the honest
+    // word for a call that never came back.
+    const abandoned =
+      (failedAt !== null && at < failedAt) || (resultAt !== null && at < resultAt) || ended;
 
     // Watched before anything else reads the frame: whatever a turn turns out
     // to be, the clock on its own rows is the only one a later row can report.

@@ -50,7 +50,7 @@
     carried?: string | null;
   } = $props();
 
-  const folded = $derived(fold(turn.messages, slot, beingWritten(turn)));
+  const folded = $derived(fold(turn.messages, slot, beingWritten(turn), !beingWritten(turn)));
 
   /**
    * The fold's units, less the one row the pin is carrying.

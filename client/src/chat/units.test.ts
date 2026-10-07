@@ -1874,6 +1874,86 @@ describe('one turn folded into the units a view draws', () => {
     expect(calls[1]?.status, 'and the one it started afterwards is still out').toBe('pending');
   });
 
+  /**
+   * #1836: a restart kills the CLI mid-call, the resumed history keeps the
+   * call's `tool_use` with no result and no failing frame, and a fold that
+   * reads only boundaries leaves the row spinning forever. The terminal
+   * settles exactly these failed on its resume
+   * (`finalize_turn_runtime_artifacts(Failed)`), and the caller's `ended`
+   * says the same: this turn's history is closed, so its unanswered call is
+   * never coming back.
+   */
+  it('settles the call a closed turn never answered, backgrounded or not', () => {
+    const load = said([use('tu_never', 'Skill', { skill: 'slow-skill' })]);
+
+    const [live] = fold([load]);
+    expect(
+      callsOf(live).map((call) => call.leaf.status),
+      'a turn still being written waits for the answer',
+    ).toEqual(['pending']);
+
+    const [settled] = fold([load], null, false, true);
+    expect(
+      callsOf(settled).map((call) => call.leaf.status),
+      'the turn ended without an answer: the call draws failed, not spinning',
+    ).toEqual(['failed']);
+
+    // A backgrounded call whose launch never landed is the same spinner one
+    // call type over: the terminal clears its background roster before the
+    // resume's sweep, so an input-keyed exemption would leave it standing.
+    const launched = said([
+      {
+        type: 'tool_use',
+        id: 'tu_bg',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const [bg] = fold([launched], null, false, true);
+    expect(
+      callsOf(bg).map((call) => call.leaf.status),
+      'a launch with no task frames fails with the turn',
+    ).toEqual(['failed']);
+
+    // What DOES hold one open is the task's own fact: a start the wire
+    // carried exempts the call, input or no input.
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'tu_bg',
+      is_backgrounded: true,
+    };
+    const [held] = fold([launched, started], null, false, true);
+    expect(
+      callsOf(held).map((call) => call.leaf.status),
+      'a live task holds its call open past the turn',
+    ).toEqual(['in_progress']);
+  });
+
+  /**
+   * The FRAME-BUILT carrier is the other half of the settle: frames arrive on
+   * a live page, whose `live` stays true for good there (#1486), so `ended`
+   * never fires for it - the RESULT frame inside the fold is what closes the
+   * turn, and a call the frames never answered before it settles failed.
+   */
+  it('settles an unanswered call when the fold own frames carried the end', () => {
+    const load = said([use('tu_frame', 'Skill', { skill: 'slow-skill' })]);
+    const ended = { type: 'result', is_error: false, subtype: 'success' };
+
+    const [framed] = fold([load, ended], null, true, false);
+    expect(
+      callsOf(framed).map((call) => call.leaf.status),
+      'the result frame closed the turn: the call before it draws failed',
+    ).toEqual(['failed']);
+
+    const [open] = fold([load], null, true, false);
+    expect(
+      callsOf(open).map((call) => call.leaf.status),
+      'and with no end in the frames it still waits',
+    ).toEqual(['pending']);
+  });
+
   it('sweeps the calls of every failure in the turn, not only the first', () => {
     // Two failing turns in one fold - which the live path reaches when no page
     // lands between them - settle BOTH turns' calls. First-wins sweeps the
