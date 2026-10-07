@@ -565,6 +565,25 @@ function isLocalCommand(text: string): boolean {
   );
 }
 
+/**
+ * The summary a task notification's envelope carries, or null for every other
+ * text.
+ *
+ * The CLI delivers a background task's end as a user frame whose text is this
+ * envelope, with no stamp and no reader behind it - so the summary draws as an
+ * info line of its own and the XML never reaches the page (#1680, Ved's shape:
+ * the summary line alone). A frame carrying no summary is not claimed here.
+ */
+function taskNotificationOf(text: string): string | null {
+  const held = text.trim();
+  if (!held.startsWith('<task-notification>')) return null;
+  const open = held.indexOf('<summary>');
+  const close = held.indexOf('</summary>', open + 1);
+  if (open === -1 || close === -1) return null;
+  const summary = held.slice(open + '<summary>'.length, close).trim();
+  return summary === '' ? null : summary;
+}
+
 /** The harness's own line about an image, or null for every other text. */
 function imageNoteOf(text: string): string | null {
   const held = text.trim();
@@ -1927,6 +1946,20 @@ export function fold(
           // typing in the launch terminal, and the terminal's own chat filters
           // the same heads. A decided ignore, not a dropped frame.
           if (isLocalCommand(stripped)) continue;
+          // A background task's end arrives as a user frame nobody typed -
+          // the CLI's `<task-notification>` envelope - and draws as its own
+          // summary line, never as the raw XML and never as the reader's turn
+          // (#1680). No summary parsed, no claim: it falls through and draws
+          // as itself, the default rule 25 keeps.
+          const taskEnd = taskNotificationOf(stripped);
+          if (taskEnd !== null) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: taskEnd },
+            });
+            continue;
+          }
           const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {

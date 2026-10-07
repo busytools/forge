@@ -489,6 +489,32 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([heard([text('a real prompt')])]))).toEqual(['user']);
   });
 
+  it('draws a background task end as its summary line, never the XML', () => {
+    // The CLI delivers a task's end as a user frame nobody typed - the
+    // `<task-notification>` envelope - so it draws as an info line of its
+    // own: not the raw XML, and not the reader's own turn (#1680, Ved's
+    // shape: the summary line alone).
+    const envelope = heard([
+      text(
+        '<task-notification>\n<task-id>bsybtnmwj</task-id>\n<tool-use-id>call_01a1</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>completed</status>\n<summary>Background command "Run both gates" completed (exit code 0)</summary>\n</task-notification>',
+      ),
+    ]);
+
+    const units = fold([envelope]);
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    const [row] = units;
+    expect(row?.kind === 'notice' ? row.notice.severity : '', 'informational').toBe('info');
+    expect(
+      row?.kind === 'notice' ? row.notice.text : '',
+      'the summary line alone, no envelope around it',
+    ).toBe('Background command "Run both gates" completed (exit code 0)');
+
+    // No summary parsed, no claim: the frame draws as itself, the rule-25
+    // default rather than a silent drop.
+    const bare = heard([text('<task-notification><task-id>t</task-id></task-notification>')]);
+    expect(kinds(fold([bare])), 'a summary-less envelope is not claimed').toEqual(['user']);
+  });
+
   it("hangs the harness's image note on the call that read the picture", () => {
     // The image rides the Read call's own result; the note arrives right after
     // as a user frame. On that call's row it is the picture's caption; as the
