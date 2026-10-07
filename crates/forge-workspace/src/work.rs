@@ -280,6 +280,14 @@ impl Workspace {
     /// store them under: a sessionless seat's stores drop what they are
     /// given, so the work would be a whole-tree walk with nowhere to land.
     pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
+        // A hold is somebody looking: it stamps the seat as shown - which is
+        // what a failure's nudge is refused against - and it ends the
+        // current failure episode, so a later failure is a new one.
+        if let Some(domain) = self.domain_session_for(slot) {
+            let mut guard = domain.lock();
+            guard.shown_at = Some(std::time::SystemTime::now());
+            guard.auto_continue_spent = false;
+        }
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
             return;
@@ -334,6 +342,11 @@ impl Workspace {
 
     /// Stop showing `slot`. The last hold stops its loop and its watch.
     pub fn release_seat(&self, slot: &SessionSlot) {
+        // Shown up to now: a failure older than this is one the reader has
+        // already looked at, which is the boundary #1612's mark clears on.
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().shown_at = Some(std::time::SystemTime::now());
+        }
         self.held_work_seats.release(slot);
     }
 
@@ -808,6 +821,35 @@ provider = "anthropic"
         assert!(
             should_scan(Some(&held), false, now + SNAPSHOT_STALENESS),
             "and a read past the window is read whatever the watch said",
+        );
+    }
+
+    /// A hold is what "somebody is looking" means, so it is also what the
+    /// seat's nudge is judged against: a hold stamps the seat as shown, and
+    /// a release stamps it as shown up to that moment rather than clearing
+    /// it - a failure older than either is one the reader has seen.
+    #[tokio::test]
+    async fn a_hold_and_a_release_stamp_the_seat_as_shown() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        let shown_at =
+            || workspace.domain_session_for(&seat).expect("the seat's session").lock().shown_at;
+
+        assert!(shown_at().is_none(), "nothing has shown the seat yet");
+
+        workspace.hold_seat(&seat).await;
+        let held_at = shown_at().expect("the hold stamps the showing");
+
+        // The two stamps are taken from the clock, so the release is given a
+        // gap to sit strictly after the hold: on a coarse clock, `now()`
+        // twice in a row reads equal.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        workspace.release_seat(&seat);
+        let released_at = shown_at().expect("and the release stamps it again");
+        assert!(
+            released_at > held_at,
+            "the release stamps its own instant - the seat was shown up to the moment it was let go",
         );
     }
 
