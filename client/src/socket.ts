@@ -10,6 +10,7 @@
  * refilling on every blip.
  */
 
+import { refused } from './chat/refusals';
 import {
   MORE_TURNS,
   readableProtocol,
@@ -683,7 +684,13 @@ export function connect(url: string): Connection {
   function dispatch(command: Command): Promise<unknown> | null {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
-    if (!isOpen()) throw new Error('the socket is not open');
+    if (!isOpen()) {
+      // The throw is what callers catch and report; this is what the reader
+      // sees: the loss noted for the seat's own column, where the click was
+      // made (#1638). A command with no seat to name notes nothing.
+      refused(slotOf(command));
+      throw new Error('the socket is not open');
+    }
 
     const variant = variantOf(command);
     if (!ANSWERS_THROUGH_A_REPLY.has(variant)) {

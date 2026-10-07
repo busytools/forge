@@ -6,10 +6,12 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { connect, type Connection } from './socket';
+import { onRefusal, type Refusal } from './chat/refusals';
 import {
   MIN_PROTOCOL,
   PROTOCOL_VERSION,
   slotOf,
+  subjectKey,
   type ClientMessage,
   type ServerMessage,
   type Subject,
@@ -410,6 +412,29 @@ describe('the connection', () => {
       'the socket is not open',
     );
     expect(conn.more(LEAD), 'a page-ask that went nowhere read as one that went').toBe(false);
+  });
+
+  /**
+   * A refused command draws where the click was made, not only in the console
+   * (#1638): the seat the command addressed is what the line is noted for.
+   */
+  it('notes a refused command for the seat it addressed', async () => {
+    const { conn } = await connected();
+    const lines: Refusal[] = [];
+    const off = onRefusal((line) => lines.push(line));
+    conn.close();
+
+    expect(() => conn.dispatch({ cancel: { key: LEAD } })).toThrow('the socket is not open');
+    expect(() => conn.dispatch({ despawn_worker: { project_key: 'p', label: 'w' } })).toThrow(
+      'the socket is not open',
+    );
+    off();
+
+    expect(lines, 'one line, for the command that carried a seat').toHaveLength(1);
+    expect(lines[0]?.seat, 'the seat it addressed').toBe(subjectKey({ session: LEAD }));
+    expect(lines[0]?.text, 'plain words, not the throw phrasing').toBe(
+      'Not sent - the connection is down.',
+    );
   });
 
   it('asks for more turns of one conversation', async () => {

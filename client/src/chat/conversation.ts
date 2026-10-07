@@ -29,6 +29,7 @@ import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
+import { onRefusal } from './refusals';
 import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
@@ -770,9 +771,22 @@ export class Chat {
         this.ask(null);
       }
     });
+    // A dispatch refused before it left the browser draws its line here: the
+    // command's own seat is the column it was sent from, so a line for another
+    // seat belongs to that seat's conversation, not this one.
+    const stopRefusals = onRefusal((line) => {
+      if (line.seat !== subjectKey({ session: this.slot })) return;
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: 'warning',
+        text: line.text,
+      });
+    });
     this.running = () => {
       stopMessages();
       stopStatus();
+      stopRefusals();
       this.clearRetry();
       this.running = null;
     };

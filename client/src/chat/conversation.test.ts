@@ -10,6 +10,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
+import { refused } from './refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
 // record should have been replaced throws here as well as in a mounted column.
@@ -305,6 +306,28 @@ describe('the conversation the chat draws', () => {
     expect(drawn(), 'a rate-limited failure draws the explainer instead').toContain(
       'Waiting for account reset; click another project or wait.',
     );
+  });
+
+  /**
+   * A dispatch refused before it left the browser draws its line in the seat's
+   * own column, where the click was made (#1638): the socket notes the loss
+   * and this draws it, rather than the console alone.
+   */
+  it('draws a refused dispatch in its seat column, and not another seat one', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    refused({ org: LEAD.org, project: LEAD.project, label: 'somebody-else' });
+    expect(drawn(), 'another seat refusal stays out of this column').not.toContain('Not sent');
+
+    refused(LEAD);
+    expect(drawn(), 'the line is drawn').toContain('Not sent - the connection is down.');
+    expect(drawn(), 'as the core own line').toContain('forge_notice');
+    expect(drawn(), 'a warning').toContain('warning');
   });
 
   /**
