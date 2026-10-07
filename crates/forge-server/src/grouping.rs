@@ -322,9 +322,12 @@ impl<'a> CallParts<'a> {
 /// with the kind-label prefix stripped.
 pub fn family_target(parts: CallParts<'_>) -> Option<String> {
     // A browser call is told by what it drove, not by the driver's server
-    // name: the URL where it has one, the call's own title otherwise.
+    // name: the URL where it has one, and its verb otherwise - the wire name
+    // the title carries (`mcp__playwright__browser_click`) is plumbing that
+    // told a reader nothing, and the client draws `browser: click` for the
+    // same call.
     if is_browser_tool(parts.name) {
-        return browser_target(parts).or_else(|| strip_title_prefix(parts));
+        return browser_target(parts).or_else(|| browser_verb(parts.name));
     }
     if let Some((_, tool)) = mcp_parts(parts.name)
         && !tool.is_empty()
@@ -387,11 +390,8 @@ fn search_target(parts: CallParts<'_>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
-/// WebSearch its query. The full value reaches the render, which clips
-/// it per row.
 /// Browser target: the URL a navigating call carries, scheme stripped like
-/// the web family's. A call with no URL falls through to its title.
+/// the web family's. A call with no URL falls through to its verb.
 fn browser_target(parts: CallParts<'_>) -> Option<String> {
     let raw = parts.input.and_then(|v| v.as_object())?;
     raw.get("url")
@@ -401,6 +401,19 @@ fn browser_target(parts: CallParts<'_>) -> Option<String> {
         .map(|s| strip_scheme(s).to_owned())
 }
 
+/// A browser call that drove no URL: `browser: <verb>`, the same sentence the
+/// client's row draws.
+fn browser_verb(name: &str) -> Option<String> {
+    let tool = name
+        .strip_prefix("mcp__")
+        .map_or(name, |rest| rest.split_once("__").map_or(rest, |(_, tool)| tool));
+    let verb = tool.strip_prefix("browser_").filter(|verb| !verb.is_empty())?;
+    Some(format!("browser: {verb}"))
+}
+
+/// Web family (`⊕`): WebFetch shows its URL (scheme stripped),
+/// WebSearch its query. The full value reaches the render, which clips
+/// it per row.
 fn web_target(parts: CallParts<'_>) -> Option<String> {
     let raw = parts.input.and_then(|v| v.as_object())?;
     let value = match parts.name {
@@ -1238,6 +1251,29 @@ mod tests {
         );
         let line = kind_line(&k, "Browser").expect("a Browser line");
         assert_eq!(line.targets, vec!["example.org".to_owned()]);
+    }
+
+    /// **A browser call that drove no URL is named by its verb.** The title
+    /// carries the driver's wire name (`mcp__playwright__browser_click`),
+    /// which names the plumbing rather than the act; the child row reads
+    /// `browser: click`, the same sentence the client draws.
+    #[test]
+    fn a_browser_call_with_no_url_is_named_by_its_verb() {
+        let mut k = KindSummary::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b2",
+                "mcp__playwright__browser_click",
+                "mcp__playwright__browser_click",
+                Some(serde_json::json!({"target": "e4"})),
+            ),
+        );
+        let line = kind_line(&k, "Browser").expect("a Browser line");
+        assert_eq!(line.targets, vec!["browser: click".to_owned()]);
+
+        // The family's own tool, bare, reads the same way.
+        assert_eq!(browser_verb("browser_hand_off"), Some("browser: hand_off".to_owned()));
     }
 
     /// A Skill call's child row carries the invoked skill name (+ args

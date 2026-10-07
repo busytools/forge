@@ -321,6 +321,7 @@ Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the 
 | Grep / Glob / LS | `⌕` |
 | Bash | `▶` |
 | WebFetch / WebSearch | `⊕` |
+| Browser | `⊕` |
 | Move / EnterWorktree | `⇄` |
 | ExitPlanMode / Config | `⊙` |
 | Task / Agent (labelled "Subagent") | `◇` |
@@ -402,8 +403,8 @@ MCP by server, with the browser as its own family:
   <span class="dim">│  ├─ resolve-library-id</span>
   <span class="dim">│  └─ query-docs</span>
   <span class="dim">└─ </span><span class="bold">⊕ Browser</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ browser_navigate</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;└─ browser_click</span></pre>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ browser: navigate</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;└─ browser: click</span></pre>
 
 </div>
 
